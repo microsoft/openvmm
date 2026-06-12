@@ -10,10 +10,13 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use thiserror::Error;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
+use x86defs::tdx::TDX_FIELD_CODE_TDX_FEATURES0;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::tdx::TdConfigFlags;
 use x86defs::tdx::TdFeatures0;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdReport;
@@ -27,8 +30,8 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
 use x86defs::tdx::TdgMemPageReleaseRcx;
 use x86defs::tdx::TdgMemPageReleaseRcxResult;
-use x86defs::tdx::TdgSysRdFieldId;
 use x86defs::tdx::TdgSysRdResult;
+use x86defs::tdx::TdgVmRdResult;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
 
@@ -923,12 +926,12 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
 /// Issue a TDG.SYS.RD call
 pub fn tdcall_sys_rd(
     call: &mut impl Tdcall,
-    field_id: TdgSysRdFieldId,
+    field_id: TdxExtendedFieldCode,
 ) -> Result<TdgSysRdResult, TdCallResult> {
     let input = TdcallInput {
         leaf: TdCallLeaf::SYS_RD,
         rcx: 0,
-        rdx: field_id.0,
+        rdx: field_id.into_bits(),
         r8: 0,
         r9: 0,
         r10: 0,
@@ -940,15 +943,46 @@ pub fn tdcall_sys_rd(
     };
 
     let output = call.tdcall(input);
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        return Err(output.rax);
+    }
 
-    if output.rax.code() == TdCallResultCode::SUCCESS {
-        match field_id {
-            TdgSysRdFieldId::TDX_FEATURES0 => {
-                Ok(TdgSysRdResult::Features0(TdFeatures0::from_bits(output.r8)))
-            }
-            _ => Ok(TdgSysRdResult::Unknown(output.r8)),
+    match field_id {
+        TDX_FIELD_CODE_TDX_FEATURES0 => {
+            Ok(TdgSysRdResult::Features0(TdFeatures0::from_bits(output.r8)))
         }
-    } else {
-        Err(output.rax)
+        _ => Ok(TdgSysRdResult::Unknown(output.r8)),
+    }
+}
+
+/// Issue a TDG.VM.RD call
+pub fn tdcall_vm_rd(
+    call: &mut impl Tdcall,
+    field_id: TdxExtendedFieldCode,
+) -> Result<TdgVmRdResult, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VM_RD,
+        rcx: 0,
+        rdx: field_id.into_bits(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        return Err(output.rax);
+    }
+
+    match field_id {
+        TDX_FIELD_CODE_CONFIG_FLAGS => Ok(TdgVmRdResult::ConfigFlags(TdConfigFlags::from_bits(
+            output.r8,
+        ))),
+        _ => Ok(TdgVmRdResult::Unknown(output.r8)),
     }
 }

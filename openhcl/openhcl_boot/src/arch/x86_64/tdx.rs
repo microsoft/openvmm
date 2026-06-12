@@ -23,8 +23,8 @@ use tdcall::tdcall_sys_rd;
 use tdcall::tdcall_wrmsr;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
+use x86defs::tdx::TDX_FIELD_CODE_TDX_FEATURES0;
 use x86defs::tdx::TdFeatures0;
-use x86defs::tdx::TdgSysRdFieldId;
 use x86defs::tdx::TdgSysRdResult;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
@@ -133,7 +133,8 @@ pub fn accept_pages(range: MemoryRange) -> Result<(), AcceptPagesError> {
 /// Change the visibility of pages. Note that pages that were previously host
 /// visible and are now private, must be reaccepted.
 pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
-    if host_visible && get_td_features0().page_release() && get_td_features0().tdx_connect() {
+    if host_visible && get_tdx_sys_features().page_release() && get_tdx_sys_features().tdx_connect()
+    {
         if let Err(err) = tdcall::release_memory_range(&mut TdcallInstruction, range) {
             panic!("failed to release pages in {range}: {err:?}");
         }
@@ -225,11 +226,11 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
 static TDX_TD_FEATURES0: SingleThreaded<Cell<Option<TdFeatures0>>> =
     SingleThreaded(Cell::new(None));
 
-fn get_td_features0() -> TdFeatures0 {
+fn get_tdx_sys_features() -> TdFeatures0 {
     if let Some(f) = TDX_TD_FEATURES0.get() {
         f
     } else {
-        let res = tdcall_sys_rd(&mut TdcallInstruction, TdgSysRdFieldId::TDX_FEATURES0)
+        let res = tdcall_sys_rd(&mut TdcallInstruction, TDX_FIELD_CODE_TDX_FEATURES0)
             .expect("TDG.SYS.RD should not fail");
 
         if let TdgSysRdResult::Features0(f) = res {

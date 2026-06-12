@@ -45,15 +45,6 @@ open_enum! {
     }
 }
 
-open_enum! {
-    /// TDX Global Metadata Field Identifiers that are passed into
-    /// the TDG.SYS.RD tdcall in rdx.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub enum TdgSysRdFieldId: u64 {
-        TDX_FEATURES0 = 0x0A00000300000008,
-    }
-}
-
 #[bitfield(u64)]
 pub struct TdFeatures0 {
     pub migration: bool,
@@ -124,6 +115,24 @@ pub struct TdFeatures0 {
 
 pub enum TdgSysRdResult {
     Features0(TdFeatures0),
+    Unknown(u64),
+}
+
+#[bitfield(u64)]
+pub struct TdConfigFlags {
+    pub gpaw: bool,
+    pub flexible_pending_ve: bool,
+    pub no_rbp_mod: bool,
+    pub maxpa_virt: bool,
+    pub maxgpa_virt: bool,
+    pub tdx_connect: bool,
+    pub page_release: bool,
+    pub sealing: bool,
+    #[bits(56)]
+    pub reserved: u64,
+}
+pub enum TdgVmRdResult {
+    ConfigFlags(TdConfigFlags),
     Unknown(u64),
 }
 
@@ -591,13 +600,24 @@ impl TdxContextCode {
     }
 }
 
+// VCPU-Scope Metadata
 pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000051);
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000052);
 
-/// Extended field code for TDG.VP.WR and TDG.VP.RD
+// TD-Scope Metadata
+pub const TDX_FIELD_CODE_CONFIG_FLAGS: TdxExtendedFieldCode =
+    TdxExtendedFieldCode(0x9110000300000016);
+
+// Global-Scope Metadata
+pub const TDX_FIELD_CODE_TDX_FEATURES0: TdxExtendedFieldCode =
+    TdxExtendedFieldCode(0x0A00000300000008);
+
+/// Extended field code for the Metadata Access Interface TDCalls:
+/// TDG.VP.WR, TDG.VP.RD, TDG.VM.WR, TDG.VM.RD, TDG.SYS.WR, TDG.SYS.RD
 #[bitfield(u64)]
+#[derive(PartialEq, Eq)]
 pub struct TdxExtendedFieldCode {
     #[bits(24)]
     pub field_code: u32,
