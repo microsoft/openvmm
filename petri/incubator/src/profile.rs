@@ -70,7 +70,6 @@ pub struct VirtioBlkDeviceConfig {
     /// `INCUBATOR_VFIO_BDF_TEST_DISK`).
     pub name: String,
     /// Size of the RAM-backed disk (e.g., "64M").
-    #[serde(default = "default_disk_size")]
     pub size: String,
     /// If true, bind the device to vfio-pci after boot, making it available
     /// for passthrough into the L2 guest.
@@ -78,55 +77,27 @@ pub struct VirtioBlkDeviceConfig {
     pub vfio: bool,
 }
 
-fn default_disk_size() -> String {
-    "64M".to_string()
-}
 /// QEMU TCG configuration parsed from the profile.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QemuTcgConfig {
     /// Guest architecture (e.g., "aarch64", "x86-64"). Selects the
     /// arch-specific kernel/initrd when those are auto-detected.
-    #[serde(default = "default_arch")]
     pub arch: Arch,
     /// Path or name of the QEMU binary (e.g., "qemu-system-aarch64").
-    #[serde(default = "default_qemu_binary")]
     pub binary: String,
     /// Machine type (e.g., "virt,virtualization=on,iommu=smmuv3").
-    #[serde(default = "default_machine")]
     pub machine: String,
     /// CPU model (e.g., "max").
-    #[serde(default = "default_cpu")]
     pub cpu: String,
     /// Memory size (e.g., "4G").
-    #[serde(default = "default_memory")]
     pub memory: String,
     /// Number of CPUs (e.g., "2").
-    #[serde(default = "default_smp")]
     pub smp: String,
     /// Extra kernel command line arguments. The incubator always appends
     /// `rdinit=/tcg-init.sh` (the injected init script); everything else,
     /// including the arch-specific serial console (e.g., "console=ttyAMA0"
     /// for aarch64 PL011, "console=ttyS0" for x86 16550), comes from here.
     pub cmdline: String,
-}
-
-fn default_arch() -> Arch {
-    Arch::Aarch64
-}
-fn default_qemu_binary() -> String {
-    "qemu-system-aarch64".to_string()
-}
-fn default_machine() -> String {
-    "virt".to_string()
-}
-fn default_cpu() -> String {
-    "max".to_string()
-}
-fn default_memory() -> String {
-    "4G".to_string()
-}
-fn default_smp() -> String {
-    "2".to_string()
 }
 
 impl IncubatorProfile {
