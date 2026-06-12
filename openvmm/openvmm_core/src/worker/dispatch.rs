@@ -2408,32 +2408,23 @@ impl InitializedVm {
             ResolvedIommu::None => IommuDevices::None,
         };
 
-        // Set up IOAPIC routing. When an AMD IOMMU is present, wrap the
-        // hypervisor's IoApicRouting through the IOMMU's interrupt
-        // remapping table so that IOAPIC-sourced interrupts are
-        // translated via the guest's IRTEs and invalidation commands
-        // trigger retranslation.
+        // Set up IOAPIC routing. When an AMD IOMMU covers the southbridge
+        // IOAPIC (segment 0, bus 0), wrap the hypervisor's IoApicRouting
+        // through that IOMMU's interrupt remapping table so IOAPIC-sourced
+        // interrupts are translated via the guest's IRTEs and invalidation
+        // commands trigger retranslation. The RID and the remapper come from
+        // the same IOMMU, so the IVRS DEV_SPECIAL(IOAPIC) entry and the
+        // runtime remapping always refer to the same DTE/IRTE context.
         #[cfg(guest_arch = "x86_64")]
         let ioapic_iommu_rid: Option<u16> = if let IommuDevices::AmdVi(amd_devices) = &iommu_devices
         {
-            if let (Some(first_iommu), Some(iommu_acpi)) = (
-                amd_devices.shared_states.iter().flatten().next(),
-                amd_devices.acpi_configs.first(),
-            ) {
-                // The IOAPIC RID. Linux expects the southbridge IOAPIC
-                // at 00:14.0 and disables interrupt remapping if this
-                // RID is not present in the IVRS.
-                let ioapic_rid = (iommu_acpi.start_bus as u16) << 8
-                    | ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
-
+            amd_devices.ioapic_iommu.as_ref().map(|sel| {
                 ioapic_routing.connect_remapper(
-                    ioapic_rid,
-                    first_iommu.clone() as Arc<dyn iommu_common::InterruptRemapper>,
+                    sel.ioapic_rid,
+                    sel.shared_state.clone() as Arc<dyn iommu_common::InterruptRemapper>,
                 );
-                Some(ioapic_rid)
-            } else {
-                None
-            }
+                sel.ioapic_rid
+            })
         } else {
             None
         };

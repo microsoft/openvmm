@@ -142,9 +142,9 @@ pub struct AmdIommuIvrsConfig {
     /// IOAPIC PCIe Requester ID (RID) for the IVRS DEV_SPECIAL(IOAPIC)
     /// entry.
     ///
-    /// When set, a special device entry is added to the first IOMMU's IVHD
-    /// block so the guest can locate the IOAPIC's DTE/IRTE context for
-    /// interrupt remapping.
+    /// When set, a DEV_SPECIAL(IOAPIC) entry is added to the IVHD whose
+    /// segment (0) and bus range cover this RID, so the guest can locate the
+    /// IOAPIC's DTE/IRTE context for interrupt remapping.
     pub ioapic_rid: Option<u16>,
 }
 
@@ -791,22 +791,26 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         let mut ivrs_extra: Vec<u8> = Vec::new();
 
-        for (idx, config) in ivrs_config.iommus.iter().enumerate() {
+        for config in &ivrs_config.iommus {
             // Use a device range entry to cover the bus range owned by this
             // root complex's IOMMU (IVHD_DEV_RANGE_START + IVHD_DEV_RANGE_END).
             // This correctly supports multiple IOMMUs within a single PCI
             // segment, each covering its own bus range.
             let mut dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
 
-            // Add IOAPIC special device entry to the first IOMMU's IVHD.
-            let ioapic_special = if idx == 0 {
-                ivrs_config.ioapic_rid.map(|ioapic_rid| {
+            // Emit the IOAPIC DEV_SPECIAL entry on the IVHD whose segment (0)
+            // and bus range cover the IOAPIC RID, so the guest resolves the
+            // IOAPIC's DTE/IRTE from the correct IOMMU regardless of config
+            // ordering.
+            let ioapic_special = ivrs_config.ioapic_rid.and_then(|ioapic_rid| {
+                let ioapic_bus = (ioapic_rid >> 8) as u8;
+                (config.pci_segment == 0
+                    && (config.start_bus..=config.end_bus).contains(&ioapic_bus))
+                .then(|| {
                     dev_entries_size += size_of::<ivrs::IvhdSpecialDeviceEntry8>();
                     ivrs::IvhdSpecialDeviceEntry8::ioapic(ioapic_rid, 0)
                 })
-            } else {
-                None
-            };
+            });
 
             let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
 
