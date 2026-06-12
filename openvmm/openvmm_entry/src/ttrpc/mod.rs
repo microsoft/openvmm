@@ -934,26 +934,7 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
-                                HostPortProtocol::Tcp
-                            } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
-                                HostPortProtocol::Udp
-                            } else {
-                                anyhow::bail!("invalid protocol {}", port.protocol);
-                            };
-                            let cfg = HostPortConfig {
-                                protocol,
-                                host_address: None,
-                                host_port: HostPort::Fixed(
-                                    port.host_port
-                                        .try_into()
-                                        .context("host port out of range")?,
-                                ),
-                                guest_port: port
-                                    .guest_port
-                                    .try_into()
-                                    .context("guest port out of range")?,
-                            };
+                            let cfg = parse_port_config(port)?;
                             consomme_rpc
                                 .call_failable(ConsommeRequest::Bind, cfg)
                                 .await
@@ -974,26 +955,7 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
-                                HostPortProtocol::Tcp
-                            } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
-                                HostPortProtocol::Udp
-                            } else {
-                                anyhow::bail!("invalid protocol {}", port.protocol);
-                            };
-                            let cfg = HostPortConfig {
-                                protocol,
-                                host_address: None,
-                                host_port: HostPort::Fixed(
-                                    port.host_port
-                                        .try_into()
-                                        .context("host port out of range")?,
-                                ),
-                                guest_port: port
-                                    .guest_port
-                                    .try_into()
-                                    .context("guest port out of range")?,
-                            };
+                            let cfg = parse_port_config(port)?;
                             consomme_rpc
                                 .call_failable(ConsommeRequest::Unbind, cfg)
                                 .await
@@ -1031,12 +993,37 @@ fn open_socket_backend(
     }
 }
 
+/// Convert a ttrpc `PortConfig` (untrusted input) into a `HostPortConfig`,
+/// validating the protocol and port ranges. The host port is always treated as
+/// a fixed port; the unbind path ignores it.
+fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConfig> {
+    let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+        HostPortProtocol::Tcp
+    } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
+        HostPortProtocol::Udp
+    } else {
+        anyhow::bail!("invalid protocol {}", port.protocol);
+    };
+    Ok(HostPortConfig {
+        protocol,
+        host_address: None,
+        host_port: HostPort::Fixed(
+            port.host_port
+                .try_into()
+                .context("host port out of range")?,
+        ),
+        guest_port: port
+            .guest_port
+            .try_into()
+            .context("guest port out of range")?,
+    })
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
     use self::vmservice::nic_config::Backend;
-
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -1066,7 +1053,11 @@ fn parse_nic_config(
             } else {
                 Some(consomme.cidr)
             },
-            ports: Vec::new(),
+            ports: consomme
+                .ports
+                .into_iter()
+                .map(parse_port_config)
+                .collect::<anyhow::Result<_>>()?,
             recv,
         }
         .into_resource(),

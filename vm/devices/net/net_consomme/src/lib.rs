@@ -491,16 +491,23 @@ fn execute_bind(
     let ip_addr = cfg.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
     let socket = create_bound_socket(&protocol, ip_addr, bind_port)
         .map_err(|e| anyhow::anyhow!(e).context("failed to create socket for port forward"))?;
-    if let Some(sender) = dynamic_sender {
-        let addr = socket_addr(&socket)
-            .map_err(|e| anyhow::anyhow!(e).context("failed to get bound address"))?;
-        sender.send(addr.port());
-    }
+    let dynamic_port = match dynamic_sender {
+        Some(sender) => {
+            let addr = socket_addr(&socket)
+                .map_err(|e| anyhow::anyhow!(e).context("failed to get bound address"))?;
+            Some((sender, addr.port()))
+        }
+        None => None,
+    };
     let result = match protocol {
         IpProtocol::Tcp => consomme.bind_tcp_port(socket, cfg.guest_port),
         IpProtocol::Udp => consomme.bind_udp_port(socket, cfg.guest_port),
     };
-    result.map_err(|e| anyhow::anyhow!(e).context("failed to bind port"))
+    result.map_err(|e| anyhow::anyhow!(e).context("failed to bind port"))?;
+    if let Some((sender, port)) = dynamic_port {
+        sender.send(port);
+    }
+    Ok(())
 }
 
 /// Execute a port unbind.
