@@ -124,6 +124,13 @@ impl Kvm {
 const GB_PAGE_LEAF: u32 = 0x80000001;
 const GB_PAGE_FLAG: u32 = 1 << 26;
 
+/// Hyper-V version reported to a nested guest hypervisor (a Windows 11 24H2 /
+/// Server 2025 era build). In the version CPUID leaf, EAX is the build number
+/// and EBX packs the major version in the high 16 bits and the minor in the low.
+const NESTED_HV_VERSION_BUILD: u32 = 26100;
+const NESTED_HV_VERSION_MAJOR: u32 = 10;
+const NESTED_HV_VERSION_MINOR: u32 = 0;
+
 /// Returns whether the host supports GB pages in the page table.
 fn gb_pages_supported() -> bool {
     safe_intrinsics::cpuid(0x80000000, 0).eax >= GB_PAGE_LEAF
@@ -254,13 +261,31 @@ impl virt::Hypervisor for Kvm {
             use hvdef::*;
             let privileges = HvPartitionPrivilege::new()
                 .with_access_partition_reference_counter(true)
+                // Reference-TSC page and reenlightenment control: a guest
+                // hypervisor (hvix64) needs the reference-TSC clock and the
+                // reenlightenment notification when it runs nested, otherwise it
+                // resets the partition a fixed interval into boot.
+                .with_access_partition_reference_tsc(nested_virt)
+                .with_access_reenlightenment_ctrls(nested_virt)
                 .with_access_hypercall_msrs(true)
                 .with_access_vp_index(true)
                 .with_access_frequency_msrs(true)
                 .with_access_synic_msrs(true)
                 .with_access_synthetic_timer_msrs(true)
                 .with_access_vp_runtime_msr(true)
-                .with_access_apic_msrs(true);
+                // AccessApicMsrs puts the guest's vmbus.sys on the synic
+                // HvPostMessage path rather than the GHCB tunnel, which is the
+                // path the nested vmbus relay intercepts. It is also the default
+                // for the non-nested case, so it is granted unconditionally.
+                .with_access_apic_msrs(true)
+                // Parent synic-messaging privileges that hvix64's capability
+                // decode reads when nesting. AccessMemoryPool, create_partitions,
+                // and start_virtual_processor are left out: they push hvix64 off
+                // this path or trip the guest HAL.
+                .with_post_messages(nested_virt)
+                .with_signal_events(nested_virt)
+                .with_create_port(nested_virt)
+                .with_connect_port(nested_virt);
 
             // Query KVM's supported Hyper-V CPUID leaves to find the
             // nested virtualization features leaf (0x4000000A), but only
@@ -294,13 +319,36 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_HV_INTERFACE,
                     [u32::from_le_bytes(*b"Hv#1"), 0, 0, 0],
                 ),
-                CpuidLeaf::new(HV_CPUID_FUNCTION_MS_HV_VERSION, [0, 0, 0, 0]),
+                // Report a real Hyper-V hypervisor version when nesting is
+                // exposed, rather than 0.0.0.0. A guest hypervisor may gate
+                // nested behavior on the parent looking like a current, capable
+                // Hyper-V.
+                CpuidLeaf::new(
+                    HV_CPUID_FUNCTION_MS_HV_VERSION,
+                    if nested_virt {
+                        [
+                            NESTED_HV_VERSION_BUILD,
+                            (NESTED_HV_VERSION_MAJOR << 16) | NESTED_HV_VERSION_MINOR,
+                            0,
+                            0,
+                        ]
+                    } else {
+                        [0, 0, 0, 0]
+                    },
+                ),
                 CpuidLeaf::new(
                     HV_CPUID_FUNCTION_MS_HV_FEATURES,
                     split_u128(u128::from(
                         HvFeatures::new()
                             .with_privileges(privileges)
-                            .with_frequency_regs_available(true),
+                            .with_frequency_regs_available(true)
+                            // hvix64 gates its nested synic (the path that would
+                            // relay the root partition's vmbus to L0) on the
+                            // parent advertising GHCB root mapping: its
+                            // capability decode enables the nested-synic handlers
+                            // only when 0x40000003 ECX bit 10 is set. Advertise it
+                            // when nesting so the guest hypervisor engages.
+                            .with_vp_ghcb_root_mapping_available(nested_virt),
                     )),
                 ),
                 CpuidLeaf::new(
@@ -308,7 +356,27 @@ impl virt::Hypervisor for Kvm {
                     split_u128(
                         HvEnlightenmentInformation::new()
                             .with_deprecate_auto_eoi(true)
+                            // Relaxed timing tells the guest to slacken its
+                            // watchdog/spinlock deadlines because it is
+                            // virtualized; without it a nested guest blows
+                            // bare-metal timeouts and resets mid-boot. APIC-access
+                            // recommended pairs with the apic-msrs privilege.
+                            .with_use_relaxed_timing(nested_virt)
+                            .with_use_apic_msrs(nested_virt)
+                            // Recommend hypercall-based remote TLB flush and
+                            // cluster IPI (with extended processor masks) so the
+                            // nested guest offloads these to the in-kernel
+                            // hypercall path instead of taking many exits.
+                            .with_use_hypercall_for_remote_flush_and_local_flush_entire(nested_virt)
+                            .with_use_synthetic_cluster_ipi(nested_virt)
+                            .with_use_ex_processor_masks(nested_virt)
                             .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
+                            // When nesting is exposed, recommend the enlightened
+                            // VMCS path so the guest hypervisor (hvix64) accesses
+                            // the VMCS through the enlightened-VMCS memory page
+                            // instead of trapping every VMREAD/VMWRITE to L0.
+                            .with_nested(nested_virt)
+                            .with_use_vmcs_enlightenments(nested_virt)
                             .into(),
                     ),
                 ),
@@ -691,6 +759,13 @@ impl virt::BindProcessor for KvmProcessorBinder {
         // Enable synic and set initial MSRs.
         if self.partition.hv1_enabled {
             kvm.enable_synic()?;
+
+            // When nesting is exposed, enable KVM's enlightened-VMCS path so a
+            // guest hypervisor (hvix64) that uses the enlightened VMCS launches
+            // instead of failing VM-enter with an invalid VMCS pointer.
+            if self.partition.caps.nested_virt {
+                kvm.enable_hyperv_evmcs()?;
+            }
 
             // Set the VP index. Also, KVM incorrectly initializes
             // SCONTROL to 0. Set it to 1 on each processor.
@@ -1421,6 +1496,16 @@ impl Processor for KvmProcessor<'_> {
                         params,
                     } => {
                         // N.B. this can only be SIGNAL_EVENT or POST_MESSAGE.
+                        // nested-virt debug: surface any hypercall carrying the
+                        // nested bit (BIT 31), which hvix64 sets when relaying a
+                        // nested partition's synic traffic.
+                        if input & (1 << 31) != 0 {
+                            tracing::debug!(
+                                code = input & 0xffff,
+                                fast = (input >> 16) & 1,
+                                "nested-bit hypercall reached OpenVMM"
+                            );
+                        }
                         let mut handler = KvmHypercallExit {
                             partition: self.partition,
                             registers: KvmHypercallRegisters {

@@ -785,6 +785,29 @@ impl<'a> Processor<'a> {
         Ok(())
     }
 
+    /// Enable Hyper-V enlightened VMCS for nested virtualization, so a guest
+    /// hypervisor that uses the enlightened VMCS (e.g. Windows hvix64) launches
+    /// correctly instead of failing VM-enter with an invalid VMCS pointer.
+    pub fn enable_hyperv_evmcs(&self) -> Result<()> {
+        // KVM writes the negotiated enlightened-VMCS version back through
+        // args[0], so it must point at a writable u32.
+        let mut version: u32 = 0;
+        // SAFETY: Calling IOCTL as documented; args[0] points at `version`,
+        // which outlives the call.
+        unsafe {
+            ioctl::kvm_enable_cap(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_enable_cap {
+                    cap: KVM_CAP_HYPERV_ENLIGHTENED_VMCS,
+                    args: [std::ptr::from_mut(&mut version) as u64, 0, 0, 0],
+                    ..Default::default()
+                },
+            )
+            .map_err(|err| Error::EnableCap("hyperv_enlightened_vmcs", err))?;
+        }
+        Ok(())
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub fn set_cpuid(&self, entries: &[kvm_cpuid_entry2]) -> Result<()> {
         const MAX_CPUID_ENTRIES: usize = 256;
