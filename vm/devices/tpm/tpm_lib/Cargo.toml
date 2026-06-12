@@ -7,7 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-# Use this feature to enable tests that pulls in `ms-tpm-20-ref`.
+# Use this feature to enable tests that pull in `ms-tpm-20-ref`.
 test_tpm = ["ms-tpm-20-ref"]
 
 [dependencies]
