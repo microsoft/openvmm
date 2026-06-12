@@ -133,7 +133,7 @@ pub fn accept_pages(range: MemoryRange) -> Result<(), AcceptPagesError> {
 /// Change the visibility of pages. Note that pages that were previously host
 /// visible and are now private, must be reaccepted.
 pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
-    if host_visible && get_td_features0().page_release() {
+    if host_visible && get_td_features0().page_release() && get_td_features0().tdx_connect() {
         if let Err(err) = tdcall::release_memory_range(&mut TdcallInstruction, range) {
             panic!("failed to release pages in {range}: {err:?}");
         }
