@@ -1375,10 +1375,20 @@ impl AmdIommuDevice {
                 }
                 CommandOpcode::INVALIDATE_INTERRUPT_TABLE => {
                     let inv = spec::commands::InvalidateInterruptTable::from(&entry);
-                    // Coalesce: global invalidation supersedes per-device.
-                    if pending_invalidation != PendingInvalidation::All {
-                        pending_invalidation = PendingInvalidation::Device(inv.device_id());
-                    }
+                    // Coalesce within the batch: keep a single device ID only
+                    // while every invalidation seen so far targets that same
+                    // device; any mismatch (or a prior global) upgrades to a
+                    // full invalidation so no device's cached routes are
+                    // dropped.
+                    pending_invalidation = match pending_invalidation {
+                        PendingInvalidation::None => PendingInvalidation::Device(inv.device_id()),
+                        PendingInvalidation::Device(id) if id == inv.device_id() => {
+                            PendingInvalidation::Device(id)
+                        }
+                        PendingInvalidation::Device(_) | PendingInvalidation::All => {
+                            PendingInvalidation::All
+                        }
+                    };
                 }
                 CommandOpcode::INVALIDATE_IOMMU_ALL => {
                     pending_invalidation = PendingInvalidation::All;

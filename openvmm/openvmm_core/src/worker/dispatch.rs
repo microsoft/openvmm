@@ -2087,15 +2087,20 @@ impl InitializedVm {
 
                 // On the segment-0 root complex covered by the AMD IOMMU, the
                 // phantom southbridge IOAPIC occupies a fixed devfn whose
-                // device number must not be assigned to a root port. Reserve
-                // that device number so that an overly large port count is
-                // rejected rather than silently shadowing the IOAPIC entry.
+                // device number must not be assigned to a root port. The
+                // IOAPIC RID is on bus 0, so only reserve the device number on
+                // the root complex whose bus range includes bus 0; reserving
+                // it on other segment-0 root complexes would wrongly reject
+                // otherwise-valid port counts. Reserve that device number so
+                // that an overly large port count is rejected rather than
+                // silently shadowing the IOAPIC entry.
                 #[cfg(guest_arch = "x86_64")]
-                let reserved_device_numbers: u32 = if rc.segment == 0 && amd_iommu_on_rc {
-                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
-                } else {
-                    0
-                };
+                let reserved_device_numbers: u32 =
+                    if rc.segment == 0 && rc.start_bus == 0 && amd_iommu_on_rc {
+                        1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                    } else {
+                        0
+                    };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let reserved_device_numbers: u32 = 0;
 

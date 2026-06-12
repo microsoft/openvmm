@@ -10,9 +10,9 @@
 //!   to GPAs via an [`IommuTranslator`] before delegating to an inner
 //!   [`GuestMemory`].
 //!
-//! - An [`InterruptRemapper`] trait and [`InterruptRemapRegistry`] for routing
-//!   pre-registered interrupt routes (IOAPIC, IrqFd) through an IOMMU's
-//!   interrupt remapping table, with invalidation support.
+//! - An [`InterruptRemapper`] trait and [`RetranslateInterruptsList`] for
+//!   routing pre-registered interrupt routes (IOAPIC, IrqFd) through an
+//!   IOMMU's interrupt remapping table, with invalidation support.
 //!
 //! Both the ARM SMMUv3 and AMD IOMMU implementations use this crate to avoid
 //! duplicating the per-page-boundary splitting, lock-across-translate-and-access
