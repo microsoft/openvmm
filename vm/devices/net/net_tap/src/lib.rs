@@ -259,6 +259,9 @@ impl Queue for TapQueue {
                         VirtioNetHdr::read_from_prefix(&self.buffer[..read_len]).unwrap();
                     let frame_start = size_of::<VirtioNetHdr>();
                     let frame_len = read_len - size_of::<VirtioNetHdr>();
+                    if frame_len == 0 {
+                        continue;
+                    }
                     let frame = &self.buffer[frame_start..read_len];
                     let rx_meta = parse_vnet_hdr(&hdr, frame);
 
@@ -597,7 +600,16 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr, frame: &[u8]) -> RxMetadata {
         } else {
             0
         };
-        (l3_proto, hdr.gso_size, l2, l3, l4)
+        // Only advertise GSO when all header lengths were derived
+        // successfully. Otherwise the metadata would be internally
+        // inconsistent (gso_size > 0 but zero header lengths), which the
+        // virtio-net layer cannot turn into a valid GSO header and would
+        // reject with a noisy ratelimited warning.
+        if l2 > 0 && l3 > 0 && l4 > 0 {
+            (l3_proto, hdr.gso_size, l2, l3, l4)
+        } else {
+            (L3Protocol::Unknown, 0, 0, 0, 0)
+        }
     } else {
         (L3Protocol::Unknown, 0, 0, 0, 0)
     };

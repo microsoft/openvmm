@@ -30,6 +30,8 @@ pub struct VirtioWorkPool {
     mem: GuestMemory,
     #[inspect(skip)]
     rx_packets: Vec<Option<RxPacket>>,
+    /// Whether the guest negotiated VIRTIO_NET_F_GUEST_CSUM.
+    guest_csum: bool,
     /// Whether the guest negotiated VIRTIO_NET_F_GUEST_TSO4.
     guest_tso4: bool,
     /// Whether the guest negotiated VIRTIO_NET_F_GUEST_TSO6.
@@ -45,10 +47,17 @@ impl VirtioWorkPool {
     }
 
     /// Create a new instance.
-    pub fn new(mem: GuestMemory, queue_size: u16, guest_tso4: bool, guest_tso6: bool) -> Self {
+    pub fn new(
+        mem: GuestMemory,
+        queue_size: u16,
+        guest_csum: bool,
+        guest_tso4: bool,
+        guest_tso6: bool,
+    ) -> Self {
         Self {
             mem,
             rx_packets: (0..queue_size).map(|_| None).collect(),
+            guest_csum,
             guest_tso4,
             guest_tso6,
         }
@@ -181,11 +190,15 @@ impl BufferAccess for VirtioWorkPool {
 
         // Build GSO fields when the backend indicates a large/coalesced packet
         // and the guest has negotiated the corresponding GUEST_TSO feature.
-        let gso_allowed = match metadata.l3_protocol {
-            L3Protocol::Ipv4 => self.guest_tso4,
-            L3Protocol::Ipv6 => self.guest_tso6,
-            L3Protocol::Unknown => false,
-        };
+        // GSO requires NEEDS_CSUM (the guest computes per-segment checksums),
+        // so it must also have negotiated GUEST_CSUM; otherwise a guest that
+        // doesn't understand NEEDS_CSUM could mishandle the frame.
+        let gso_allowed = self.guest_csum
+            && match metadata.l3_protocol {
+                L3Protocol::Ipv4 => self.guest_tso4,
+                L3Protocol::Ipv6 => self.guest_tso6,
+                L3Protocol::Unknown => false,
+            };
         let (gso_type, gso_size, hdr_len, csum_start, csum_offset) = if metadata.gso_size > 0
             && metadata.l2_len > 0
             && metadata.l3_len > 0

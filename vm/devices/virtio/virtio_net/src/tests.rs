@@ -1796,9 +1796,10 @@ impl Endpoint for MockEndpointWithOffloads {
 
 // --- RX GSO/LRO Tests ---
 
-/// Helper: features with GUEST_TSO4 + GUEST_TSO6 negotiated.
+/// Helper: features with GUEST_CSUM + GUEST_TSO4 + GUEST_TSO6 negotiated.
 fn features_guest_tso() -> NetworkFeaturesBank0 {
     NetworkFeaturesBank0::new()
+        .with_guest_csum(true)
         .with_guest_tso4(true)
         .with_guest_tso6(true)
 }

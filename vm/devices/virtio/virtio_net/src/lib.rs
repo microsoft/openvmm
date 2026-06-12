@@ -518,6 +518,7 @@ impl ActiveState {
             pending_rx_packets: VirtioWorkPool::new(
                 mem,
                 rx_queue_size,
+                negotiated_features.guest_csum(),
                 negotiated_features.guest_tso4(),
                 negotiated_features.guest_tso6(),
             ),
