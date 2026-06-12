@@ -352,7 +352,6 @@ impl FaultStatusCode {
     const fn into_bits(self) -> u32 {
         self.0 as u32
     }
-
 }
 
 #[bitfield(u32)]

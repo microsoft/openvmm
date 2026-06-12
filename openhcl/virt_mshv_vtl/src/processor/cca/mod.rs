@@ -468,14 +468,21 @@ impl BackingPrivate for CcaBacked {
 
                             if iss.fnv() {
                                 tracing::warn!("CCA InstructionAbort: FAR_EL2 is not valid");
-                                return Err(dev.fatal_error(CcaUnsupportedExit::ExitReason(0).into()));
+                                return Err(
+                                    dev.fatal_error(CcaUnsupportedExit::ExitReason(0).into())
+                                );
                             }
 
                             let far = cca_exit.far_el2();
                             let hpfar = cca_exit.hpfar_el2();
                             let fipa = (hpfar.fipa() << 12) | (far & 0xfff);
-                            let mut plane_state = mshv_rsi_get_ipa_state{ fipa, state: u64::MAX};
-                            let _ = this.ipa_state_read(GuestVtl::Vtl0, &mut plane_state).map_err(|_| Error::Hcl);
+                            let mut plane_state = mshv_rsi_get_ipa_state {
+                                fipa,
+                                state: u64::MAX,
+                            };
+                            let _ = this
+                                .ipa_state_read(GuestVtl::Vtl0, &mut plane_state)
+                                .map_err(|_| Error::Hcl);
 
                             let reason = InstructionAbortReason::from(iss.ifsc());
                             tracing::warn!(
@@ -494,7 +501,7 @@ impl BackingPrivate for CcaBacked {
                                     esr_el2: cca_exit.0.esr_el2,
                                     elr_el2: cca_exit.elr_el2(),
                                     far_el2: cca_exit.far_el2(),
-                                    fipa: fipa,
+                                    fipa,
                                     fipa_state: plane_state.state as u8,
                                     ifsc: iss.ifsc().0,
                                     reason,
@@ -502,7 +509,6 @@ impl BackingPrivate for CcaBacked {
                                 }
                                 .into(),
                             ));
-
                         }
                         ExceptionClass::SimdAccess => {
                             this.runner.cca_plane_no_trap_simd();
@@ -610,7 +616,9 @@ impl UhProcessor<'_, CcaBacked> {
         vtl: GuestVtl,
         state: &mut mshv_rsi_get_ipa_state,
     ) -> Result<(), Error> {
-        self.runner.cca_ipa_state_read(vtl, state).map_err(Error::Hcl)
+        self.runner
+            .cca_ipa_state_read(vtl, state)
+            .map_err(Error::Hcl)
     }
 
     fn set_plane_enter(&mut self) {

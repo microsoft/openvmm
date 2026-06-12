@@ -1,7 +1,11 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(target_arch = "aarch64")]
-
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "global_asm! required for AArch64 trampoline code"
+)]
 
 use crate::prelude::*;
 
@@ -23,6 +27,9 @@ unsafe extern "C" {
 fn instruction_abort_outside_par(_: TestContext<'_>) {
     log!("instruction_abort_outside_par");
 
+    // SAFETY: This test intentionally jumps to an assembly entry point that
+    // triggers an instruction abort. The symbol is defined in this module via
+    // `global_asm!` and is declared `-> !`, so it is not expected to return.
     unsafe {
         instruction_abort_outside_par_entry();
     }
@@ -43,6 +50,9 @@ unsafe extern "C" {
 fn instruction_abort_ripas_empty(_: TestContext<'_>) {
     log!("instruction_abort_ripas_empty");
 
+    // SAFETY: This test intentionally transfers control to an assembly entry
+    // point that executes from an address chosen to provoke the expected
+    // instruction abort. The entry point is defined above and never returns.
     unsafe {
         instruction_abort_ripas_empty_entry();
     }
@@ -64,6 +74,9 @@ unsafe extern "C" {
 fn instruction_abort_permissions_enabled(_: TestContext<'_>) {
     log!("instruction_abort_permissions_enabled");
 
+    // SAFETY: This test intentionally calls an assembly entry point that jumps
+    // to an address expected to fault under the configured permissions. The
+    // entry point is defined in this module and is declared `-> !`.
     unsafe {
         instruction_abort_permissions_enabled_entry();
     }
