@@ -21,6 +21,9 @@ pub struct VfioDeviceHandle {
     pub pci_id: String,
     /// Pre-opened VFIO group file descriptor (`/dev/vfio/<group_id>`).
     pub group: File,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioDeviceHandle {
@@ -44,6 +47,9 @@ pub struct VfioCdevDeviceHandle {
     /// The `--iommu` context ID this device belongs to. All devices
     /// sharing the same ID share a single IOAS (one set of page tables).
     pub iommu_id: String,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioCdevDeviceHandle {

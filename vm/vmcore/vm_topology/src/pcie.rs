@@ -36,4 +36,7 @@ pub struct PcieHostBridge {
     pub cxl: Option<PcieHostBridgeCxlInfo>,
     /// NUMA node affinity for this host bridge.
     pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }

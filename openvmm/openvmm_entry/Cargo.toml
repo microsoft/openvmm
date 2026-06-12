@@ -20,6 +20,7 @@ cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
+memory_range.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 vmm_core_defs.workspace = true

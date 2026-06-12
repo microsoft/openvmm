@@ -2021,6 +2021,7 @@ impl InitializedVm {
                     high_mmio: ranges.high_mmio,
                     cxl,
                     vnode: rc.vnode,
+                    preserve_bars: rc.preserve_bars,
                 });
 
                 pcie_root_complexes.push(root_complex.clone());

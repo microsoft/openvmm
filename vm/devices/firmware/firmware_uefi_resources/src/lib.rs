@@ -159,6 +159,7 @@ pub struct UefiConfig {
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
     pub diagnostics_log_level: LogLevel,
+    pub diagnostics_rate_limit: Option<u32>,
 }
 
 /// Resource kind for the platform-provided UEFI logger.
