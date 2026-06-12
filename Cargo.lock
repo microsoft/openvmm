@@ -8222,7 +8222,6 @@ dependencies = [
 name = "tpm_lib"
 version = "0.0.0"
 dependencies = [
- "crypto",
  "cvm_tracing",
  "getrandom 0.4.2",
  "inspect",

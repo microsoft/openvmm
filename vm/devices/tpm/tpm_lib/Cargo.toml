@@ -15,7 +15,6 @@ ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_protocol.workspace = true
 cvm_tracing.workspace = true
 inspect.workspace = true
-crypto.workspace = true
 
 thiserror.workspace = true
 tracelimit.workspace = true
@@ -30,8 +29,3 @@ getrandom.workspace = true
 
 [lints]
 workspace = true
-
-[package.metadata.xtask.unused-deps]
-# We need to depend on crypto to ensure the backend gets linked in
-# for partial tree builds, like unit tests.
-ignored = ["crypto"]
