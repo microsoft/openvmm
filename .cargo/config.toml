@@ -65,9 +65,8 @@ AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARC
 # `links = "mimalloc"`, and the presence of a `[target.<triple>.mimalloc]`
 # table here causes cargo to skip that crate's build script entirely.
 # Skipping it avoids the slow C recompile, but mainly it avoids the 
-# `-l static=mimalloc` directive it would otherwise emit (which would 
-# conflict with the one we emit from `openhcl/underhill_entry`'s build.rs.
-# The tables below are therefore intentionally empty stubs.
+# `-l static=mimalloc` directive it would otherwise emit. The tables below are
+# therefore intentionally empty stubs.
 [target.x86_64-unknown-linux-musl.mimalloc]
 rustc-link-search = []
 [target.x86_64-underhill-linux-musl.mimalloc]
