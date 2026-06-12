@@ -25,6 +25,36 @@ pub enum IncubatorBackend {
     QemuTcg(QemuTcgConfig),
 }
 
+impl IncubatorBackend {
+    /// The guest architecture this backend emulates.
+    pub fn arch(&self) -> Arch {
+        match self {
+            IncubatorBackend::QemuTcg(config) => config.arch,
+        }
+    }
+}
+
+/// Guest architecture emulated by an incubator backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Arch {
+    /// x86-64.
+    X86_64,
+    /// AArch64.
+    Aarch64,
+}
+
+impl Arch {
+    /// The prefix used for arch-specific environment variables, matching
+    /// openvmm's convention (e.g., `X86_64_OPENVMM_LINUX_DIRECT_KERNEL`).
+    pub fn env_prefix(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "X86_64",
+            Arch::Aarch64 => "AARCH64",
+        }
+    }
+}
+
 /// A device to add to the platform.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -51,10 +81,13 @@ pub struct VirtioBlkDeviceConfig {
 fn default_disk_size() -> String {
     "64M".to_string()
 }
-
 /// QEMU TCG configuration parsed from the profile.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QemuTcgConfig {
+    /// Guest architecture (e.g., "aarch64", "x86-64"). Selects the
+    /// arch-specific kernel/initrd when those are auto-detected.
+    #[serde(default = "default_arch")]
+    pub arch: Arch,
     /// Path or name of the QEMU binary (e.g., "qemu-system-aarch64").
     #[serde(default = "default_qemu_binary")]
     pub binary: String,
@@ -77,6 +110,9 @@ pub struct QemuTcgConfig {
     pub cmdline: String,
 }
 
+fn default_arch() -> Arch {
+    Arch::Aarch64
+}
 fn default_qemu_binary() -> String {
     "qemu-system-aarch64".to_string()
 }

@@ -10,6 +10,7 @@
 
 [incubator]
 type = "qemu-tcg"
+arch = "aarch64"
 machine = "virt,virtualization=on,iommu=smmuv3,gic-version=3"
 cpu = "max"
 memory = "4G"

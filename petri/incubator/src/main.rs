@@ -46,21 +46,21 @@ fn main() -> anyhow::Result<()> {
 
     let profile = incubator::IncubatorProfile::from_file(std::path::Path::new(&args.profile))?;
 
+    let arch = profile.incubator.arch();
     let kernel = match args.kernel {
         Some(kernel) => kernel,
-        None => kernel_or_initrd_from_env("AARCH64_OPENVMM_LINUX_DIRECT_KERNEL")?,
+        None => kernel_or_initrd_from_env(arch, "OPENVMM_LINUX_DIRECT_KERNEL")?,
     };
     let initrd = match args.initrd {
         Some(initrd) => initrd,
-        None => kernel_or_initrd_from_env("AARCH64_OPENVMM_LINUX_DIRECT_INITRD")?,
+        None => kernel_or_initrd_from_env(arch, "OPENVMM_LINUX_DIRECT_INITRD")?,
     };
 
-    eprintln!("Profile: {}", args.profile);
-    eprintln!("Kernel:  {}", kernel.display());
-    eprintln!("Initrd:  {}", initrd.display());
-    eprintln!("Share:   {}", args.share);
-    eprintln!("Command: {:?}", args.command);
-    eprintln!();
+    tracing::info!(profile = %args.profile, "profile");
+    tracing::info!(kernel = %kernel.display(), "kernel");
+    tracing::info!(initrd = %initrd.display(), "initrd");
+    tracing::info!(share = %args.share, "share");
+    tracing::info!(command = ?args.command, "command");
 
     let output = incubator::run_in_incubator(incubator::IncubatorConfig {
         profile,
@@ -72,11 +72,10 @@ fn main() -> anyhow::Result<()> {
         qemu_binary_override: args.qemu_binary,
     })?;
 
-    eprintln!();
-    eprintln!(
-        "Completed in {:.1}s, exit code: {:?}",
-        output.elapsed.as_secs_f64(),
-        output.exit_code
+    tracing::info!(
+        elapsed_secs = output.elapsed.as_secs_f64(),
+        exit_code = ?output.exit_code,
+        "completed"
     );
 
     std::process::exit(output.exit_code.unwrap_or(1));
@@ -84,16 +83,30 @@ fn main() -> anyhow::Result<()> {
 
 /// Resolve a kernel or initrd path from an environment variable.
 ///
-/// These variables are set by the repo's `.cargo/config.toml` (e.g.
-/// `AARCH64_OPENVMM_LINUX_DIRECT_KERNEL`) so that `cargo run` picks up the
-/// sample kernel/initrd packaged alongside openvmm-deps. If the variable is
-/// not set, fail with a hint to pass the path explicitly.
-fn kernel_or_initrd_from_env(var: &str) -> anyhow::Result<std::path::PathBuf> {
-    match std::env::var_os(var) {
-        Some(value) if !value.is_empty() => Ok(std::path::PathBuf::from(value)),
-        _ => anyhow::bail!(
-            "{var} is not set (normally provided by .cargo/config.toml); \
-             pass --kernel/--initrd explicitly or run via cargo from the repo"
+/// Mimics openvmm's lookup: given a base name like `OPENVMM_LINUX_DIRECT_KERNEL`,
+/// it checks the unprefixed variable first, then the arch-specific variant
+/// (e.g. `AARCH64_OPENVMM_LINUX_DIRECT_KERNEL`). The arch comes from the
+/// profile. These variables are set by the repo's `.cargo/config.toml` so that
+/// `cargo run` picks up the sample kernel/initrd packaged alongside
+/// openvmm-deps. If neither is set, fail with a hint to pass the path
+/// explicitly.
+fn kernel_or_initrd_from_env(
+    arch: incubator::Arch,
+    base_name: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let prefixed = format!("{}_{base_name}", arch.env_prefix());
+    let value = non_empty_env(base_name).or_else(|| non_empty_env(&prefixed));
+    match value {
+        Some(value) => Ok(std::path::PathBuf::from(value)),
+        None => anyhow::bail!(
+            "neither {base_name} nor {prefixed} is set (normally provided by \
+             .cargo/config.toml); pass --kernel/--initrd explicitly or run via \
+             cargo from the repo"
         ),
     }
+}
+
+/// Read an environment variable, treating an empty value as unset.
+fn non_empty_env(var: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(var).filter(|value| !value.is_empty())
 }

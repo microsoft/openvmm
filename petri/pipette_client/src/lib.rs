@@ -10,6 +10,7 @@ mod send;
 pub mod shell;
 
 pub use pipette_protocol::PIPETTE_PORT;
+pub use pipette_protocol::PIPETTE_READY_MARKER;
 
 use crate::send::PipetteSender;
 use anyhow::Context;
