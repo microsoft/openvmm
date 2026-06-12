@@ -271,22 +271,6 @@ impl std::fmt::Display for Vtl0Bus {
     }
 }
 
-// The worker's lifecycle is tracked across a few orthogonal pieces of state
-// rather than a single enum:
-//
-// - `self.is_shutdown_active` gates guest-driven transitions.
-// - `Vtl2DeviceState` tracks whether the VTL2 VF is enumerated (but not present),
-//      present, missing, or in the middle of a reconfiguration retry loop.
-// - `self.vtl0_bus_control` tracks whether the VTL0 VF exists and whether it is
-//   currently hidden from the guest.
-// - `self.guest_state` is the guest-visible projection of that internal state.
-// - `self.mana_device.is_some()` means the worker currently owns a live VTL2
-//   MANA device and its endpoints may be connected.
-//
-// The helper methods below document the assumptions and post-state they rely on
-// so a reader can reason about transitions without having to keep the whole
-// `run()` loop in mind.
-
 #[derive(Inspect)]
 struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
@@ -321,29 +305,6 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     vf_reset_request_receiver: Option<mesh::Receiver<bool>>,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Vtl2DeviceState {
-    /// The VTL2 VF has been enumerated on vPCI and is waiting for uevent add.
-    DeviceEnumerated,
-    /// The VTL2 VF is bound and VTL0 updates may be applied immediately.
-    Present,
-    /// The VTL2 VF is gone; VTL0 changes are recorded locally until it returns.
-    Missing,
-    /// The VTL2 VF was shut down for recovery and a restart retry is pending.
-    Reconfiguring,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct VfReconfigBackoff {
-    deadline: Instant,
-    sleep: std::time::Duration,
-    attempts: u64,
-}
-
-const RECONFIG_INITIAL_SLEEP: std::time::Duration = std::time::Duration::from_millis(100);
-const RECONFIG_MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(2);
-const RECONFIG_MAX_ATTEMPTS: u64 = 300; // ~10 minutes of retries at max backoff
 
 impl HclNetworkVFManagerWorker {
     pub fn new(
@@ -713,6 +674,29 @@ impl HclNetworkVFManagerWorker {
             VfReconfig(bool),
             VfReconfigRestart,
             ExitWorker,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct VfReconfigBackoff {
+            deadline: Instant,
+            sleep: std::time::Duration,
+            attempts: u64,
+        }
+
+        const RECONFIG_INITIAL_SLEEP: std::time::Duration = std::time::Duration::from_millis(100);
+        const RECONFIG_MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(2);
+        const RECONFIG_MAX_ATTEMPTS: u64 = 300; // ~10 minutes of retries at max backoff
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Vtl2DeviceState {
+            /// The VTL2 VF has been enumerated on vPCI and is waiting for uevent add.
+            DeviceEnumerated,
+            /// The VTL2 VF is bound and VTL0 updates may be applied immediately.
+            Present,
+            /// The VTL2 VF is gone; VTL0 changes are recorded locally until it returns.
+            Missing,
+            /// The VTL2 VF was shut down for recovery and a restart retry is pending.
+            Reconfiguring,
         }
 
         let mut vtl2_device_state = Vtl2DeviceState::Present;
