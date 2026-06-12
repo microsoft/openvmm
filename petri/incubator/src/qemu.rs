@@ -5,6 +5,7 @@
 
 use crate::profile::DeviceConfig;
 use crate::profile::QemuTcgConfig;
+use anyhow::Context;
 use std::path::Path;
 use std::process::Command;
 
@@ -17,7 +18,7 @@ pub fn build_qemu_command(
     share_dir: &Path,
     host_pipette_port: u16,
     kernel_cmdline: &str,
-) -> Command {
+) -> anyhow::Result<Command> {
     let mut cmd = Command::new(&config.binary);
 
     cmd.arg("-machine").arg(&config.machine);
@@ -62,7 +63,8 @@ pub fn build_qemu_command(
         match device {
             DeviceConfig::VirtioBlk(cfg) => {
                 let node_name = format!("disk{i}");
-                let size_bytes = parse_size(&cfg.size);
+                let size_bytes = parse_size(&cfg.size)
+                    .with_context(|| format!("invalid size for device '{}'", cfg.name))?;
                 cmd.arg("-blockdev")
                     .arg(format!("null-co,node-name={node_name},size={size_bytes}"));
                 cmd.arg("-device")
@@ -71,7 +73,7 @@ pub fn build_qemu_command(
         }
     }
 
-    cmd
+    Ok(cmd)
 }
 
 /// First PCI device number (`addr=`) used for extra-device root ports.
@@ -82,17 +84,34 @@ pub fn build_qemu_command(
 pub const EXTRA_DEVICE_ADDR_BASE: usize = 16;
 
 /// Parse a human-readable size string (e.g., "64M", "1G", "512K") to bytes.
-/// Falls back to parsing as a plain integer if no suffix is present.
-fn parse_size(s: &str) -> u64 {
-    let s = s.trim();
-    let (num, mul) = if let Some(n) = s.strip_suffix(['G', 'g']) {
-        (n, 1024 * 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix(['M', 'm']) {
-        (n, 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix(['K', 'k']) {
-        (n, 1024)
-    } else {
-        (s, 1)
-    };
-    num.trim().parse::<u64>().unwrap_or(0) * mul
+///
+/// Accepts the suffixes K, M, G, and T, optionally followed by B. A plain
+/// integer (no suffix) is interpreted as a byte count.
+//
+// Copied from openvmm's CLI memory parser (`parse_memory` in
+// openvmm_entry::cli_args) to keep behavior consistent without taking a
+// dependency just to share this small helper.
+fn parse_size(s: &str) -> anyhow::Result<u64> {
+    || -> Option<u64> {
+        let mut b = s.as_bytes();
+        if s.ends_with('B') {
+            b = &b[..b.len() - 1]
+        }
+        if b.is_empty() {
+            return None;
+        }
+        let multi = match b[b.len() - 1] as char {
+            'T' => Some(1024 * 1024 * 1024 * 1024),
+            'G' => Some(1024 * 1024 * 1024),
+            'M' => Some(1024 * 1024),
+            'K' => Some(1024),
+            _ => None,
+        };
+        if multi.is_some() {
+            b = &b[..b.len() - 1]
+        }
+        let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
+        n.checked_mul(multi.unwrap_or(1))
+    }()
+    .with_context(|| format!("invalid size '{s}'"))
 }

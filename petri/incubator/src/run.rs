@@ -129,7 +129,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         &config.share_dir,
         host_port,
         &kernel_cmdline,
-    );
+    )?;
 
     // QEMU runs in the background. Serial console goes to a pipe;
     // an async task copies output to a log file and signals when
