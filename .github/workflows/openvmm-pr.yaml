@@ -538,11 +538,13 @@ jobs:
       run: |-
         flowey e 10 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 10 flowey_lib_hvlite::init_cross_build 1
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 10 flowey_lib_common::run_cargo_build 2
-        flowey e 10 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 8
         flowey e 10 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
       shell: bash
@@ -746,16 +748,18 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 0
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 0
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_build 0
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 0
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 0
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 1
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 3
         flowey e 11 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
     - name: collect openvmm_hcl files for analysis
@@ -773,12 +777,12 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_hvlite::init_cross_build 1
         flowey e 11 flowey_lib_common::run_cargo_build 1
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 2
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 3
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 5
         flowey e 11 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - name: create gh cache dir
@@ -948,18 +952,18 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 0
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build sidecar
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_build 3
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 11
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 12 flowey_lib_hvlite::run_split_debug_info 6
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 10
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 12
         flowey e 12 flowey_lib_hvlite::build_sidecar 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 1
         flowey e 12 flowey_lib_hvlite::run_cargo_build 2
@@ -988,11 +992,13 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 3
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_build 2
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
         flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
       shell: bash
@@ -1280,16 +1286,18 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 13 flowey_lib_hvlite::init_cross_build 1
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 0
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 13 flowey_lib_common::run_cargo_build 0
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 0
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 1
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 3
         flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
     - name: collect openvmm_hcl files for analysis
@@ -1307,12 +1315,12 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::init_cross_build 0
         flowey e 13 flowey_lib_common::run_cargo_build 1
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 2
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 0
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 3
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 5
         flowey e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - name: create gh cache dir
@@ -1485,18 +1493,18 @@ jobs:
       run: |-
         flowey e 14 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 14 flowey_lib_hvlite::init_cross_build 0
-        flowey e 14 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 14 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build sidecar
       run: |-
         flowey e 14 flowey_lib_common::run_cargo_build 3
-        flowey e 14 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 11
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 14 flowey_lib_hvlite::run_split_debug_info 4
-        flowey e 14 flowey_lib_hvlite::run_cargo_build 10
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 12
         flowey e 14 flowey_lib_hvlite::build_sidecar 0
         flowey e 14 flowey_lib_hvlite::init_cross_build 1
         flowey e 14 flowey_lib_hvlite::run_cargo_build 2
@@ -1525,11 +1533,13 @@ jobs:
       run: |-
         flowey e 14 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 14 flowey_lib_hvlite::init_cross_build 3
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 14 flowey_lib_common::run_cargo_build 2
-        flowey e 14 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 14 flowey_lib_hvlite::run_cargo_build 8
         flowey e 14 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
       shell: bash
