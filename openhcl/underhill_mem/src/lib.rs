@@ -289,7 +289,7 @@ impl MemoryAcceptor {
             }
 
             IsolationType::Tdx => {
-                // Nothing to do for TDX.
+                todo!("Implement Page Release Here")
             }
             IsolationType::Cca => {
                 // TODO: CCA: anything to do here?
