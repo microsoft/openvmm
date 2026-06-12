@@ -25,15 +25,23 @@ use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
 use tdcall::TdgPageReleaseError;
+use tdcall::tdcall_sys_rd;
+use tdcall::tdcall_vm_rd;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
+use x86defs::tdx::TDX_FIELD_CODE_TDX_FEATURES0;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::tdx::TdConfigFlags;
+use x86defs::tdx::TdFeatures0;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
+use x86defs::tdx::TdgSysRdResult;
+use x86defs::tdx::TdgVmRdResult;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
@@ -82,6 +90,30 @@ impl MshvVtl {
     /// Issues tdcalls to release pages.
     pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdgPageReleaseError> {
         tdcall::release_pages(&mut MshvVtlTdcall(self), range)
+    }
+
+    /// Issues tdcall to get Global TDX Features.
+    pub fn tdx_get_sys_features(&self) -> TdFeatures0 {
+        let res = tdcall_sys_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_TDX_FEATURES0)
+            .expect("TDG.SYS.RD should not fail for FEATURES0");
+
+        if let TdgSysRdResult::Features0(f) = res {
+            f
+        } else {
+            unreachable!();
+        }
+    }
+
+    /// Issues tdcall to get TD-scoped config flags.
+    pub fn tdx_get_config_flags(&self) -> TdConfigFlags {
+        let res = tdcall_vm_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_CONFIG_FLAGS)
+            .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
+
+        if let TdgVmRdResult::ConfigFlags(f) = res {
+            f
+        } else {
+            unreachable!();
+        }
     }
 }
 

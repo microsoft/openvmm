@@ -206,6 +206,11 @@ pub struct ModifyGpaVisibilityError {
     processed: usize,
 }
 
+#[derive(Default)]
+struct MemoryAcceptorFlags {
+    tdx_page_release_required: bool,
+}
+
 /// Interface to accept and manipulate lower VTL memory acceptance and page
 /// protections.
 ///
@@ -215,6 +220,7 @@ pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
     isolation: IsolationType,
+    flags: MemoryAcceptorFlags,
 }
 
 impl MemoryAcceptor {
@@ -229,11 +235,26 @@ impl MemoryAcceptor {
             HypercallCode::HvCallModifyVtlProtectionMask,
         ]);
 
+        let mut flags = MemoryAcceptorFlags::default();
+
+        if isolation == IsolationType::Tdx {
+            // Check if TDX Connect is enabled on this TD. If so, page release is required when
+            // unaccepting pages.
+            let sys_features = mshv_vtl.tdx_get_sys_features();
+            let config_flags = mshv_vtl.tdx_get_config_flags();
+            if sys_features.tdx_connect() && config_flags.tdx_connect() {
+                assert!(sys_features.page_release() && config_flags.tdx_connect());
+
+                flags.tdx_page_release_required = true;
+            }
+        }
+
         // On boot, VTL 0 should have permissions.
         Ok(Self {
             mshv_hvcall,
             mshv_vtl,
             isolation,
+            flags,
         })
     }
 
@@ -289,9 +310,10 @@ impl MemoryAcceptor {
             }
 
             IsolationType::Tdx => {
-                todo!("RAZTODO: Check if TDX Connect is enabled)");
-                if true {
-                    self.mshv_vtl.tdx_release_pages(range).expect("Failed to release pages");
+                if self.flags.tdx_page_release_required {
+                    self.mshv_vtl
+                        .tdx_release_pages(range)
+                        .expect("Failed to release pages");
                 }
             }
             IsolationType::Cca => {
