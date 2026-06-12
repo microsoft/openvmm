@@ -424,12 +424,12 @@ pub fn tdcall_release_page(
 }
 
 /// Releases memory from `range` using [`tdcall_release_page`].
-pub fn release_memory_range(
+pub fn release_pages(
     call: &mut impl Tdcall,
     range: MemoryRange,
 ) -> Result<(), TdgPageReleaseError> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(%range, "release_memory_range");
+    tracing::trace!(%range, "release_pages");
 
     let mut range = range;
     while !range.is_empty() {

@@ -24,6 +24,7 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::TdgPageReleaseError;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
@@ -76,6 +77,11 @@ impl MshvVtl {
             });
 
         tdcall::accept_pages(&mut MshvVtlTdcall(self), range, attributes)
+    }
+
+    /// Issues tdcalls to release pages.
+    pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdgPageReleaseError> {
+        tdcall::release_pages(&mut MshvVtlTdcall(self), range)
     }
 }
 

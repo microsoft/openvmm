@@ -289,7 +289,10 @@ impl MemoryAcceptor {
             }
 
             IsolationType::Tdx => {
-                todo!("Implement Page Release Here")
+                todo!("RAZTODO: Check if TDX Connect is enabled)");
+                if true {
+                    self.mshv_vtl.tdx_release_pages(range).expect("Failed to release pages");
+                }
             }
             IsolationType::Cca => {
                 // TODO: CCA: anything to do here?

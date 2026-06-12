@@ -141,7 +141,7 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
     if host_visible && get_tdx_sys_features().tdx_connect() && get_td_config_flags().tdx_connect() {
         assert!(get_tdx_sys_features().page_release() && get_td_config_flags().page_release());
 
-        if let Err(err) = tdcall::release_memory_range(&mut TdcallInstruction, range) {
+        if let Err(err) = tdcall::release_pages(&mut TdcallInstruction, range) {
             panic!("failed to release pages in {range}: {err:?}");
         }
     }
