@@ -1484,14 +1484,14 @@ impl InitializedVm {
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
         #[cfg(guest_arch = "x86_64")]
-        let ioapic_routing_slot = {
-            let slot = ioapic_iommu_wiring::SwappableIoApicRouting::new(
+        let ioapic_routing = {
+            let conn = ioapic_iommu_wiring::IoApicRoutingConnection::new(
                 partition.clone().ioapic_routing(),
             );
             resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
-                slot.clone(),
+                conn.target(),
             ));
-            slot
+            conn
         };
         resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
             memory_manager.ram_visibility_control(),
@@ -2426,12 +2426,10 @@ impl InitializedVm {
                 let ioapic_rid = (iommu_acpi.start_bus as u16) << 8
                     | ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
 
-                let wrapped = ioapic_iommu_wiring::IommuIoApicRouting::new(
-                    partition.clone().ioapic_routing(),
+                ioapic_routing.connect_remapper(
                     ioapic_rid,
                     first_iommu.clone() as Arc<dyn iommu_common::InterruptRemapper>,
                 );
-                ioapic_routing_slot.swap(wrapped);
                 Some(ioapic_rid)
             } else {
                 None
