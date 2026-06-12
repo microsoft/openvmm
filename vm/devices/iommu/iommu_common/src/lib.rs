@@ -131,7 +131,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     /// access: `(secondary_bus << 8)`. If the secondary bus is 0, the RID is
     /// 0 and the IOMMU translates or faults accordingly.
     pub fn new_guest_memory(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         inner_gm: GuestMemory,
