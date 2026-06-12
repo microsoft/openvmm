@@ -94,11 +94,21 @@ pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
 }
 
+/// Configuration for a port to forward from the host to the guest.
+pub struct PortForwardConfig {
+    /// The protocol to forward.
+    pub protocol: IpProtocol,
+    /// An already-bound host socket to forward traffic from.
+    pub socket: socket2::Socket,
+    /// The port traffic is forwarded to on the guest.
+    pub guest_port: u16,
+}
+
 struct EndpointState {
     consomme: Consomme,
     recv: Option<mesh::Receiver<ConsommeMessage>>,
     port_recv: Option<mesh::Receiver<ConsommeRequest>>,
-    port_forwards: Vec<HostPortConfig>,
+    port_forwards: Vec<PortForwardConfig>,
 }
 
 impl ConsommeEndpoint {
@@ -114,7 +124,7 @@ impl ConsommeEndpoint {
     }
 
     /// Creates a new endpoint with ports to forward once the queue starts.
-    pub fn new_with_ports(state: ConsommeParams, ports: Vec<HostPortConfig>) -> Self {
+    pub fn new_with_ports(state: ConsommeParams, ports: Vec<PortForwardConfig>) -> Self {
         Self {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
@@ -129,7 +139,7 @@ impl ConsommeEndpoint {
     /// port bind/unbind requests from an external source (e.g. ttrpc server).
     pub fn new_dynamic(
         state: ConsommeParams,
-        ports: Vec<HostPortConfig>,
+        ports: Vec<PortForwardConfig>,
         port_recv: mesh::Receiver<ConsommeRequest>,
     ) -> Self {
         Self {
@@ -294,26 +304,13 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             c.refresh_driver();
             let mut bound: Vec<(IpProtocol, IpVersion, u16)> = Vec::new();
             for fwd in port_forwards {
-                let protocol: IpProtocol = fwd.protocol.clone().into();
+                let protocol = fwd.protocol;
                 let guest_port = fwd.guest_port;
-                let ip_addr = fwd.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
-                let (bind_port, dynamic_sender) = match fwd.host_port {
-                    net_backend_resources::consomme::HostPort::Fixed(port) => (port, None),
-                    net_backend_resources::consomme::HostPort::Dynamic(sender) => (0, Some(sender)),
-                };
-                let socket = create_bound_socket(&protocol, ip_addr, bind_port).map_err(|e| {
-                    anyhow::anyhow!(e).context("failed to create socket for port forward")
-                })?;
-                if let Some(sender) = dynamic_sender {
-                    if let Ok(addr) = socket_addr(&socket) {
-                        sender.send(addr.port());
-                    }
-                }
-                let result = match socket_family(&socket) {
+                let result = match socket_family(&fwd.socket) {
                     Ok(family) => {
                         let result = match protocol {
-                            IpProtocol::Tcp => c.bind_tcp_port(socket, guest_port),
-                            IpProtocol::Udp => c.bind_udp_port(socket, guest_port),
+                            IpProtocol::Tcp => c.bind_tcp_port(fwd.socket, guest_port),
+                            IpProtocol::Udp => c.bind_udp_port(fwd.socket, guest_port),
                         };
                         result.map(|()| (protocol, family, guest_port))
                     }

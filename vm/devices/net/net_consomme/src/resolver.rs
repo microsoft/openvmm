@@ -2,10 +2,15 @@
 // Licensed under the MIT License.
 
 use crate::ConsommeEndpoint;
+use crate::IpProtocol;
+use crate::PortForwardConfig;
+use crate::create_bound_socket;
 use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::consomme::ConsommeHandle;
+use net_backend_resources::consomme::HostPort;
+use net_backend_resources::consomme::HostPortProtocol;
 use thiserror::Error;
 use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
@@ -24,6 +29,12 @@ pub enum ResolveConsommeError {
     Consomme(consomme::Error),
     #[error(transparent)]
     InvalidCidr(consomme::InvalidCidr),
+    #[error("failed to create socket for port forward ({details})")]
+    SocketCreation {
+        #[source]
+        source: std::io::Error,
+        details: String,
+    },
 }
 
 impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver {
@@ -42,10 +53,53 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
+        let port_forwards: Vec<PortForwardConfig> = resource
+            .ports
+            .into_iter()
+            .map(|p| {
+                let protocol = match p.protocol {
+                    HostPortProtocol::Tcp => IpProtocol::Tcp,
+                    HostPortProtocol::Udp => IpProtocol::Udp,
+                };
+                let ip_addr = p.host_address.map(std::net::IpAddr::from);
+                let (bind_port, dynamic_sender) = match p.host_port {
+                    HostPort::Fixed(port) => (port, None),
+                    HostPort::Dynamic(sender) => (0, Some(sender)),
+                };
+                let socket = create_bound_socket(&protocol, ip_addr, bind_port).map_err(|e| {
+                    ResolveConsommeError::SocketCreation {
+                        source: e,
+                        details: format!(
+                            "{:?} {}:{}",
+                            protocol,
+                            ip_addr
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| "*".to_string()),
+                            bind_port,
+                        ),
+                    }
+                })?;
+                let host_addr = socket.local_addr().ok().and_then(|a| a.as_socket());
+                tracing::info!(
+                    ?protocol,
+                    host_addr = %host_addr.map(|a| a.to_string()).unwrap_or_default(),
+                    guest_port = %p.guest_port,
+                    "port forward socket created"
+                );
+                if let Some(sender) = dynamic_sender {
+                    sender.send(host_addr.expect("just bound an IP socket").port());
+                }
+                Ok(PortForwardConfig {
+                    protocol,
+                    socket,
+                    guest_port: p.guest_port,
+                })
+            })
+            .collect::<Result<Vec<_>, ResolveConsommeError>>()?;
         let endpoint = if let Some(port_recv) = resource.recv {
-            ConsommeEndpoint::new_dynamic(state, resource.ports, port_recv)
+            ConsommeEndpoint::new_dynamic(state, port_forwards, port_recv)
         } else {
-            ConsommeEndpoint::new_with_ports(state, resource.ports)
+            ConsommeEndpoint::new_with_ports(state, port_forwards)
         };
         Ok(endpoint.into())
     }
