@@ -2026,6 +2026,23 @@ mod test {
         }
     }
 
+    fn set_amd_iommu_with_ioapic(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<AmdIommuAcpiConfig>,
+        ioapic_rid: Option<u16>,
+    ) {
+        if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
+            *iommu = Some(X86IommuAcpiConfig::AmdVi(AmdIommuIvrsConfig {
+                pa_size: 48,
+                va_size: 48,
+                iommus: configs,
+                ioapic_rid,
+            }));
+        } else {
+            panic!("expected X86 arch config");
+        }
+    }
+
     #[test]
     fn test_ivrs_basic() {
         let mem = new_mem();
@@ -2425,5 +2442,114 @@ mod test {
         // Second DRHD's device scope start_bus = 128
         let scope1_offset = drhd1_offset + 16;
         assert_eq!(dmar[scope1_offset + 5], 128);
+    }
+
+    /// The IOAPIC DEV_SPECIAL entry must be emitted on the IVHD whose
+    /// segment (0) and bus range cover the IOAPIC RID, regardless of where
+    /// that IOMMU sits in the config list. Here the covering IOMMU is listed
+    /// second, so a correct implementation must not assume index 0.
+    #[test]
+    fn test_ivrs_ioapic_special_entry_placement() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        // RID 00:14.0 on segment 0, bus 0.
+        let ioapic_rid = 0x00A0u16;
+        set_amd_iommu_with_ioapic(
+            &mut builder,
+            vec![
+                // First config: segment 1, does NOT cover the IOAPIC.
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_4000,
+                    pci_segment: 1,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 255,
+                },
+                // Second config: segment 0, bus 0 — covers the IOAPIC RID.
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_0000,
+                    pci_segment: 0,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 127,
+                },
+            ],
+            Some(ioapic_rid),
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        assert_eq!(checksum(&ivrs), 0);
+
+        // First IVHD (segment 1): only the range_start + range_end pair, so
+        // its length is header (40) + 2 * 4 = 48, and it carries no special
+        // device entry.
+        let ivhd0_offset = 48;
+        assert_eq!(ivrs[ivhd0_offset], 0x40);
+        let ivhd0_len =
+            u16::from_ne_bytes(ivrs[ivhd0_offset + 2..ivhd0_offset + 4].try_into().unwrap());
+        assert_eq!(ivhd0_len as usize, 40 + 2 * 4);
+
+        // Second IVHD (segment 0): range_start + range_end + the 8-byte
+        // IOAPIC special device entry, so its length is 40 + 2 * 4 + 8 = 56.
+        let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
+        assert_eq!(ivrs[ivhd1_offset], 0x40);
+        let ivhd1_len =
+            u16::from_ne_bytes(ivrs[ivhd1_offset + 2..ivhd1_offset + 4].try_into().unwrap());
+        assert_eq!(ivhd1_len as usize, 40 + 2 * 4 + 8);
+        let seg1 = u16::from_ne_bytes(
+            ivrs[ivhd1_offset + 16..ivhd1_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg1, 0);
+
+        // The special entry follows the two range entries (header + 8 bytes).
+        let special = ivhd1_offset + 40 + 2 * 4;
+        assert_eq!(ivrs[special], 0x48); // IVHD_DEV_SPECIAL
+        // source_device_id at +5 (u16) must equal the IOAPIC RID.
+        let src_rid = u16::from_ne_bytes(ivrs[special + 5..special + 7].try_into().unwrap());
+        assert_eq!(src_rid, ioapic_rid);
+        // variety at +7 must be IOAPIC (0x01).
+        assert_eq!(ivrs[special + 7], 0x01);
+    }
+
+    /// When an IOAPIC RID is supplied but no IOMMU covers segment 0 / bus 0,
+    /// no DEV_SPECIAL(IOAPIC) entry is emitted.
+    #[test]
+    fn test_ivrs_no_ioapic_entry_when_uncovered() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu_with_ioapic(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x0000,
+                capability_offset: 0x40,
+                mmio_base: 0xFD00_0000,
+                pci_segment: 1, // not segment 0
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+            Some(0x00A0),
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        // The single IVHD must contain only the range_start + range_end pair.
+        let ivhd_offset = 48;
+        let ivhd_len =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 2..ivhd_offset + 4].try_into().unwrap());
+        assert_eq!(ivhd_len as usize, 40 + 2 * 4);
+        // No special device entry byte present anywhere after the header.
+        assert!(!ivrs[ivhd_offset..].contains(&0x48));
     }
 }

@@ -13,13 +13,9 @@ use iommu_common::InterruptRemapper;
 use iommu_common::RetranslateInterrupts;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use virt::irqcon::IRQ_LINES;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
-
-/// Number of IOAPIC redirection table entries. Must match
-/// `chipset_resources::ioapic::IOAPIC_NUM_ENTRIES`, which bounds the `irq`
-/// values the IOAPIC device passes to [`IoApicRouting`].
-const NUM_ENTRIES: usize = 24;
 
 /// Device/function (devfn) used as the IOAPIC requestor ID (RID) for
 /// interrupt remapping, as required by the Linux AMD-Vi driver.
@@ -56,7 +52,7 @@ struct IoApicRoutingState {
     /// Remapping state; `None` while in passthrough mode.
     remap: Option<RemapState>,
     /// Per-IRQ route state.
-    routes: [Route; NUM_ENTRIES],
+    routes: [Route; IRQ_LINES],
 }
 
 #[derive(Copy, Clone, Default)]
@@ -84,7 +80,7 @@ impl IoApicRoutingConnection {
                 hv_routing,
                 state: Mutex::new(IoApicRoutingState {
                     remap: None,
-                    routes: [Route::default(); NUM_ENTRIES],
+                    routes: [Route::default(); IRQ_LINES],
                 }),
             }),
         }
@@ -137,7 +133,7 @@ impl IoApicRoutingInner {
 
     /// Re-translate and re-program all cached routes.
     fn set_all_routes(&self, state: &mut IoApicRoutingState) {
-        for irq in 0..NUM_ENTRIES {
+        for irq in 0..IRQ_LINES {
             self.set_route(state, irq as u8);
         }
     }
