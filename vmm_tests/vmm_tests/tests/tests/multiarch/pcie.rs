@@ -768,7 +768,7 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 #[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WIN_DRIVERS])]
 async fn virtio_net_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
+    (virtio_win,): (ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");

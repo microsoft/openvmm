@@ -45,9 +45,7 @@ mod namespace;
 mod pci;
 mod prp;
 mod queue;
-mod registers;
 pub mod resolver;
-mod vf;
 mod workers;
 
 #[cfg(test)]
@@ -79,14 +77,6 @@ const MAX_NSID: u32 = 1024;
 const BAR0_LEN: u64 = 0x10000;
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
-
-/// NVMe CAP register value shared by PF and VF controllers.
-const CAP: spec::Cap = spec::Cap::new()
-    .with_dstrd(DOORBELL_STRIDE_BITS - 2)
-    .with_mqes_z(MAX_QES - 1)
-    .with_cqr(true)
-    .with_css_nvm(true)
-    .with_to(!0);
 
 // NVMe page sizes. This must match the `PagedRange` page size.
 const PAGE_SIZE: usize = 4096;

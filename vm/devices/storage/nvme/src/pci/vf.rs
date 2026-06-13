@@ -15,8 +15,8 @@
 
 use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
-use crate::registers::ControllerCore;
-use crate::registers::RegState;
+use crate::pci::ControllerCore;
+use crate::pci::RegState;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeControllerClient;
 use crate::workers::NvmeWorkers;

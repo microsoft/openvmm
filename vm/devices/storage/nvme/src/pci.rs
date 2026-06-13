@@ -3,17 +3,26 @@
 
 //! The NVMe PCI device implementation.
 
+mod vf;
+
 use crate::BAR0_LEN;
 use crate::DEVICE_ID;
+use crate::DOORBELL_STRIDE_BITS;
+use crate::IOCQES;
+use crate::IOSQES;
+use crate::MAX_QES;
+use crate::NVME_VERSION;
 use crate::NvmeControllerClient;
+use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
-use crate::registers::ControllerCore;
-use crate::registers::RegState;
-use crate::vf::NvmeVirtualFunction;
+use crate::spec;
+use crate::workers::EnablePoll;
+use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoError::InvalidRegister;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
@@ -28,6 +37,7 @@ use device_emulators::write_as_u32_chunks;
 use futures::future::join_all;
 use guestmem::GuestMemory;
 use guid::Guid;
+use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::capabilities::extended::sriov::SriovBarDecode;
@@ -46,6 +56,7 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use std::task::Context;
+use vf::NvmeVirtualFunction;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -63,16 +74,67 @@ pub struct NvmeController {
     core: ControllerCore,
 
     // SR-IOV support — None when SR-IOV is not configured.
-    #[inspect(skip)]
+    #[inspect(skip)] // BUGBUG
     sriov: Option<SriovState>,
     #[inspect(iter_by_index)]
     vfs: Vec<NvmeVirtualFunction>,
     /// Pending VF drain — set when VF_Enable is cleared, completed by
     /// `poll_device` when all VF IOs have drained. Stalls the VCPU that
     /// wrote VF_Enable=0 until drain is complete.
-    #[inspect(skip)]
+    #[inspect(with = "Option::is_some")]
     vf_drain: Option<VfDrainState>,
 }
+
+/// The common state machine shared by PF ([`super::NvmeController`]) and VF
+/// ([`super::vf::NvmeVirtualFunction`]) NVMe controllers.
+///
+/// Both controllers have identical register layouts and an identical
+/// [`NvmeWorkers`] coordinator; only their surrounding PCI/SR-IOV state
+/// differs. Each embeds one of these and forwards BAR0 reads/writes to
+/// [`ControllerCore::read_bar0`] / [`ControllerCore::write_bar0`].
+#[derive(Inspect)]
+pub(crate) struct ControllerCore {
+    registers: RegState,
+    #[inspect(skip)]
+    qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
+    #[inspect(flatten)]
+    workers: NvmeWorkers,
+}
+
+/// NVMe controller register state.
+#[derive(Inspect)]
+struct RegState {
+    #[inspect(hex)]
+    interrupt_mask: u32,
+    cc: spec::Cc,
+    csts: spec::Csts,
+    aqa: spec::Aqa,
+    #[inspect(hex)]
+    asq: u64,
+    #[inspect(hex)]
+    acq: u64,
+}
+
+impl RegState {
+    fn new() -> Self {
+        Self {
+            interrupt_mask: 0,
+            cc: spec::Cc::new(),
+            csts: spec::Csts::new(),
+            aqa: spec::Aqa::new(),
+            asq: 0,
+            acq: 0,
+        }
+    }
+}
+
+/// NVMe CAP register value shared by PF and VF controllers.
+const CAP: spec::Cap = spec::Cap::new()
+    .with_dstrd(DOORBELL_STRIDE_BITS - 2)
+    .with_mqes_z(MAX_QES - 1)
+    .with_cqr(true)
+    .with_css_nvm(true)
+    .with_to(!0);
 
 /// Internal SR-IOV state held by the PF.
 struct SriovState {
@@ -274,6 +336,7 @@ impl NvmeController {
     }
 
     /// Build VF BAR configuration for the SR-IOV capability.
+    /// TODO: inline or at least just return a tuple.
     fn vf_bar_config(vf_msix_count: u16) -> [Option<VfBarConfig>; 6] {
         // Compute MSI-X BAR size: each vector needs 16 bytes for the table
         // entry, plus pending bits array. Round up to power of 2 and at least
@@ -318,12 +381,6 @@ impl NvmeController {
         self.core.write_bar0(addr, data)
     }
 
-    /// Sets the CFS bit in the controller status register (CSTS), indicating
-    /// that the controller has experienced "undefined" behavior.
-    pub fn fatal_error(&mut self) {
-        self.core.registers.csts.set_cfs(true);
-    }
-
     /// Enable VFs by creating VF instances.
     fn enable_vfs(&mut self, num_vfs: u16) {
         let sriov = self.sriov.as_ref().expect("SR-IOV must be configured");
@@ -348,7 +405,7 @@ impl NvmeController {
             let vf_index = i;
             let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
 
-            let vf = NvmeVirtualFunction::new(crate::vf::NvmeVirtualFunctionParams {
+            let vf = NvmeVirtualFunction::new(vf::NvmeVirtualFunctionParams {
                 msix_count: config.vf_msix_count,
                 max_io_queues: config.vf_max_io_queues,
                 msi_target: &vf_msi_target,
@@ -421,9 +478,18 @@ impl NvmeController {
     /// Compute VF index from a PCI function number.
     /// Returns `None` if the function does not correspond to a valid,
     /// enabled VF.
-    fn vf_index_from_function(&self, function: u8) -> Option<usize> {
-        if function == 0 {
+    fn vf_index_from_function(
+        &self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+    ) -> Option<usize> {
+        if secondary_bus == target_bus && function == 0 {
             return None; // Function 0 is the PF.
+        }
+        if secondary_bus != target_bus {
+            // TODO: ARI support.
+            return None;
         }
         // first_vf_offset = 1, vf_stride = 1
         let idx = function.checked_sub(1)? as usize;
@@ -432,6 +498,280 @@ impl NvmeController {
         } else {
             None
         }
+    }
+}
+
+impl ControllerCore {
+    pub fn new(qe_sizes: Arc<Mutex<IoQueueEntrySizes>>, workers: NvmeWorkers) -> Self {
+        Self {
+            registers: RegState::new(),
+            qe_sizes,
+            workers,
+        }
+    }
+}
+
+/// Read from NVMe BAR0 (controller registers).
+impl ControllerCore {
+    fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        if data.len() < 4 {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+        if addr & (data.len() as u64 - 1) != 0 {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        // Check for 64-bit registers.
+        let d: Option<u64> = match spec::Register(addr & !7) {
+            spec::Register::CAP => Some(CAP.into()),
+            spec::Register::ASQ => Some(self.registers.asq),
+            spec::Register::ACQ => Some(self.registers.acq),
+            spec::Register::BPMBL => Some(0),
+            _ => None,
+        };
+        if let Some(d) = d {
+            if data.len() == 8 {
+                data.copy_from_slice(&d.to_ne_bytes());
+            } else if addr & 7 == 0 {
+                data.copy_from_slice(&(d as u32).to_ne_bytes());
+            } else {
+                data.copy_from_slice(&((d >> 32) as u32).to_ne_bytes());
+            }
+            return IoResult::Ok;
+        }
+
+        if data.len() != 4 {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+
+        // Handle 32-bit registers.
+        let d: u32 = match spec::Register(addr) {
+            spec::Register::VS => NVME_VERSION,
+            spec::Register::INTMS => self.registers.interrupt_mask,
+            spec::Register::INTMC => self.registers.interrupt_mask,
+            spec::Register::CC => self.registers.cc.into(),
+            spec::Register::RESERVED => 0,
+            spec::Register::CSTS => self.get_csts(),
+            spec::Register::NSSR => 0,
+            spec::Register::AQA => self.registers.aqa.into(),
+            spec::Register::CMBLOC => 0,
+            spec::Register::CMBSZ => 0,
+            spec::Register::BPINFO => 0,
+            spec::Register::BPRSEL => 0,
+            _ => return IoResult::Err(InvalidRegister),
+        };
+        data.copy_from_slice(&d.to_ne_bytes());
+        IoResult::Ok
+    }
+
+    /// Write to NVMe BAR0 (controller registers + doorbells).
+    fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        if addr >= 0x1000 {
+            // Doorbell write.
+            let base = addr - 0x1000;
+            let db_id = base >> DOORBELL_STRIDE_BITS;
+            if (db_id << DOORBELL_STRIDE_BITS) != base {
+                return IoResult::Err(InvalidRegister);
+            }
+            let Ok(data) = data.try_into() else {
+                return IoResult::Err(IoError::InvalidAccessSize);
+            };
+            let value = u32::from_ne_bytes(data);
+            let db_id = match u16::try_from(db_id) {
+                Ok(id) => id,
+                Err(_) => return IoResult::Err(InvalidRegister),
+            };
+            self.workers.doorbell(db_id, value);
+            return IoResult::Ok;
+        }
+
+        if data.len() < 4 {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+        if addr & (data.len() as u64 - 1) != 0 {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let update_reg = |x: u64| {
+            if data.len() == 8 {
+                u64::from_ne_bytes(data.try_into().unwrap())
+            } else {
+                let data = u32::from_ne_bytes(data.try_into().unwrap()) as u64;
+                if addr & 7 == 0 {
+                    (x & !(u32::MAX as u64)) | data
+                } else {
+                    (x & u32::MAX as u64) | (data << 32)
+                }
+            }
+        };
+
+        // Check for 64-bit registers.
+        let handled = match spec::Register(addr & !7) {
+            spec::Register::ASQ => {
+                if !self.registers.cc.en() {
+                    self.registers.asq = update_reg(self.registers.asq) & PAGE_MASK;
+                } else {
+                    tracelimit::warn_ratelimited!("attempt to set asq while enabled");
+                }
+                true
+            }
+            spec::Register::ACQ => {
+                if !self.registers.cc.en() {
+                    self.registers.acq = update_reg(self.registers.acq) & PAGE_MASK;
+                } else {
+                    tracelimit::warn_ratelimited!("attempt to set acq while enabled");
+                }
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            return IoResult::Ok;
+        }
+
+        let Ok(data) = data.try_into() else {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        };
+        let data = u32::from_ne_bytes(data);
+
+        // Handle 32-bit registers.
+        match spec::Register(addr) {
+            spec::Register::INTMS => self.registers.interrupt_mask |= data,
+            spec::Register::INTMC => self.registers.interrupt_mask &= !data,
+            spec::Register::CC => self.set_cc(data.into()),
+            spec::Register::AQA => self.registers.aqa = data.into(),
+            _ => return IoResult::Err(InvalidRegister),
+        }
+        IoResult::Ok
+    }
+
+    fn set_cc(&mut self, cc: spec::Cc) {
+        tracing::debug!(?cc, "set cc");
+
+        if cc.mps() != 0 {
+            tracelimit::warn_ratelimited!(
+                "This implementation only supports memory page sizes of 4K."
+            );
+            self.fatal_error();
+            return;
+        }
+
+        if cc.css() != 0 {
+            tracelimit::warn_ratelimited!("This implementation only supports the NVM command set.");
+            self.fatal_error();
+            return;
+        }
+
+        if let 2..=6 = cc.ams() {
+            tracelimit::warn_ratelimited!("Undefined arbitration mechanism.");
+            self.fatal_error();
+        }
+
+        let mask: u32 = u32::from(
+            spec::Cc::new()
+                .with_en(true)
+                .with_shn(0b11)
+                .with_iosqes(0b1111)
+                .with_iocqes(0b1111),
+        );
+        let mut cc: spec::Cc = (u32::from(cc) & mask).into();
+
+        if cc.shn() != 0 {
+            // It is unclear in the spec (to me) what guarantees a
+            // controller is supposed to make after shutdown. For now, just
+            // complete shutdown immediately.
+            self.registers.csts.set_shst(0b10);
+        }
+
+        if cc.en() != self.registers.cc.en() {
+            if cc.en() {
+                // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
+                if cc.iocqes() == 0 {
+                    cc.set_iocqes(IOCQES);
+                } else if cc.iocqes() != IOCQES {
+                    tracelimit::warn_ratelimited!(
+                        "This implementation only supports CQEs of the default size."
+                    );
+                    self.fatal_error();
+                    return;
+                }
+
+                if cc.iosqes() == 0 {
+                    cc.set_iosqes(IOSQES);
+                } else if cc.iosqes() != IOSQES {
+                    tracelimit::warn_ratelimited!(
+                        "This implementation only supports SQEs of the default size."
+                    );
+                    self.fatal_error();
+                    return;
+                }
+
+                if self.registers.csts.rdy() {
+                    tracelimit::warn_ratelimited!("enabling during reset");
+                    return;
+                }
+                if cc.shn() == 0 {
+                    self.registers.csts.set_shst(0);
+                }
+
+                self.workers.enable(
+                    self.registers.asq,
+                    self.registers.aqa.asqs_z().max(1) + 1,
+                    self.registers.acq,
+                    self.registers.aqa.acqs_z().max(1) + 1,
+                );
+            } else if self.registers.csts.rdy() {
+                self.workers.controller_reset();
+            } else {
+                tracelimit::warn_ratelimited!("disabling while not ready");
+                return;
+            }
+        }
+
+        self.registers.cc = cc;
+        *self.qe_sizes.lock() = IoQueueEntrySizes {
+            sqe_bits: cc.iosqes(),
+            cqe_bits: cc.iocqes(),
+        };
+    }
+
+    fn get_csts(&mut self) -> u32 {
+        if !self.registers.cc.en() && self.registers.csts.rdy() {
+            // Keep trying to disable.
+            if self.workers.poll_controller_reset() {
+                // AQA, ASQ, and ACQ are not reset by controller reset.
+                self.registers.csts = 0.into();
+                self.registers.cc = 0.into();
+                self.registers.interrupt_mask = 0;
+            }
+        } else if self.registers.cc.en() && !self.registers.csts.rdy() {
+            match self.workers.poll_enabled() {
+                EnablePoll::Enabled => self.registers.csts.set_rdy(true),
+                EnablePoll::Pending => {}
+                EnablePoll::Rejected => {
+                    // The controller is offline (an SR-IOV VF whose secondary
+                    // controller is not online). Per NVMe Base 2.1 §8.2.6.3, a
+                    // secondary controller "is able to be enabled only when in
+                    // the Online state"; in the Offline state "CSTS.CFS shall
+                    // be set to '1'". So set CFS and never reach RDY. The PF is
+                    // always online, so it never lands here; if it somehow did,
+                    // CFS makes the failure observable rather than hanging
+                    // silently.
+                    tracelimit::warn_ratelimited!("controller enable rejected: offline");
+                    self.fatal_error();
+                }
+            }
+        }
+
+        let csts = self.registers.csts;
+        tracing::debug!(?csts, "get csts");
+        csts.into()
+    }
+
+    /// Sets the CFS bit in the controller status register (CSTS), indicating
+    /// that the controller has experienced "undefined" behavior.
+    fn fatal_error(&mut self) {
+        self.registers.csts.set_cfs(true);
     }
 }
 
@@ -467,6 +807,7 @@ impl ChangeDeviceState for NvmeController {
             drain.deferred.complete();
         }
 
+        // TODO: let core implement reset
         core.workers.reset().await;
         cfg_space.reset();
         core.registers = RegState::new();
@@ -506,7 +847,7 @@ impl PollDevice for NvmeController {
             if all_drained {
                 let drain = self.vf_drain.take().unwrap();
                 drain.deferred.complete();
-                tracing::info!("SR-IOV: VF drain complete, VCPU resumed");
+                tracing::debug!("SR-IOV: VF drain complete, VCPU resumed");
             }
         }
     }
@@ -597,16 +938,11 @@ impl PciConfigSpace for NvmeController {
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        if secondary_bus != target_bus {
-            *value = !0;
-            return IoResult::Ok;
-        }
-
-        if function == 0 {
+        if secondary_bus == target_bus && function == 0 {
             return self.pci_cfg_read(offset, value);
         }
 
-        match self.vf_index_from_function(function) {
+        match self.vf_index_from_function(secondary_bus, target_bus, function) {
             Some(idx) => self.vfs[idx].pci_cfg_read(offset, value),
             None => {
                 *value = !0; // No device present.
@@ -623,15 +959,11 @@ impl PciConfigSpace for NvmeController {
         offset: u16,
         value: u32,
     ) -> IoResult {
-        if secondary_bus != target_bus {
-            return IoResult::Ok;
-        }
-
-        if function == 0 {
+        if secondary_bus == target_bus && function == 0 {
             return self.pci_cfg_write(offset, value);
         }
 
-        match self.vf_index_from_function(function) {
+        match self.vf_index_from_function(secondary_bus, target_bus, function) {
             Some(idx) => self.vfs[idx].pci_cfg_write(offset, value),
             None => IoResult::Ok, // Silently drop writes to absent functions.
         }
