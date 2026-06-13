@@ -1173,10 +1173,6 @@ impl AdminHandler {
 
     /// Fill the Primary Controller Capabilities structure (CNS 0x14).
     fn identify_primary_controller_capabilities(&self, buf: &mut [u8]) {
-        let _sriov = self
-            .sriov_state
-            .as_ref()
-            .expect("SR-IOV must be configured");
         let pcc = spec::PrimaryControllerCapabilities::mut_from_prefix(buf)
             .unwrap()
             .0;
