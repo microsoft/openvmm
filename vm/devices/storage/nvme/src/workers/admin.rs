@@ -755,8 +755,12 @@ impl AdminHandler {
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
             cntlid: self.config.controller_id,
-            // CMIC bit 2: set only for VFs (associated with an SR-IOV VF).
-            cmic: spec::Cmic::new().with_vf(is_vf),
+            // CMIC bit 1 (multi_controller): set for all controllers in an
+            // SR-IOV subsystem (PF and VFs), since they share a subsystem NQN.
+            // CMIC bit 2 (vf): set only for VFs (associated with an SR-IOV VF).
+            cmic: spec::Cmic::new()
+                .with_multi_controller(is_pf || is_vf)
+                .with_vf(is_vf),
             oacs: spec::OptionalAdminCommandSupport::new()
                 .with_doorbell_buffer_config(self.supports_shadow_doorbells(state))
                 .with_virtualization_management(is_pf)

@@ -26,6 +26,8 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::future::pending;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use task_control::TaskControl;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
@@ -41,6 +43,11 @@ pub struct NvmeWorkers {
     doorbells: Arc<RwLock<DoorbellMemory>>,
     #[inspect(skip)]
     state: EnableState,
+    /// Whether this controller is online. Read synchronously by the device
+    /// thread (see [`NvmeWorkers::online`]); written by the coordinator's
+    /// `SetOnline` handler.
+    #[inspect(skip)]
+    online: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -58,7 +65,11 @@ pub enum EnablePoll {
     Pending,
     /// The controller is enabled.
     Enabled,
-    /// The enable was rejected (e.g. the secondary controller is offline).
+    /// The enable was rejected because the controller went offline between
+    /// the device thread observing it online and the coordinator processing
+    /// the enable. The offline check on the device thread is racy (it reads a
+    /// shared flag), so the coordinator's FIFO-ordered gate is the
+    /// authoritative arbiter; this is how a lost race surfaces.
     Rejected,
 }
 
@@ -78,6 +89,7 @@ impl NvmeWorkers {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
         let driver = driver_source.simple();
+        let online = Arc::new(AtomicBool::new(online));
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
             AdminConfig {
@@ -97,7 +109,7 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
-            online,
+            online: online.clone(),
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -106,6 +118,7 @@ impl NvmeWorkers {
             send,
             doorbells,
             state: EnableState::Disabled,
+            online,
         }
     }
 
@@ -113,6 +126,17 @@ impl NvmeWorkers {
         NvmeControllerClient {
             send: self.send.clone(),
         }
+    }
+
+    /// Returns whether the controller is currently online.
+    ///
+    /// This reads a shared flag without coordinating with the worker task, so
+    /// it can momentarily disagree with an in-flight online/offline change.
+    /// The device thread uses it only to mask BAR0 reads for an offline
+    /// controller; the coordinator's enable gate (see [`EnablePoll::Rejected`])
+    /// remains the authoritative arbiter of whether an enable succeeds.
+    pub fn online(&self) -> bool {
+        self.online.load(Ordering::Relaxed)
     }
 
     pub fn doorbell(&self, db_id: u16, value: u32) {
@@ -303,8 +327,10 @@ struct Coordinator {
     reset: Option<Rpc<(), ()>>,
     /// Whether this controller is online and may be enabled. Always true for
     /// the PF and standalone controllers; toggled for SR-IOV VFs via
-    /// [`CoordinatorRequest::SetOnline`].
-    online: bool,
+    /// [`CoordinatorRequest::SetOnline`]. Shared with [`NvmeWorkers`] so the
+    /// device thread can read it to mask BAR0 reads for an offline controller.
+    #[inspect(skip)]
+    online: Arc<AtomicBool>,
 }
 
 enum CoordinatorRequest {
@@ -359,7 +385,7 @@ impl Coordinator {
                              acq,
                              acqs,
                          }| {
-                            if !self.online {
+                            if !self.online.load(Ordering::Relaxed) {
                                 tracelimit::warn_ratelimited!(
                                     "enable attempted while controller is offline"
                                 );
@@ -406,7 +432,7 @@ impl Coordinator {
                     }
                     CoordinatorRequest::SetOnline(rpc) => {
                         rpc.handle_sync(|online| {
-                            self.online = online;
+                            self.online.store(online, Ordering::Relaxed);
                         });
                     }
                     CoordinatorRequest::Inspect(req) => req.inspect(&self),

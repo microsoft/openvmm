@@ -348,6 +348,11 @@ async fn test_sriov_vf_identify_reports_cmic_sriov(driver: DefaultDriver) {
     assert_eq!(id.cntlid, 1, "PF cntlid should be PF_CONTROLLER_ID (1)");
     // PF should NOT have cmic.vf set — that's only for VFs.
     assert!(!id.cmic.vf(), "PF should not report cmic.vf (only VFs do)");
+    // PF shares a subsystem with its VFs, so it must report multi_controller.
+    assert!(
+        id.cmic.multi_controller(),
+        "PF should report cmic.multi_controller"
+    );
     // PF should advertise virtualization management.
     assert!(
         id.oacs.virtualization_management(),
@@ -407,37 +412,37 @@ async fn test_sriov_vf_bar0_mmio_routing(driver: DefaultDriver) {
 
     // VF 0's BAR0 is at vf_bar0_base + 0 * BAR0_LEN.
     // VF 1's BAR0 is at vf_bar0_base + 1 * BAR0_LEN.
-    // Read CAP register (offset 0) from VF 0 via MMIO — should return
-    // the NVMe CAP value, not zeros.
+    // The VFs were never brought online, so every BAR0 register reads back as
+    // all-ones. A successful all-ones read still proves the access routed to
+    // the VF (an unrouted address would return an MMIO error instead).
     let vf0_bar0_addr = vf_bar0_base;
     let mut cap = 0u64;
     c.mmio_read(vf0_bar0_addr, cap.as_mut_bytes()).unwrap();
-    // CAP.MQES should be MAX_QES - 1 = 0xFF (bits 15:0).
-    assert_eq!(cap & 0xFFFF, 0xFF, "VF0 CAP.MQES should be 0xFF");
+    assert_eq!(cap, !0, "VF0 (offline) CAP should read all-ones");
 
     // Read CAP from VF 1 via MMIO.
     let vf1_bar0_addr = vf_bar0_base + BAR0_LEN;
     let mut cap1 = 0u64;
     c.mmio_read(vf1_bar0_addr, cap1.as_mut_bytes()).unwrap();
-    assert_eq!(cap1 & 0xFFFF, 0xFF, "VF1 CAP.MQES should be 0xFF");
+    assert_eq!(cap1, !0, "VF1 (offline) CAP should read all-ones");
 
     // Read Version register (offset 8) from VF 0.
     let mut ver = 0u32;
     c.mmio_read(vf0_bar0_addr + 8, ver.as_mut_bytes()).unwrap();
-    assert_eq!(ver, 0x00020000, "VF0 version should be NVMe 2.0");
+    assert_eq!(ver, !0, "VF0 (offline) version should read all-ones");
 
-    // Write CC.EN = 0 should succeed (VF not online, so CFS is set,
-    // but the write itself should route correctly).
+    // Writing CC.EN to an offline VF is dropped, but the write must still
+    // route (not error).
     let cc_val = 0u32;
     c.mmio_write(vf0_bar0_addr + 0x14, cc_val.as_bytes())
         .unwrap();
 
-    // Read CSTS from VF 0 — should be valid (not an MMIO error).
+    // Read CSTS from VF 0 — routes successfully and reads all-ones while
+    // offline (CSTS == ~0 is the host's "device gone" sentinel).
     let mut csts = 0u32;
     c.mmio_read(vf0_bar0_addr + 0x1c, csts.as_mut_bytes())
         .unwrap();
-    // CSTS should not have RDY set (controller not enabled).
-    assert!(!spec::Csts::from(csts).rdy(), "VF0 should not be ready");
+    assert_eq!(csts, !0, "VF0 (offline) CSTS should read all-ones");
 }
 
 /// Helper to submit a PF admin command and wait for completion.
@@ -712,6 +717,10 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
     assert_eq!(id.vid, 0x1414, "VF identify not written");
     assert_eq!(id.cntlid, vf_cntlid);
     assert!(id.cmic.vf(), "VF should report cmic.vf = true");
+    assert!(
+        id.cmic.multi_controller(),
+        "VF should report cmic.multi_controller"
+    );
     assert!(
         !id.oacs.virtualization_management(),
         "VF should not report oacs.virtualization_management"
@@ -1098,13 +1107,22 @@ impl SriovVfHarness {
                 .mmio_read(self.vf_bar0_base + 0x1c, csts.as_mut_bytes())
                 .unwrap();
             let csts = spec::Csts::from(csts);
-            if csts.rdy() {
-                return true;
-            }
             if csts.cfs() {
                 return false;
             }
+            if csts.rdy() {
+                return true;
+            }
         }
+    }
+
+    /// Read the VF's CSTS register as a raw u32.
+    fn vf_csts_raw(&mut self) -> u32 {
+        let mut csts = 0u32;
+        self.c
+            .mmio_read(self.vf_bar0_base + 0x1c, csts.as_mut_bytes())
+            .unwrap();
+        csts
     }
 
     /// Write a command to the VF admin SQ and ring its doorbell.
@@ -1172,15 +1190,41 @@ impl SriovVfHarness {
     }
 }
 
-/// Criterion 8: enabling a VF whose secondary controller is offline must set
-/// CSTS.CFS and never reach RDY.
+/// An offline VF presents all-ones BAR0 registers, so a host enabling it
+/// never observes RDY (and reads CSTS == ~0, the "device gone" sentinel).
 #[async_test]
-async fn test_sriov_vf_enable_while_offline_sets_cfs(driver: DefaultDriver) {
+async fn test_sriov_vf_enable_while_offline_reads_all_ones(driver: DefaultDriver) {
     let mut h = setup_pf_with_offline_vf(driver).await;
 
-    // The VF was never brought online; enabling it must fail with CFS.
+    // The VF was never brought online; enabling it must not reach RDY.
     let ready = h.enable_vf_controller().await;
-    assert!(!ready, "offline VF must set CFS and not reach RDY");
+    assert!(!ready, "offline VF must not reach RDY");
+
+    // Every BAR0 register reads back as all-ones while offline.
+    assert_eq!(h.vf_csts_raw(), !0, "offline CSTS must read all-ones");
+    let mut cap = 0u64;
+    h.c.mmio_read(h.vf_bar0_base, cap.as_mut_bytes()).unwrap();
+    assert_eq!(cap, !0, "offline CAP must read all-ones");
+    let mut vs = 0u32;
+    h.c.mmio_read(h.vf_bar0_base + 0x08, vs.as_mut_bytes())
+        .unwrap();
+    assert_eq!(vs, !0, "offline VS must read all-ones");
+}
+
+/// A host that enables an offline VF keeps polling CSTS (as the Linux driver
+/// does while waiting for RDY). Re-reading CSTS must keep returning all-ones
+/// and must not panic by re-polling an enable that already settled.
+#[async_test]
+async fn test_sriov_vf_enable_while_offline_csts_reread(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver).await;
+
+    let ready = h.enable_vf_controller().await;
+    assert!(!ready, "offline VF must not reach RDY");
+
+    // Re-read CSTS several times, mimicking a driver still polling for RDY.
+    for _ in 0..3 {
+        assert_eq!(h.vf_csts_raw(), !0, "offline CSTS must stay all-ones");
+    }
 }
 
 /// Criterion 9: after a Virtualization Management SECONDARY_ONLINE completes,

@@ -522,6 +522,21 @@ impl ControllerCore {
 /// Read from NVMe BAR0 (controller registers).
 impl ControllerCore {
     fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        // An offline controller (an SR-IOV VF whose secondary controller is not
+        // online) presents all-ones for every BAR0 register. Per NVMe Base 2.1
+        // §8.2.6.3 an offline secondary controller's properties other than CSTS
+        // are undefined, and CSTS must have CFS set — all-ones satisfies both.
+        // This lets a host fast-fail its CC.EN -> CSTS.RDY wait instead of
+        // spinning until CAP.TO--Linux checks that CSTS == !0, and Windows
+        // checks that ASQ == !0.
+        if !self.workers.online() {
+            data.fill(!0);
+            return IoResult::Ok;
+        }
+        self.read_registers(addr, data)
+    }
+
+    fn read_registers(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
@@ -574,6 +589,15 @@ impl ControllerCore {
 
     /// Write to NVMe BAR0 (controller registers + doorbells).
     fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        // Drop all BAR0 writes while offline; an offline controller may not be
+        // used by a host (NVMe Base 2.1 §8.2.6.3). The controller is moved
+        // into and out of the offline state by the PF (virtualization
+        // management) and by VF teardown — never by guest register writes — so
+        // ignoring writes here cannot strand the enable state machine.
+        if !self.workers.online() {
+            return IoResult::Ok;
+        }
+
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -752,7 +776,13 @@ impl ControllerCore {
                 self.registers.cc = 0.into();
                 self.registers.interrupt_mask = 0;
             }
-        } else if self.registers.cc.en() && !self.registers.csts.rdy() {
+        } else if self.registers.cc.en() && !self.registers.csts.rdy() && !self.registers.csts.cfs()
+        {
+            // Poll the in-progress enable. The `!cfs()` guard is essential:
+            // once an enable has been rejected (CFS set, below), the
+            // coordinator has settled back to the disabled state, so polling
+            // it again would panic. A driver that keeps reading CSTS while
+            // waiting for RDY (e.g. Linux) would otherwise trip this.
             match self.workers.poll_enabled() {
                 EnablePoll::Enabled => self.registers.csts.set_rdy(true),
                 EnablePoll::Pending => {}
