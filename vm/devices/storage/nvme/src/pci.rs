@@ -333,7 +333,15 @@ impl NvmeController {
         let sriov = self.sriov.as_ref().expect("SR-IOV must be configured");
         let config = &sriov.config;
 
-        self.vfs.clear();
+        // VFs must already be disabled and drained before enabling. The
+        // caller (`drain_sriov_pending`) only invokes this on a VF_Enable
+        // 0->1 transition, and refuses to re-enable while a drain is in
+        // progress, so `vfs` is always empty here.
+        assert!(
+            self.vfs.is_empty(),
+            "enable_vfs called with {} VFs still present",
+            self.vfs.len()
+        );
         self.vfs.reserve(num_vfs as usize);
 
         for i in 0..num_vfs {
