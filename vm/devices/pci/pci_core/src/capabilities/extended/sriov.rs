@@ -11,6 +11,7 @@ use crate::spec::caps::sriov::SriovCapabilities;
 use crate::spec::caps::sriov::SriovControl;
 use crate::spec::caps::sriov::SriovExtendedCapabilityHeader;
 use crate::spec::caps::sriov::SriovStatus;
+use crate::spec::cfg_space::BarEncodingBits;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -72,9 +73,10 @@ pub struct SriovExtendedCapability {
     /// Per-BAR size (0 = not implemented). Sizes are per-VF.
     #[inspect(iter_by_index)]
     vf_bar_sizes: [u64; 6],
-    /// Per-BAR type flags: bit 0 = 64-bit, bit 1 = prefetchable.
-    #[inspect(iter_by_index)]
-    vf_bar_flags: [u8; 6],
+    /// Per-BAR in-band encoding bits (64-bit / prefetchable), as stored in
+    /// the low bits of each VF BAR register.
+    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(|b| b.into_bits()))")]
+    vf_bar_encoding: [BarEncodingBits; 6],
 
     // -- Mutable state (guest-writable) --
     control: SriovControl,
@@ -179,10 +181,6 @@ impl SriovBarDecode {
     }
 }
 
-/// Flag bits stored in `vf_bar_flags`.
-const BAR_FLAG_64BIT: u8 = 1;
-const BAR_FLAG_PREFETCHABLE: u8 = 2;
-
 impl SriovExtendedCapability {
     /// Creates a new SR-IOV extended capability.
     ///
@@ -202,7 +200,7 @@ impl SriovExtendedCapability {
         );
 
         let mut vf_bar_sizes = [0u64; 6];
-        let mut vf_bar_flags = [0u8; 6];
+        let mut vf_bar_encoding = [BarEncodingBits::new(); 6];
 
         let mut i = 0;
         while i < 6 {
@@ -212,12 +210,11 @@ impl SriovExtendedCapability {
                     "VF BAR{i} size must be a power of 2 and >= 16"
                 );
                 vf_bar_sizes[i] = bar.size;
+                vf_bar_encoding[i] = BarEncodingBits::new()
+                    .with_type_64_bit(bar.is_64bit)
+                    .with_prefetchable(bar.prefetchable);
 
                 if bar.is_64bit {
-                    vf_bar_flags[i] = BAR_FLAG_64BIT;
-                    if bar.prefetchable {
-                        vf_bar_flags[i] |= BAR_FLAG_PREFETCHABLE;
-                    }
                     // 64-bit BAR consumes next slot too.
                     assert!(i + 1 < 6, "64-bit VF BAR{i} would overflow BAR slots");
                     assert!(
@@ -226,28 +223,19 @@ impl SriovExtendedCapability {
                         i + 1
                     );
                     i += 1; // skip next slot
-                } else if bar.prefetchable {
-                    vf_bar_flags[i] |= BAR_FLAG_PREFETCHABLE;
                 }
             }
             i += 1;
         }
 
-        // Build initial bar register values from type flags.
+        // Build initial bar register values from the encoding bits.
         let mut vf_bar_regs = [0u32; 6];
         {
             let mut idx = 0;
             while idx < 6 {
                 if vf_bar_sizes[idx] > 0 {
-                    let mut type_bits: u32 = 0;
-                    if vf_bar_flags[idx] & BAR_FLAG_64BIT != 0 {
-                        type_bits |= 0b100;
-                    }
-                    if vf_bar_flags[idx] & BAR_FLAG_PREFETCHABLE != 0 {
-                        type_bits |= 0b1000;
-                    }
-                    vf_bar_regs[idx] = type_bits;
-                    if vf_bar_flags[idx] & BAR_FLAG_64BIT != 0 {
+                    vf_bar_regs[idx] = vf_bar_encoding[idx].into_bits();
+                    if vf_bar_encoding[idx].type_64_bit() {
                         idx += 1; // skip upper 32-bit slot (stays 0)
                     }
                 }
@@ -275,7 +263,7 @@ impl SriovExtendedCapability {
                 vf_stride: config.vf_stride,
                 supported_page_sizes,
                 vf_bar_sizes,
-                vf_bar_flags,
+                vf_bar_encoding,
                 control: SriovControl::new(),
                 status: SriovStatus::new(),
                 num_vfs: 0,
@@ -317,7 +305,7 @@ impl SriovExtendedCapability {
         }
 
         // Reconstruct the 64-bit base address from the VF BAR register(s).
-        let is_64bit = self.vf_bar_flags[bar_index] & BAR_FLAG_64BIT != 0;
+        let is_64bit = self.vf_bar_encoding[bar_index].type_64_bit();
         let base_lo = self.vf_bar_regs[bar_index] & !0xF; // mask off type bits
         let base_hi = if is_64bit && bar_index + 1 < 6 {
             self.vf_bar_regs[bar_index + 1]
@@ -352,10 +340,7 @@ impl SriovExtendedCapability {
     fn write_vf_bar(&mut self, bar_index: usize, val: u32) {
         if bar_index >= 6 || self.vf_bar_sizes[bar_index] == 0 {
             // Check if this is the upper half of a 64-bit BAR.
-            if bar_index > 0
-                && bar_index < 6
-                && self.vf_bar_flags[bar_index - 1] & BAR_FLAG_64BIT != 0
-            {
+            if bar_index > 0 && bar_index < 6 && self.vf_bar_encoding[bar_index - 1].type_64_bit() {
                 // Upper 32 bits of a 64-bit BAR.
                 let size = self.vf_bar_sizes[bar_index - 1];
                 let size_mask_hi = !((size - 1) >> 32) as u32;
@@ -366,24 +351,12 @@ impl SriovExtendedCapability {
         }
 
         let size = self.vf_bar_sizes[bar_index];
-        let is_64bit = self.vf_bar_flags[bar_index] & BAR_FLAG_64BIT != 0;
-        let is_prefetchable = self.vf_bar_flags[bar_index] & BAR_FLAG_PREFETCHABLE != 0;
 
         // Low bits (type field) are read-only. Build the writable mask.
         let size_mask = !(size as u32 - 1);
-        let type_bits = {
-            let mut t: u32 = 0;
-            if is_64bit {
-                t |= 0b100;
-            }
-            if is_prefetchable {
-                t |= 0b1000;
-            }
-            t
-        };
-
         // The writable portion is the address bits; type bits are preserved.
-        self.vf_bar_regs[bar_index] = (val & size_mask) | type_bits;
+        self.vf_bar_regs[bar_index] =
+            (val & size_mask) | self.vf_bar_encoding[bar_index].into_bits();
     }
 
     /// Synchronize VF MMIO intercepts and the shared decode state with the
@@ -404,7 +377,7 @@ impl SriovExtendedCapability {
             // Compute VF0 base address inline (can't call self.vf_bar_address
             // while self.vf_mmio is mutably borrowed).
             let vf0_base = if vf_enable && vf_mse {
-                let is_64bit = self.vf_bar_flags[bar_idx] & BAR_FLAG_64BIT != 0;
+                let is_64bit = self.vf_bar_encoding[bar_idx].type_64_bit();
                 let base_lo = self.vf_bar_regs[bar_idx] & !0xF;
                 let base_hi = if is_64bit && bar_idx + 1 < 6 {
                     self.vf_bar_regs[bar_idx + 1]
@@ -611,14 +584,7 @@ impl PciExtendedCapability for SriovExtendedCapability {
         // Reset VF BAR registers to their type bits only.
         for i in 0..6 {
             if self.vf_bar_sizes[i] > 0 {
-                let mut type_bits: u32 = 0;
-                if self.vf_bar_flags[i] & BAR_FLAG_64BIT != 0 {
-                    type_bits |= 0b100;
-                }
-                if self.vf_bar_flags[i] & BAR_FLAG_PREFETCHABLE != 0 {
-                    type_bits |= 0b1000;
-                }
-                self.vf_bar_regs[i] = type_bits;
+                self.vf_bar_regs[i] = self.vf_bar_encoding[i].into_bits();
             } else {
                 self.vf_bar_regs[i] = 0;
             }
@@ -696,15 +662,8 @@ mod save_restore {
                 if self.vf_bar_sizes[i] > 0 {
                     let size = self.vf_bar_sizes[i];
                     let size_mask = !(size as u32 - 1);
-                    let mut type_bits: u32 = 0;
-                    if self.vf_bar_flags[i] & BAR_FLAG_64BIT != 0 {
-                        type_bits |= 0b100;
-                    }
-                    if self.vf_bar_flags[i] & BAR_FLAG_PREFETCHABLE != 0 {
-                        type_bits |= 0b1000;
-                    }
-                    self.vf_bar_regs[i] = (val & size_mask) | type_bits;
-                } else if i > 0 && self.vf_bar_flags[i - 1] & BAR_FLAG_64BIT != 0 {
+                    self.vf_bar_regs[i] = (val & size_mask) | self.vf_bar_encoding[i].into_bits();
+                } else if i > 0 && self.vf_bar_encoding[i - 1].type_64_bit() {
                     // Upper 32 bits of a 64-bit BAR.
                     let size = self.vf_bar_sizes[i - 1];
                     let size_mask_hi = !((size - 1) >> 32) as u32;
