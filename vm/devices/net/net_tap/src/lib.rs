@@ -746,7 +746,7 @@ mod tests {
             0x0a, 0x00, 0x00, 0x02, // dst: 10.0.0.2
         ];
         // Append a TCP header + payload so the datagram exceeds the IP header.
-        packet.extend(std::iter::repeat(0u8).take(40));
+        packet.extend(std::iter::repeat_n(0u8, 40));;
         let expected_total = (packet.len() - 14) as u16; // 20 (IP) + 40 = 60
         fixup_ipv4_header_checksum(&mut packet, 14);
         let total = u16::from_be_bytes([packet[16], packet[17]]);
@@ -770,7 +770,7 @@ mod tests {
             0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, // dst
         ];
         // Append a TCP header + payload after the IPv6 header.
-        packet.extend(std::iter::repeat(0u8).take(40));
+        packet.extend(std::iter::repeat_n(0u8, 40));;
         let expected_payload = (packet.len() - 14 - 40) as u16; // 40 here
         fixup_ipv6_payload_length(&mut packet, 14);
         let payload = u16::from_be_bytes([packet[14 + 4], packet[14 + 5]]);
