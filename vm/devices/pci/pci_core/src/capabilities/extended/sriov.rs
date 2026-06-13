@@ -97,9 +97,10 @@ pub struct SriovExtendedCapability {
 /// capability, mirroring how PF BARs are managed by
 /// `ConfigSpaceType0Emulator`.
 struct SriovVfMmio {
-    /// Per-BAR memory for each VF. `bars[bar_index]` is a Vec of
-    /// length total_vfs. Empty for unimplemented BARs.
-    bars: [Vec<BarMemoryKind>; 6],
+    /// One MMIO region per BAR, covering all VFs contiguously.
+    /// `bars[bar_index]` spans `total_vfs * per_vf_size` bytes starting at
+    /// VF0's base address. `None` for unimplemented BARs.
+    bars: [Option<BarMemoryKind>; 6],
     /// Shared decode state — the device reads this for MMIO routing.
     decode: Arc<SriovBarDecode>,
 }
@@ -188,12 +189,13 @@ impl SriovExtendedCapability {
     /// Creates a new SR-IOV extended capability.
     ///
     /// `config` specifies the PF's SR-IOV parameters. `vf_bars` provides
-    /// per-BAR MMIO intercept handles for each VF — the capability manages
-    /// VF BAR mapping directly (like PF BARs). Returns the shared BAR decode
-    /// state for MMIO routing.
+    /// one MMIO intercept region per BAR, each spanning all VFs
+    /// contiguously (`total_vfs * per_vf_size` bytes) — the capability
+    /// manages VF BAR mapping directly (like PF BARs). Returns the shared
+    /// BAR decode state for MMIO routing.
     pub fn new(
         config: SriovConfig,
-        vf_bars: [Vec<BarMemoryKind>; 6],
+        vf_bars: [Option<BarMemoryKind>; 6],
     ) -> (Self, Arc<SriovBarDecode>) {
         assert!(config.total_vfs > 0, "total_vfs must be > 0");
         assert!(
@@ -393,7 +395,6 @@ impl SriovExtendedCapability {
         let vf_mmio = &mut self.vf_mmio;
         let vf_enable = self.control.vf_enable();
         let vf_mse = self.control.vf_mse();
-        let num_vfs = self.num_vfs as usize;
         let mut decode = vf_mmio.decode.inner.lock();
 
         for bar_idx in 0..6 {
@@ -419,20 +420,15 @@ impl SriovExtendedCapability {
             };
             decode.bars[bar_idx].vf0_base = vf0_base;
 
-            let vf_bar_mem = &mut vf_mmio.bars[bar_idx];
-            for (vf_idx, mem) in vf_bar_mem.iter_mut().enumerate() {
-                let wanted = if vf_idx < num_vfs {
-                    vf0_base.map(|base| base + vf_idx as u64 * bar_size)
-                } else {
-                    None
-                };
+            // The BAR's single MMIO region covers all VFs contiguously,
+            // starting at VF0's base. Map or unmap it as a whole.
+            if let Some(mem) = &mut vf_mmio.bars[bar_idx] {
                 mem.unmap_from_guest();
-                if let Some(addr) = wanted {
+                if let Some(addr) = vf0_base {
                     if let Err(err) = mem.map_to_guest(addr) {
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             bar_idx,
-                            vf_idx,
                             addr,
                             "failed to map VF BAR",
                         );
@@ -760,13 +756,11 @@ mod tests {
     }
 
     fn new_test_cap(config: SriovConfig) -> (SriovExtendedCapability, Arc<SriovBarDecode>) {
-        let vf_bars: [Vec<BarMemoryKind>; 6] = std::array::from_fn(|bar_idx| {
+        let vf_bars: [Option<BarMemoryKind>; 6] = std::array::from_fn(|bar_idx| {
             if config.vf_bars[bar_idx].is_some() {
-                (0..config.total_vfs)
-                    .map(|_| BarMemoryKind::Dummy)
-                    .collect()
+                Some(BarMemoryKind::Dummy)
             } else {
-                Vec::new()
+                None
             }
         });
         SriovExtendedCapability::new(config, vf_bars)

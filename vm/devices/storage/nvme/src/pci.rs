@@ -158,30 +158,21 @@ impl NvmeController {
 
         // Build extended capabilities — add SR-IOV if configured.
         let (extended_caps, sriov, multi_function) = if let Some(sriov_caps) = caps.sriov {
-            // Pre-allocate MMIO intercepts for all VFs, organized by BAR
-            // index. The SR-IOV capability owns these and maps/unmaps them
-            // directly when BAR/MSE/VF_Enable change.
+            // Allocate one MMIO intercept region per VF BAR, each spanning
+            // all VFs contiguously. The SR-IOV capability owns these and
+            // maps/unmaps them directly when BAR/MSE/VF_Enable change.
             let vf_bar_cfg = Self::vf_bar_config(sriov_caps.vf_msix_count);
-            let vf_bar0_len = vf_bar_cfg[0].as_ref().map_or(BAR0_LEN, |b| b.size);
-            let vf_bar4_len = vf_bar_cfg[4].as_ref().map_or(16, |b| b.size);
+            let vf_bar0_len = vf_bar_cfg[0].as_ref().expect("VF BAR0 is always set").size;
+            let vf_bar4_len = vf_bar_cfg[4].as_ref().expect("VF BAR4 is always set").size;
+            let total_vfs = sriov_caps.total_vfs as u64;
 
-            let bar0_intercepts: Vec<_> = (0..sriov_caps.total_vfs)
-                .map(|i| {
-                    BarMemoryKind::Intercept(
-                        register_mmio.new_io_region(&format!("vf{i}_bar0"), vf_bar0_len),
-                    )
-                })
-                .collect();
-            let bar4_intercepts: Vec<_> = (0..sriov_caps.total_vfs)
-                .map(|i| {
-                    BarMemoryKind::Intercept(
-                        register_mmio.new_io_region(&format!("vf{i}_msix"), vf_bar4_len),
-                    )
-                })
-                .collect();
-            let mut vf_bars: [Vec<_>; 6] = Default::default();
-            vf_bars[0] = bar0_intercepts;
-            vf_bars[4] = bar4_intercepts;
+            let mut vf_bars: [Option<BarMemoryKind>; 6] = Default::default();
+            vf_bars[0] = Some(BarMemoryKind::Intercept(
+                register_mmio.new_io_region("vf_bar0", total_vfs * vf_bar0_len),
+            ));
+            vf_bars[4] = Some(BarMemoryKind::Intercept(
+                register_mmio.new_io_region("vf_msix", total_vfs * vf_bar4_len),
+            ));
 
             // VFs start at function 1 with stride 1 (no ARI).
             // VFs use a distinct VF device ID (VF_DEVICE_ID), separate from
