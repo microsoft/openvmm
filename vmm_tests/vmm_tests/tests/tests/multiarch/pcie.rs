@@ -520,6 +520,15 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
         })
         .run()
         .await?;
@@ -548,14 +557,9 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         "IORT ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3–5. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
-    verify_iommu_mixed_topology(
-        &sh,
-        &dmesg,
-        |l| l.contains("arm-smmu-v3") && l.contains("event"),
-        2,
-    )
-    .await?;
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(&sh, |l| l.contains("arm-smmu-v3") && l.contains("event"), 2)
+        .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -589,6 +593,15 @@ async fn amd_iommu_mixed_topology(
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
         })
         .run()
         .await?;
@@ -616,10 +629,9 @@ async fn amd_iommu_mixed_topology(
         "IVRS ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3–5. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
         &sh,
-        &dmesg,
         |l| l.contains("AMD-Vi: Event") || l.contains("IO_PAGE_FAULT"),
         2,
     )
@@ -700,10 +712,9 @@ async fn intel_vtd_mixed_topology(
         "DMAR ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3–6. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
+    // 3–6. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
         &sh,
-        &dmesg,
         |l| l.contains("DMAR: [DMA") || l.contains("DMAR: DRHD: handling fault"),
         2,
     )
@@ -741,26 +752,19 @@ async fn boot_no_vmbus_pcie_nvme(
 /// After the platform-specific IOMMU discovery and ACPI table checks, this
 /// function verifies that DMA remapping is actually working:
 ///
-/// 1. No IOMMU faults in dmesg (using the caller-provided `fault_filter`).
-/// 2. At least `min_iommu_groups` IOMMU groups exist (ensures all devices
+/// 1. At least `min_iommu_groups` IOMMU groups exist (ensures all devices
 ///    behind the IOMMU are scoped correctly, not just one).
-/// 3. NVMe DMA works on the IOMMU-backed segment.
-/// 4. Network interfaces are present on both segments.
+/// 2. NVMe DMA works on the IOMMU-backed segment.
+/// 3. Network interfaces are present on both segments.
+/// 4. No IOMMU faults in dmesg (using the caller-provided `fault_filter`).
+///    This is checked last, after exercising DMA/MSI, so that runtime faults
+///    triggered by the actual translation and interrupt-remapping paths are
+///    caught in addition to any boot-time faults.
 async fn verify_iommu_mixed_topology(
     sh: &pipette_client::shell::UnixShell<'_>,
-    dmesg: &str,
     fault_filter: impl Fn(&str) -> bool,
     min_iommu_groups: usize,
 ) -> anyhow::Result<()> {
-    // Verify no IOMMU faults — faults indicate broken device scope,
-    // missing page table mappings, or devices not covered by the IOMMU.
-    let faults: Vec<&str> = dmesg.lines().filter(|l| fault_filter(l)).collect();
-    assert!(
-        faults.is_empty(),
-        "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
-        faults.join("\n")
-    );
-
     // Verify IOMMU groups cover all devices behind the IOMMU RC.
     let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
     let group_count = iommu_groups.split_whitespace().count();
@@ -775,6 +779,18 @@ async fn verify_iommu_mixed_topology(
 
     // Verify network interfaces exist on both RCs.
     verify_net_interface_count(sh, 2).await?;
+
+    // Verify no IOMMU faults — faults indicate broken device scope, missing
+    // page table mappings, or devices not covered by the IOMMU. Re-read dmesg
+    // here (after the DMA exercise above) so faults from the actual
+    // translation/interrupt-remapping path are caught, not just boot-time ones.
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let faults: Vec<&str> = dmesg.lines().filter(|l| fault_filter(l)).collect();
+    assert!(
+        faults.is_empty(),
+        "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
+        faults.join("\n")
+    );
 
     Ok(())
 }
