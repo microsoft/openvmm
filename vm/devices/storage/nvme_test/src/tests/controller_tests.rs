@@ -359,6 +359,10 @@ async fn test_send_identify_no_fault(driver: DefaultDriver) {
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let mut faulty_identify = Command::new_zeroed();
     faulty_identify.cdw0.set_cid(10);
+    // Use a valid Identify CONTROLLER request (which ignores NSID) so the
+    // command still completes successfully; this test only verifies that the
+    // fault overwrote the command (observed via the changed CID).
+    faulty_identify.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0));
 
     let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
         .with_admin_queue_fault(
