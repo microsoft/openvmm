@@ -79,23 +79,47 @@ pub(crate) struct NvmeVirtualFunction {
     shared_config: Arc<Mutex<VfControllerConfig>>,
 }
 
+/// Parameters for constructing a [`NvmeVirtualFunction`].
+pub(crate) struct NvmeVirtualFunctionParams<'a> {
+    /// Number of MSI-X vectors for the VF.
+    pub msix_count: u16,
+    /// Fixed maximum number of IO queues for the VF.
+    pub max_io_queues: u16,
+    /// MSI target for this VF's interrupts.
+    pub msi_target: &'a MsiTarget,
+    /// Driver source for creating VF worker tasks.
+    pub driver_source: VmTaskDriverSource,
+    /// Guest memory for VF DMA.
+    pub guest_memory: GuestMemory,
+    /// Subsystem ID for VF NVMe identity.
+    pub subsystem_id: Guid,
+    /// 0-based VF index.
+    pub vf_index: u16,
+    /// NVMe controller ID for this VF (secondary controller ID).
+    pub cntlid: u16,
+    /// Shared configuration from the PF admin handler.
+    pub shared_config: Arc<Mutex<VfControllerConfig>>,
+}
+
 impl NvmeVirtualFunction {
     /// Creates a new VF with the given identity and worker dependencies.
     ///
     /// The VF starts disabled (CC.EN=0). The guest driver enables it by
     /// writing to the CC register via BAR0. At that point, the VF reads
     /// its resource limits and namespaces from `shared_config`.
-    pub fn new(
-        msix_count: u16,
-        max_io_queues: u16,
-        msi_target: &MsiTarget,
-        driver_source: VmTaskDriverSource,
-        guest_memory: GuestMemory,
-        subsystem_id: Guid,
-        vf_index: u16,
-        cntlid: u16,
-        shared_config: Arc<Mutex<VfControllerConfig>>,
-    ) -> Self {
+    pub fn new(params: NvmeVirtualFunctionParams<'_>) -> Self {
+        let NvmeVirtualFunctionParams {
+            msix_count,
+            max_io_queues,
+            msi_target,
+            driver_source,
+            guest_memory,
+            subsystem_id,
+            vf_index,
+            cntlid,
+            shared_config,
+        } = params;
+
         let (msix, msix_cap) = MsixEmulator::new(4, msix_count, msi_target);
 
         // VFs have no BARs in their own config space. BAR addresses come

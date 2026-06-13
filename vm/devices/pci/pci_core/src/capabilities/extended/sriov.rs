@@ -187,11 +187,10 @@ const BAR_FLAG_PREFETCHABLE: u8 = 2;
 impl SriovExtendedCapability {
     /// Creates a new SR-IOV extended capability.
     ///
-    /// `config` specifies the PF's SR-IOV parameters. `callback` is invoked
-    /// when VF Enable changes. `vf_intercepts` provides per-BAR MMIO
-    /// intercept handles for each VF — when provided, the capability manages
+    /// `config` specifies the PF's SR-IOV parameters. `vf_bars` provides
+    /// per-BAR MMIO intercept handles for each VF — the capability manages
     /// VF BAR mapping directly (like PF BARs). Returns the shared BAR decode
-    /// state for MMIO routing if intercepts were provided.
+    /// state for MMIO routing.
     pub fn new(
         config: SriovConfig,
         vf_bars: [Vec<BarMemoryKind>; 6],

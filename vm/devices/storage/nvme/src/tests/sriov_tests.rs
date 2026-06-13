@@ -161,8 +161,8 @@ async fn test_sriov_enable_creates_vfs(driver: DefaultDriver) {
     assert_eq!(vf1_id & 0xFFFF, 0x1414, "VF vendor ID should be Microsoft");
     assert_eq!(
         (vf1_id >> 16) & 0xFFFF,
-        0x00a9,
-        "VF device ID should match PF"
+        crate::VF_DEVICE_ID as u32,
+        "VF device ID should be the NVMe VF device ID"
     );
 
     // VF at function 2 should also be present.

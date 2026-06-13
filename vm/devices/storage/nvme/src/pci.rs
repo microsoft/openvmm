@@ -184,14 +184,15 @@ impl NvmeController {
             vf_bars[4] = bar4_intercepts;
 
             // VFs start at function 1 with stride 1 (no ARI).
-            // VF device ID matches the PF — same driver binds to both.
+            // VFs use a distinct VF device ID (VF_DEVICE_ID), separate from
+            // the PF's DEVICE_ID.
             let (sriov_cap, bar_decode) = SriovExtendedCapability::new(
                 SriovConfig {
                     total_vfs: sriov_caps.total_vfs,
                     vf_device_id: VF_DEVICE_ID,
                     first_vf_offset: 1,
                     vf_stride: 1,
-                    vf_bars: Self::vf_bar_config(sriov_caps.vf_msix_count),
+                    vf_bars: vf_bar_cfg,
                 },
                 vf_bars,
             );
@@ -352,17 +353,17 @@ impl NvmeController {
             let vf_index = i;
             let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
 
-            let vf = NvmeVirtualFunction::new(
-                config.vf_msix_count,
-                config.vf_max_io_queues,
-                &vf_msi_target,
-                sriov.driver_source.clone(),
-                sriov.guest_memory.clone(),
-                sriov.subsystem_id,
+            let vf = NvmeVirtualFunction::new(crate::vf::NvmeVirtualFunctionParams {
+                msix_count: config.vf_msix_count,
+                max_io_queues: config.vf_max_io_queues,
+                msi_target: &vf_msi_target,
+                driver_source: sriov.driver_source.clone(),
+                guest_memory: sriov.guest_memory.clone(),
+                subsystem_id: sriov.subsystem_id,
                 vf_index,
                 cntlid,
-                sriov.vf_configs[vf_index as usize].clone(),
-            );
+                shared_config: sriov.vf_configs[vf_index as usize].clone(),
+            });
             self.vfs.push(Some(vf));
         }
 

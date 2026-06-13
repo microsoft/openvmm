@@ -912,8 +912,8 @@ async fn pcie_nvme_sriov<T>(
 
     // 1. Enable VFs.
     let num_vfs = total_vfs.to_string();
-    cmd!(sh, "echo {num_vfs} > {pf_sysfs}/sriov_numvfs")
-        .read()
+    agent
+        .write_file(&format!("{pf_sysfs}/sriov_numvfs"), num_vfs.as_bytes())
         .await?;
 
     // 2. Verify VF PCI devices appear.
@@ -984,7 +984,9 @@ async fn pcie_nvme_sriov<T>(
         .await?;
 
     // 7. Cleanup: disable VFs, verify they disappear.
-    cmd!(sh, "echo 0 > {pf_sysfs}/sriov_numvfs").read().await?;
+    agent
+        .write_file(&format!("{pf_sysfs}/sriov_numvfs"), b"0".as_slice())
+        .await?;
 
     let guest_devices = parse_guest_pci_devices(OsFlavor::Linux, &agent).await?;
     let nvme_after = guest_devices
