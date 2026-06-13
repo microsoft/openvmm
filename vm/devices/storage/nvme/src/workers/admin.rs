@@ -602,17 +602,27 @@ impl AdminHandler {
                 }
             }
             spec::Cns::NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             cns => {

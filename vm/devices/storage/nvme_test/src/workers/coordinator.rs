@@ -4,10 +4,10 @@
 //! Coordinator between queues and hot add/remove of namespaces.
 
 use super::IoQueueEntrySizes;
+use super::admin::AddNamespaceError;
 use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
-use super::admin::NsidConflict;
 use crate::queue::DoorbellMemory;
 use crate::queue::InvalidDoorbell;
 use disk_backend::Disk;
@@ -188,7 +188,7 @@ pub struct NvmeFaultControllerClient {
 
 impl NvmeFaultControllerClient {
     /// Adds a namespace.
-    pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), NsidConflict> {
+    pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), AddNamespaceError> {
         self.send
             .call(CoordinatorRequest::AddNamespace, (nsid, disk))
             .await
@@ -215,7 +215,7 @@ struct Coordinator {
 
 enum CoordinatorRequest {
     EnableAdmin(Rpc<EnableAdminParams, ()>),
-    AddNamespace(Rpc<(u32, Disk), Result<(), NsidConflict>>),
+    AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
