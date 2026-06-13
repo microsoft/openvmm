@@ -528,6 +528,30 @@ impl AdminHandler {
         }
     }
 
+    /// Clears the PF's bookkeeping for all secondary controllers, called when
+    /// the VFs are disabled and destroyed.
+    ///
+    /// Any namespace the PF recorded as attached to a secondary is marked
+    /// unattached — the VF's own namespace set is gone with the VF, so there
+    /// is no controller left to detach from — and every secondary is marked
+    /// offline for Secondary Controller List (CNS 0x15) reporting. A no-op on
+    /// non-PF controllers, which have neither an allocated set nor secondary
+    /// state.
+    pub(crate) fn disable_secondaries(&mut self) {
+        if let Some(allocated) = self.allocated.as_mut() {
+            for ns in allocated.values_mut() {
+                if ns.attached_to.is_some_and(|cntlid| cntlid != PF_CONTROLLER_ID) {
+                    ns.attached_to = None;
+                }
+            }
+        }
+        if let Some(sriov) = self.sriov_state.as_mut() {
+            for controller in &mut sriov.controllers {
+                controller.online = false;
+            }
+        }
+    }
+
     /// Attaches a namespace to this controller's active set, wiring it into
     /// the IO queues and starting capacity-change polling. Returns `false` if
     /// a namespace with this ID is already attached to this controller.

@@ -39,6 +39,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::PendingRpc;
 use parking_lot::Mutex;
 use pci_core::capabilities::extended::sriov::SriovBarDecode;
 use pci_core::capabilities::extended::sriov::SriovConfig;
@@ -177,6 +178,12 @@ struct VfDrainState {
     vfs: Vec<NvmeVirtualFunction>,
     /// Completes the deferred config-space write when drain is done.
     deferred: DeferredWrite,
+    /// Pending cleanup of the PF's secondary-controller bookkeeping (namespace
+    /// attachments + online flags). Polled alongside the VF drains; the
+    /// deferred write must not resume until it completes, so the guest cannot
+    /// observe the disable and issue a namespace command against stale PF
+    /// state.
+    secondary_cleanup: Option<PendingRpc<()>>,
 }
 
 /// The routing target of a PCI config-space access, as resolved by
@@ -476,10 +483,16 @@ impl NvmeController {
         } else {
             let draining_vfs = self.disable_vfs();
             if !draining_vfs.is_empty() {
+                // The VFs are gone, so clear the PF's secondary-controller
+                // bookkeeping. Gate the config-write completion on this (along
+                // with the VF drains) so the guest can't race a namespace
+                // command ahead of the cleanup.
+                let secondary_cleanup = Some(self.core.workers.disable_secondaries());
                 let (deferred, token) = defer_write();
                 self.vf_drain = Some(VfDrainState {
                     vfs: draining_vfs,
                     deferred,
+                    secondary_cleanup,
                 });
                 return Some(IoResult::Defer(token));
             }
@@ -848,10 +861,13 @@ impl ChangeDeviceState for NvmeController {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Drain any pending VF drain — this can happen if the device is
+        // Complete any pending VF drain — this can happen if the device is
         // stopped while a VF_Enable=0 write is being processed.
         if let Some(mut drain) = self.vf_drain.take() {
             join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
+            if let Some(rpc) = drain.secondary_cleanup.take() {
+                let _ = rpc.await;
+            }
             drain.deferred.complete();
         }
     }
@@ -873,10 +889,20 @@ impl ChangeDeviceState for NvmeController {
         // workers to the disabled state, waits for in-flight IO, and resets
         // its register state.
         join_all(vfs.iter_mut().map(|vf| vf.drain())).await;
-        // Drain any pending VF drain from a VF_Enable=0 write.
+        // Complete any pending VF drain from a VF_Enable=0 write.
         if let Some(mut drain) = vf_drain.take() {
             join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
+            if let Some(rpc) = drain.secondary_cleanup.take() {
+                let _ = rpc.await;
+            }
             drain.deferred.complete();
+        }
+
+        // Now that all VFs are gone, clear the PF's secondary-controller
+        // bookkeeping (namespace attachments + online flags) so a later
+        // re-enable starts from a clean slate.
+        if sriov.is_some() {
+            let _ = core.workers.disable_secondaries().await;
         }
 
         // Reset the PF's own controller core: drive the workers to the
@@ -914,6 +940,17 @@ impl PollDevice for NvmeController {
             let mut all_drained = true;
             for vf in &mut drain.vfs {
                 all_drained &= vf.poll_drain(cx);
+            }
+            // Drive the PF secondary-controller cleanup to completion. It must
+            // finish before the deferred write resumes so the guest can't
+            // observe the disable and issue a namespace command against stale
+            // PF bookkeeping.
+            if let Some(rpc) = &mut drain.secondary_cleanup {
+                if std::pin::Pin::new(rpc).poll(cx).is_ready() {
+                    drain.secondary_cleanup = None;
+                } else {
+                    all_drained = false;
+                }
             }
             if all_drained {
                 let drain = self.vf_drain.take().unwrap();

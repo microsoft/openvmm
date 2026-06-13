@@ -128,6 +128,14 @@ impl NvmeWorkers {
         }
     }
 
+    /// Initiates cleanup of the PF's secondary-controller bookkeeping (namespace
+    /// attachments and online flags) after the VFs have been disabled, returning
+    /// the pending RPC so the caller can await it — e.g. alongside the VF drains
+    /// — and gate the guest's VF-disable config write on its completion.
+    pub fn disable_secondaries(&self) -> PendingRpc<()> {
+        self.send.call(CoordinatorRequest::DisableSecondaries, ())
+    }
+
     /// Returns whether the controller is currently online.
     ///
     /// This reads a shared flag without coordinating with the worker task, so
@@ -338,6 +346,7 @@ enum CoordinatorRequest {
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
     SetOnline(Rpc<bool, ()>),
+    DisableSecondaries(Rpc<(), ()>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
 }
@@ -434,6 +443,19 @@ impl Coordinator {
                         rpc.handle_sync(|online| {
                             self.online.store(online, Ordering::Relaxed);
                         });
+                    }
+                    CoordinatorRequest::DisableSecondaries(rpc) => {
+                        rpc.handle(async |()| {
+                            // Briefly stop the admin task so its handler state
+                            // can be mutated, mirroring the namespace add/remove
+                            // paths.
+                            let running = self.admin.stop().await;
+                            self.admin.task_mut().disable_secondaries();
+                            if running {
+                                self.admin.start();
+                            }
+                        })
+                        .await
                     }
                     CoordinatorRequest::Inspect(req) => req.inspect(&self),
                 },
