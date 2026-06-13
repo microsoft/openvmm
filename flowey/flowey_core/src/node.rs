@@ -393,34 +393,6 @@ pub trait ReadVarValue {
     fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value;
 }
 
-// /// Read the value of one or more flowey Vars and write into an equal sized
-// /// collection of flowey Vars.
-// ///
-// /// By having this be a trait, it is possible to `write_into` both single
-// /// `ReadVar` / `WriteVar` pairs, as well as equal sized _collections_ of
-// /// them.
-// pub trait WriteInto {
-//     /// The read value of Self.
-//     type Value;
-//     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
-//     /// function to the Var at runtime.
-//     #[track_caller]
-//     fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
-//     where
-//         self::Value: 'static,
-//         U: Serialize + DeserializeOwned + 'static,
-//         F: FnOnce(T) -> U + 'static;
-
-//     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
-//     #[track_caller]
-//     pub fn write_into(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<T>)
-//     where
-//         T: 'static,
-//     {
-//         self.write_into_with(ctx, write_into, |x| x);
-//     }
-// }
-
 impl<T: Serialize + DeserializeOwned> ClaimVar for ReadVar<T> {
     type Claimed = ClaimedReadVar<T>;
 

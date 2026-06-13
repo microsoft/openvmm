@@ -3,7 +3,6 @@
 
 //! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
 
-use crate::artifact_openhcl_igvm_from_recipe_extras;
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
@@ -38,7 +37,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<gh_workflow_id::Node>();
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_openvmm_hcl::Node>();
-        ctx.import::<artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {

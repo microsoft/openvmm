@@ -115,8 +115,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
