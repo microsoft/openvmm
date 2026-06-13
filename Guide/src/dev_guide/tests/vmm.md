@@ -78,9 +78,8 @@ reported as a failure like any other test.
 To promote an unstable test to stable, remove `unstable` from the macro. This is
 a single-place change — no CI or configuration updates are required.
 
-To ignore these `unstable` tags and report unstable failures as passing when
-running locally (matching the CI behavior), set the following environment
-variable: `PETRI_IGNORE_UNSTABLE_FAILURES=1`
+To suppress failures from `unstable` tests when running locally (matching the CI
+behavior), set the following environment variable: `PETRI_IGNORE_UNSTABLE_FAILURES=1`
 
 ## Running VMM Tests (Flowey)
 
