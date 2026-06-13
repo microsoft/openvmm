@@ -877,8 +877,8 @@ open_enum! {
     pub enum VirtualizationManagementAction: u8 {
         PRIMARY_FLEXIBLE_RESOURCES = 0x01,
         SECONDARY_OFFLINE = 0x07,
-        SECONDARY_ONLINE = 0x08,
-        SECONDARY_ASSIGN = 0x09,
+        SECONDARY_ASSIGN = 0x08,
+        SECONDARY_ONLINE = 0x09,
     }
 }
 
