@@ -396,6 +396,11 @@ options:
     `id=<name>`                    controller name (required)
     `pcie_port=<port>`             present on PCIe under the specified port
     `vpci[=<guid>]`                present via VPCI; optional instance GUID
+    `subsys=<guid>`                subsystem ID override; defaults to a value
+                                   derived from the controller name
+    `sn=<string>`                  serial number override (<=20 ASCII chars);
+                                   defaults to a value derived from the
+                                   subsystem ID
     `vtl2`                         assign to VTL2 (default VTL0)
 
 Exactly one of `pcie_port` or `vpci` must be specified.
@@ -404,6 +409,7 @@ Examples:
     --nvme-pci id=nvme0,pcie_port=p0
     --nvme-pci id=nvme1,vpci
     --nvme-pci id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
+    --nvme-pci id=nvme3,vpci,sn=MYSERIAL01
 "#)]
     #[clap(long = "nvme-pci")]
     pub nvme_pci: Vec<NvmeControllerCli>,
@@ -2112,6 +2118,12 @@ pub struct NvmeControllerCli {
     pub transport: NvmeControllerTransport,
     /// VTL assignment (default VTL0).
     pub vtl: DeviceVtl,
+    /// Subsystem ID override. Defaults to a value derived from the controller
+    /// name when `None`.
+    pub subsystem_id: Option<Guid>,
+    /// Serial number override. Defaults to a value derived from the subsystem
+    /// ID when `None`.
+    pub serial_number: Option<String>,
 }
 
 impl FromStr for NvmeControllerCli {
@@ -2123,24 +2135,24 @@ impl FromStr for NvmeControllerCli {
         let mut vpci = None;
         let mut vpci_set = false;
         let mut vtl = DeviceVtl::Vtl0;
+        let mut subsystem_id = None;
+        let mut serial_number = None;
 
         for part in s.split(',') {
             let mut kv = part.split('=');
             let key = kv.next().unwrap();
             match key {
                 "id" => {
-                    let val = kv.next();
-                    if val.is_none_or(|v| v.is_empty()) {
+                    let Some(val) = kv.next().filter(|v| !v.is_empty()) else {
                         anyhow::bail!("`id` requires a name");
-                    }
-                    id = Some(val.unwrap().to_string());
+                    };
+                    id = Some(val.to_string());
                 }
                 "pcie_port" => {
-                    let val = kv.next();
-                    if val.is_none_or(|v| v.is_empty()) {
+                    let Some(val) = kv.next().filter(|v| !v.is_empty()) else {
                         anyhow::bail!("`pcie_port` requires a port name");
-                    }
-                    pcie_port = Some(val.unwrap().to_string());
+                    };
+                    pcie_port = Some(val.to_string());
                 }
                 "vpci" => {
                     vpci_set = true;
@@ -2149,6 +2161,18 @@ impl FromStr for NvmeControllerCli {
                             vpci = Some(val.parse::<Guid>().context("invalid GUID for `vpci`")?);
                         }
                     }
+                }
+                "subsys" => {
+                    let Some(val) = kv.next().filter(|v| !v.is_empty()) else {
+                        anyhow::bail!("`subsys` requires a GUID");
+                    };
+                    subsystem_id = Some(val.parse::<Guid>().context("invalid GUID for `subsys`")?);
+                }
+                "sn" => {
+                    let Some(val) = kv.next().filter(|v| !v.is_empty()) else {
+                        anyhow::bail!("`sn` requires a value");
+                    };
+                    serial_number = Some(val.to_string());
                 }
                 "vtl2" => {
                     vtl = DeviceVtl::Vtl2;
@@ -2170,7 +2194,13 @@ impl FromStr for NvmeControllerCli {
             }
         };
 
-        Ok(NvmeControllerCli { id, transport, vtl })
+        Ok(NvmeControllerCli {
+            id,
+            transport,
+            vtl,
+            subsystem_id,
+            serial_number,
+        })
     }
 }
 

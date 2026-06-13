@@ -20,11 +20,28 @@ use vm_resource::kind::PciDeviceHandleKind;
 
 pub mod fault;
 
+/// Derives a stable NVMe serial number from a subsystem ID: the first 10
+/// hexadecimal digits of the GUID. This keeps the serial number consistent
+/// with the subsystem NQN (which is also derived from the subsystem ID) so
+/// that distinct controllers report distinct serial numbers.
+pub fn default_serial_number(subsystem_id: &Guid) -> String {
+    subsystem_id
+        .to_string()
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(10)
+        .collect()
+}
+
 /// A handle to an NVMe controller.
 #[derive(MeshPayload)]
 pub struct NvmeControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
     pub subsystem_id: Guid,
+    /// The serial number to report in the identify controller response. Must be
+    /// at most 20 ASCII characters. Use [`default_serial_number`] to derive a
+    /// stable value from the subsystem ID.
+    pub serial_number: String,
     /// The number of MSI-X interrupts to support.
     pub msix_count: u16,
     /// The number of IO queues to support.

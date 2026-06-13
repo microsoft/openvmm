@@ -61,6 +61,7 @@ impl NvmeWorkers {
         max_cqs: u16,
         qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
         subsystem_id: Guid,
+        serial_number: nvme_spec::AsciiString<20>,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
@@ -73,6 +74,7 @@ impl NvmeWorkers {
                 interrupts,
                 doorbells: doorbells.clone(),
                 subsystem_id,
+                serial_number,
                 max_sqs,
                 max_cqs,
                 qe_sizes,

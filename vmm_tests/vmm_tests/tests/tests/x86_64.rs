@@ -179,6 +179,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                         instance_id: nvme_guid,
                         resource: NvmeControllerHandle {
                             subsystem_id: nvme_guid,
+                            serial_number: nvme_resources::default_serial_number(&nvme_guid),
                             msix_count: 1,
                             max_io_queues: 1,
                             namespaces: Vec::new(),

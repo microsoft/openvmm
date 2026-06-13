@@ -237,6 +237,7 @@ impl PetriVmConfigOpenVmm {
                 port_name,
                 resource: NvmeControllerHandle {
                     subsystem_id: Guid::new_random(),
+                    serial_number: nvme_resources::default_serial_number(&Guid::new_random()),
                     max_io_queues: 64,
                     msix_count: 64,
                     namespaces: vec![NamespaceDefinition {
@@ -1388,6 +1389,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                     instance_id: *instance_id,
                     resource: NvmeControllerHandle {
                         subsystem_id: *instance_id,
+                        serial_number: nvme_resources::default_serial_number(instance_id),
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces,

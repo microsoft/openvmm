@@ -66,6 +66,7 @@ impl ScsiDvdNvmeTest {
                 msix_count: MSIX_COUNT,
                 max_io_queues: IO_QUEUE_COUNT,
                 subsystem_id: Guid::new_random(),
+                serial_number: (*b"SN: 000001          ").into(),
             },
         );
 

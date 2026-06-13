@@ -355,6 +355,7 @@ async fn pcie_device_numa_affinity(
                     port_name: "rp0".to_string(),
                     resource: nvme_resources::NvmeControllerHandle {
                         subsystem_id: nvme_subsystem_id,
+                        serial_number: nvme_resources::default_serial_number(&nvme_subsystem_id),
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces: vec![nvme_resources::NamespaceDefinition {

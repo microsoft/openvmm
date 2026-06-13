@@ -56,6 +56,7 @@ impl FuzzNvmeDriver {
                 msix_count: 2,
                 max_io_queues: 64,
                 subsystem_id: guid,
+                serial_number: (*b"SN: 000001          ").into(),
             },
         );
 

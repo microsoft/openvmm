@@ -158,6 +158,7 @@ impl PetriVmConfigOpenVmm {
             port_name: port_name.to_string(),
             resource: NvmeControllerHandle {
                 subsystem_id,
+                serial_number: nvme_resources::default_serial_number(&subsystem_id),
                 max_io_queues: 64,
                 msix_count: 64,
                 namespaces: vec![NamespaceDefinition {

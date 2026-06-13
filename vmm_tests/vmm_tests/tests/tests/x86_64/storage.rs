@@ -66,6 +66,7 @@ pub(crate) fn new_test_vtl2_nvme_device(
         instance_id,
         resource: NvmeControllerHandle {
             subsystem_id: instance_id,
+            serial_number: nvme_resources::default_serial_number(&instance_id),
             max_io_queues: 64,
             msix_count: 64,
             namespaces: vec![NamespaceDefinition {
@@ -792,6 +793,7 @@ async fn storvsp_dynamic_add_disk(
                     instance_id: NVME_INSTANCE,
                     resource: NvmeControllerHandle {
                         subsystem_id: NVME_INSTANCE,
+                        serial_number: nvme_resources::default_serial_number(&NVME_INSTANCE),
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces: (0..NS_COUNT)

@@ -72,6 +72,7 @@ pub struct AdminConfig {
     pub doorbells: Arc<RwLock<DoorbellMemory>>,
     #[inspect(display)]
     pub subsystem_id: Guid,
+    pub serial_number: spec::AsciiString<20>,
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
@@ -653,7 +654,7 @@ impl AdminHandler {
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
-            sn: (*b"SN: 000001          ").into(),
+            sn: self.config.serial_number,
             aerl: MAX_ASYNC_EVENT_REQUESTS - 1,
             elpe: ERROR_LOG_PAGE_ENTRIES - 1,
             oaes: spec::Oaes::new().with_namespace_attribute(true),

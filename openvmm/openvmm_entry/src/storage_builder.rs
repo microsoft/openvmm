@@ -78,6 +78,13 @@ struct NvmeControllerEntry {
     vtl: DeviceVtl,
     transport: NvmeControllerTransport,
     namespaces: Vec<NamespaceDefinition>,
+    /// Optional subsystem ID override. Defaults to [`deterministic_guid`] of
+    /// the controller name when `None`.
+    subsystem_id: Option<Guid>,
+    /// Optional serial number override. Defaults to
+    /// [`nvme_resources::default_serial_number`] of the controller's subsystem
+    /// ID when `None`.
+    serial_number: Option<String>,
     /// Optional pre-created channel for runtime namespace add/remove.
     requests: Option<mesh::Receiver<NvmeControllerRequest>>,
 }
@@ -218,6 +225,8 @@ impl StorageBuilder {
         name: String,
         vtl: DeviceVtl,
         transport: NvmeControllerTransport,
+        subsystem_id: Option<Guid>,
+        serial_number: Option<String>,
         requests: Option<mesh::Receiver<NvmeControllerRequest>>,
     ) -> anyhow::Result<()> {
         if let Some(existing) = self.controllers.get(&name) {
@@ -235,6 +244,8 @@ impl StorageBuilder {
                 vtl,
                 transport,
                 namespaces: Vec::new(),
+                subsystem_id,
+                serial_number,
                 requests,
             }),
         );
@@ -747,13 +758,19 @@ impl StorageBuilder {
                     ));
                 }
                 ControllerEntry::Nvme(ctrl) => {
-                    let subsystem_id = deterministic_guid(&name);
+                    let subsystem_id = ctrl
+                        .subsystem_id
+                        .unwrap_or_else(|| deterministic_guid(&name));
+                    let serial_number = ctrl
+                        .serial_number
+                        .unwrap_or_else(|| nvme_resources::default_serial_number(&subsystem_id));
                     match ctrl.transport {
                         NvmeControllerTransport::Pcie(port_name) => {
                             config.pcie_devices.push(PcieDeviceConfig {
                                 port_name,
                                 resource: NvmeControllerHandle {
                                     subsystem_id,
+                                    serial_number,
                                     namespaces: ctrl.namespaces,
                                     max_io_queues: 64,
                                     msix_count: 64,
@@ -768,6 +785,7 @@ impl StorageBuilder {
                                 instance_id,
                                 resource: NvmeControllerHandle {
                                     subsystem_id,
+                                    serial_number,
                                     namespaces: ctrl.namespaces,
                                     max_io_queues: 64,
                                     msix_count: 64,
@@ -798,6 +816,7 @@ impl StorageBuilder {
                 instance_id: NVME_VTL0_INSTANCE_ID,
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL0_INSTANCE_ID,
+                    serial_number: nvme_resources::default_serial_number(&NVME_VTL0_INSTANCE_ID),
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
@@ -836,6 +855,7 @@ impl StorageBuilder {
                 instance_id: NVME_VTL2_INSTANCE_ID,
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL2_INSTANCE_ID,
+                    serial_number: nvme_resources::default_serial_number(&NVME_VTL2_INSTANCE_ID),
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,

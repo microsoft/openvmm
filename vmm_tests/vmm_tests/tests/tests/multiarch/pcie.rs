@@ -364,6 +364,7 @@ async fn pcie_hotplug(
     // Hot-add an NVMe controller (no namespaces) to the first root port
     let nvme_resource = vm_resource::Resource::new(nvme_resources::NvmeControllerHandle {
         subsystem_id: PCIE_NVME_SUBSYSTEM_IDS[0],
+        serial_number: nvme_resources::default_serial_number(&PCIE_NVME_SUBSYSTEM_IDS[0]),
         msix_count: 2,
         max_io_queues: 1,
         namespaces: vec![],

@@ -45,6 +45,8 @@ pub enum Error {
     },
     #[error(transparent)]
     AddNamespace(AddNamespaceError),
+    #[error("invalid serial number")]
+    InvalidSerialNumber(#[source] nvme_spec::InvalidAsciiString),
 }
 
 #[async_trait]
@@ -58,6 +60,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
         resource: NvmeControllerHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        let serial_number = resource
+            .serial_number
+            .parse()
+            .map_err(Error::InvalidSerialNumber)?;
         let controller = NvmeController::new(
             input.driver_source,
             input.guest_memory.clone(),
@@ -67,6 +73,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 msix_count: resource.msix_count,
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
+                serial_number,
             },
         );
         for NamespaceDefinition {

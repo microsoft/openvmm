@@ -459,7 +459,14 @@ async fn vm_config_from_command_line(
                 storage_builder::NvmeControllerTransport::Vpci(guid)
             }
         };
-        storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
+        storage.add_nvme_controller(
+            ctrl.id.clone(),
+            ctrl.vtl,
+            transport,
+            ctrl.subsystem_id,
+            ctrl.serial_number.clone(),
+            None,
+        )?;
     }
 
     for ctrl in &opt.vmbus_scsi {
@@ -566,6 +573,8 @@ async fn vm_config_from_command_line(
                         port.clone(),
                         DeviceVtl::Vtl0,
                         storage_builder::NvmeControllerTransport::Pcie(port.clone()),
+                        None,
+                        None,
                         None,
                     ).with_context(|| format!(
                         "legacy --nvme flag conflicts with an explicit controller named '{port}'; \

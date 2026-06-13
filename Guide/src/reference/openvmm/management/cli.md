@@ -87,6 +87,27 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.
+* `--nvme-pci id=<name>,<transport>[,options]`: Creates a named NVMe
+  controller. Use with `--disk ...,on=<name>` to attach namespaces.
+
+  Exactly one transport is required:
+  * `pcie_port=<port>` - present on PCIe under the named root port
+  * `vpci[=<guid>]` - present via VPCI, with an optional instance GUID
+    (derived from the controller name when omitted)
+
+  Additional options:
+  * `subsys=<guid>` - subsystem ID, used for the subsystem NQN and the
+    default serial number. Derived from the controller name when omitted.
+  * `sn=<string>` - serial number (at most 20 ASCII characters). Derived
+    from the subsystem ID when omitted.
+  * `vtl2` - assign the controller to VTL2 (default VTL0)
+
+  Examples:
+  ```sh
+  --nvme-pci id=nvme0,pcie_port=rp0
+  --nvme-pci id=nvme1,vpci
+  --nvme-pci id=nvme2,vpci,subsys=008091f6-9688-497d-9091-af347dc9173c,sn=MYSN01
+  ```
 * `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image

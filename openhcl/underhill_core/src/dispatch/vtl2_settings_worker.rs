@@ -1454,6 +1454,7 @@ async fn make_nvme_controller_config(
         instance_id: controller.instance_id,
         resource: NvmeControllerHandle {
             subsystem_id: controller.instance_id,
+            serial_number: nvme_resources::default_serial_number(&controller.instance_id),
             namespaces,
             max_io_queues: 64,
             msix_count: 64,
