@@ -251,10 +251,17 @@ pub struct NvmeControllerClient {
 
 /// Routing table mapping a 0-based VF index to that VF's controller client.
 ///
-/// This is **structural routing**, not shared event data: it is populated only
-/// on the rare VF create/destroy events (`enable_vfs`/`disable_vfs`), and all
-/// runtime state changes (online/offline, namespace attach/detach) flow as
-/// ordered messages *through* the clients, which preserve event/AEN semantics.
+/// Populated only on VF create/destroy (`enable_vfs`/`disable_vfs`); all
+/// runtime state (online/offline, namespace attach/detach) still flows as
+/// ordered messages *through* the clients.
+///
+/// It is shared mutable state rather than a message because it needs
+/// *synchronous publication*: `enable_vfs` fills it on the device thread inside
+/// the guest's VF-enable config-space write, before that write completes. Since
+/// the guest must observe that completion before issuing any virt-mgmt or
+/// namespace-attach command, this establishes a happens-before edge with the
+/// admin task's reads. A message would apply asynchronously with no such
+/// ordering, letting a command race ahead and see an empty table.
 pub type VfClientTable = Arc<Mutex<Vec<NvmeControllerClient>>>;
 
 impl NvmeControllerClient {

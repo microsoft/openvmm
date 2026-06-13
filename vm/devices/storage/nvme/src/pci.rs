@@ -179,6 +179,17 @@ struct VfDrainState {
     deferred: DeferredWrite,
 }
 
+/// The routing target of a PCI config-space access, as resolved by
+/// [`NvmeController::target_from_function`].
+enum Target {
+    /// The physical function (function 0).
+    Pf,
+    /// The VF at the given 0-based index.
+    Vf(usize),
+    /// No device present at the addressed function.
+    None,
+}
+
 /// The NVMe controller's capabilities.
 #[derive(Debug, Copy, Clone)]
 pub struct NvmeControllerCaps {
@@ -480,28 +491,20 @@ impl NvmeController {
         None
     }
 
-    /// Compute VF index from a PCI function number.
-    /// Returns `None` if the function does not correspond to a valid,
-    /// enabled VF.
-    fn vf_index_from_function(
-        &self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-    ) -> Option<usize> {
-        if secondary_bus == target_bus && function == 0 {
-            return None; // Function 0 is the PF.
-        }
+    /// Determine the routing target of a PCI config-space access to the given
+    /// bus/function.
+    fn target_from_function(&self, secondary_bus: u8, target_bus: u8, function: u8) -> Target {
         if secondary_bus != target_bus {
             // TODO: ARI support.
-            return None;
+            return Target::None;
+        }
+        if function == 0 {
+            return Target::Pf;
         }
         // first_vf_offset = 1, vf_stride = 1
-        let idx = function.checked_sub(1)? as usize;
-        if idx < self.vfs.len() {
-            Some(idx)
-        } else {
-            None
+        match function.checked_sub(1).map(usize::from) {
+            Some(idx) if idx < self.vfs.len() => Target::Vf(idx),
+            _ => Target::None,
         }
     }
 }
@@ -976,13 +979,10 @@ impl PciConfigSpace for NvmeController {
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        if secondary_bus == target_bus && function == 0 {
-            return self.pci_cfg_read(offset, value);
-        }
-
-        match self.vf_index_from_function(secondary_bus, target_bus, function) {
-            Some(idx) => self.vfs[idx].pci_cfg_read(offset, value),
-            None => {
+        match self.target_from_function(secondary_bus, target_bus, function) {
+            Target::Pf => self.pci_cfg_read(offset, value),
+            Target::Vf(idx) => self.vfs[idx].pci_cfg_read(offset, value),
+            Target::None => {
                 *value = !0; // No device present.
                 IoResult::Ok
             }
@@ -997,13 +997,10 @@ impl PciConfigSpace for NvmeController {
         offset: u16,
         value: u32,
     ) -> IoResult {
-        if secondary_bus == target_bus && function == 0 {
-            return self.pci_cfg_write(offset, value);
-        }
-
-        match self.vf_index_from_function(secondary_bus, target_bus, function) {
-            Some(idx) => self.vfs[idx].pci_cfg_write(offset, value),
-            None => IoResult::Ok, // Silently drop writes to absent functions.
+        match self.target_from_function(secondary_bus, target_bus, function) {
+            Target::Pf => self.pci_cfg_write(offset, value),
+            Target::Vf(idx) => self.vfs[idx].pci_cfg_write(offset, value),
+            Target::None => IoResult::Ok, // Silently drop writes to absent functions.
         }
     }
 }
