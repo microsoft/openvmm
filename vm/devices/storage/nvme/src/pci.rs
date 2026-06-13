@@ -9,9 +9,9 @@ use crate::NvmeControllerClient;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
+use crate::registers::ControllerCore;
 use crate::registers::RegState;
 use crate::vf::NvmeVirtualFunction;
-use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError::InvalidRegister;
@@ -59,11 +59,8 @@ pub struct NvmeController {
     #[inspect(skip)]
     msix: MsixEmulator,
 
-    registers: RegState,
-    #[inspect(skip)]
-    qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-    #[inspect(flatten, mut)]
-    workers: NvmeWorkers,
+    #[inspect(flatten)]
+    core: ControllerCore,
 
     // SR-IOV support — None when SR-IOV is not configured.
     #[inspect(skip)]
@@ -87,8 +84,10 @@ struct SriovState {
     msi_target: MsiTarget,
     /// SR-IOV configuration.
     config: NvmeSriovCaps,
-    /// Shared VF configs — updated by PF admin handler, read by VFs.
-    vf_configs: crate::SharedVfConfigs,
+    /// Routing table mapping VF index to that VF's controller client.
+    /// Populated by `enable_vfs`, cleared by `disable_vfs`; the PF admin
+    /// handler uses it to route online/offline and namespace attach/detach.
+    vf_clients: crate::workers::VfClientTable,
     /// Driver source for creating VF workers.
     driver_source: VmTaskDriverSource,
     /// Guest memory for VF DMA.
@@ -192,16 +191,15 @@ impl NvmeController {
                 Box<dyn pci_core::capabilities::extended::PciExtendedCapability>,
             > = vec![Box::new(sriov_cap)];
 
-            // Create shared VF configs — one per VF.
-            let vf_configs: crate::SharedVfConfigs = (0..sriov_caps.total_vfs)
-                .map(|_| Arc::new(Mutex::new(crate::VfControllerConfig::default())))
-                .collect();
+            // Routing table mapping VF index to that VF's controller client.
+            // Empty until VFs are enabled.
+            let vf_clients: crate::workers::VfClientTable = Arc::new(Mutex::new(Vec::new()));
 
             let state = SriovState {
                 bar_decode,
                 msi_target: msi_target.clone(),
                 config: sriov_caps,
-                vf_configs: vf_configs.clone(),
+                vf_clients,
                 driver_source: driver_source.clone(),
                 guest_memory: guest_memory.clone(),
                 subsystem_id: caps.subsystem_id,
@@ -245,7 +243,7 @@ impl NvmeController {
         let qe_sizes = Arc::new(Default::default());
         let sriov_admin_config = sriov.as_ref().map(|s| crate::workers::SriovAdminConfig {
             total_vfs: s.config.total_vfs,
-            vf_configs: s.vf_configs.clone(),
+            vf_clients: s.vf_clients.clone(),
         });
         let controller_id = if sriov.is_some() {
             crate::workers::PF_CONTROLLER_ID
@@ -262,15 +260,13 @@ impl NvmeController {
             caps.subsystem_id,
             sriov_admin_config,
             controller_id,
-            Default::default(), // PF starts with no namespaces; added via client
+            true, // PF (and standalone) controllers are always online
         );
 
         Self {
             cfg_space,
             msix,
-            registers: RegState::new(),
-            workers: admin,
-            qe_sizes,
+            core: ControllerCore::new(qe_sizes, admin),
             sriov,
             vfs: Vec::new(),
             vf_drain: None,
@@ -309,23 +305,23 @@ impl NvmeController {
 
     /// Returns a client for manipulating the NVMe controller at runtime.
     pub fn client(&self) -> NvmeControllerClient {
-        self.workers.client()
+        self.core.workers.client()
     }
 
     /// Reads from the virtual BAR 0.
     pub fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
-        crate::registers::read_bar0(self, addr, data)
+        self.core.read_bar0(addr, data)
     }
 
     /// Writes to the virtual BAR 0.
     pub fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
-        crate::registers::write_bar0(self, addr, data)
+        self.core.write_bar0(addr, data)
     }
 
     /// Sets the CFS bit in the controller status register (CSTS), indicating
     /// that the controller has experienced "undefined" behavior.
     pub fn fatal_error(&mut self) {
-        self.registers.csts.set_cfs(true);
+        self.core.registers.csts.set_cfs(true);
     }
 
     /// Enable VFs by creating VF instances.
@@ -361,10 +357,14 @@ impl NvmeController {
                 subsystem_id: sriov.subsystem_id,
                 vf_index,
                 cntlid,
-                shared_config: sriov.vf_configs[vf_index as usize].clone(),
             });
             self.vfs.push(vf);
         }
+
+        // Populate the routing table so the PF admin handler can deliver
+        // online/offline and namespace attach/detach messages to each VF.
+        let clients: Vec<NvmeControllerClient> = self.vfs.iter().map(|vf| vf.client()).collect();
+        *sriov.vf_clients.lock() = clients;
 
         tracing::info!(num_vfs, "SR-IOV: enabled VFs");
     }
@@ -378,6 +378,10 @@ impl NvmeController {
         for mut vf in self.vfs.drain(..) {
             vf.initiate_reset();
             draining.push(vf);
+        }
+        // Clear the routing table; these VFs are going away.
+        if let Some(sriov) = &self.sriov {
+            sriov.vf_clients.lock().clear();
         }
         tracing::info!(draining = draining.len(), "SR-IOV: disabled VFs");
         draining
@@ -431,45 +435,6 @@ impl NvmeController {
     }
 }
 
-impl crate::registers::NvmeRegisterIo for NvmeController {
-    fn registers(&self) -> &RegState {
-        &self.registers
-    }
-
-    fn registers_mut(&mut self) -> &mut RegState {
-        &mut self.registers
-    }
-
-    fn qe_sizes(&self) -> &Mutex<IoQueueEntrySizes> {
-        &self.qe_sizes
-    }
-
-    fn doorbell(&self, db_id: u16, value: u32) {
-        self.workers.doorbell(db_id, value);
-    }
-
-    fn enable_controller(&mut self) {
-        self.workers.enable(
-            self.registers.asq,
-            self.registers.aqa.asqs_z().max(1) + 1,
-            self.registers.acq,
-            self.registers.aqa.acqs_z().max(1) + 1,
-        );
-    }
-
-    fn reset_controller(&mut self) {
-        self.workers.controller_reset();
-    }
-
-    fn poll_enabled(&mut self) -> bool {
-        self.workers.poll_enabled()
-    }
-
-    fn poll_reset(&mut self) -> bool {
-        self.workers.poll_controller_reset()
-    }
-}
-
 impl ChangeDeviceState for NvmeController {
     fn start(&mut self) {}
 
@@ -486,9 +451,7 @@ impl ChangeDeviceState for NvmeController {
         let Self {
             cfg_space,
             msix: _,
-            registers,
-            qe_sizes,
-            workers,
+            core,
             sriov,
             vfs,
             vf_drain,
@@ -504,13 +467,15 @@ impl ChangeDeviceState for NvmeController {
             drain.deferred.complete();
         }
 
-        workers.reset().await;
+        core.workers.reset().await;
         cfg_space.reset();
-        *registers = RegState::new();
-        *qe_sizes.lock() = Default::default();
+        core.registers = RegState::new();
+        *core.qe_sizes.lock() = Default::default();
         // cfg_space.reset() resets the SR-IOV capability, which unmaps
         // all VF MMIO intercepts. VFs were already drained above.
-        let _ = sriov;
+        if let Some(sriov) = sriov {
+            sriov.vf_clients.lock().clear();
+        }
         vfs.clear();
     }
 }

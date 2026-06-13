@@ -9,9 +9,11 @@ mod io;
 
 pub use admin::AddNamespaceError;
 pub use admin::SriovAdminConfig;
+pub use coordinator::EnablePoll;
 pub use coordinator::EnableStateKind;
 pub use coordinator::NvmeControllerClient;
 pub use coordinator::NvmeWorkers;
+pub use coordinator::VfClientTable;
 
 pub(crate) use admin::PF_CONTROLLER_ID;
 

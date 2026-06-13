@@ -815,3 +815,490 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
         "VF IO READ failed"
     );
 }
+
+/// Controller ID of the single VF created by [`SriovVfHarness`].
+const VF_CNTLID: u16 = 2;
+
+/// A test harness with a PF (enabled, namespace 1 added) and a single VF
+/// created with its BARs configured. The VF's secondary controller starts
+/// **offline** and its NVMe controller is **not** yet enabled.
+///
+/// Memory layout (page-aligned GPAs):
+///   0x00000 - PF ACQ        0x04000 - VF ACQ
+///   0x01000 - PF ASQ        0x05000 - VF ASQ
+///   0x02000 - controller list (NS attachment)
+///   0x06000 - VF identify output
+///   0x80000 - VF BAR0 region 0xA0000 - VF BAR4 (MSI-X) region
+struct SriovVfHarness {
+    c: NvmeController,
+    gm: GuestMemory,
+    driver: DefaultDriver,
+    int_controller: TestPciInterruptController,
+    pf_asq: PrpRange,
+    pf_acq: PrpRange,
+    vf_asq: PrpRange,
+    vf_acq: PrpRange,
+    vf_bar0_base: u64,
+    vf_bar4_base: u64,
+    pf_slot: usize,
+    vf_sq_tail: usize,
+    vf_cq_head: usize,
+}
+
+/// Build a PF with SR-IOV, enable it, add namespace 1, and create one VF
+/// (offline, controller not enabled) with its BARs configured.
+async fn setup_pf_with_offline_vf(driver: DefaultDriver) -> SriovVfHarness {
+    let gm = GuestMemory::allocate(4096 * 256); // 1 MB
+    let int_controller = TestPciInterruptController::new();
+    let mut backoff = Backoff::new(&driver);
+
+    let pf_acq = PrpRange::new(vec![0x00000], 0, PAGE_SIZE64).unwrap();
+    let pf_asq = PrpRange::new(vec![0x01000], 0, PAGE_SIZE64).unwrap();
+    let vf_acq = PrpRange::new(vec![0x04000], 0, PAGE_SIZE64).unwrap();
+    let vf_asq = PrpRange::new(vec![0x05000], 0, PAGE_SIZE64).unwrap();
+
+    let mut mmio_reg = TestNvmeMmioRegistration {};
+    let vm_task_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let mut c = NvmeController::new(
+        &vm_task_driver,
+        gm.clone(),
+        msi_conn.target(),
+        &mut mmio_reg,
+        NvmeControllerCaps {
+            msix_count: 64,
+            max_io_queues: 64,
+            subsystem_id: Guid::new_random(),
+            sriov: Some(NvmeSriovCaps {
+                total_vfs: 1,
+                vf_msix_count: 4,
+                vf_max_io_queues: 64,
+            }),
+        },
+    );
+    msi_conn.connect(int_controller.signal_msi());
+
+    // Set PF BARs.
+    c.pci_cfg_write(0x10, 0).unwrap();
+    c.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
+
+    // Find and enable MSI-X.
+    let mut cap_ptr = cfg_read(&mut c, 0x34) & 0xFF;
+    loop {
+        let cap_header = cfg_read(&mut c, cap_ptr as u16);
+        if cap_header & 0xFF == 0x11 {
+            c.pci_cfg_write(cap_ptr as u16, 0x80000000).unwrap();
+            break;
+        }
+        cap_ptr = (cap_header >> 8) & 0xFF;
+        assert_ne!(cap_ptr, 0, "MSI-X capability not found");
+    }
+
+    // Enable MMIO + DMA.
+    c.pci_cfg_write(4, 6).unwrap();
+
+    // Set PF admin queues (16 entries) and enable the PF.
+    c.write_bar0(0x30, 0x00000u64.as_bytes()).unwrap(); // ACQ
+    c.write_bar0(0x28, 0x01000u64.as_bytes()).unwrap(); // ASQ
+    c.write_bar0(0x24, 0xf000fu32.as_bytes()).unwrap(); // AQA: 16 entries
+    c.mmio_write(BAR0_LEN, 0xfeed0000u64.as_bytes()).unwrap();
+    c.mmio_write(BAR0_LEN + 8, 0x1111u64.as_bytes()).unwrap();
+    c.write_bar0(0x14, 1u32.as_bytes()).unwrap();
+    loop {
+        backoff.back_off().await;
+        let mut csts = 0u32;
+        c.read_bar0(0x1c, csts.as_mut_bytes()).unwrap();
+        if spec::Csts::from(csts).rdy() {
+            break;
+        }
+    }
+
+    // Add namespace 1 to the PF.
+    let disk = disklayer_ram::ram_disk(1 << 20, false).unwrap(); // 1 MB disk
+    c.client().add_namespace(1, disk).await.unwrap();
+
+    // Enable the VF and configure its BARs.
+    set_num_vfs(&mut c, 1);
+    set_vf_enable(&mut c, true).unwrap();
+    set_vf_mse(&mut c, true);
+
+    let vf_bar0_base: u64 = 0x80000;
+    let vf_bar4_base: u64 = 0xA0000;
+    c.pci_cfg_write(SRIOV_VF_BAR0, vf_bar0_base as u32).unwrap();
+    c.pci_cfg_write(SRIOV_VF_BAR1, 0).unwrap();
+    c.pci_cfg_write(SRIOV_VF_BAR4, vf_bar4_base as u32).unwrap();
+
+    SriovVfHarness {
+        c,
+        gm,
+        driver,
+        int_controller,
+        pf_asq,
+        pf_acq,
+        vf_asq,
+        vf_acq,
+        vf_bar0_base,
+        vf_bar4_base,
+        pf_slot: 0,
+        vf_sq_tail: 0,
+        vf_cq_head: 0,
+    }
+}
+
+impl SriovVfHarness {
+    /// Submit a command on the PF admin queue and wait for its completion.
+    async fn pf_command(&mut self, command: &spec::Command) -> spec::Completion {
+        let slot = self.pf_slot;
+        self.pf_slot += 1;
+        pf_admin_command(
+            &mut self.c,
+            &self.gm,
+            &self.pf_asq,
+            &self.pf_acq,
+            slot,
+            command,
+            &self.int_controller,
+            self.driver.clone(),
+        )
+        .await
+    }
+
+    /// Issue a Virtualization Management command to online/offline the VF's
+    /// secondary controller.
+    async fn set_secondary_online(&mut self, online: bool) -> spec::Completion {
+        let act = if online {
+            spec::VirtualizationManagementAction::SECONDARY_ONLINE
+        } else {
+            spec::VirtualizationManagementAction::SECONDARY_OFFLINE
+        };
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0
+            .set_opcode(spec::AdminOpcode::VIRTUALIZATION_MANAGEMENT.0);
+        cmd.cdw0.set_cid(10);
+        cmd.cdw10 = spec::Cdw10VirtualizationManagement::new()
+            .with_act(act.0)
+            .with_cntlid(VF_CNTLID)
+            .into();
+        self.pf_command(&cmd).await
+    }
+
+    /// Attach or detach namespace `nsid` to/from the VF via the PF admin
+    /// Namespace Attachment command.
+    async fn namespace_attachment(&mut self, nsid: u32, attach: bool) -> spec::Completion {
+        let cmd = self.namespace_attachment_command(nsid, attach);
+        self.pf_command(&cmd).await
+    }
+
+    /// Build a Namespace Attachment command (writing the controller list to
+    /// guest memory) without submitting it.
+    fn namespace_attachment_command(&mut self, nsid: u32, attach: bool) -> spec::Command {
+        let mut ctrl_list = spec::ControllerList::new_zeroed();
+        ctrl_list.num_identifiers = 1;
+        ctrl_list.identifiers[0] = VF_CNTLID;
+        self.gm.write_plain(0x02000u64, &ctrl_list).unwrap();
+
+        let sel = if attach {
+            spec::NamespaceAttachmentSelection::ATTACH
+        } else {
+            spec::NamespaceAttachmentSelection::DETACH
+        };
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0
+            .set_opcode(spec::AdminOpcode::NAMESPACE_ATTACHMENT.0);
+        cmd.cdw0.set_cid(11);
+        cmd.nsid = nsid;
+        cmd.cdw10 = spec::Cdw10NamespaceAttachment::new().with_sel(sel.0).into();
+        cmd.dptr[0] = 0x02000;
+        cmd
+    }
+
+    /// Submit a PF admin command without waiting; returns its queue slot.
+    fn pf_submit(&mut self, command: &spec::Command) -> usize {
+        let slot = self.pf_slot;
+        self.pf_slot += 1;
+        write_command_to_queue(&self.gm, &self.pf_asq, slot, command);
+        self.c
+            .write_bar0(0x1000, ((slot + 1) as u32).as_bytes())
+            .unwrap();
+        slot
+    }
+
+    /// Read and consume the PF completion at the given slot.
+    fn pf_consume(&mut self, slot: usize) -> spec::Completion {
+        let cqe = read_completion_from_queue(&self.gm, &self.pf_acq, slot);
+        self.c
+            .write_bar0(0x1004, ((slot + 1) as u32).as_bytes())
+            .unwrap();
+        cqe
+    }
+
+    /// Wait until an interrupt with each of the two data values has been
+    /// observed (in any order). Used when a single PF admin command produces
+    /// both a PF completion and a routed VF AEN.
+    async fn wait_for_two_msi(&mut self, data_a: u32, data_b: u32) {
+        let mut backoff = Backoff::new(&self.driver);
+        let (mut got_a, mut got_b) = (false, false);
+        for _ in 0..100 {
+            while let Some(int) = self.int_controller.get_next_interrupt() {
+                got_a |= int.1 == data_a;
+                got_b |= int.1 == data_b;
+            }
+            if got_a && got_b {
+                return;
+            }
+            backoff.back_off().await;
+        }
+        panic!("did not observe both interrupts (a={got_a}, b={got_b})");
+    }
+
+    /// Enable MSI-X and admin queues on the VF and write CC.EN=1, then poll
+    /// CSTS until RDY (returns `true`) or CFS (returns `false`).
+    async fn enable_vf_controller(&mut self) -> bool {
+        // Enable MSI-X on the VF via config space routing.
+        let mut vf_cap_ptr = vf_cfg_read(&mut self.c, 1, 0x34) & 0xFF;
+        loop {
+            let cap_header = vf_cfg_read(&mut self.c, 1, vf_cap_ptr as u16);
+            if cap_header & 0xFF == 0x11 {
+                self.c
+                    .pci_cfg_write_with_routing(0, 0, 1, vf_cap_ptr as u16, 0x80000000)
+                    .unwrap();
+                break;
+            }
+            vf_cap_ptr = (cap_header >> 8) & 0xFF;
+            assert_ne!(vf_cap_ptr, 0, "VF MSI-X capability not found");
+        }
+
+        // VF MSI-X table entry 0 for the VF admin CQ.
+        self.c
+            .mmio_write(self.vf_bar4_base, 0xfeed0000u64.as_bytes())
+            .unwrap();
+        self.c
+            .mmio_write(self.vf_bar4_base + 8, 0x3333u64.as_bytes())
+            .unwrap();
+
+        // VF admin queues (16 entries) and CC.EN = 1.
+        self.c
+            .mmio_write(self.vf_bar0_base + 0x30, 0x04000u64.as_bytes())
+            .unwrap();
+        self.c
+            .mmio_write(self.vf_bar0_base + 0x28, 0x05000u64.as_bytes())
+            .unwrap();
+        self.c
+            .mmio_write(self.vf_bar0_base + 0x24, 0xf000fu32.as_bytes())
+            .unwrap();
+        self.c
+            .mmio_write(self.vf_bar0_base + 0x14, 1u32.as_bytes())
+            .unwrap();
+
+        let mut backoff = Backoff::new(&self.driver);
+        loop {
+            backoff.back_off().await;
+            let mut csts = 0u32;
+            self.c
+                .mmio_read(self.vf_bar0_base + 0x1c, csts.as_mut_bytes())
+                .unwrap();
+            let csts = spec::Csts::from(csts);
+            if csts.rdy() {
+                return true;
+            }
+            if csts.cfs() {
+                return false;
+            }
+        }
+    }
+
+    /// Write a command to the VF admin SQ and ring its doorbell.
+    fn vf_submit(&mut self, command: &spec::Command) {
+        write_command_to_queue(&self.gm, &self.vf_asq, self.vf_sq_tail, command);
+        self.vf_sq_tail += 1;
+        self.c
+            .mmio_write(
+                self.vf_bar0_base + 0x1000,
+                (self.vf_sq_tail as u32).as_bytes(),
+            )
+            .unwrap();
+    }
+
+    /// Wait for a VF admin CQ completion (via MSI-X) and consume it.
+    async fn vf_wait_completion(&mut self) -> spec::Completion {
+        wait_for_msi(
+            self.driver.clone(),
+            &self.int_controller,
+            1000,
+            0xfeed0000,
+            0x3333,
+        )
+        .await;
+        let cqe = read_completion_from_queue(&self.gm, &self.vf_acq, self.vf_cq_head);
+        self.vf_cq_head += 1;
+        self.c
+            .mmio_write(
+                self.vf_bar0_base + 0x1004,
+                (self.vf_cq_head as u32).as_bytes(),
+            )
+            .unwrap();
+        cqe
+    }
+
+    /// Issue Identify Active Namespace List (CNS 0x02) on the VF and return
+    /// the reported NSIDs.
+    async fn vf_active_namespaces(&mut self) -> Vec<u32> {
+        let out_gpa = 0x06000u64;
+        let mut id_cmd = spec::Command::new_zeroed();
+        id_cmd.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+        id_cmd.cdw0.set_cid(60);
+        id_cmd.cdw10 = spec::Cdw10Identify::new()
+            .with_cns(spec::Cns::ACTIVE_NAMESPACES.0)
+            .into();
+        id_cmd.nsid = 0;
+        id_cmd.dptr[0] = out_gpa;
+        self.vf_submit(&id_cmd);
+        let cqe = self.vf_wait_completion().await;
+        assert_eq!(
+            cqe.status.status(),
+            spec::Status::SUCCESS.0,
+            "VF identify active namespaces failed"
+        );
+        // The response is a zero-terminated list of u32 NSIDs.
+        let mut nsids = Vec::new();
+        for i in 0..1024u64 {
+            let nsid: u32 = self.gm.read_plain(out_gpa + i * 4).unwrap();
+            if nsid == 0 {
+                break;
+            }
+            nsids.push(nsid);
+        }
+        nsids
+    }
+}
+
+/// Criterion 8: enabling a VF whose secondary controller is offline must set
+/// CSTS.CFS and never reach RDY.
+#[async_test]
+async fn test_sriov_vf_enable_while_offline_sets_cfs(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver).await;
+
+    // The VF was never brought online; enabling it must fail with CFS.
+    let ready = h.enable_vf_controller().await;
+    assert!(!ready, "offline VF must set CFS and not reach RDY");
+}
+
+/// Criterion 9: after a Virtualization Management SECONDARY_ONLINE completes,
+/// a subsequent CC.EN on that VF must reach RDY without spuriously setting CFS.
+#[async_test]
+async fn test_sriov_vf_online_then_enable_reaches_ready(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver).await;
+
+    let cqe = h.set_secondary_online(true).await;
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::SUCCESS.0,
+        "secondary online failed"
+    );
+
+    // Online has completed (happens-before), so the immediately-following
+    // enable must succeed.
+    let ready = h.enable_vf_controller().await;
+    assert!(ready, "online VF must reach RDY without CFS");
+}
+
+/// Criterion 10: attaching a namespace to an already-enabled VF makes it
+/// visible (Identify CNS 0x02) without a VF reset, and raises an Attached
+/// Namespace Attribute Changed AEN when an AER is outstanding.
+#[async_test]
+async fn test_sriov_vf_namespace_hotplug(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    // Bring the VF online and enable it with no namespaces attached.
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+
+    // No namespaces are visible yet.
+    assert!(
+        h.vf_active_namespaces().await.is_empty(),
+        "VF should have no namespaces before attach"
+    );
+
+    // Submit an Async Event Request on the VF — it stays outstanding until an
+    // event occurs.
+    let mut aer = spec::Command::new_zeroed();
+    aer.cdw0
+        .set_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0);
+    aer.cdw0.set_cid(50);
+    h.vf_submit(&aer);
+
+    // Attach namespace 1 to the already-enabled VF. This produces both the PF
+    // command completion (0x1111) and the routed VF AEN (0x3333), in either
+    // order.
+    let attach_cmd = h.namespace_attachment_command(1, true);
+    let slot = h.pf_submit(&attach_cmd);
+    h.wait_for_two_msi(0x1111, 0x3333).await;
+    assert_eq!(
+        h.pf_consume(slot).status.status(),
+        spec::Status::SUCCESS.0,
+        "namespace attach failed"
+    );
+
+    // The outstanding AER must have completed with a namespace-attribute-
+    // changed notice.
+    let cqe = read_completion_from_queue(&h.gm, &h.vf_acq, h.vf_cq_head);
+    h.vf_cq_head += 1;
+    h.c.mmio_write(h.vf_bar0_base + 0x1004, (h.vf_cq_head as u32).as_bytes())
+        .unwrap();
+    assert_eq!(cqe.cid, 50, "AER completion expected");
+    let dw0 = spec::AsynchronousEventRequestDw0::from(cqe.dw0);
+    assert_eq!(
+        dw0.event_type(),
+        spec::AsynchronousEventType::NOTICE.0,
+        "AEN should be a NOTICE"
+    );
+    assert_eq!(
+        dw0.information(),
+        spec::AsynchronousEventInformationNotice::NAMESPACE_ATTRIBUTE_CHANGED.0,
+        "AEN should report namespace attribute changed"
+    );
+
+    // The namespace is now visible on the online VF — no reset required.
+    let nsids = h.vf_active_namespaces().await;
+    assert_eq!(nsids, vec![1], "nsid 1 should be visible on the online VF");
+}
+
+/// Criterion 11: detaching a namespace removes it from the online VF.
+#[async_test]
+async fn test_sriov_vf_namespace_detach(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+
+    // Attach, confirm visible.
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(h.vf_active_namespaces().await, vec![1]);
+
+    // Detach, confirm gone — without a VF reset.
+    assert_eq!(
+        h.namespace_attachment(1, false).await.status.status(),
+        spec::Status::SUCCESS.0,
+        "namespace detach failed"
+    );
+    assert!(
+        h.vf_active_namespaces().await.is_empty(),
+        "nsid 1 should be removed from the online VF"
+    );
+
+    // Detaching again must report the namespace is not attached.
+    assert_eq!(
+        h.namespace_attachment(1, false).await.status.status(),
+        spec::Status::NAMESPACE_NOT_ATTACHED.0,
+        "detaching an unattached namespace should fail"
+    );
+}

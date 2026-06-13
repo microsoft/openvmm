@@ -58,26 +58,8 @@ pub use pci::NvmeControllerCaps;
 pub use workers::AddNamespaceError;
 pub use workers::NvmeControllerClient;
 
-use disk_backend::Disk;
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;
-use parking_lot::Mutex;
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-/// Configuration for a VF NVMe controller, shared between the PF admin
-/// handler and VF instances. Updated by PF admin via Virtualization Management
-/// and Namespace Attachment commands, read by VFs at CC.EN time.
-#[derive(Debug, Default)]
-pub(crate) struct VfControllerConfig {
-    /// Whether this secondary controller is online.
-    pub online: bool,
-    /// Attached namespace disks, keyed by NSID. Disk is cheap to clone (Arc-based).
-    pub attached_namespaces: BTreeMap<u32, Disk>,
-}
-
-/// Shared VF configs — one per VF, behind Arc<Mutex>.
-pub(crate) type SharedVfConfigs = Vec<Arc<Mutex<VfControllerConfig>>>;
 
 // Device configuration shared by PCI and NVMe.
 const DOORBELL_STRIDE_BITS: u8 = 2;

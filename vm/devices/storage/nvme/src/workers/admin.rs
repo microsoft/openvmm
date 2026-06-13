@@ -5,6 +5,7 @@
 
 use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
+use super::NvmeControllerClient;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
@@ -90,19 +91,20 @@ pub struct AdminConfig {
 pub struct SriovAdminConfig {
     /// Total number of VFs (secondary controllers).
     pub total_vfs: u16,
-    /// Shared VF configs — updated by admin handler, read by VFs.
+    /// Routing table mapping VF index to that VF's controller client.
+    /// Populated by the PCI layer at `enable_vfs`; used by the admin handler
+    /// to route online/offline and namespace attach/detach to each VF.
     #[inspect(skip)]
-    pub vf_configs: crate::SharedVfConfigs,
+    pub vf_clients: super::VfClientTable,
 }
 
 /// Per-secondary-controller resource state tracked by the admin handler.
 #[derive(Debug, Clone, Inspect)]
 struct SecondaryControllerState {
-    /// Whether this secondary controller is online.
+    /// Whether this secondary controller is online. Owned by the PF for
+    /// Secondary Controller List (CNS 0x15) reporting; the authoritative
+    /// enable-gate lives in the VF coordinator and is updated via messages.
     online: bool,
-    /// Namespace IDs attached to this secondary controller.
-    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|p| (p, ())))")]
-    attached_namespaces: Vec<u32>,
 }
 
 /// SR-IOV admin state tracking secondary controller state.
@@ -112,38 +114,14 @@ struct SriovAdminState {
     /// Per-secondary-controller state, indexed by VF index (0-based).
     #[inspect(iter_by_index)]
     controllers: Vec<SecondaryControllerState>,
-    /// Shared VF configs updated on every mutation.
-    #[inspect(skip)]
-    vf_configs: crate::SharedVfConfigs,
 }
 
 impl SriovAdminState {
-    fn new(total_vfs: u16, vf_configs: crate::SharedVfConfigs) -> Self {
-        assert_eq!(vf_configs.len(), total_vfs as usize);
+    fn new(total_vfs: u16) -> Self {
         let controllers = (0..total_vfs)
-            .map(|_| SecondaryControllerState {
-                online: false,
-                attached_namespaces: Vec::new(),
-            })
+            .map(|_| SecondaryControllerState { online: false })
             .collect();
-        Self {
-            controllers,
-            vf_configs,
-        }
-    }
-
-    /// Sync the shared VfControllerConfig for the given VF index from
-    /// the canonical SecondaryControllerState.
-    fn sync_shared_config(&self, idx: usize, namespaces: &BTreeMap<u32, Arc<Namespace>>) {
-        let sc = &self.controllers[idx];
-        let mut config = self.vf_configs[idx].lock();
-        config.online = sc.online;
-        // Rebuild attached namespace disks from current namespace map.
-        config.attached_namespaces = sc
-            .attached_namespaces
-            .iter()
-            .filter_map(|nsid| namespaces.get(nsid).map(|ns| (*nsid, ns.disk())))
-            .collect();
+        Self { controllers }
     }
 
     /// Looks up a secondary controller by its controller ID (1-based VF
@@ -447,28 +425,15 @@ pub enum AddNamespaceError {
 }
 
 impl AdminHandler {
-    pub fn new(
-        driver: VmTaskDriver,
-        config: AdminConfig,
-        initial_namespaces: BTreeMap<u32, Disk>,
-    ) -> Self {
-        let namespaces = initial_namespaces
-            .into_iter()
-            .map(|(nsid, disk)| {
-                (
-                    nsid,
-                    Arc::new(Namespace::new(config.mem.clone(), nsid, disk)),
-                )
-            })
-            .collect();
+    pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
         let sriov_state = config
             .sriov
             .as_ref()
-            .map(|s| SriovAdminState::new(s.total_vfs, s.vf_configs.clone()));
+            .map(|s| SriovAdminState::new(s.total_vfs));
         Self {
             driver,
             config,
-            namespaces,
+            namespaces: BTreeMap::new(),
             sriov_state,
         }
     }
@@ -627,10 +592,12 @@ impl AdminHandler {
                     }
                     spec::AdminOpcode::VIRTUALIZATION_MANAGEMENT if self.sriov_state.is_some() => {
                         self.handle_virtualization_management(&command)
+                            .await
                             .map(|()| Some(Default::default()))
                     }
                     spec::AdminOpcode::NAMESPACE_ATTACHMENT if self.sriov_state.is_some() => self
                         .handle_namespace_attachment(&command)
+                        .await
                         .map(|()| Some(Default::default())),
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
@@ -1260,7 +1227,7 @@ impl AdminHandler {
     }
 
     /// Handle the Virtualization Management admin command (opcode 0x1C).
-    fn handle_virtualization_management(
+    async fn handle_virtualization_management(
         &mut self,
         command: &spec::Command,
     ) -> Result<(), NvmeError> {
@@ -1268,30 +1235,13 @@ impl AdminHandler {
         let act = spec::VirtualizationManagementAction(cdw10.act());
         let cntlid = cdw10.cntlid();
 
-        let sriov = self
-            .sriov_state
-            .as_mut()
-            .expect("SR-IOV must be configured");
-
-        match act {
+        let online = match act {
             spec::VirtualizationManagementAction::PRIMARY_FLEXIBLE_RESOURCES => {
                 // CRT=0: flexible resources not supported.
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
             }
-            spec::VirtualizationManagementAction::SECONDARY_OFFLINE => {
-                let idx = sriov
-                    .secondary_index(cntlid)
-                    .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
-                sriov.controllers[idx].online = false;
-                sriov.sync_shared_config(idx, &self.namespaces);
-            }
-            spec::VirtualizationManagementAction::SECONDARY_ONLINE => {
-                let idx = sriov
-                    .secondary_index(cntlid)
-                    .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
-                sriov.controllers[idx].online = true;
-                sriov.sync_shared_config(idx, &self.namespaces);
-            }
+            spec::VirtualizationManagementAction::SECONDARY_OFFLINE => false,
+            spec::VirtualizationManagementAction::SECONDARY_ONLINE => true,
             spec::VirtualizationManagementAction::SECONDARY_ASSIGN => {
                 // CRT=0: flexible resources not supported.
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
@@ -1300,12 +1250,37 @@ impl AdminHandler {
                 tracelimit::warn_ratelimited!(?act, "unsupported virtualization management action");
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
             }
+        };
+
+        let sriov = self
+            .sriov_state
+            .as_mut()
+            .expect("SR-IOV must be configured");
+        let idx = sriov
+            .secondary_index(cntlid)
+            .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+        // Update the PF's administrative online bit (used for CNS 0x15).
+        sriov.controllers[idx].online = online;
+
+        // Route the online change to the VF coordinator. Await so the change
+        // is committed before the guest observes this command's completion,
+        // preserving happens-before ordering with a subsequent VF CC.EN.
+        if let Some(client) = self.vf_client(idx) {
+            client.set_online(online).await;
+        } else {
+            tracelimit::warn_ratelimited!(
+                idx,
+                "virtualization management for a VF that is not enabled"
+            );
         }
         Ok(())
     }
 
     /// Handle the Namespace Attachment admin command (opcode 0x15).
-    fn handle_namespace_attachment(&mut self, command: &spec::Command) -> Result<(), NvmeError> {
+    async fn handle_namespace_attachment(
+        &mut self,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
         let cdw10: spec::Cdw10NamespaceAttachment = command.cdw10.into();
         let sel = spec::NamespaceAttachmentSelection(cdw10.sel());
         let nsid = command.nsid;
@@ -1314,10 +1289,13 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
         }
 
-        // Verify the namespace exists on this controller.
-        if !self.namespaces.contains_key(&nsid) {
-            return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
-        }
+        // Verify the namespace exists on this controller, and grab its disk
+        // for attachment.
+        let disk = self
+            .namespaces
+            .get(&nsid)
+            .ok_or(spec::Status::INVALID_NAMESPACE_OR_FORMAT)?
+            .disk();
 
         // Read the controller list from the data buffer.
         let mut controller_list = spec::ControllerList::new_zeroed();
@@ -1328,43 +1306,52 @@ impl AdminHandler {
         )?
         .read(&self.config.mem, controller_list.as_mut_bytes())?;
 
-        let sriov = self
-            .sriov_state
-            .as_mut()
-            .expect("SR-IOV must be configured");
-
         for &cntlid in controller_list
             .identifiers
             .iter()
             .take(controller_list.num_identifiers as usize)
         {
-            let idx = sriov
+            let idx = self
+                .sriov_state
+                .as_ref()
+                .expect("SR-IOV must be configured")
                 .secondary_index(cntlid)
+                .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+
+            // The VF coordinator owns its namespace set; route the change to
+            // it. A long-lived VF worker fed via the client raises the
+            // Attached Namespace Attribute Changed AEN automatically.
+            let client = self
+                .vf_client(idx)
                 .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
 
             match sel {
                 spec::NamespaceAttachmentSelection::ATTACH => {
-                    let ns_list = &mut sriov.controllers[idx].attached_namespaces;
-                    if ns_list.contains(&nsid) {
+                    if client.add_namespace(nsid, disk.clone()).await.is_err() {
                         return Err(spec::Status::NAMESPACE_ALREADY_ATTACHED.into());
                     }
-                    ns_list.push(nsid);
-                    ns_list.sort();
-                    sriov.sync_shared_config(idx, &self.namespaces);
                 }
                 spec::NamespaceAttachmentSelection::DETACH => {
-                    let ns_list = &mut sriov.controllers[idx].attached_namespaces;
-                    if let Some(pos) = ns_list.iter().position(|&n| n == nsid) {
-                        ns_list.remove(pos);
-                    } else {
+                    if !client.remove_namespace(nsid).await {
                         return Err(spec::Status::NAMESPACE_NOT_ATTACHED.into());
                     }
-                    sriov.sync_shared_config(idx, &self.namespaces);
                 }
                 _ => return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into()),
             }
         }
         Ok(())
+    }
+
+    /// Returns a clone of the routing client for the VF at the given 0-based
+    /// index, if that VF currently exists.
+    fn vf_client(&self, idx: usize) -> Option<NvmeControllerClient> {
+        self.config
+            .sriov
+            .as_ref()?
+            .vf_clients
+            .lock()
+            .get(idx)
+            .cloned()
     }
 }
 

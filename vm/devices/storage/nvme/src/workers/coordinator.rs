@@ -17,7 +17,6 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
-use inspect::InspectMut;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -32,7 +31,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-#[derive(InspectMut)]
+#[derive(Inspect)]
 pub struct NvmeWorkers {
     #[inspect(skip)]
     _task: Task<()>,
@@ -47,9 +46,20 @@ pub struct NvmeWorkers {
 #[derive(Debug)]
 enum EnableState {
     Disabled,
-    Enabling(PendingRpc<()>),
+    Enabling(PendingRpc<bool>),
     Enabled,
     Resetting(PendingRpc<()>),
+}
+
+/// Result of polling an in-progress enable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnablePoll {
+    /// The enable is still in progress.
+    Pending,
+    /// The controller is enabled.
+    Enabled,
+    /// The enable was rejected (e.g. the secondary controller is offline).
+    Rejected,
 }
 
 /// The current high-level state of the NVMe workers.
@@ -83,7 +93,7 @@ impl NvmeWorkers {
         subsystem_id: Guid,
         sriov: Option<super::admin::SriovAdminConfig>,
         controller_id: u16,
-        initial_namespaces: std::collections::BTreeMap<u32, Disk>,
+        online: bool,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
@@ -102,12 +112,12 @@ impl NvmeWorkers {
                 sriov,
                 controller_id,
             },
-            initial_namespaces,
         );
         let coordinator = Coordinator {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
+            online,
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -152,13 +162,19 @@ impl NvmeWorkers {
         }
     }
 
-    pub fn poll_enabled(&mut self) -> bool {
+    pub fn poll_enabled(&mut self) -> EnablePoll {
         if let EnableState::Enabling(recv) = &mut self.state {
-            if recv.now_or_never().is_some() {
-                self.state = EnableState::Enabled;
-                true
-            } else {
-                false
+            match recv.now_or_never() {
+                Some(result) => {
+                    if result.unwrap() {
+                        self.state = EnableState::Enabled;
+                        EnablePoll::Enabled
+                    } else {
+                        self.state = EnableState::Disabled;
+                        EnablePoll::Rejected
+                    }
+                }
+                None => EnablePoll::Pending,
             }
         } else {
             panic!("not enabling: {:?}", self.state)
@@ -193,8 +209,12 @@ impl NvmeWorkers {
             match &mut self.state {
                 EnableState::Disabled => break,
                 EnableState::Enabling(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Enabled;
+                    let accepted = recv.await.unwrap();
+                    self.state = if accepted {
+                        EnableState::Enabled
+                    } else {
+                        EnableState::Disabled
+                    };
                 }
                 EnableState::Enabled => {
                     self.controller_reset();
@@ -219,9 +239,15 @@ impl NvmeWorkers {
                 EnableState::Disabled => return true,
                 EnableState::Enabling(recv) => {
                     match std::pin::Pin::new(recv).poll(cx) {
-                        std::task::Poll::Ready(_) => {
-                            self.state = EnableState::Enabled;
-                            // Fall through to Enabled → controller_reset.
+                        std::task::Poll::Ready(accepted) => {
+                            // On rejection the admin task never started, so
+                            // the workers are effectively disabled; otherwise
+                            // fall through to Enabled → controller_reset.
+                            self.state = if accepted.unwrap() {
+                                EnableState::Enabled
+                            } else {
+                                EnableState::Disabled
+                            };
                         }
                         std::task::Poll::Pending => return false,
                     }
@@ -243,10 +269,18 @@ impl NvmeWorkers {
 }
 
 /// Client for modifying the NVMe controller state at runtime.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NvmeControllerClient {
     send: mesh::Sender<CoordinatorRequest>,
 }
+
+/// Routing table mapping a 0-based VF index to that VF's controller client.
+///
+/// This is **structural routing**, not shared event data: it is populated only
+/// on the rare VF create/destroy events (`enable_vfs`/`disable_vfs`), and all
+/// runtime state changes (online/offline, namespace attach/detach) flow as
+/// ordered messages *through* the clients, which preserve event/AEN semantics.
+pub type VfClientTable = Arc<Mutex<Vec<NvmeControllerClient>>>;
 
 impl NvmeControllerClient {
     /// Adds a namespace.
@@ -264,6 +298,18 @@ impl NvmeControllerClient {
             .await
             .unwrap()
     }
+
+    /// Sets the online state of the controller.
+    ///
+    /// Awaiting this guarantees the coordinator has committed the online
+    /// change before the caller proceeds, preserving happens-before ordering
+    /// with a subsequent CC.EN on the controller.
+    pub async fn set_online(&self, online: bool) {
+        self.send
+            .call(CoordinatorRequest::SetOnline, online)
+            .await
+            .unwrap()
+    }
 }
 
 #[derive(Inspect)]
@@ -273,12 +319,17 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
+    /// Whether this controller is online and may be enabled. Always true for
+    /// the PF and standalone controllers; toggled for SR-IOV VFs via
+    /// [`CoordinatorRequest::SetOnline`].
+    online: bool,
 }
 
 enum CoordinatorRequest {
-    EnableAdmin(Rpc<EnableAdminParams, ()>),
+    EnableAdmin(Rpc<EnableAdminParams, bool>),
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
+    SetOnline(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
 }
@@ -326,13 +377,20 @@ impl Coordinator {
                              acq,
                              acqs,
                          }| {
-                            if !self.admin.has_state() {
+                            if !self.online {
+                                tracelimit::warn_ratelimited!(
+                                    "enable attempted while controller is offline"
+                                );
+                                false
+                            } else if !self.admin.has_state() {
                                 let state =
                                     AdminState::new(self.admin.task(), asq, asqs, acq, acqs);
                                 self.admin.insert(&self.driver, "nvme-admin", state);
                                 self.admin.start();
+                                true
                             } else {
                                 tracelimit::warn_ratelimited!("duplicate attempt to enable admin");
+                                true
                             }
                         },
                     ),
@@ -363,6 +421,11 @@ impl Coordinator {
                     CoordinatorRequest::ControllerReset(rpc) => {
                         assert!(self.reset.is_none());
                         self.reset = Some(rpc);
+                    }
+                    CoordinatorRequest::SetOnline(rpc) => {
+                        rpc.handle_sync(|online| {
+                            self.online = online;
+                        });
                     }
                     CoordinatorRequest::Inspect(req) => req.inspect(&self),
                 },
