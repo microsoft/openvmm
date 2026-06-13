@@ -223,10 +223,24 @@ impl NvmeController {
             // Allocate one MMIO intercept region per VF BAR, each spanning
             // all VFs contiguously. The SR-IOV capability owns these and
             // maps/unmaps them directly when BAR/MSE/VF_Enable change.
-            let vf_bar_cfg = Self::vf_bar_config(sriov_caps.vf_msix_count);
-            let vf_bar0_len = vf_bar_cfg[0].as_ref().expect("VF BAR0 is always set").size;
-            let vf_bar4_len = vf_bar_cfg[4].as_ref().expect("VF BAR4 is always set").size;
+            //
+            // Only BAR0 (NVMe registers + doorbells) and BAR4 (MSI-X table)
+            // are used; both are 64-bit prefetchable, so their upper halves
+            // (BAR1/BAR5) are consumed by the 64-bit BARs.
+            let vf_bar0_len = BAR0_LEN;
+            let vf_bar4_len = Self::vf_msix_bar_size(sriov_caps.vf_msix_count);
             let total_vfs = sriov_caps.total_vfs as u64;
+
+            let vf_bar = |size| {
+                Some(VfBarConfig {
+                    size,
+                    is_64bit: true,
+                    prefetchable: true,
+                })
+            };
+            let mut vf_bar_cfg: [Option<VfBarConfig>; 6] = [None; 6];
+            vf_bar_cfg[0] = vf_bar(vf_bar0_len);
+            vf_bar_cfg[4] = vf_bar(vf_bar4_len);
 
             let mut vf_bars: [Option<BarMemoryKind>; 6] = Default::default();
             vf_bars[0] = Some(BarMemoryKind::Intercept(
@@ -336,35 +350,17 @@ impl NvmeController {
         }
     }
 
-    /// Build VF BAR configuration for the SR-IOV capability.
-    /// TODO: inline or at least just return a tuple.
-    fn vf_bar_config(vf_msix_count: u16) -> [Option<VfBarConfig>; 6] {
-        // Compute MSI-X BAR size: each vector needs 16 bytes for the table
-        // entry, plus pending bits array. Round up to power of 2 and at least
-        // PAGE_SIZE so that each VF gets its own page in the MMIO region.
-        let msix_table_size = vf_msix_count as u64 * 16;
-        let pending_bits_size = (vf_msix_count.div_ceil(32)) as u64 * 4;
-        let raw_msix_bar_size = msix_table_size + pending_bits_size;
-        let msix_bar_size = raw_msix_bar_size.next_power_of_two().max(PAGE_SIZE as u64);
-
-        let mut vf_bars: [Option<VfBarConfig>; 6] = [None; 6];
-        // VF BAR0: NVMe registers + doorbells (64-bit, prefetchable).
-        vf_bars[0] = Some(VfBarConfig {
-            size: BAR0_LEN,
-            is_64bit: true,
-            prefetchable: true,
-        });
-        // VF BAR1 consumed by 64-bit BAR0.
-        // VF BAR2: unused.
-        // VF BAR3: unused.
-        // VF BAR4: MSI-X table (64-bit, prefetchable).
-        vf_bars[4] = Some(VfBarConfig {
-            size: msix_bar_size,
-            is_64bit: true,
-            prefetchable: true,
-        });
-        // VF BAR5 consumed by 64-bit BAR4.
-        vf_bars
+    /// Compute the size of a VF's MSI-X BAR (BAR4).
+    ///
+    /// Each vector needs 16 bytes for its table entry plus a pending-bits
+    /// array. Round up to a power of two and at least `PAGE_SIZE` so each VF
+    /// gets its own page in the contiguous MMIO region.
+    fn vf_msix_bar_size(vf_msix_count: u16) -> u64 {
+        let table_size = vf_msix_count as u64 * 16;
+        let pending_bits_size = vf_msix_count.div_ceil(32) as u64 * 4;
+        (table_size + pending_bits_size)
+            .next_power_of_two()
+            .max(PAGE_SIZE as u64)
     }
 
     /// Returns a client for manipulating the NVMe controller at runtime.
