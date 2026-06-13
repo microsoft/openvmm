@@ -79,10 +79,8 @@ pub struct SriovExtendedCapability {
     // -- Mutable state (guest-writable) --
     control: SriovControl,
     status: SriovStatus,
-    #[inspect(hex)]
     num_vfs: u16,
     /// System page size — bit N means page size 2^(N+12).
-    #[inspect(hex)]
     system_page_size: u32,
     /// Current BAR register values (including probe state).
     #[inspect(with = r#"|x| inspect::iter_by_index(x).prefix("vf_bar")"#)]

@@ -75,7 +75,6 @@ pub struct NvmeController {
     core: ControllerCore,
 
     // SR-IOV support — None when SR-IOV is not configured.
-    #[inspect(skip)] // BUGBUG
     sriov: Option<SriovState>,
     #[inspect(iter_by_index)]
     vfs: Vec<NvmeVirtualFunction>,
@@ -138,24 +137,32 @@ const CAP: spec::Cap = spec::Cap::new()
     .with_to(!0);
 
 /// Internal SR-IOV state held by the PF.
+#[derive(Inspect)]
 struct SriovState {
     /// Shared VF BAR decode state — updated by the SR-IOV capability,
     /// read by the MMIO handler for VF address routing, and used to
     /// receive pending VF_Enable changes.
+    #[inspect(skip)]
     bar_decode: Arc<SriovBarDecode>,
     /// PF's MSI target, cloned per-VF with different devfn.
+    #[inspect(skip)]
     msi_target: MsiTarget,
     /// SR-IOV configuration.
+    #[inspect(flatten)]
     config: NvmeSriovCaps,
     /// Routing table mapping VF index to that VF's controller client.
     /// Populated by `enable_vfs`, cleared by `disable_vfs`; the PF admin
     /// handler uses it to route online/offline and namespace attach/detach.
+    #[inspect(skip)]
     vf_clients: crate::workers::VfClientTable,
     /// Driver source for creating VF workers.
+    #[inspect(skip)]
     driver_source: VmTaskDriverSource,
     /// Guest memory for VF DMA.
+    #[inspect(skip)]
     guest_memory: GuestMemory,
     /// Subsystem ID for VF NVMe identity.
+    #[inspect(display)]
     subsystem_id: Guid,
 }
 
@@ -187,7 +194,7 @@ pub struct NvmeControllerCaps {
 }
 
 /// SR-IOV configuration for the NVMe controller.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Inspect)]
 pub struct NvmeSriovCaps {
     /// Total number of VFs the PF can support (1..=7 without ARI).
     pub total_vfs: u16,
@@ -780,6 +787,7 @@ impl ControllerCore {
     /// [`ControllerCore::poll_drain`] (non-blocking) before the controller is
     /// dropped, so that IOs holding guest memory references finish first.
     fn initiate_reset(&mut self) {
+        // BUGBUG: this EnableStateKind only exists for this check, seems dumb.
         if self.workers.enable_state() == EnableStateKind::Enabled {
             self.workers.controller_reset();
         }
