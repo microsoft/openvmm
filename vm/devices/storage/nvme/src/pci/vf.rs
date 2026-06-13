@@ -16,7 +16,6 @@
 use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
 use crate::pci::ControllerCore;
-use crate::pci::RegState;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeControllerClient;
 use crate::workers::NvmeWorkers;
@@ -195,23 +194,8 @@ impl NvmeVirtualFunction {
     /// does NOT drop the workers — call [`drain`] to wait for in-flight IOs
     /// to complete before the VF is dropped.
     pub fn initiate_reset(&mut self) {
-        match self.core.workers.enable_state() {
-            crate::workers::EnableStateKind::Enabled => {
-                tracing::info!(vf = self.vf_index, "VF: initiating controller reset");
-                self.core.workers.controller_reset();
-            }
-            crate::workers::EnableStateKind::Enabling => {
-                // Workers are mid-enable — nothing to drain yet, will
-                // be cleaned up when drain() awaits reset().
-                tracing::info!(vf = self.vf_index, "VF: initiating reset during enable");
-            }
-            crate::workers::EnableStateKind::Disabled
-            | crate::workers::EnableStateKind::Resetting => {
-                // Already disabled or resetting — nothing to do.
-            }
-        }
-        self.core.registers = RegState::new();
-        *self.core.qe_sizes.lock() = Default::default();
+        tracing::info!(vf = self.vf_index, "VF: initiating controller reset");
+        self.core.initiate_reset();
     }
 
     /// Asynchronously drain all in-flight IOs, returning the workers to the
@@ -220,7 +204,7 @@ impl NvmeVirtualFunction {
     /// Must be called after [`initiate_reset`] to ensure all IOs holding
     /// guest memory references complete before the VF is dropped.
     pub async fn drain(&mut self) {
-        self.core.workers.reset().await;
+        self.core.drain().await;
     }
 
     /// Non-blocking poll for drain completion. Returns `true` when the
@@ -229,7 +213,7 @@ impl NvmeVirtualFunction {
     /// Registers `cx.waker()` with the underlying channel so the caller
     /// is woken when the drain makes progress.
     pub fn poll_drain(&mut self, cx: &mut std::task::Context<'_>) -> bool {
-        self.core.workers.poll_drain(cx)
+        self.core.poll_drain(cx)
     }
 
     /// Reads from the VF's MSI-X BAR.

@@ -19,6 +19,7 @@ use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
 use crate::spec;
 use crate::workers::EnablePoll;
+use crate::workers::EnableStateKind;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
@@ -773,6 +774,38 @@ impl ControllerCore {
     fn fatal_error(&mut self) {
         self.registers.csts.set_cfs(true);
     }
+
+    /// Initiates a controller reset and resets the register state.
+    ///
+    /// If the controller is enabled, this kicks off a controller reset on the
+    /// workers; the register state is reset to its initial values immediately.
+    /// This does **not** wait for in-flight IO to complete — the caller must
+    /// follow up with [`ControllerCore::drain`] (async) or
+    /// [`ControllerCore::poll_drain`] (non-blocking) before the controller is
+    /// dropped, so that IOs holding guest memory references finish first.
+    fn initiate_reset(&mut self) {
+        if self.workers.enable_state() == EnableStateKind::Enabled {
+            self.workers.controller_reset();
+        }
+        self.registers = RegState::new();
+        *self.qe_sizes.lock() = Default::default();
+    }
+
+    /// Drives the workers to the disabled state from whatever state they are
+    /// in, awaiting any in-flight IO. Must be preceded by
+    /// [`ControllerCore::initiate_reset`], which resets the register state.
+    async fn drain(&mut self) {
+        self.workers.reset().await;
+    }
+
+    /// Non-blocking poll for drain completion. Returns `true` once the workers
+    /// have reached the disabled state.
+    ///
+    /// Registers `cx.waker()` with the underlying channel so the caller is
+    /// woken when the drain makes progress.
+    fn poll_drain(&mut self, cx: &mut Context<'_>) -> bool {
+        self.workers.poll_drain(cx)
+    }
 }
 
 impl ChangeDeviceState for NvmeController {
@@ -807,11 +840,11 @@ impl ChangeDeviceState for NvmeController {
             drain.deferred.complete();
         }
 
-        // TODO: let core implement reset
-        core.workers.reset().await;
+        // Reset the PF's own controller core: kick off the reset (resetting
+        // the register state) and drain in-flight IO.
+        core.initiate_reset();
+        core.drain().await;
         cfg_space.reset();
-        core.registers = RegState::new();
-        *core.qe_sizes.lock() = Default::default();
         // cfg_space.reset() resets the SR-IOV capability, which unmaps
         // all VF MMIO intercepts. VFs were already drained above.
         if let Some(sriov) = sriov {
