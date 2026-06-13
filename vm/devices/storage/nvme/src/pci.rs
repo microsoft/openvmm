@@ -8,6 +8,7 @@ use crate::DEVICE_ID;
 use crate::NvmeControllerClient;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
+use crate::VF_DEVICE_ID;
 use crate::registers::RegState;
 use crate::vf::NvmeVirtualFunction;
 use crate::workers::IoQueueEntrySizes;

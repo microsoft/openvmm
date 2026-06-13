@@ -13,8 +13,8 @@
 //! Namespace Attachment commands. The VF reads its configuration from a
 //! shared [`VfControllerConfig`](crate::VfControllerConfig) at CC.EN time.
 
-use crate::VF_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::VF_DEVICE_ID;
 use crate::VfControllerConfig;
 use crate::registers::RegState;
 use crate::workers::IoQueueEntrySizes;

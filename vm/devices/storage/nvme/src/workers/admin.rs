@@ -1320,10 +1320,13 @@ impl AdminHandler {
         }
 
         // Read the controller list from the data buffer.
-        let mut list_buf = [0u8; 4096];
-        PrpRange::parse(&self.config.mem, list_buf.len(), command.dptr)?
-            .read(&self.config.mem, &mut list_buf)?;
-        let controller_list = spec::ControllerList::ref_from_bytes(&list_buf).unwrap();
+        let mut controller_list = spec::ControllerList::new_zeroed();
+        PrpRange::parse(
+            &self.config.mem,
+            controller_list.as_bytes().len(),
+            command.dptr,
+        )?
+        .read(&self.config.mem, controller_list.as_mut_bytes())?;
 
         let sriov = self
             .sriov_state
