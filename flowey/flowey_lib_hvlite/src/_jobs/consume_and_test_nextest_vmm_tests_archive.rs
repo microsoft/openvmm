@@ -176,7 +176,7 @@ impl SimpleFlowNode for Node {
             openhcl_linux_direct,
         ]
         .into_iter()
-        .filter_map(|x| x)
+        .flatten()
         .collect();
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));

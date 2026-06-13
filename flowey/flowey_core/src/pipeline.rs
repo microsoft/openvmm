@@ -728,7 +728,7 @@ impl Pipeline {
             .into_iter()
             .map(|artifact_type| {
                 let (pub_artifact, use_artifact) =
-                    self.new_typed_artifact(artifact_type.name(additional_tag.map(|t| t.as_ref())));
+                    self.new_typed_artifact(artifact_type.name(additional_tag));
                 (
                     (artifact_type.clone(), pub_artifact),
                     (artifact_type, use_artifact),
