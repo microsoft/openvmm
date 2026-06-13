@@ -74,6 +74,20 @@ pub struct NvmeController {
     #[inspect(flatten)]
     core: ControllerCore,
 
+    // Inputs captured at construction, cloned to lazily build VFs in
+    // `enable_vfs`. Stored unconditionally (even without SR-IOV) so VF
+    // creation doesn't depend on threading them through `SriovState` — a
+    // little wasteful for non-SR-IOV controllers, but simpler to reason
+    // about.
+    #[inspect(skip)]
+    driver_source: VmTaskDriverSource,
+    #[inspect(skip)]
+    guest_memory: GuestMemory,
+    #[inspect(skip)]
+    msi_target: MsiTarget,
+    #[inspect(display)]
+    subsystem_id: Guid,
+
     // SR-IOV support — None when SR-IOV is not configured.
     sriov: Option<SriovState>,
     #[inspect(iter_by_index)]
@@ -144,9 +158,6 @@ struct SriovState {
     /// receive pending VF_Enable changes.
     #[inspect(skip)]
     bar_decode: Arc<SriovBarDecode>,
-    /// PF's MSI target, cloned per-VF with different devfn.
-    #[inspect(skip)]
-    msi_target: MsiTarget,
     /// SR-IOV configuration.
     #[inspect(flatten)]
     config: NvmeSriovCaps,
@@ -155,15 +166,6 @@ struct SriovState {
     /// handler uses it to route online/offline and namespace attach/detach.
     #[inspect(skip)]
     vf_clients: crate::workers::VfClientTable,
-    /// Driver source for creating VF workers.
-    #[inspect(skip)]
-    driver_source: VmTaskDriverSource,
-    /// Guest memory for VF DMA.
-    #[inspect(skip)]
-    guest_memory: GuestMemory,
-    /// Subsystem ID for VF NVMe identity.
-    #[inspect(display)]
-    subsystem_id: Guid,
 }
 
 /// State for an in-progress VF drain operation.
@@ -281,12 +283,8 @@ impl NvmeController {
 
             let state = SriovState {
                 bar_decode,
-                msi_target: msi_target.clone(),
                 config: sriov_caps,
                 vf_clients,
-                driver_source: driver_source.clone(),
-                guest_memory: guest_memory.clone(),
-                subsystem_id: caps.subsystem_id,
             };
 
             (extended_caps, Some(state), true)
@@ -336,7 +334,7 @@ impl NvmeController {
         };
         let admin = NvmeWorkers::new(
             driver_source,
-            guest_memory,
+            guest_memory.clone(),
             interrupts,
             caps.max_io_queues,
             caps.max_io_queues,
@@ -351,6 +349,10 @@ impl NvmeController {
             cfg_space,
             msix,
             core: ControllerCore::new(qe_sizes, admin),
+            driver_source: driver_source.clone(),
+            guest_memory,
+            msi_target: msi_target.clone(),
+            subsystem_id: caps.subsystem_id,
             sriov,
             vfs: Vec::new(),
             vf_drain: None,
@@ -405,7 +407,7 @@ impl NvmeController {
             // VF function number: first_vf_offset + i * vf_stride.
             // With offset=1, stride=1, VFs are at functions 1, 2, 3, ...
             let vf_devfn = 1 + i as u8; // first_vf_offset=1, vf_stride=1
-            let vf_msi_target = sriov.msi_target.with_devfn(vf_devfn);
+            let vf_msi_target = self.msi_target.with_devfn(vf_devfn);
             let vf_index = i;
             let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
 
@@ -413,9 +415,9 @@ impl NvmeController {
                 msix_count: config.vf_msix_count,
                 max_io_queues: config.vf_max_io_queues,
                 msi_target: &vf_msi_target,
-                driver_source: sriov.driver_source.clone(),
-                guest_memory: sriov.guest_memory.clone(),
-                subsystem_id: sriov.subsystem_id,
+                driver_source: self.driver_source.clone(),
+                guest_memory: self.guest_memory.clone(),
+                subsystem_id: self.subsystem_id,
                 vf_index,
                 cntlid,
             });
@@ -829,6 +831,10 @@ impl ChangeDeviceState for NvmeController {
             cfg_space,
             msix: _,
             core,
+            driver_source: _,
+            guest_memory: _,
+            msi_target: _,
+            subsystem_id: _,
             sriov,
             vfs,
             vf_drain,
