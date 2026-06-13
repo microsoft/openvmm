@@ -17,11 +17,10 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 /// Configuration for a single VF BAR.
-#[derive(Debug, Clone, Copy, Inspect)]
+#[derive(Debug, Clone, Copy)]
 pub struct VfBarConfig {
     /// Size of the BAR in bytes. Must be a power of 2 and >= 16.
     /// Set to 0 to indicate the BAR is not implemented.
-    #[inspect(hex)]
     pub size: u64,
     /// Whether the BAR is 64-bit (consumes two consecutive BAR slots).
     pub is_64bit: bool,
@@ -30,19 +29,17 @@ pub struct VfBarConfig {
 }
 
 /// Configuration parameters for the SR-IOV extended capability.
-#[derive(Debug, Clone, Inspect)]
+#[derive(Debug, Clone)]
 pub struct SriovConfig {
     /// Total number of VFs the PF can support (1..=255, or up to 7 without ARI).
     pub total_vfs: u16,
     /// PCI Device ID to report for all VFs.
-    #[inspect(hex)]
     pub vf_device_id: u16,
     /// Function offset from the PF to the first VF.
     pub first_vf_offset: u16,
     /// Stride between consecutive VFs.
     pub vf_stride: u16,
     /// VF BAR configurations (up to 6).
-    #[inspect(skip)]
     pub vf_bars: [Option<VfBarConfig>; 6],
 }
 
