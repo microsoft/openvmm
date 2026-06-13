@@ -69,7 +69,7 @@ pub struct NvmeController {
     #[inspect(skip)]
     sriov: Option<SriovState>,
     #[inspect(iter_by_index)]
-    vfs: Vec<Option<NvmeVirtualFunction>>,
+    vfs: Vec<NvmeVirtualFunction>,
     /// Pending VF drain — set when VF_Enable is cleared, completed by
     /// `poll_device` when all VF IOs have drained. Stalls the VCPU that
     /// wrote VF_Enable=0 until drain is complete.
@@ -364,7 +364,7 @@ impl NvmeController {
                 cntlid,
                 shared_config: sriov.vf_configs[vf_index as usize].clone(),
             });
-            self.vfs.push(Some(vf));
+            self.vfs.push(vf);
         }
 
         tracing::info!(num_vfs, "SR-IOV: enabled VFs");
@@ -376,11 +376,9 @@ impl NvmeController {
     /// controller resets, and returns the VFs for async draining.
     fn disable_vfs(&mut self) -> Vec<NvmeVirtualFunction> {
         let mut draining = Vec::new();
-        for vf_opt in self.vfs.drain(..) {
-            if let Some(mut vf) = vf_opt {
-                vf.initiate_reset();
-                draining.push(vf);
-            }
+        for mut vf in self.vfs.drain(..) {
+            vf.initiate_reset();
+            draining.push(vf);
         }
         tracing::info!(draining = draining.len(), "SR-IOV: disabled VFs");
         draining
@@ -426,7 +424,7 @@ impl NvmeController {
         }
         // first_vf_offset = 1, vf_stride = 1
         let idx = function.checked_sub(1)? as usize;
-        if idx < self.vfs.len() && self.vfs[idx].is_some() {
+        if idx < self.vfs.len() {
             Some(idx)
         } else {
             None
@@ -497,17 +495,10 @@ impl ChangeDeviceState for NvmeController {
             vf_drain,
         } = self;
         // Initiate reset on all active VFs, then drain them concurrently.
-        for vf_opt in vfs.iter_mut() {
-            if let Some(vf) = vf_opt {
-                vf.initiate_reset();
-            }
+        for vf in vfs.iter_mut() {
+            vf.initiate_reset();
         }
-        join_all(
-            vfs.iter_mut()
-                .filter_map(|opt| opt.as_mut())
-                .map(|vf| vf.drain()),
-        )
-        .await;
+        join_all(vfs.iter_mut().map(|vf| vf.drain())).await;
         // Drain any pending VF drain from a VF_Enable=0 write.
         if let Some(mut drain) = vf_drain.take() {
             join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
@@ -572,12 +563,12 @@ impl MmioIntercept for NvmeController {
         // Check VF BARs using the shared address decode.
         if let Some(sriov) = &self.sriov {
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
-                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                if let Some(vf) = self.vfs.get_mut(vf_idx) {
                     return vf.read_bar0(offset, data);
                 }
             }
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
-                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                if let Some(vf) = self.vfs.get_mut(vf_idx) {
                     return vf.read_msix(offset, data);
                 }
             }
@@ -606,12 +597,12 @@ impl MmioIntercept for NvmeController {
         // Check VF BARs using the shared address decode.
         if let Some(sriov) = &self.sriov {
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
-                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                if let Some(vf) = self.vfs.get_mut(vf_idx) {
                     return vf.write_bar0(offset, data);
                 }
             }
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
-                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                if let Some(vf) = self.vfs.get_mut(vf_idx) {
                     return vf.write_msix(offset, data);
                 }
             }
@@ -652,7 +643,7 @@ impl PciConfigSpace for NvmeController {
         }
 
         match self.vf_index_from_function(function) {
-            Some(idx) => self.vfs[idx].as_mut().unwrap().pci_cfg_read(offset, value),
+            Some(idx) => self.vfs[idx].pci_cfg_read(offset, value),
             None => {
                 *value = !0; // No device present.
                 IoResult::Ok
@@ -677,7 +668,7 @@ impl PciConfigSpace for NvmeController {
         }
 
         match self.vf_index_from_function(function) {
-            Some(idx) => self.vfs[idx].as_mut().unwrap().pci_cfg_write(offset, value),
+            Some(idx) => self.vfs[idx].pci_cfg_write(offset, value),
             None => IoResult::Ok, // Silently drop writes to absent functions.
         }
     }
