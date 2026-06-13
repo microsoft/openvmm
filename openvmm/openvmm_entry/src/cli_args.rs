@@ -2205,6 +2205,7 @@ impl FromStr for NvmeControllerCli {
         let mut vfs = None;
         let mut vf_msix_count = 64u16;
         let mut vf_max_io_queues = 64u16;
+        let mut vf_options_set = false;
 
         for part in s.split(',') {
             let mut kv = part.split('=');
@@ -2275,6 +2276,7 @@ impl FromStr for NvmeControllerCli {
                         .unwrap()
                         .parse::<u16>()
                         .context("invalid value for `vf_msix`")?;
+                    vf_options_set = true;
                 }
                 "vf_io_queues" => {
                     let val = kv.next();
@@ -2285,6 +2287,7 @@ impl FromStr for NvmeControllerCli {
                         .unwrap()
                         .parse::<u16>()
                         .context("invalid value for `vf_io_queues`")?;
+                    vf_options_set = true;
                 }
                 other => anyhow::bail!("unknown option: '{other}'"),
             }
@@ -2302,6 +2305,10 @@ impl FromStr for NvmeControllerCli {
                 anyhow::bail!("one of `pcie_port` or `vpci` is required")
             }
         };
+
+        if vfs.is_none() && vf_options_set {
+            anyhow::bail!("`vf_msix`/`vf_io_queues` require `vfs`");
+        }
 
         let sriov = vfs.map(|total_vfs| NvmeSriovCli {
             total_vfs,

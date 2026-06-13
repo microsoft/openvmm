@@ -587,8 +587,12 @@ impl PciExtendedCapability for SriovExtendedCapability {
             }
         }
 
-        // Don't queue a pending VF change — the device handles its own
-        // VF cleanup during reset. Just unmap the intercepts.
+        // Discard any VF change that was queued by a prior config write but
+        // not yet consumed by the device. After reset, VF Enable is clear and
+        // NumVFs is 0, so applying a stale enable/disable transition would be
+        // wrong; the device performs its own VF cleanup during reset. Don't
+        // queue a new change here. Just unmap the intercepts.
+        self.vf_mmio.decode.inner.lock().pending_vf_change = None;
         self.sync_vf_mmio();
     }
 }

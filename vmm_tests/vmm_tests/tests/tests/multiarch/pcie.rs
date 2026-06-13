@@ -931,7 +931,7 @@ async fn pcie_nvme_sriov<T>(
 
     // 3. Bring secondary controller online and attach namespace.
     //    Secondary controller IDs start at 2 (PF is 1).
-    //    nvme virt-mgmt: action 8 = secondary online
+    //    nvme virt-mgmt: action 9 = secondary online
     let sec_cntlid = "2";
 
     // Use chroot for nvme-cli commands (nvme-cli is in petritools).
@@ -941,7 +941,7 @@ async fn pcie_nvme_sriov<T>(
     // Bring secondary controller online.
     cmd!(
         chroot_sh,
-        "nvme virt-mgmt {pf_dev} --cntlid={sec_cntlid} --act=8"
+        "nvme virt-mgmt {pf_dev} --cntlid={sec_cntlid} --act=9"
     )
     .read()
     .await?;

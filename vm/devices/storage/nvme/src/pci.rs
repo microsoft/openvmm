@@ -444,14 +444,11 @@ impl NvmeController {
 
     /// Disable all VFs.
     ///
-    /// Unmaps MMIO intercepts so VFs stop receiving new work, initiates
-    /// controller resets, and returns the VFs for async draining.
+    /// Removes the VFs from the routing tables so they stop receiving new
+    /// work, and returns them for async draining (which tears down their
+    /// workers and waits for in-flight IO to complete).
     fn disable_vfs(&mut self) -> Vec<NvmeVirtualFunction> {
-        let mut draining = Vec::new();
-        for mut vf in self.vfs.drain(..) {
-            vf.initiate_reset();
-            draining.push(vf);
-        }
+        let draining = std::mem::take(&mut self.vfs);
         // Clear the routing table; these VFs are going away.
         if let Some(sriov) = &self.sriov {
             sriov.vf_clients.lock().clear();
@@ -812,33 +809,38 @@ impl ControllerCore {
         self.registers.csts.set_cfs(true);
     }
 
-    /// Initiates a controller reset and resets the register state.
-    ///
-    /// The register state is reset to its initial values immediately. The
-    /// worker teardown is **not** performed here — the caller must follow up
-    /// with [`ControllerCore::drain`] (async) or [`ControllerCore::poll_drain`]
-    /// (non-blocking), both of which drive the workers to the disabled state
-    /// from wherever they are (issuing the controller reset if still enabled)
-    /// and wait for in-flight IO holding guest memory references to finish.
-    fn initiate_reset(&mut self) {
-        self.registers = RegState::new();
-        *self.qe_sizes.lock() = Default::default();
-    }
-
     /// Drives the workers to the disabled state from whatever state they are
-    /// in, awaiting any in-flight IO. Must be preceded by
-    /// [`ControllerCore::initiate_reset`], which resets the register state.
+    /// in, awaiting any in-flight IO holding guest memory references, then
+    /// resets the controller's register and queue-entry-size state.
+    ///
+    /// `workers.reset()` issues the controller reset itself if the workers are
+    /// still enabled, so no separate initiation step is required.
     async fn drain(&mut self) {
         self.workers.reset().await;
+        self.reset_state();
     }
 
-    /// Non-blocking poll for drain completion. Returns `true` once the workers
-    /// have reached the disabled state.
+    /// Non-blocking equivalent of [`ControllerCore::drain`]. Returns `true`
+    /// once the workers have reached the disabled state and the controller
+    /// state has been reset.
     ///
     /// Registers `cx.waker()` with the underlying channel so the caller is
     /// woken when the drain makes progress.
     fn poll_drain(&mut self, cx: &mut Context<'_>) -> bool {
-        self.workers.poll_drain(cx)
+        if self.workers.poll_drain(cx) {
+            self.reset_state();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reset the controller's register state and the worker-shared IO queue
+    /// entry sizes. Only safe to call once the workers have fully drained,
+    /// since `qe_sizes` is shared with them.
+    fn reset_state(&mut self) {
+        self.registers = RegState::new();
+        *self.qe_sizes.lock() = Default::default();
     }
 }
 
@@ -867,10 +869,9 @@ impl ChangeDeviceState for NvmeController {
             vfs,
             vf_drain,
         } = self;
-        // Initiate reset on all active VFs, then drain them concurrently.
-        for vf in vfs.iter_mut() {
-            vf.initiate_reset();
-        }
+        // Drain all active VFs concurrently. Each VF's drain drives its
+        // workers to the disabled state, waits for in-flight IO, and resets
+        // its register state.
         join_all(vfs.iter_mut().map(|vf| vf.drain())).await;
         // Drain any pending VF drain from a VF_Enable=0 write.
         if let Some(mut drain) = vf_drain.take() {
@@ -878,9 +879,8 @@ impl ChangeDeviceState for NvmeController {
             drain.deferred.complete();
         }
 
-        // Reset the PF's own controller core: kick off the reset (resetting
-        // the register state) and drain in-flight IO.
-        core.initiate_reset();
+        // Reset the PF's own controller core: drive the workers to the
+        // disabled state, await in-flight IO, and reset the register state.
         core.drain().await;
         cfg_space.reset();
         // cfg_space.reset() resets the SR-IOV capability, which unmaps

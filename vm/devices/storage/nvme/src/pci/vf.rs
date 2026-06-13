@@ -189,21 +189,15 @@ impl NvmeVirtualFunction {
 }
 
 impl NvmeVirtualFunction {
-    /// Force-reset the VF controller. Called when PF resets or VF_Enable
-    /// is cleared. Resets register state and initiates worker shutdown, but
-    /// does NOT drop the workers — call [`drain`] to wait for in-flight IOs
-    /// to complete before the VF is dropped.
-    pub fn initiate_reset(&mut self) {
-        tracing::info!(vf = self.vf_index, "VF: initiating controller reset");
-        self.core.initiate_reset();
-    }
-
-    /// Asynchronously drain all in-flight IOs, returning the workers to the
+    /// Asynchronously drain the VF controller, returning its workers to the
     /// disabled state.
     ///
-    /// Must be called after [`initiate_reset`] to ensure all IOs holding
-    /// guest memory references complete before the VF is dropped.
+    /// Drives the workers to the disabled state from wherever they are,
+    /// waits for all in-flight IOs holding guest memory references to
+    /// complete, and resets the VF's register state. Called when the PF
+    /// resets or VF_Enable is cleared, before the VF is dropped.
     pub async fn drain(&mut self) {
+        tracing::debug!(vf = self.vf_index, "VF: draining controller");
         self.core.drain().await;
     }
 
