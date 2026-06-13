@@ -846,7 +846,7 @@ async fn virtio_net_windows(
 /// attach namespaces, perform IO through a VF, then tear down.
 ///
 /// Uses petritools erofs for nvme-cli access.
-#[openvmm_test(unstable_linux_direct_x64[PETRITOOLS_EROFS_X64])]
+#[openvmm_test(linux_direct_x64[PETRITOOLS_EROFS_X64])]
 async fn pcie_nvme_sriov<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),

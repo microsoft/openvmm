@@ -758,6 +758,7 @@ impl StorageBuilder {
                                     max_io_queues: 64,
                                     msix_count: 64,
                                     requests: ctrl.requests,
+                                    sriov: None,
                                 }
                                 .into_resource(),
                             });
@@ -772,6 +773,7 @@ impl StorageBuilder {
                                     max_io_queues: 64,
                                     msix_count: 64,
                                     requests: ctrl.requests,
+                                    sriov: None,
                                 }
                                 .into_resource(),
                                 vnode: None,
@@ -802,6 +804,7 @@ impl StorageBuilder {
                     max_io_queues: 64,
                     msix_count: 64,
                     requests: None,
+                    sriov: None,
                 }
                 .into_resource(),
                 vnode: None,
@@ -840,6 +843,7 @@ impl StorageBuilder {
                     max_io_queues: 64,
                     msix_count: 64,
                     requests: Some(recv),
+                    sriov: None,
                 }
                 .into_resource(),
                 vnode: None,
