@@ -71,6 +71,7 @@ pub mod user_facing {
     pub use crate::new_simple_flow_node;
     pub use crate::node::FlowPlatformLinuxDistro;
     pub use crate::pipeline::Artifact;
+    pub use crate::pipeline::ArtifactType;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -340,7 +341,7 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         T: 'static,
     {
         let val = ReadVar::from_static(val);
-        val.write_into(ctx, self, |v| v);
+        val.write_into(ctx, self);
     }
 
     pub(crate) fn into_json(self) -> WriteVar<serde_json::Value> {
@@ -391,6 +392,34 @@ pub trait ReadVarValue {
     /// Read the value of the Var at runtime.
     fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value;
 }
+
+// /// Read the value of one or more flowey Vars and write into an equal sized
+// /// collection of flowey Vars.
+// ///
+// /// By having this be a trait, it is possible to `write_into` both single
+// /// `ReadVar` / `WriteVar` pairs, as well as equal sized _collections_ of
+// /// them.
+// pub trait WriteInto {
+//     /// The read value of Self.
+//     type Value;
+//     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
+//     /// function to the Var at runtime.
+//     #[track_caller]
+//     fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
+//     where
+//         self::Value: 'static,
+//         U: Serialize + DeserializeOwned + 'static,
+//         F: FnOnce(T) -> U + 'static;
+
+//     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
+//     #[track_caller]
+//     pub fn write_into(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<T>)
+//     where
+//         T: 'static,
+//     {
+//         self.write_into_with(ctx, write_into, |x| x);
+//     }
+// }
 
 impl<T: Serialize + DeserializeOwned> ClaimVar for ReadVar<T> {
     type Claimed = ClaimedReadVar<T>;
@@ -673,14 +702,14 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         F: FnOnce(T) -> U + 'static,
     {
         let (read_from, write_into) = ctx.new_var();
-        self.write_into(ctx, write_into, f);
+        self.write_into_with(ctx, write_into, f);
         read_from
     }
 
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
     /// function to the Var at runtime.
     #[track_caller]
-    pub fn write_into<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
+    pub fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
     where
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
@@ -695,6 +724,15 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
                 rt.write(write_into, &f(this));
             }
         });
+    }
+
+    /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
+    #[track_caller]
+    pub fn write_into(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<T>)
+    where
+        T: 'static,
+    {
+        self.write_into_with(ctx, write_into, |x| x);
     }
 
     /// Zips self (`ReadVar<T>`) with another `ReadVar<U>`, returning a new

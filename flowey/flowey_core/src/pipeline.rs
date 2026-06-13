@@ -6,6 +6,7 @@
 mod artifact;
 
 pub use artifact::Artifact;
+pub use artifact::ArtifactType;
 
 use self::internal::*;
 use crate::node::FlowArch;
@@ -712,6 +713,30 @@ impl Pipeline {
         )
     }
 
+    /// Returns a pair of opaque handles to a new artifact for use across jobs
+    /// in the pipeline.
+    #[track_caller]
+    pub fn new_typed_artifact_collection<T: Artifact, U: ArtifactType>(
+        &mut self,
+        artifact_types: impl IntoIterator<Item = U>,
+        additional_tag: Option<&str>,
+    ) -> (
+        BTreeMap<U, PublishTypedArtifact<T>>,
+        BTreeMap<U, UseTypedArtifact<T>>,
+    ) {
+        artifact_types
+            .into_iter()
+            .map(|artifact_type| {
+                let (pub_artifact, use_artifact) =
+                    self.new_typed_artifact(artifact_type.name(additional_tag.map(|t| t.as_ref())));
+                (
+                    (artifact_type.clone(), pub_artifact),
+                    (artifact_type, use_artifact),
+                )
+            })
+            .unzip()
+    }
+
     /// (ADO only) Set the pipeline-level name.
     ///
     /// <https://learn.microsoft.com/en-us/azure/devops/pipelines/process/run-number?view=azure-devops&tabs=yaml>
@@ -997,6 +1022,21 @@ impl PipelineJobCtx<'_> {
         let done = self.new_done_handle();
         self.helper_request(artifact::publish::Request::new(read, artifact_path, done));
         write
+    }
+
+    /// Claim that this job will publish the artifacts, obtaining variables to
+    /// write the artifacts' contents to. The artifacts will be published at
+    /// the end of the job.
+    pub fn publish_typed_artifact_collection<T: Artifact, U: ArtifactType>(
+        &mut self,
+        artifacts: BTreeMap<U, PublishTypedArtifact<T>>,
+    ) -> BTreeMap<U, WriteVar<T>> {
+        artifacts
+            .into_iter()
+            .map(|(artifact_type, pub_artifact)| {
+                (artifact_type, self.publish_typed_artifact(pub_artifact))
+            })
+            .collect()
     }
 
     /// Obtain a `ReadVar<T>` corresponding to a pipeline parameter which is

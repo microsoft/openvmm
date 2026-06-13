@@ -16,7 +16,6 @@ pub(crate) fn recipe_to_filename(flavor: &OpenhclIgvmRecipe) -> &str {
         OpenhclIgvmRecipe::X64CvmDevkern => "openhcl-cvm-dev",
         OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64",
         OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-dev",
-        OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),
     }
 }
 

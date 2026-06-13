@@ -20,6 +20,7 @@ vmm_test_images = { workspace = true, features = ["serde", "clap"] }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 log.workspace = true
+paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
@@ -29,4 +30,4 @@ workspace = true
 
 [package.metadata.xtask.unused-deps]
 # Pulled in via prelude
-ignored = ["serde"]
+ignored = ["serde", "paste"]

@@ -5,7 +5,9 @@
 
 use super::build_and_publish_openvmm_hcl_baseline;
 use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeType;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::common::CommonTriple;
@@ -31,10 +33,10 @@ pub struct OpenhclIgvmBuildParams {
 
 flowey_request! {
     pub struct Params {
-        pub igvm_files: Vec<OpenhclIgvmBuildParams>,
-        pub artifact_dir_openhcl_igvm: ReadVar<PathBuf>,
+        pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>)>,
         pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
         pub artifact_openhcl_verify_size_baseline: Option<ReadVar<PathBuf>>,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -55,44 +57,60 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             igvm_files,
-            artifact_dir_openhcl_igvm,
             artifact_dir_openhcl_igvm_extras,
             artifact_openhcl_verify_size_baseline,
             done,
         } = request;
 
-        let mut built_igvm_files = Vec::new();
+        // Validate that all custom_target values are equal (or all None)
+        // for baseline publishing below
+        let (all_same, unique_target) = {
+            let mut unique_target: Option<CommonTriple> = None;
+            let mut all_same = true;
+            for (params, _) in &igvm_files {
+                match (&unique_target, &params.custom_target) {
+                    (None, Some(t)) => unique_target = Some(t.clone()),
+                    (Some(u), Some(t)) if u != t => {
+                        all_same = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            (all_same, unique_target)
+        };
+
         let mut built_extras = Vec::new();
 
-        for OpenhclIgvmBuildParams {
-            profile,
-            recipe,
-            custom_target,
-            extra_features,
-            release_cfg,
-        } in &igvm_files
+        for (
+            OpenhclIgvmBuildParams {
+                profile,
+                recipe,
+                custom_target,
+                extra_features,
+                release_cfg,
+            },
+            openhcl_igvm,
+        ) in igvm_files
         {
             let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
             let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
             let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
             let (read_built_sidecar, built_sidecar) = ctx.new_var();
+
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                 custom_target: custom_target.clone(),
-                build_profile: *profile,
-                release_cfg: *release_cfg,
-                recipe: recipe.clone(),
+                build_profile: profile,
+                release_cfg,
+                recipe: OpenhclIgvmRecipeType::WellKnown(recipe.clone()),
                 extra_features: extra_features.clone(),
                 disable_secure_avic: false,
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,
                 built_sidecar,
+                openhcl_igvm,
             });
-
-            built_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
-                let recipe = recipe.clone();
-                move |x| (recipe, x)
-            }));
 
             built_extras.push(ctx.emit_minor_rust_stepv(
                 "collect openhcl component paths",
@@ -115,14 +133,6 @@ impl SimpleFlowNode for Node {
 
         let mut did_publish = Vec::new();
 
-        did_publish.push(ctx.reqv(|done| {
-            crate::artifact_openhcl_igvm_from_recipe::publish::Request {
-                openhcl_igvm_files: built_igvm_files,
-                artifact_dir: artifact_dir_openhcl_igvm,
-                done,
-            }
-        }));
-
         did_publish.push(ctx.reqv(|v| {
             crate::artifact_openhcl_igvm_from_recipe_extras::publish::Request {
                 extras: built_extras,
@@ -132,19 +142,6 @@ impl SimpleFlowNode for Node {
         }));
 
         if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
-            // Validate that all custom_target values are equal (or all None)
-            let mut unique_target: Option<CommonTriple> = None;
-            let mut all_same = true;
-            for params in &igvm_files {
-                match (&unique_target, &params.custom_target) {
-                    (None, Some(t)) => unique_target = Some(t.clone()),
-                    (Some(u), Some(t)) if u != t => {
-                        all_same = false;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
             if all_same {
                 if let Some(custom_target) = unique_target {
                     did_publish.push(ctx.reqv(|v| {
