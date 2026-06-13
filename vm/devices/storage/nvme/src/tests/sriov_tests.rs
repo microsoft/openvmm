@@ -600,6 +600,40 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
         "secondary online failed"
     );
 
+    // Detach namespace 1 from the PF (it was attached there by
+    // `add_namespace`) so it can be attached to the private VF.
+    let mut pf_list = spec::ControllerList::new_zeroed();
+    pf_list.num_identifiers = 1;
+    pf_list.identifiers[0] = 1; // PF controller ID
+    gm.write_plain(0x02000u64, &pf_list).unwrap();
+
+    let mut detach_cmd = spec::Command::new_zeroed();
+    detach_cmd
+        .cdw0
+        .set_opcode(spec::AdminOpcode::NAMESPACE_ATTACHMENT.0);
+    detach_cmd.cdw0.set_cid(12);
+    detach_cmd.nsid = 1;
+    detach_cmd.cdw10 = spec::Cdw10NamespaceAttachment::new()
+        .with_sel(spec::NamespaceAttachmentSelection::DETACH.0)
+        .into();
+    detach_cmd.dptr[0] = 0x02000;
+    let cqe = pf_admin_command(
+        &mut c,
+        &gm,
+        &pf_asq,
+        &pf_acq,
+        1,
+        &detach_cmd,
+        &int_controller,
+        driver.clone(),
+    )
+    .await;
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::SUCCESS.0,
+        "NS detach from PF failed"
+    );
+
     // Attach namespace 1 to secondary controller.
     let mut ctrl_list = spec::ControllerList::new_zeroed();
     ctrl_list.num_identifiers = 1;
@@ -621,7 +655,7 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
         &gm,
         &pf_asq,
         &pf_acq,
-        1,
+        2,
         &ns_cmd,
         &int_controller,
         driver.clone(),
@@ -828,6 +862,9 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
 /// Controller ID of the single VF created by [`SriovVfHarness`].
 const VF_CNTLID: u16 = 2;
 
+/// Controller ID of the PF (primary controller).
+const PF_CNTLID: u16 = 1;
+
 /// A test harness with a PF (enabled, namespace 1 added) and a single VF
 /// created with its BARs configured. The VF's secondary controller starts
 /// **offline** and its NVMe controller is **not** yet enabled.
@@ -937,7 +974,7 @@ async fn setup_pf_with_offline_vf(driver: DefaultDriver) -> SriovVfHarness {
     c.pci_cfg_write(SRIOV_VF_BAR1, 0).unwrap();
     c.pci_cfg_write(SRIOV_VF_BAR4, vf_bar4_base as u32).unwrap();
 
-    SriovVfHarness {
+    let mut h = SriovVfHarness {
         c,
         gm,
         driver,
@@ -951,7 +988,16 @@ async fn setup_pf_with_offline_vf(driver: DefaultDriver) -> SriovVfHarness {
         pf_slot: 0,
         vf_sq_tail: 0,
         vf_cq_head: 0,
-    }
+    };
+
+    // `add_namespace` allocates namespace 1 and attaches it to the PF. Detach
+    // it from the PF so it can be attached to the (private) VF by tests.
+    assert_eq!(
+        h.detach_from_pf(1).await.status.status(),
+        spec::Status::SUCCESS.0,
+        "detaching namespace 1 from the PF failed"
+    );
+    h
 }
 
 impl SriovVfHarness {
@@ -995,6 +1041,26 @@ impl SriovVfHarness {
     /// Namespace Attachment command.
     async fn namespace_attachment(&mut self, nsid: u32, attach: bool) -> spec::Completion {
         let cmd = self.namespace_attachment_command(nsid, attach);
+        self.pf_command(&cmd).await
+    }
+
+    /// Detach namespace `nsid` from the PF itself via the Namespace Attachment
+    /// command, so it can be attached to a VF as a private namespace.
+    async fn detach_from_pf(&mut self, nsid: u32) -> spec::Completion {
+        let mut ctrl_list = spec::ControllerList::new_zeroed();
+        ctrl_list.num_identifiers = 1;
+        ctrl_list.identifiers[0] = PF_CNTLID;
+        self.gm.write_plain(0x02000u64, &ctrl_list).unwrap();
+
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0
+            .set_opcode(spec::AdminOpcode::NAMESPACE_ATTACHMENT.0);
+        cmd.cdw0.set_cid(12);
+        cmd.nsid = nsid;
+        cmd.cdw10 = spec::Cdw10NamespaceAttachment::new()
+            .with_sel(spec::NamespaceAttachmentSelection::DETACH.0)
+            .into();
+        cmd.dptr[0] = 0x02000;
         self.pf_command(&cmd).await
     }
 
@@ -1188,6 +1254,55 @@ impl SriovVfHarness {
         }
         nsids
     }
+
+    /// Issue an Identify namespace-list command (CNS in `cns`) on the PF and
+    /// return the reported NSIDs.
+    async fn pf_namespace_list(&mut self, cns: spec::Cns) -> Vec<u32> {
+        let out_gpa = 0x07000u64;
+        let mut id_cmd = spec::Command::new_zeroed();
+        id_cmd.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+        id_cmd.cdw0.set_cid(61);
+        id_cmd.cdw10 = spec::Cdw10Identify::new().with_cns(cns.0).into();
+        id_cmd.nsid = 0;
+        id_cmd.dptr[0] = out_gpa;
+        let cqe = self.pf_command(&id_cmd).await;
+        assert_eq!(
+            cqe.status.status(),
+            spec::Status::SUCCESS.0,
+            "PF identify namespace list failed"
+        );
+        let mut nsids = Vec::new();
+        for i in 0..1024u64 {
+            let nsid: u32 = self.gm.read_plain(out_gpa + i * 4).unwrap();
+            if nsid == 0 {
+                break;
+            }
+            nsids.push(nsid);
+        }
+        nsids
+    }
+
+    /// Build a Namespace Attachment command targeting an arbitrary controller.
+    fn attachment_command_to(&mut self, nsid: u32, cntlid: u16, attach: bool) -> spec::Command {
+        let mut ctrl_list = spec::ControllerList::new_zeroed();
+        ctrl_list.num_identifiers = 1;
+        ctrl_list.identifiers[0] = cntlid;
+        self.gm.write_plain(0x02000u64, &ctrl_list).unwrap();
+
+        let sel = if attach {
+            spec::NamespaceAttachmentSelection::ATTACH
+        } else {
+            spec::NamespaceAttachmentSelection::DETACH
+        };
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0
+            .set_opcode(spec::AdminOpcode::NAMESPACE_ATTACHMENT.0);
+        cmd.cdw0.set_cid(13);
+        cmd.nsid = nsid;
+        cmd.cdw10 = spec::Cdw10NamespaceAttachment::new().with_sel(sel.0).into();
+        cmd.dptr[0] = 0x02000;
+        cmd
+    }
 }
 
 /// An offline VF presents all-ones BAR0 registers, so a host enabling it
@@ -1344,5 +1459,88 @@ async fn test_sriov_vf_namespace_detach(driver: DefaultDriver) {
         h.namespace_attachment(1, false).await.status.status(),
         spec::Status::NAMESPACE_NOT_ATTACHED.0,
         "detaching an unattached namespace should fail"
+    );
+}
+
+/// A private namespace can be attached to only one controller at a time:
+/// attaching it to a second controller (here the PF) while it is attached to
+/// the VF must fail with Namespace Is Private, and re-attaching to the same
+/// controller must fail with Namespace Already Attached.
+#[async_test]
+async fn test_sriov_namespace_private_enforcement(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+
+    // Attach namespace 1 to the VF.
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+
+    // Re-attaching to the same controller reports Already Attached.
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::NAMESPACE_ALREADY_ATTACHED.0,
+        "re-attach to the same controller should report already attached"
+    );
+
+    // Attaching to the PF while attached to the VF reports Is Private.
+    let attach_pf = h.attachment_command_to(1, PF_CNTLID, true);
+    assert_eq!(
+        h.pf_command(&attach_pf).await.status.status(),
+        spec::Status::NAMESPACE_IS_PRIVATE.0,
+        "attaching a privately-held namespace elsewhere should report is private"
+    );
+}
+
+/// The PF's allocated namespace list (Identify CNS 0x10) reports a namespace
+/// for as long as it is allocated in the subsystem, independent of which
+/// controller (if any) it is attached to, while the PF's active list
+/// (CNS 0x02) reflects only namespaces attached to the PF.
+#[async_test]
+async fn test_sriov_pf_allocated_namespace_list(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    // After setup, namespace 1 is allocated but detached from the PF.
+    assert_eq!(
+        h.pf_namespace_list(spec::Cns::ALLOCATED_NAMESPACE_LIST)
+            .await,
+        vec![1],
+        "allocated list should contain the detached namespace"
+    );
+    assert!(
+        h.pf_namespace_list(spec::Cns::ACTIVE_NAMESPACES)
+            .await
+            .is_empty(),
+        "active list should be empty after detaching from the PF"
+    );
+
+    // Attaching to the VF does not change the PF's allocated list, and the
+    // namespace remains inactive on the PF.
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(
+        h.pf_namespace_list(spec::Cns::ALLOCATED_NAMESPACE_LIST)
+            .await,
+        vec![1],
+        "allocated list should still contain the VF-attached namespace"
+    );
+    assert!(
+        h.pf_namespace_list(spec::Cns::ACTIVE_NAMESPACES)
+            .await
+            .is_empty(),
+        "namespace attached to the VF is not active on the PF"
     );
 }

@@ -39,11 +39,6 @@ impl Namespace {
         }
     }
 
-    /// Returns a clone of the underlying disk.
-    pub fn disk(&self) -> Disk {
-        self.disk.clone()
-    }
-
     pub fn identify(&self, buf: &mut [u8]) {
         let id = nvm::IdentifyNamespace::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let size = self.disk.sector_count();
