@@ -19,7 +19,6 @@ use crate::VENDOR_ID;
 use crate::VF_DEVICE_ID;
 use crate::spec;
 use crate::workers::EnablePoll;
-use crate::workers::EnableStateKind;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
@@ -782,17 +781,13 @@ impl ControllerCore {
 
     /// Initiates a controller reset and resets the register state.
     ///
-    /// If the controller is enabled, this kicks off a controller reset on the
-    /// workers; the register state is reset to its initial values immediately.
-    /// This does **not** wait for in-flight IO to complete — the caller must
-    /// follow up with [`ControllerCore::drain`] (async) or
-    /// [`ControllerCore::poll_drain`] (non-blocking) before the controller is
-    /// dropped, so that IOs holding guest memory references finish first.
+    /// The register state is reset to its initial values immediately. The
+    /// worker teardown is **not** performed here — the caller must follow up
+    /// with [`ControllerCore::drain`] (async) or [`ControllerCore::poll_drain`]
+    /// (non-blocking), both of which drive the workers to the disabled state
+    /// from wherever they are (issuing the controller reset if still enabled)
+    /// and wait for in-flight IO holding guest memory references to finish.
     fn initiate_reset(&mut self) {
-        // BUGBUG: this EnableStateKind only exists for this check, seems dumb.
-        if self.workers.enable_state() == EnableStateKind::Enabled {
-            self.workers.controller_reset();
-        }
         self.registers = RegState::new();
         *self.qe_sizes.lock() = Default::default();
     }
