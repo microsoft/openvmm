@@ -1018,6 +1018,52 @@ impl SriovVfHarness {
         .await
     }
 
+    /// Re-drive the PF enable sequence after a device reset: reprogram BARs,
+    /// MSI-X, and admin queues, enable the controller, and wait for RDY. The
+    /// admin queue indices are reset since the queues are freshly created.
+    async fn reenable_pf(&mut self) {
+        // Set PF BARs.
+        self.c.pci_cfg_write(0x10, 0).unwrap();
+        self.c.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
+
+        // Find and enable MSI-X.
+        let mut cap_ptr = cfg_read(&mut self.c, 0x34) & 0xFF;
+        loop {
+            let cap_header = cfg_read(&mut self.c, cap_ptr as u16);
+            if cap_header & 0xFF == 0x11 {
+                self.c.pci_cfg_write(cap_ptr as u16, 0x80000000).unwrap();
+                break;
+            }
+            cap_ptr = (cap_header >> 8) & 0xFF;
+            assert_ne!(cap_ptr, 0, "MSI-X capability not found");
+        }
+
+        // Enable MMIO + DMA.
+        self.c.pci_cfg_write(4, 6).unwrap();
+
+        // Set PF admin queues (16 entries) and enable the PF.
+        self.c.write_bar0(0x30, 0x00000u64.as_bytes()).unwrap(); // ACQ
+        self.c.write_bar0(0x28, 0x01000u64.as_bytes()).unwrap(); // ASQ
+        self.c.write_bar0(0x24, 0xf000fu32.as_bytes()).unwrap(); // AQA: 16 entries
+        self.c
+            .mmio_write(BAR0_LEN, 0xfeed0000u64.as_bytes())
+            .unwrap();
+        self.c
+            .mmio_write(BAR0_LEN + 8, 0x1111u64.as_bytes())
+            .unwrap();
+        self.c.write_bar0(0x14, 1u32.as_bytes()).unwrap();
+        let mut backoff = Backoff::new(&self.driver);
+        loop {
+            backoff.back_off().await;
+            let mut csts = 0u32;
+            self.c.read_bar0(0x1c, csts.as_mut_bytes()).unwrap();
+            if spec::Csts::from(csts).rdy() {
+                break;
+            }
+        }
+        self.pf_slot = 0;
+    }
+
     /// Issue a Virtualization Management command to online/offline the VF's
     /// secondary controller.
     async fn set_secondary_online(&mut self, online: bool) -> spec::Completion {
@@ -1459,6 +1505,132 @@ async fn test_sriov_vf_namespace_detach(driver: DefaultDriver) {
         h.namespace_attachment(1, false).await.status.status(),
         spec::Status::NAMESPACE_NOT_ATTACHED.0,
         "detaching an unattached namespace should fail"
+    );
+}
+
+/// A namespace attached to a secondary controller survives an SR-IOV VF
+/// disable + re-enable cycle.
+///
+/// Per NVMe Base 2.1, Namespace Attachment operations are persistent across
+/// resets and across Virtualization Management commands that set a secondary
+/// offline. Clearing VF Enable implicitly transitions the secondary offline
+/// (§8.2.6.3) but must not drop its attachments. Because the secondary
+/// controller is persistent (it is not destroyed on VF disable), the namespace
+/// is still present — and the PF still records it as attached — after the VF is
+/// brought back.
+#[async_test]
+async fn test_sriov_vf_disable_preserves_namespace(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    // Online the secondary, enable it, attach namespace 1, confirm visible.
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(h.vf_active_namespaces().await, vec![1]);
+
+    // Clear VF Enable. This deactivates the VF and forces the secondary
+    // offline, but the secondary controller (and its namespace attachment)
+    // persists. Drive the deferred drain to completion via stop().
+    let _ = set_vf_enable(&mut h.c, false);
+    h.c.stop().await;
+
+    // The VF config space is now absent.
+    assert_eq!(vf_cfg_read(&mut h.c, 1, 0), 0xFFFFFFFF);
+
+    // Re-enable VFs. The VF BAR mapping is recomputed from the still-programmed
+    // VF BAR registers, so no BAR reprogramming is needed.
+    set_vf_enable(&mut h.c, true).unwrap();
+
+    // The secondary is offline after the implicit transition; bring it back
+    // online and re-enable its controller — crucially, without re-attaching the
+    // namespace.
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(
+        h.enable_vf_controller().await,
+        "VF should reach RDY after re-enable"
+    );
+
+    // The namespace is still attached and active on the secondary, with no
+    // re-attach required.
+    assert_eq!(
+        h.vf_active_namespaces().await,
+        vec![1],
+        "namespace attachment must persist across VF disable/re-enable"
+    );
+
+    // Drain any interrupts left over from the re-enable/online sequence so the
+    // following PF command observes only its own completion.
+    while h.int_controller.get_next_interrupt().is_some() {}
+
+    // The PF still records the namespace as attached to the secondary: a
+    // re-attach reports Already Attached rather than succeeding.
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::NAMESPACE_ALREADY_ATTACHED.0,
+        "PF must still record the namespace as attached to the secondary"
+    );
+}
+
+/// A full device reset restores the configured namespace topology: a namespace
+/// the guest moved to a secondary controller is returned to the PF.
+///
+/// The controller models no non-volatile configuration storage, so a
+/// subsystem-wide reset returns to the host-configured layout (all namespaces
+/// on the PF) rather than preserving guest-initiated VF attachments. This
+/// contrasts with a VF disable, across which attachments persist.
+#[async_test]
+async fn test_sriov_device_reset_restores_topology(driver: DefaultDriver) {
+    let mut h = setup_pf_with_offline_vf(driver.clone()).await;
+
+    // Online + enable the VF and attach namespace 1 to it.
+    assert_eq!(
+        h.set_secondary_online(true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert!(h.enable_vf_controller().await, "VF should reach RDY");
+    assert_eq!(
+        h.namespace_attachment(1, true).await.status.status(),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(h.vf_active_namespaces().await, vec![1]);
+
+    // Setup detached ns1 from the PF, so before reset it is on the VF only.
+    assert!(
+        h.pf_namespace_list(spec::Cns::ACTIVE_NAMESPACES)
+            .await
+            .is_empty(),
+        "ns1 should be on the VF, not the PF, before reset"
+    );
+
+    // Full device reset, then re-enable the PF.
+    h.c.reset().await;
+    h.reenable_pf().await;
+
+    // Drain any interrupts left over from the pre-reset sequence so the PF
+    // admin commands below observe only their own completions.
+    while h.int_controller.get_next_interrupt().is_some() {}
+
+    // The namespace is back on the PF (configured topology restored), and still
+    // allocated in the subsystem.
+    assert_eq!(
+        h.pf_namespace_list(spec::Cns::ACTIVE_NAMESPACES).await,
+        vec![1],
+        "device reset should restore the namespace to the PF"
+    );
+    assert_eq!(
+        h.pf_namespace_list(spec::Cns::ALLOCATED_NAMESPACE_LIST)
+            .await,
+        vec![1],
+        "the namespace should remain allocated in the subsystem"
     );
 }
 

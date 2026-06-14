@@ -91,11 +91,11 @@ pub struct AdminConfig {
 pub struct SriovAdminConfig {
     /// Total number of VFs (secondary controllers).
     pub total_vfs: u16,
-    /// Routing table mapping VF index to that VF's controller client.
-    /// Populated by the PCI layer at `enable_vfs`; used by the admin handler
-    /// to route online/offline and namespace attach/detach to each VF.
+    /// Routing table mapping VF index to that secondary controller's client.
+    /// Built once at PF construction; used by the admin handler to route
+    /// online/offline and namespace attach/detach to each secondary.
     #[inspect(skip)]
-    pub vf_clients: super::VfClientTable,
+    pub vf_clients: Vec<NvmeControllerClient>,
 }
 
 /// Per-secondary-controller resource state tracked by the admin handler.
@@ -528,27 +528,73 @@ impl AdminHandler {
         }
     }
 
-    /// Clears the PF's bookkeeping for all secondary controllers, called when
-    /// the VFs are disabled and destroyed.
+    /// Marks every secondary controller offline in the PF's CNS-15h online
+    /// mirror, called when VFs are deactivated (VF Enable=0 / NumVFs shrink).
     ///
-    /// Any namespace the PF recorded as attached to a secondary is marked
-    /// unattached — the VF's own namespace set is gone with the VF, so there
-    /// is no controller left to detach from — and every secondary is marked
-    /// offline for Secondary Controller List (CNS 0x15) reporting. A no-op on
-    /// non-PF controllers, which have neither an allocated set nor secondary
-    /// state.
-    pub(crate) fn disable_secondaries(&mut self) {
-        if let Some(allocated) = self.allocated.as_mut() {
-            for ns in allocated.values_mut() {
-                if ns.attached_to.is_some_and(|cntlid| cntlid != PF_CONTROLLER_ID) {
-                    ns.attached_to = None;
-                }
-            }
-        }
+    /// Namespace attachments are deliberately left intact: per NVMe Base 2.1,
+    /// Namespace Attachment operations are persistent across Virtualization
+    /// Management commands that set a secondary offline (and across all reset
+    /// events). The secondary controllers themselves persist, so their
+    /// attachments remain valid and become active again when the VF is
+    /// re-activated and brought online. A no-op on non-PF controllers, which
+    /// have no secondary state.
+    pub(crate) fn mark_secondaries_offline(&mut self) {
         if let Some(sriov) = self.sriov_state.as_mut() {
             for controller in &mut sriov.controllers {
                 controller.online = false;
             }
+        }
+    }
+
+    /// Restores the configured namespace topology: every allocated namespace is
+    /// returned to the PF (its configured home), undoing any guest-initiated
+    /// Namespace Attachment that moved it to a secondary controller.
+    ///
+    /// Called on a full device reset. The controller models no non-volatile
+    /// configuration storage, so a subsystem-wide reset returns to the
+    /// host-configured topology (all namespaces on the PF, as established by
+    /// the resolver) rather than preserving guest runtime attachment changes.
+    /// This differs from a Controller Level Reset / Virtualization Management
+    /// offline, across which attachments persist. A no-op on non-SR-IOV
+    /// controllers, which have no `allocated` set and cannot detach namespaces
+    /// from the PF in the first place.
+    pub(crate) async fn restore_default_topology(&mut self, mut state: Option<&mut AdminState>) {
+        let Some(allocated) = self.allocated.as_ref() else {
+            return;
+        };
+        // Collect the namespaces currently held by a secondary; their backing
+        // disks are re-attached to the PF below.
+        let mut to_restore: Vec<(u32, u16, Disk)> = Vec::new();
+        for (&nsid, ns) in allocated {
+            if let Some(cntlid) = ns.attached_to {
+                if cntlid != PF_CONTROLLER_ID {
+                    to_restore.push((nsid, cntlid, ns.disk.clone()));
+                }
+            }
+        }
+
+        for (nsid, cntlid, disk) in to_restore {
+            // Detach from the secondary. Best-effort: the secondary owns its
+            // namespace set and may already have shed it during its own reset.
+            if let Some(idx) = self
+                .sriov_state
+                .as_ref()
+                .and_then(|s| s.secondary_index(cntlid))
+            {
+                if let Some(client) = self.vf_client(idx) {
+                    let _ = client.remove_namespace(nsid).await;
+                }
+            }
+            // Re-attach to the PF and record it as the namespace's home. The
+            // PF is disabled during reset, so `state` is `None` and this just
+            // updates the persistent handler set that a later enable re-reads.
+            self.attach_local(state.as_deref_mut(), nsid, disk).await;
+            self.allocated
+                .as_mut()
+                .unwrap()
+                .get_mut(&nsid)
+                .unwrap()
+                .attached_to = Some(PF_CONTROLLER_ID);
         }
     }
 
@@ -1583,15 +1629,9 @@ impl AdminHandler {
     }
 
     /// Returns a clone of the routing client for the VF at the given 0-based
-    /// index, if that VF currently exists.
+    /// index, if that VF index is within range.
     fn vf_client(&self, idx: usize) -> Option<NvmeControllerClient> {
-        self.config
-            .sriov
-            .as_ref()?
-            .vf_clients
-            .lock()
-            .get(idx)
-            .cloned()
+        self.config.sriov.as_ref()?.vf_clients.get(idx).cloned()
     }
 }
 

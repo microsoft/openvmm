@@ -3,7 +3,7 @@
 
 //! The NVMe PCI device implementation.
 
-mod vf;
+mod secondary;
 
 use crate::BAR0_LEN;
 use crate::DEVICE_ID;
@@ -34,7 +34,6 @@ use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use futures::future::join_all;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
@@ -55,9 +54,11 @@ use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
+use secondary::NvmeSecondaryController;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
-use vf::NvmeVirtualFunction;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -74,33 +75,39 @@ pub struct NvmeController {
     #[inspect(flatten)]
     core: ControllerCore,
 
-    // Inputs captured at construction, cloned to lazily build VFs in
-    // `enable_vfs`. Stored unconditionally (even without SR-IOV) so VF
-    // creation doesn't depend on threading them through `SriovState` — a
-    // little wasteful for non-SR-IOV controllers, but simpler to reason
-    // about.
-    #[inspect(skip)]
-    driver_source: VmTaskDriverSource,
-    #[inspect(skip)]
-    guest_memory: GuestMemory,
-    #[inspect(skip)]
-    msi_target: MsiTarget,
     #[inspect(display)]
     subsystem_id: Guid,
 
     // SR-IOV support — None when SR-IOV is not configured.
     sriov: Option<SriovState>,
+    /// Secondary controllers, one per VF the PF can support (`total_vfs`).
+    ///
+    /// These are **persistent** for the life of the PF: they are created once
+    /// at construction and never destroyed. SR-IOV VF Enable / NumVFs control
+    /// only their PCI/MMIO visibility and online-ability (see `num_active_vfs`),
+    /// not their existence. Their namespace attachments and controller identity
+    /// survive VF Enable transitions, matching the NVMe model in which a
+    /// secondary controller is an enduring NVM-subsystem entity (NVMe Base 2.1:
+    /// the Secondary Controller List (CNS 15h) reports all secondaries —
+    /// including those Offline due to VF Enable=0 — and Namespace Attachment
+    /// operations are persistent across resets and across Virtualization
+    /// Management commands that set a secondary offline).
     #[inspect(iter_by_index)]
-    vfs: Vec<NvmeVirtualFunction>,
-    /// Pending VF drain — set when VF_Enable is cleared, completed by
-    /// `poll_device` when all VF IOs have drained. Stalls the VCPU that
-    /// wrote VF_Enable=0 until drain is complete.
+    secondaries: Vec<NvmeSecondaryController>,
+    /// Number of secondaries currently *active* (visible to config space and
+    /// MMIO routing, and able to be brought online). Set to NumVFs when VF
+    /// Enable transitions 0->1, and back to 0 when it transitions 1->0. Always
+    /// `<= secondaries.len()`.
+    num_active_vfs: u16,
+    /// Pending deactivation drain — set when VF Enable is cleared,
+    /// completed by `poll_device` once the affected secondaries have drained
+    /// and gone offline. Stalls the VCPU that wrote VF Enable=0 until then.
     #[inspect(with = "Option::is_some")]
     vf_drain: Option<VfDrainState>,
 }
 
 /// The common state machine shared by PF ([`super::NvmeController`]) and VF
-/// ([`super::vf::NvmeVirtualFunction`]) NVMe controllers.
+/// ([`super::secondary::NvmeSecondaryController`]) NVMe controllers.
 ///
 /// Both controllers have identical register layouts and an identical
 /// [`NvmeWorkers`] coordinator; only their surrounding PCI/SR-IOV state
@@ -161,29 +168,64 @@ struct SriovState {
     /// SR-IOV configuration.
     #[inspect(flatten)]
     config: NvmeSriovCaps,
-    /// Routing table mapping VF index to that VF's controller client.
-    /// Populated by `enable_vfs`, cleared by `disable_vfs`; the PF admin
-    /// handler uses it to route online/offline and namespace attach/detach.
-    #[inspect(skip)]
-    vf_clients: crate::workers::VfClientTable,
 }
 
-/// State for an in-progress VF drain operation.
+/// State for an in-progress VF deactivation drain.
 ///
-/// When VF_Enable is cleared, VFs are moved here and their workers are
-/// drained asynchronously via `poll_device`. When all VFs finish
-/// draining, the `DeferredWrite` is completed to resume the stalled VCPU.
+/// When VF Enable is cleared, the formerly-active secondaries are forced
+/// offline and controller-reset **in place** (they stay in
+/// [`NvmeController::secondaries`]; their namespaces and identity persist).
+/// The drain completes asynchronously via `poll_device`; the deferred config
+/// write resumes only once every affected secondary has drained and gone
+/// offline, so the guest cannot observe the disable and race a namespace or
+/// virtualization-management command against not-yet-offline state.
 struct VfDrainState {
-    /// The VFs being drained.
-    vfs: Vec<NvmeVirtualFunction>,
-    /// Completes the deferred config-space write when drain is done.
+    /// Number of secondaries `[0, count)` being drained (the formerly-active
+    /// set).
+    count: u16,
+    /// Completes the deferred config-space write when the drain is done.
     deferred: DeferredWrite,
-    /// Pending cleanup of the PF's secondary-controller bookkeeping (namespace
-    /// attachments + online flags). Polled alongside the VF drains; the
-    /// deferred write must not resume until it completes, so the guest cannot
-    /// observe the disable and issue a namespace command against stale PF
-    /// state.
-    secondary_cleanup: Option<PendingRpc<()>>,
+    /// Pending offline acknowledgements: one per affected secondary's
+    /// coordinator plus the PF's CNS-15h online mirror. All must resolve
+    /// before the deferred write completes.
+    pending_offline: Vec<PendingRpc<()>>,
+}
+
+impl VfDrainState {
+    /// Await this drain to completion, then release the stalled config write:
+    /// finish draining each affected secondary's in-flight IO, resolve every
+    /// offline acknowledgement, and complete the deferred write.
+    async fn complete(mut self, secondaries: &mut [NvmeSecondaryController]) {
+        for secondary in &mut secondaries[..self.count as usize] {
+            secondary.drain().await;
+        }
+        for rpc in self.pending_offline.drain(..) {
+            let _ = rpc.await;
+        }
+        self.deferred.complete();
+    }
+
+    /// Poll this drain forward without blocking. Returns `true` once every
+    /// affected secondary has drained and all offline acknowledgements have
+    /// resolved; the caller then calls [`VfDrainState::release`].
+    ///
+    /// Must not short-circuit: every secondary and RPC is polled so each
+    /// registers `cx.waker()` with its underlying mesh channel.
+    fn poll(&mut self, cx: &mut Context<'_>, secondaries: &mut [NvmeSecondaryController]) -> bool {
+        let mut all_done = true;
+        for secondary in &mut secondaries[..self.count as usize] {
+            all_done &= secondary.poll_drain(cx);
+        }
+        self.pending_offline
+            .retain_mut(|rpc| Pin::new(rpc).poll(cx).is_pending());
+        all_done && self.pending_offline.is_empty()
+    }
+
+    /// Release the stalled config-space write once [`VfDrainState::poll`] has
+    /// reported completion.
+    fn release(self) {
+        self.deferred.complete();
+    }
 }
 
 /// The routing target of a PCI config-space access, as resolved by
@@ -294,14 +336,9 @@ impl NvmeController {
                 Box<dyn pci_core::capabilities::extended::PciExtendedCapability>,
             > = vec![Box::new(sriov_cap)];
 
-            // Routing table mapping VF index to that VF's controller client.
-            // Empty until VFs are enabled.
-            let vf_clients: crate::workers::VfClientTable = Arc::new(Mutex::new(Vec::new()));
-
             let state = SriovState {
                 bar_decode,
                 config: sriov_caps,
-                vf_clients,
             };
 
             (extended_caps, Some(state), true)
@@ -340,9 +377,43 @@ impl NvmeController {
             .collect();
 
         let qe_sizes = Arc::new(Default::default());
+
+        // Eagerly create all secondary controllers (one per total VF). They are
+        // persistent for the PF's lifetime — VF Enable / NumVFs only gate their
+        // visibility, not their existence (see `secondaries` field docs). Each
+        // starts offline with its controller disabled and no namespaces; the
+        // guest brings it online via Virtualization Management and attaches
+        // namespaces, all of which persist across VF Enable transitions.
+        let secondaries: Vec<NvmeSecondaryController> = if let Some(sriov) = &sriov {
+            let config = &sriov.config;
+            (0..config.total_vfs)
+                .map(|vf_index| {
+                    // VF function number: first_vf_offset + index * vf_stride,
+                    // with offset=1, stride=1 → functions 1, 2, 3, ...
+                    let vf_devfn = 1 + vf_index as u8;
+                    let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
+                    NvmeSecondaryController::new(secondary::NvmeSecondaryControllerParams {
+                        msix_count: config.vf_msix_count,
+                        max_io_queues: config.vf_max_io_queues,
+                        msi_target: &msi_target.with_devfn(vf_devfn),
+                        driver_source: driver_source.clone(),
+                        guest_memory: guest_memory.clone(),
+                        subsystem_id: caps.subsystem_id,
+                        vf_index,
+                        cntlid,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let sriov_admin_config = sriov.as_ref().map(|s| crate::workers::SriovAdminConfig {
             total_vfs: s.config.total_vfs,
-            vf_clients: s.vf_clients.clone(),
+            // Build the routing table once and hand it to the admin handler,
+            // which owns it outright. The secondaries are persistent, so it is
+            // stable for the PF's lifetime — no later mutation, hence no lock.
+            vf_clients: secondaries.iter().map(|s| s.client()).collect(),
         });
         let controller_id = if sriov.is_some() {
             crate::workers::PF_CONTROLLER_ID
@@ -366,12 +437,10 @@ impl NvmeController {
             cfg_space,
             msix,
             core: ControllerCore::new(qe_sizes, admin),
-            driver_source: driver_source.clone(),
-            guest_memory,
-            msi_target: msi_target.clone(),
             subsystem_id: caps.subsystem_id,
             sriov,
-            vfs: Vec::new(),
+            secondaries,
+            num_active_vfs: 0,
             vf_drain: None,
         }
     }
@@ -404,64 +473,47 @@ impl NvmeController {
         self.core.write_bar0(addr, data)
     }
 
-    /// Enable VFs by creating VF instances.
-    fn enable_vfs(&mut self, num_vfs: u16) {
-        let sriov = self.sriov.as_ref().expect("SR-IOV must be configured");
-        let config = &sriov.config;
-
-        // VFs must already be disabled and drained before enabling. The
-        // caller (`drain_sriov_pending`) only invokes this on a VF_Enable
-        // 0->1 transition, and refuses to re-enable while a drain is in
-        // progress, so `vfs` is always empty here.
-        assert!(
-            self.vfs.is_empty(),
-            "enable_vfs called with {} VFs still present",
-            self.vfs.len()
-        );
-        self.vfs.reserve(num_vfs as usize);
-
-        for i in 0..num_vfs {
-            // VF function number: first_vf_offset + i * vf_stride.
-            // With offset=1, stride=1, VFs are at functions 1, 2, 3, ...
-            let vf_devfn = 1 + i as u8; // first_vf_offset=1, vf_stride=1
-            let vf_msi_target = self.msi_target.with_devfn(vf_devfn);
-            let vf_index = i;
-            let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
-
-            let vf = NvmeVirtualFunction::new(vf::NvmeVirtualFunctionParams {
-                msix_count: config.vf_msix_count,
-                max_io_queues: config.vf_max_io_queues,
-                msi_target: &vf_msi_target,
-                driver_source: self.driver_source.clone(),
-                guest_memory: self.guest_memory.clone(),
-                subsystem_id: self.subsystem_id,
-                vf_index,
-                cntlid,
-            });
-            self.vfs.push(vf);
+    /// Deactivate all currently-active secondaries on VF Enable=0.
+    ///
+    /// Each formerly-active secondary is forced offline and controller-reset
+    /// **in place** — it stays in `self.secondaries`, and its namespace
+    /// attachments and identity persist. Returns `Some(IoResult::Defer(...))`
+    /// so the config write stalls until every secondary has drained and gone
+    /// offline.
+    fn deactivate_vfs(&mut self) -> Option<IoResult> {
+        let count = self.num_active_vfs;
+        if count == 0 {
+            return None;
         }
 
-        // Populate the routing table so the PF admin handler can deliver
-        // online/offline and namespace attach/detach messages to each VF.
-        let clients: Vec<NvmeControllerClient> = self.vfs.iter().map(|vf| vf.client()).collect();
-        *sriov.vf_clients.lock() = clients;
+        // Force each active secondary offline (NVMe Base 2.1 §8.2.6.3: VF
+        // Enable=0 implicitly transitions the secondary to Offline). The
+        // controller reset / IO drain itself is driven by `poll_device` via
+        // `poll_drain`.
+        let mut pending_offline: Vec<PendingRpc<()>> = self.secondaries[..count as usize]
+            .iter()
+            .map(|s| s.set_offline())
+            .collect();
+        // Clear the PF's CNS-15h online mirror for the affected secondaries.
+        pending_offline.push(self.core.workers.mark_secondaries_offline());
 
-        tracing::info!(num_vfs, "SR-IOV: enabled VFs");
+        self.num_active_vfs = 0;
+        let (deferred, token) = defer_write();
+        self.vf_drain = Some(VfDrainState {
+            count,
+            deferred,
+            pending_offline,
+        });
+        tracing::info!(count, "SR-IOV: deactivating VFs");
+        Some(IoResult::Defer(token))
     }
 
-    /// Disable all VFs.
-    ///
-    /// Removes the VFs from the routing tables so they stop receiving new
-    /// work, and returns them for async draining (which tears down their
-    /// workers and waits for in-flight IO to complete).
-    fn disable_vfs(&mut self) -> Vec<NvmeVirtualFunction> {
-        let draining = std::mem::take(&mut self.vfs);
-        // Clear the routing table; these VFs are going away.
-        if let Some(sriov) = &self.sriov {
-            sriov.vf_clients.lock().clear();
+    /// Await any in-progress VF deactivation drain to completion, releasing the
+    /// stalled config write. A no-op if no drain is pending.
+    async fn complete_vf_drain(&mut self) {
+        if let Some(drain) = self.vf_drain.take() {
+            drain.complete(&mut self.secondaries).await;
         }
-        tracing::info!(draining = draining.len(), "SR-IOV: disabled VFs");
-        draining
     }
 
     /// Drain any pending SR-IOV callbacks and handle VF lifecycle / BAR changes.
@@ -472,30 +524,21 @@ impl NvmeController {
         let change = self.sriov.as_ref()?.bar_decode.take_pending_vf_change()?;
 
         if change.enabled {
-            // Don't allow VF_Enable=1 while a drain is in progress.
+            // Activate secondaries [0, NumVFs): make them visible to config
+            // space and MMIO routing. They already exist (created at
+            // construction) with their persistent namespaces; the guest brings
+            // them online and enables them. Don't activate while a drain is
+            // in progress.
             if self.vf_drain.is_some() {
                 tracelimit::warn_ratelimited!(
                     "SR-IOV: ignoring VF_Enable=1 while VF drain is in progress"
                 );
             } else {
-                self.enable_vfs(change.num_vfs);
+                self.num_active_vfs = change.num_vfs.min(self.secondaries.len() as u16);
+                tracing::info!(num_vfs = self.num_active_vfs, "SR-IOV: activated VFs");
             }
-        } else {
-            let draining_vfs = self.disable_vfs();
-            if !draining_vfs.is_empty() {
-                // The VFs are gone, so clear the PF's secondary-controller
-                // bookkeeping. Gate the config-write completion on this (along
-                // with the VF drains) so the guest can't race a namespace
-                // command ahead of the cleanup.
-                let secondary_cleanup = Some(self.core.workers.disable_secondaries());
-                let (deferred, token) = defer_write();
-                self.vf_drain = Some(VfDrainState {
-                    vfs: draining_vfs,
-                    deferred,
-                    secondary_cleanup,
-                });
-                return Some(IoResult::Defer(token));
-            }
+        } else if let Some(defer) = self.deactivate_vfs() {
+            return Some(defer);
         }
 
         None
@@ -511,9 +554,10 @@ impl NvmeController {
         if function == 0 {
             return Target::Pf;
         }
-        // first_vf_offset = 1, vf_stride = 1
+        // first_vf_offset = 1, vf_stride = 1. Only active secondaries
+        // (index < num_active_vfs) present config space; the rest are absent.
         match function.checked_sub(1).map(usize::from) {
-            Some(idx) if idx < self.vfs.len() => Target::Vf(idx),
+            Some(idx) if idx < self.num_active_vfs as usize => Target::Vf(idx),
             _ => Target::None,
         }
     }
@@ -861,60 +905,53 @@ impl ChangeDeviceState for NvmeController {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Complete any pending VF drain — this can happen if the device is
-        // stopped while a VF_Enable=0 write is being processed.
-        if let Some(mut drain) = self.vf_drain.take() {
-            join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
-            if let Some(rpc) = drain.secondary_cleanup.take() {
-                let _ = rpc.await;
-            }
-            drain.deferred.complete();
-        }
+        // Complete any in-progress VF deactivation drain — this can happen if
+        // the device is stopped while a VF Enable=0 write is being processed.
+        self.complete_vf_drain().await;
     }
 
     async fn reset(&mut self) {
+        // Complete any in-progress VF deactivation drain first.
+        self.complete_vf_drain().await;
+
         let Self {
             cfg_space,
             msix: _,
             core,
-            driver_source: _,
-            guest_memory: _,
-            msi_target: _,
             subsystem_id: _,
             sriov,
-            vfs,
-            vf_drain,
+            secondaries,
+            num_active_vfs,
+            vf_drain: _,
         } = self;
-        // Drain all active VFs concurrently. Each VF's drain drives its
-        // workers to the disabled state, waits for in-flight IO, and resets
-        // its register state.
-        join_all(vfs.iter_mut().map(|vf| vf.drain())).await;
-        // Complete any pending VF drain from a VF_Enable=0 write.
-        if let Some(mut drain) = vf_drain.take() {
-            join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
-            if let Some(rpc) = drain.secondary_cleanup.take() {
-                let _ = rpc.await;
-            }
-            drain.deferred.complete();
-        }
 
-        // Now that all VFs are gone, clear the PF's secondary-controller
-        // bookkeeping (namespace attachments + online flags) so a later
-        // re-enable starts from a clean slate.
-        if sriov.is_some() {
-            let _ = core.workers.disable_secondaries().await;
+        // Force every secondary offline and controller-reset it in place. The
+        // secondaries themselves persist (identity is stable), but their
+        // guest-assigned namespaces are restored to the PF below.
+        for secondary in secondaries.iter_mut() {
+            let _ = secondary.set_offline().await;
+            secondary.drain().await;
         }
+        *num_active_vfs = 0;
 
         // Reset the PF's own controller core: drive the workers to the
         // disabled state, await in-flight IO, and reset the register state.
         core.drain().await;
         cfg_space.reset();
-        // cfg_space.reset() resets the SR-IOV capability, which unmaps
-        // all VF MMIO intercepts. VFs were already drained above.
-        if let Some(sriov) = sriov {
-            sriov.vf_clients.lock().clear();
+        // cfg_space.reset() reset the SR-IOV capability (VF Enable=0, NumVFs=0),
+        // unmapping all VF MMIO intercepts. Mark the PF's CNS-15h online mirror
+        // offline to match; the routing table (`vf_clients`) is left intact
+        // because the secondaries persist.
+        if sriov.is_some() {
+            let _ = core.workers.mark_secondaries_offline().await;
+            // Return every namespace to the PF (its configured home). The
+            // controller models no non-volatile configuration storage, so a
+            // full subsystem reset restores the host-configured topology rather
+            // than preserving guest-initiated VF attachments. (Unlike a
+            // Controller Level Reset / VF disable, across which attachments
+            // persist.)
+            let _ = core.workers.restore_default_topology().await;
         }
-        vfs.clear();
     }
 }
 
@@ -934,27 +971,14 @@ impl ChipsetDevice for NvmeController {
 
 impl PollDevice for NvmeController {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        if let Some(drain) = &mut self.vf_drain {
-            // Poll every VF — must not short-circuit so that each VF
-            // registers cx.waker() with its underlying mesh channel.
-            let mut all_drained = true;
-            for vf in &mut drain.vfs {
-                all_drained &= vf.poll_drain(cx);
-            }
-            // Drive the PF secondary-controller cleanup to completion. It must
-            // finish before the deferred write resumes so the guest can't
-            // observe the disable and issue a namespace command against stale
-            // PF bookkeeping.
-            if let Some(rpc) = &mut drain.secondary_cleanup {
-                if std::pin::Pin::new(rpc).poll(cx).is_ready() {
-                    drain.secondary_cleanup = None;
-                } else {
-                    all_drained = false;
-                }
-            }
-            if all_drained {
-                let drain = self.vf_drain.take().unwrap();
-                drain.deferred.complete();
+        let Self {
+            secondaries,
+            vf_drain,
+            ..
+        } = self;
+        if let Some(drain) = vf_drain {
+            if drain.poll(cx, secondaries) {
+                vf_drain.take().unwrap().release();
                 tracing::debug!("SR-IOV: VF drain complete, VCPU resumed");
             }
         }
@@ -973,16 +997,18 @@ impl MmioIntercept for NvmeController {
             _ => {}
         }
 
-        // Check VF BARs using the shared address decode.
+        // Check VF BARs using the shared address decode. Only active
+        // secondaries (index < num_active_vfs) respond; addresses that decode
+        // to an inactive secondary fall through to InvalidRegister.
         if let Some(sriov) = &self.sriov {
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
-                if let Some(vf) = self.vfs.get_mut(vf_idx) {
-                    return vf.read_bar0(offset, data);
+                if vf_idx < self.num_active_vfs as usize {
+                    return self.secondaries[vf_idx].read_bar0(offset, data);
                 }
             }
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
-                if let Some(vf) = self.vfs.get_mut(vf_idx) {
-                    return vf.read_msix(offset, data);
+                if vf_idx < self.num_active_vfs as usize {
+                    return self.secondaries[vf_idx].read_msix(offset, data);
                 }
             }
         }
@@ -1007,16 +1033,18 @@ impl MmioIntercept for NvmeController {
             _ => {}
         }
 
-        // Check VF BARs using the shared address decode.
+        // Check VF BARs using the shared address decode. Only active
+        // secondaries (index < num_active_vfs) respond; addresses that decode
+        // to an inactive secondary fall through to InvalidRegister.
         if let Some(sriov) = &self.sriov {
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
-                if let Some(vf) = self.vfs.get_mut(vf_idx) {
-                    return vf.write_bar0(offset, data);
+                if vf_idx < self.num_active_vfs as usize {
+                    return self.secondaries[vf_idx].write_bar0(offset, data);
                 }
             }
             if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
-                if let Some(vf) = self.vfs.get_mut(vf_idx) {
-                    return vf.write_msix(offset, data);
+                if vf_idx < self.num_active_vfs as usize {
+                    return self.secondaries[vf_idx].write_msix(offset, data);
                 }
             }
         }
@@ -1048,7 +1076,7 @@ impl PciConfigSpace for NvmeController {
     ) -> IoResult {
         match self.target_from_function(secondary_bus, target_bus, function) {
             Target::Pf => self.pci_cfg_read(offset, value),
-            Target::Vf(idx) => self.vfs[idx].pci_cfg_read(offset, value),
+            Target::Vf(idx) => self.secondaries[idx].pci_cfg_read(offset, value),
             Target::None => {
                 *value = !0; // No device present.
                 IoResult::Ok
@@ -1066,7 +1094,7 @@ impl PciConfigSpace for NvmeController {
     ) -> IoResult {
         match self.target_from_function(secondary_bus, target_bus, function) {
             Target::Pf => self.pci_cfg_write(offset, value),
-            Target::Vf(idx) => self.vfs[idx].pci_cfg_write(offset, value),
+            Target::Vf(idx) => self.secondaries[idx].pci_cfg_write(offset, value),
             Target::None => IoResult::Ok, // Silently drop writes to absent functions.
         }
     }

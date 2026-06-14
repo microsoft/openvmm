@@ -1,16 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVMe Virtual Function (VF) state for SR-IOV support.
+//! NVMe secondary controller state for SR-IOV support.
 //!
-//! Each VF is an independent NVMe controller with its own register state,
-//! admin/IO queues, and worker tasks. VFs are owned by the PF
-//! ([`super::NvmeController`]) and created/destroyed when the SR-IOV
-//! capability's VF Enable bit changes.
+//! Each secondary controller is an independent NVMe controller with its own
+//! register state, admin/IO queues, and worker tasks. They are owned by the PF
+//! ([`super::NvmeController`]) and are **persistent** for the PF's lifetime:
+//! they are created once at construction and never destroyed. SR-IOV VF Enable
+//! / NumVFs only gate their PCI/MMIO visibility and online-ability, not their
+//! existence — a secondary controller is an enduring NVM-subsystem entity
+//! whose namespace attachments and identity survive VF Enable transitions
+//! (NVMe Base 2.1).
 //!
-//! VF resource limits (max queues, interrupts) and namespace assignments
-//! are managed by the PF admin handler via Virtualization Management and
-//! Namespace Attachment commands, which are routed to the VF's coordinator
+//! Resource limits (max queues, interrupts) and namespace assignments are
+//! managed by the PF admin handler via Virtualization Management and Namespace
+//! Attachment commands, which are routed to the secondary's coordinator
 //! through its [`NvmeControllerClient`](crate::NvmeControllerClient).
 
 use crate::VENDOR_ID;
@@ -26,6 +30,7 @@ use device_emulators::write_as_u32_chunks;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::PendingRpc;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::capabilities::pci_express::PciExpressCapability;
@@ -47,7 +52,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// is computed as `VF_BAR_base + vf_index * bar_size`. The PF manages MMIO
 /// intercepts on behalf of VFs and routes MMIO accesses to VF methods.
 #[derive(Inspect)]
-pub(crate) struct NvmeVirtualFunction {
+pub(crate) struct NvmeSecondaryController {
     cfg_space: ConfigSpaceType0Emulator,
     #[inspect(skip)]
     msix: MsixEmulator,
@@ -59,8 +64,8 @@ pub(crate) struct NvmeVirtualFunction {
     vf_index: u16,
 }
 
-/// Parameters for constructing a [`NvmeVirtualFunction`].
-pub(crate) struct NvmeVirtualFunctionParams<'a> {
+/// Parameters for constructing a [`NvmeSecondaryController`].
+pub(crate) struct NvmeSecondaryControllerParams<'a> {
     /// Number of MSI-X vectors for the VF.
     pub msix_count: u16,
     /// Fixed maximum number of IO queues for the VF.
@@ -79,14 +84,14 @@ pub(crate) struct NvmeVirtualFunctionParams<'a> {
     pub cntlid: u16,
 }
 
-impl NvmeVirtualFunction {
+impl NvmeSecondaryController {
     /// Creates a new VF with the given identity and worker dependencies.
     ///
     /// The VF's coordinator is created here (in the `Disabled` state) and
     /// lives until the VF is destroyed. The VF starts disabled (CC.EN=0);
     /// the guest driver enables it by writing to the CC register via BAR0.
-    pub fn new(params: NvmeVirtualFunctionParams<'_>) -> Self {
-        let NvmeVirtualFunctionParams {
+    pub fn new(params: NvmeSecondaryControllerParams<'_>) -> Self {
+        let NvmeSecondaryControllerParams {
             msix_count,
             max_io_queues,
             msi_target,
@@ -162,42 +167,53 @@ impl NvmeVirtualFunction {
     }
 
     /// Returns a client for routing online/offline and namespace
-    /// attach/detach to this VF's coordinator.
+    /// attach/detach to this secondary controller's coordinator.
     pub fn client(&self) -> NvmeControllerClient {
         self.core.workers.client()
     }
 
-    /// Read from this VF's PCI config space.
+    /// Force this secondary controller offline, returning the pending RPC so
+    /// the caller can await the transition.
+    ///
+    /// Per NVMe Base 2.1 §8.2.6.3, clearing SR-IOV VF Enable (or shrinking
+    /// NumVFs so this secondary is no longer enabled) implicitly transitions
+    /// the secondary to the Offline state. The controller reset / IO drain is
+    /// performed separately via [`drain`](Self::drain) / [`poll_drain`].
+    pub fn set_offline(&self) -> PendingRpc<()> {
+        self.core.workers.set_online_rpc(false)
+    }
+
+    /// Read from this secondary controller's PCI config space.
     pub fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
         self.cfg_space.read_u32(offset, value)
     }
 
-    /// Write to this VF's PCI config space.
+    /// Write to this secondary controller's PCI config space.
     pub fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         self.cfg_space.write_u32(offset, value)
     }
 
-    /// Reads from the VF's BAR0 (NVMe registers + doorbells).
+    /// Reads from the secondary controller's BAR0 (NVMe registers + doorbells).
     pub fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         self.core.read_bar0(addr, data)
     }
 
-    /// Writes to the VF's BAR0 (NVMe registers + doorbells).
+    /// Writes to the secondary controller's BAR0 (NVMe registers + doorbells).
     pub fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
         self.core.write_bar0(addr, data)
     }
 }
 
-impl NvmeVirtualFunction {
-    /// Asynchronously drain the VF controller, returning its workers to the
-    /// disabled state.
+impl NvmeSecondaryController {
+    /// Asynchronously drain the secondary controller, returning its workers to
+    /// the disabled state.
     ///
-    /// Drives the workers to the disabled state from wherever they are,
-    /// waits for all in-flight IOs holding guest memory references to
-    /// complete, and resets the VF's register state. Called when the PF
-    /// resets or VF_Enable is cleared, before the VF is dropped.
+    /// Drives the workers to the disabled state from wherever they are, waits
+    /// for all in-flight IOs holding guest memory references to complete, and
+    /// resets the register state. The namespace attachments persist. Called
+    /// when the PF resets or VF Enable is cleared.
     pub async fn drain(&mut self) {
-        tracing::debug!(vf = self.vf_index, "VF: draining controller");
+        tracing::debug!(vf = self.vf_index, "secondary: draining controller");
         self.core.drain().await;
     }
 

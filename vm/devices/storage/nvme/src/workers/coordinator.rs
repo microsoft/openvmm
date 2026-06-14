@@ -128,12 +128,28 @@ impl NvmeWorkers {
         }
     }
 
-    /// Initiates cleanup of the PF's secondary-controller bookkeeping (namespace
-    /// attachments and online flags) after the VFs have been disabled, returning
-    /// the pending RPC so the caller can await it — e.g. alongside the VF drains
-    /// — and gate the guest's VF-disable config write on its completion.
-    pub fn disable_secondaries(&self) -> PendingRpc<()> {
-        self.send.call(CoordinatorRequest::DisableSecondaries, ())
+    /// Initiates clearing of the PF's CNS-15h online mirror for all secondary
+    /// controllers, returning the pending RPC so the caller can await it — e.g.
+    /// alongside the per-secondary offline transitions — and gate the guest's
+    /// VF-disable config write on its completion.
+    pub fn mark_secondaries_offline(&self) -> PendingRpc<()> {
+        self.send
+            .call(CoordinatorRequest::MarkSecondariesOffline, ())
+    }
+
+    /// Restores the configured namespace topology (every allocated namespace
+    /// back on the PF), undoing guest-initiated attachments to secondaries.
+    /// Called on a full device reset; see
+    /// [`AdminHandler::restore_default_topology`](super::admin::AdminHandler::restore_default_topology).
+    pub fn restore_default_topology(&self) -> PendingRpc<()> {
+        self.send
+            .call(CoordinatorRequest::RestoreDefaultTopology, ())
+    }
+
+    /// Sends an online/offline transition to the coordinator, returning the
+    /// pending RPC without awaiting it.
+    pub fn set_online_rpc(&self, online: bool) -> PendingRpc<()> {
+        self.send.call(CoordinatorRequest::SetOnline, online)
     }
 
     /// Returns whether the controller is currently online.
@@ -281,21 +297,6 @@ pub struct NvmeControllerClient {
     send: mesh::Sender<CoordinatorRequest>,
 }
 
-/// Routing table mapping a 0-based VF index to that VF's controller client.
-///
-/// Populated only on VF create/destroy (`enable_vfs`/`disable_vfs`); all
-/// runtime state (online/offline, namespace attach/detach) still flows as
-/// ordered messages *through* the clients.
-///
-/// It is shared mutable state rather than a message because it needs
-/// *synchronous publication*: `enable_vfs` fills it on the device thread inside
-/// the guest's VF-enable config-space write, before that write completes. Since
-/// the guest must observe that completion before issuing any virt-mgmt or
-/// namespace-attach command, this establishes a happens-before edge with the
-/// admin task's reads. A message would apply asynchronously with no such
-/// ordering, letting a command race ahead and see an empty table.
-pub type VfClientTable = Arc<Mutex<Vec<NvmeControllerClient>>>;
-
 impl NvmeControllerClient {
     /// Adds a namespace.
     pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), AddNamespaceError> {
@@ -346,7 +347,8 @@ enum CoordinatorRequest {
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
     SetOnline(Rpc<bool, ()>),
-    DisableSecondaries(Rpc<(), ()>),
+    MarkSecondariesOffline(Rpc<(), ()>),
+    RestoreDefaultTopology(Rpc<(), ()>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
 }
@@ -444,13 +446,24 @@ impl Coordinator {
                             self.online.store(online, Ordering::Relaxed);
                         });
                     }
-                    CoordinatorRequest::DisableSecondaries(rpc) => {
+                    CoordinatorRequest::MarkSecondariesOffline(rpc) => {
                         rpc.handle(async |()| {
                             // Briefly stop the admin task so its handler state
                             // can be mutated, mirroring the namespace add/remove
                             // paths.
                             let running = self.admin.stop().await;
-                            self.admin.task_mut().disable_secondaries();
+                            self.admin.task_mut().mark_secondaries_offline();
+                            if running {
+                                self.admin.start();
+                            }
+                        })
+                        .await
+                    }
+                    CoordinatorRequest::RestoreDefaultTopology(rpc) => {
+                        rpc.handle(async |()| {
+                            let running = self.admin.stop().await;
+                            let (admin, state) = self.admin.get_mut();
+                            admin.restore_default_topology(state).await;
                             if running {
                                 self.admin.start();
                             }
