@@ -342,6 +342,20 @@ impl ConsommeParams {
             }
         }
     }
+
+    /// Returns true if this endpoint is dedicated to loopback traffic, i.e. its
+    /// own client address is a loopback address.
+    ///
+    /// Such an endpoint exists specifically to carry localhost traffic between
+    /// the host and guest, and the guest is configured to route replies to
+    /// loopback source addresses back out through this adapter (for example, via
+    /// a dedicated policy-routing table). For these endpoints the local-source
+    /// virtual address rewriting must be skipped: rewriting the source to an
+    /// address outside the loopback range causes the guest's reply to miss that
+    /// routing and never reach the gateway, breaking the connection.
+    fn is_loopback_endpoint(&self) -> bool {
+        self.client_ip.is_loopback()
+    }
 }
 
 impl ConsommeState {
@@ -389,8 +403,15 @@ impl ConsommeState {
         // it with a unique virtual address so that the guest routes the reply
         // back through the virtual adapter and we can reverse-translate it on the
         // outgoing path.
+        //
+        // This rewriting is skipped for endpoints that are themselves dedicated to
+        // loopback traffic (see `is_loopback_endpoint`): those endpoints already
+        // route loopback-sourced replies back through the adapter, and rewriting
+        // the source out of the loopback range would break that return path.
         let src = match remote_addr {
-            SocketAddr::V4(v4) if params.is_local_address(remote_addr) => {
+            SocketAddr::V4(v4)
+                if params.is_local_address(remote_addr) && !params.is_loopback_endpoint() =>
+            {
                 let subnet_base =
                     Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
                 let virtual_ip = local_addr_map.get_or_allocate_v4(
@@ -408,7 +429,9 @@ impl ConsommeState {
                     }
                 }
             }
-            SocketAddr::V6(v6) if params.is_local_address(remote_addr) => {
+            SocketAddr::V6(v6)
+                if params.is_local_address(remote_addr) && !params.is_loopback_endpoint() =>
+            {
                 let virtual_ip = local_addr_map.get_or_allocate_v6(
                     *v6.ip(),
                     params.gateway_link_local_ipv6,
