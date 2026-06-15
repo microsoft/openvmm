@@ -150,6 +150,11 @@ impl SimpleFlowNode for Node {
 
         let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
 
+        // In CI, unstable test failures are non-gating and should be reported as
+        // passing (with a warning). Outside of CI, unstable test failures are
+        // reported as failures unless the user explicitly opts in.
+        let ignore_unstable_failures = !matches!(ctx.backend(), FlowBackend::Local);
+
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
@@ -281,6 +286,10 @@ impl SimpleFlowNode for Node {
 
                 if reuse_prepped_vhds {
                     env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
+                }
+
+                if ignore_unstable_failures {
+                    env.insert("PETRI_IGNORE_UNSTABLE_FAILURES".into(), "1".into());
                 }
 
                 if let Some(openvmm) = openvmm {
