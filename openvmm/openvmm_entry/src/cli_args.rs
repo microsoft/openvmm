@@ -1036,9 +1036,13 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `low_mmio_base=<addr>`         pin low MMIO window base address (0x-prefixed hex)
+    `high_mmio_base=<addr>`        pin high MMIO window base address (0x-prefixed hex)
     `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
     `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
                                    default DEVICE_COHERENT (bit 0, value 0x1)
+    `preserve_bars`                keep pinned BARs at their assigned addresses
+    `node=<value>`                 NUMA node the root complex is associated with
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -1393,6 +1397,15 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+/// Parses an address, which must be a `0x`-prefixed hexadecimal value.
+fn parse_address(s: &str) -> anyhow::Result<u64> {
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .with_context(|| format!("invalid address '{s}', expected a 0x-prefixed hex value"))?;
+    u64::from_str_radix(hex, 16).with_context(|| format!("invalid address '{s}'"))
 }
 
 fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
@@ -2977,13 +2990,14 @@ impl FromStr for PcieRootComplexCli {
                 "low_mmio_base" => {
                     let base_str = s.next().context("expected low MMIO base address")?;
                     low_mmio_base = Some(
-                        parse_memory(base_str).context("failed to parse low MMIO base address")?,
+                        parse_address(base_str).context("failed to parse low MMIO base address")?,
                     );
                 }
                 "high_mmio_base" => {
                     let base_str = s.next().context("expected high MMIO base address")?;
                     high_mmio_base = Some(
-                        parse_memory(base_str).context("failed to parse high MMIO base address")?,
+                        parse_address(base_str)
+                            .context("failed to parse high MMIO base address")?,
                     );
                 }
                 "preserve_bars" => {
