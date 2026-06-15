@@ -91,6 +91,10 @@ mod ioctl {
     ioctl_read!(kvm_get_xcrs, KVMIO, 0xa6, kvm_xcrs);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_xcrs, KVMIO, 0xa7, kvm_xcrs);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite!(kvm_get_nested_state, KVMIO, 0xbe, kvm_nested_state);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_set_nested_state, KVMIO, 0xbf, kvm_nested_state);
     ioctl_write_ptr!(kvm_get_reg, KVMIO, 0xab, kvm_one_reg);
     ioctl_write_ptr!(kvm_set_reg, KVMIO, 0xac, kvm_one_reg);
     #[cfg(target_arch = "aarch64")]
@@ -191,6 +195,14 @@ pub enum Error {
     SetDeviceAttr(#[source] nix::Error),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
+    #[error("GetNestedState")]
+    GetNestedState(#[source] nix::Error),
+    #[error("SetNestedState")]
+    SetNestedState(#[source] nix::Error),
+    #[error("nested state buffer too small: {0} bytes")]
+    NestedStateTooSmall(usize),
+    #[error("nested state size {size} out of range for a {len}-byte buffer")]
+    NestedStateBadSize { size: usize, len: usize },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -1102,6 +1114,102 @@ impl<'a> Processor<'a> {
         assert_eq!(data.nr_xcrs, 1);
         assert_eq!(data.xcrs[0].xcr, 0);
         Ok(data.xcrs[0].value)
+    }
+
+    /// Reads the vCPU's nested-virtualization state (VMCS12/VMCB plus the
+    /// per-vCPU nested control fields) as an opaque, size-prefixed blob.
+    ///
+    /// Returns an empty vector when the host kernel does not support
+    /// `KVM_CAP_NESTED_STATE`, so callers can treat "no nested state" as a blob
+    /// of length zero.
+    #[cfg(target_arch = "x86_64")]
+    pub fn get_nested_state(&self) -> Result<Vec<u8>> {
+        // KVM_CHECK_EXTENSION returns the size in bytes of the largest
+        // nested-state buffer the kernel may produce, or <= 0 when the
+        // capability is unavailable. It must be issued on the VM fd; the vcpu
+        // fd does not handle this ioctl and rejects it with EINVAL.
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        let max = unsafe {
+            ioctl::kvm_check_extension(self.0.vm.as_raw_fd(), KVM_CAP_NESTED_STATE as i32)
+                .map_err(Error::CheckExtension)?
+        };
+        if max <= 0 {
+            return Ok(Vec::new());
+        }
+        let max = max as usize;
+        if max < size_of::<kvm_nested_state>() {
+            return Err(Error::NestedStateTooSmall(max));
+        }
+
+        let mut buf = vec![0u8; max];
+        let state = buf.as_mut_ptr().cast::<kvm_nested_state>();
+        // The kernel reads the caller-provided `.size` to bound how much it
+        // writes, then overwrites it with the actual length on return. `buf` is a
+        // `Vec<u8>` (alignment 1), so `.size` is accessed with addr_of plus an
+        // unaligned read/write rather than dereferencing a possibly-unaligned
+        // `*mut kvm_nested_state`; the kernel copies the bytes regardless of the
+        // pointer's alignment, and the rest of the input header is already zeroed.
+        // SAFETY: `buf` is `max` bytes (>= one `kvm_nested_state` header) and is
+        // valid for reads and writes for `max` bytes.
+        let used = unsafe {
+            std::ptr::addr_of_mut!((*state).size).write_unaligned(max as u32);
+            ioctl::kvm_get_nested_state(self.get().vcpu.as_raw_fd(), state)
+                .map_err(Error::GetNestedState)?;
+            std::ptr::addr_of!((*state).size).read_unaligned() as usize
+        };
+        // Don't trust the kernel-returned length: it must cover at least the
+        // header and fit within the buffer we provided.
+        if !(size_of::<kvm_nested_state>()..=max).contains(&used) {
+            return Err(Error::NestedStateBadSize {
+                size: used,
+                len: max,
+            });
+        }
+        buf.truncate(used);
+        Ok(buf)
+    }
+
+    /// Restores nested-virtualization state previously captured by
+    /// [`Processor::get_nested_state`].
+    ///
+    /// The vCPU's CPUID, MSRs, and control registers (CR4.VMXE,
+    /// IA32_FEATURE_CONTROL) must already be restored, since the kernel
+    /// validates the blob against them.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_nested_state(&self, data: &[u8]) -> Result<()> {
+        // An empty blob is the "no nested state" value get_nested_state returns
+        // on a host without KVM_CAP_NESTED_STATE; there is nothing to restore.
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.len() < size_of::<kvm_nested_state>() {
+            return Err(Error::NestedStateTooSmall(data.len()));
+        }
+        // The kernel reads `kvm_nested_state.size` bytes from the buffer. Reject
+        // a blob whose embedded size is smaller than the header or larger than
+        // the slice, so a malformed snapshot cannot drive an out-of-bounds read.
+        let state = data.as_ptr().cast::<kvm_nested_state>();
+        // SAFETY: `data` holds at least a `kvm_nested_state` header (checked
+        // above). It is a `&[u8]` (alignment 1), so `.size` is read via addr_of
+        // plus an unaligned read rather than dereferencing a possibly-unaligned
+        // `*const kvm_nested_state`.
+        let size = unsafe { std::ptr::addr_of!((*state).size).read_unaligned() } as usize;
+        if !(size_of::<kvm_nested_state>()..=data.len()).contains(&size) {
+            return Err(Error::NestedStateBadSize {
+                size,
+                len: data.len(),
+            });
+        }
+        // SAFETY: the kernel reads `size` bytes starting at `data`, and
+        // `size <= data.len()`.
+        unsafe {
+            ioctl::kvm_set_nested_state(
+                self.get().vcpu.as_raw_fd(),
+                data.as_ptr().cast::<kvm_nested_state>(),
+            )
+            .map_err(Error::SetNestedState)?;
+        }
+        Ok(())
     }
 
     pub fn set_mp_state(&self, state: u32) -> Result<()> {

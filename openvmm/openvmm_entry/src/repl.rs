@@ -105,7 +105,8 @@ enum InteractiveCommand {
     #[clap(visible_alias = "r")]
     Resume,
 
-    /// Save a snapshot to a directory (requires --memory-backing-file).
+    /// Save a snapshot to a directory (requires file-backed guest memory,
+    /// i.e. `file=` in --memory).
     #[clap(visible_alias = "snap")]
     SaveSnapshot {
         /// Directory to write the snapshot to.
