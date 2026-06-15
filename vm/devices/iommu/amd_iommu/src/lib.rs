@@ -10,6 +10,8 @@
 //! (CapID 0x0F) pointing to a fixed MMIO register region. The guest discovers
 //! the IOMMU via PCI enumeration and reads the capability to find the MMIO base.
 
+#![forbid(unsafe_code)]
+
 pub mod spec;
 
 use chipset_device::ChipsetDevice;
@@ -18,7 +20,6 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
-use guestmem::GuestMemoryBackingError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::RwLock;
@@ -61,7 +62,6 @@ use spec::registers::MiscInfo0;
 use spec::registers::MmioRegister;
 use spec::registers::Range;
 use std::ops::RangeInclusive;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
 use zerocopy::Immutable;
@@ -365,52 +365,23 @@ impl IommuSharedState {
         self.lookup_irte_inner(&state, device_id, dte, msi_data)
     }
 
-    /// Create a `GuestMemory` that translates DMA through the IOMMU's
-    /// page tables for the given device bus range.
-    pub fn create_translating_memory(
-        self: &Arc<Self>,
-        bus_range: pci_core::bus_range::AssignedBusRange,
-        inner_gm: &GuestMemory,
-    ) -> GuestMemory {
-        let initial_device_id = compose_device_id(&bus_range);
-        let label = format!("iommu-dev-{:04x}", initial_device_id.unwrap_or(0));
-        let translating = IommuTranslatingMemory {
-            bus_range,
+    /// Create a translator for PCI devices behind this IOMMU.
+    ///
+    /// The translator uses the requester ID (RID / BDF) passed at each
+    /// translation call directly as the AMD IOMMU DeviceID.
+    pub fn translator(self: &Arc<Self>) -> AmdTranslator {
+        AmdTranslator {
             shared: self.clone(),
-            inner_gm: inner_gm.clone(),
-        };
-        GuestMemory::new(label, translating)
+        }
     }
 
     /// Create an `IommuSignalMsi` that remaps MSIs through the IOMMU's
     /// Interrupt Remapping Table.
-    pub fn create_signal_msi(
-        self: &Arc<Self>,
-        inner_msi: Arc<dyn SignalMsi>,
-    ) -> Arc<IommuSignalMsi> {
+    pub fn wrap_signal_msi(self: &Arc<Self>, inner_msi: Arc<dyn SignalMsi>) -> Arc<IommuSignalMsi> {
         Arc::new(IommuSignalMsi {
             shared: self.clone(),
             inner: inner_msi,
         })
-    }
-
-    /// Create per-device wrappers for DMA translation and MSI remapping.
-    ///
-    /// Returns a `GuestMemory` backed by IOMMU translation and an
-    /// `IommuSignalMsi` that remaps MSIs through the IOMMU's IRT.
-    pub fn create_device_context(
-        self: &Arc<Self>,
-        bus_range: pci_core::bus_range::AssignedBusRange,
-        inner_gm: &GuestMemory,
-        inner_msi: Arc<dyn SignalMsi>,
-    ) -> (GuestMemory, Arc<IommuSignalMsi>) {
-        tracing::trace!(
-            device_id = ?compose_device_id(&bus_range),
-            "create IOMMU translated device context"
-        );
-        let gm = self.create_translating_memory(bus_range, inner_gm);
-        let msi = self.create_signal_msi(inner_msi);
-        (gm, msi)
     }
 
     // -- Internal methods that operate with a lock already held --
@@ -507,6 +478,20 @@ impl IommuSharedState {
         }
 
         let levels = mode;
+
+        // §2.2.3: VA width = levels * 9 + 12. If any upper bits of the
+        // IOVA are non-zero, the address exceeds the configured VA width
+        // and must be rejected.
+        let va_width = (levels as u32) * 9 + 12;
+        if va_width < 64 && (iova >> va_width) != 0 {
+            return Err(IommuFault::IoPageFault {
+                device_id,
+                domain_id: dte.dw1.domain_id(),
+                address: iova,
+                is_write: write,
+            });
+        }
+
         let root_addr = dte.dw0.page_table_root_address();
         let dte_ir = dte.dw0.ir();
         let dte_iw = dte.dw0.iw();
@@ -664,6 +649,10 @@ impl IommuSharedState {
 
         let irt_base = dw2.int_tab_address();
         let max_entries = dw2.int_tab_entries();
+
+        // §2.2.5 / Figure 14: The IRTE index is always MSI data[10:0]
+        // (11 bits). NumIntRemapMode controls which interrupt *types* are
+        // remapped, not the index width.
         let irte_index = msi_data & 0x7FF;
 
         if irte_index >= max_entries {
@@ -821,6 +810,14 @@ impl IommuSharedState {
             return;
         }
 
+        // §2.5: "When an event log overflow condition exists, the IOMMU
+        // ceases recording events until software resets the event logging
+        // function." Drop events while EventOverflow is set.
+        let status = IommuStatus::from_bits(state.iommu_status);
+        if status.evt_overflow() {
+            return;
+        }
+
         let buf_size_bytes = match evt_log_size_bytes(state) {
             Some(size) => size,
             None => {
@@ -849,6 +846,12 @@ impl IommuSharedState {
             let mut status = IommuStatus::from_bits(state.iommu_status);
             status.set_evt_overflow(true);
             state.iommu_status = status.into_bits();
+            // §2.5.1: deliver MSI on overflow when EventIntEn is set.
+            if ctrl.evt_int_en() {
+                if let Some(interrupt) = msi_interrupt {
+                    interrupt.deliver();
+                }
+            }
             return;
         }
 
@@ -876,289 +879,55 @@ impl IommuSharedState {
     }
 }
 
-/// Composes an AMD IOMMU DeviceID from a PCIe port's assigned bus range.
-///
-/// DMA requests use the default BDF on the assigned secondary bus
-/// `(secondary_bus, device 0, function 0)`. A secondary bus value of 0 means
-/// the guest has not assigned the port's bus range yet.
-fn compose_device_id(bus_range: &pci_core::bus_range::AssignedBusRange) -> Option<u16> {
-    let (secondary, _) = bus_range.bus_range();
-    if secondary == 0 {
-        None
-    } else {
-        Some((secondary as u16) << 8)
-    }
-}
-
 // =============================================================================
 // Per-Device DMA Translation Wrapper
 // =============================================================================
 
-/// A `GuestMemoryAccess` implementation that translates IOVAs through the
-/// AMD IOMMU before accessing guest memory.
+/// An [`IommuTranslator`](iommu_common::IommuTranslator) for the AMD IOMMU.
 ///
-/// Each emulated PCIe device that is behind the IOMMU gets its own
-/// `IommuTranslatingMemory` with the assigned bus range for the port that
-/// owns the device.
-pub struct IommuTranslatingMemory {
-    /// The assigned bus range used to derive the DeviceID for IOMMU lookups.
-    bus_range: pci_core::bus_range::AssignedBusRange,
+/// One `AmdTranslator` is shared by all PCI devices behind the same IOMMU.
+/// The requester ID (RID / BDF) is passed at each translation call and
+/// used directly as the AMD IOMMU DeviceID.
+pub struct AmdTranslator {
     /// Reference to the shared IOMMU state.
     shared: Arc<IommuSharedState>,
-    /// The raw (untranslated) guest memory.
-    inner_gm: GuestMemory,
 }
 
-impl IommuTranslatingMemory {
-    /// Perform a translated memory operation, splitting at page boundaries.
-    ///
-    /// Holds the IOMMU state read lock across both translation and memory
-    /// access for each page chunk, preventing config changes between
-    /// translation and the actual DMA.
-    ///
-    /// `op(gpa, offset, chunk_len)` is called for each chunk with the
-    /// translated GPA, the byte offset into the caller's buffer, and the
-    /// chunk length.
-    fn do_translated_op(
+impl iommu_common::IommuTranslator for AmdTranslator {
+    type Error = IommuFault;
+
+    fn max_iova(&self) -> u64 {
+        // The AMD IOMMU architecture supports up to 48-bit virtual
+        // addresses (VA_SIZE), the architectural maximum for all
+        // paging modes and translation configurations.
+        1u64 << VA_SIZE
+    }
+
+    fn translate<R>(
         &self,
+        rid: u16,
         iova: u64,
-        len: usize,
         write: bool,
-        mut op: impl FnMut(u64, usize, usize) -> Result<(), GuestMemoryBackingError>,
-    ) -> Result<(), GuestMemoryBackingError> {
-        let device_id = match compose_device_id(&self.bus_range) {
-            Some(id) => id,
-            None => {
-                // Bus not yet assigned — bypass IOMMU, use IOVA as GPA.
-                tracelimit::warn_ratelimited!(
-                    iova,
-                    len,
-                    write,
-                    "IOMMU DMA with unassigned bus, bypassing translation"
-                );
-                return self.do_passthrough_op(iova, len, write, op);
+        op: impl FnOnce(u64) -> R,
+    ) -> Result<R, iommu_common::TranslationFault<IommuFault>> {
+        let device_id = rid;
+
+        // Hold the read lock across translate + op to prevent IOMMU config
+        // from changing between getting the GPA and using it.
+        let state = self.shared.state.read();
+        let gpa = match self.shared.translate_locked(&state, device_id, iova, write) {
+            Ok(gpa) => gpa,
+            Err(fault) => {
+                drop(state);
+                self.shared.queue_event(fault.to_event_entry());
+                return Err(iommu_common::TranslationFault { iova, error: fault });
             }
         };
-        let mut current_iova = iova;
-        let mut offset = 0usize;
-        tracing::trace!(device_id, iova, len, write, "iommu dma op");
-        while offset < len {
-            let chunk_len = chunk_size(current_iova, len - offset);
 
-            let state = self.shared.state.read();
-            let gpa = match self
-                .shared
-                .translate_locked(&state, device_id, current_iova, write)
-            {
-                Ok(gpa) => gpa,
-                Err(fault) => {
-                    drop(state);
-                    self.shared.queue_event(fault.to_event_entry());
-                    return Err(GuestMemoryBackingError::other(
-                        iova,
-                        IommuTranslationError(fault),
-                    ));
-                }
-            };
-
-            tracing::trace!(
-                device_id,
-                iova,
-                current_iova,
-                gpa,
-                len,
-                offset,
-                chunk_len,
-                write,
-                "iommu dma op chunk"
-            );
-
-            let result = op(gpa, offset, chunk_len);
-            drop(state);
-            result?;
-
-            offset += chunk_len;
-            if offset < len {
-                // Only compute next IOVA when another chunk is needed.
-                // §2.5.3: An IOVA that overflows u64 cannot appear in
-                // any page table — report IO_PAGE_FAULT.
-                current_iova = current_iova.checked_add(chunk_len as u64).ok_or_else(|| {
-                    GuestMemoryBackingError::other(
-                        current_iova,
-                        IommuTranslationError(IommuFault::IoPageFault {
-                            device_id,
-                            domain_id: 0,
-                            address: current_iova,
-                            is_write: write,
-                        }),
-                    )
-                })?;
-            }
-        }
-        Ok(())
+        let result = op(gpa);
+        drop(state);
+        Ok(result)
     }
-
-    /// Bypass IOMMU translation — use IOVA directly as GPA.
-    /// Used when the device's bus number hasn't been assigned yet.
-    fn do_passthrough_op(
-        &self,
-        iova: u64,
-        len: usize,
-        _write: bool,
-        mut op: impl FnMut(u64, usize, usize) -> Result<(), GuestMemoryBackingError>,
-    ) -> Result<(), GuestMemoryBackingError> {
-        op(iova, 0, len)
-    }
-}
-
-// UNSAFETY: Implementing GuestMemoryAccess to provide IOVA-to-GPA translation.
-// This impl returns `mapping() = None`, forcing all accesses through the
-// fallback path where IOVAs are translated before delegating to the inner
-// GuestMemory which handles actual memory safety.
-#[expect(unsafe_code)]
-unsafe impl guestmem::GuestMemoryAccess for IommuTranslatingMemory {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        None // Force fallback path for IOVA translation.
-    }
-
-    fn max_address(&self) -> u64 {
-        u64::MAX
-    }
-
-    unsafe fn read_fallback(
-        &self,
-        addr: u64,
-        dest: *mut u8,
-        len: usize,
-    ) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, false, |gpa, offset, chunk_len| {
-            // SAFETY: dest + offset is valid for writes of chunk_len bytes
-            // (caller contract guarantees dest is valid for `len` bytes).
-            let slice = unsafe { std::slice::from_raw_parts_mut(dest.add(offset), chunk_len) };
-            self.inner_gm
-                .read_at(gpa, slice)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
-    }
-
-    unsafe fn write_fallback(
-        &self,
-        addr: u64,
-        src: *const u8,
-        len: usize,
-    ) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, true, |gpa, offset, chunk_len| {
-            // SAFETY: src + offset is valid for reads of chunk_len bytes
-            // (caller contract guarantees src is valid for `len` bytes).
-            let slice = unsafe { std::slice::from_raw_parts(src.add(offset), chunk_len) };
-            let preview_len = slice.len().min(16);
-            tracing::trace!(
-                iova = addr,
-                gpa,
-                len,
-                offset,
-                chunk_len,
-                bytes = ?&slice[..preview_len],
-                "iommu dma write bytes"
-            );
-            self.inner_gm
-                .write_at(gpa, slice)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
-    }
-
-    fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, true, |gpa, _offset, chunk_len| {
-            self.inner_gm
-                .fill_at(gpa, val, chunk_len)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
-    }
-
-    fn compare_exchange_fallback(
-        &self,
-        addr: u64,
-        current: &mut [u8],
-        new: &[u8],
-    ) -> Result<bool, GuestMemoryBackingError> {
-        if current.len() != new.len() || !matches!(new.len(), 1 | 2 | 4 | 8) {
-            return Err(GuestMemoryBackingError::other(
-                addr,
-                UnsupportedIommuCompareExchange { len: new.len() },
-            ));
-        }
-
-        let len = new.len();
-        if chunk_size(addr, len) != len {
-            return Err(GuestMemoryBackingError::other(
-                addr,
-                UnsupportedIommuCompareExchange { len },
-            ));
-        }
-
-        let device_id = compose_device_id(&self.bus_range);
-        let mut state_guard = None;
-        let gpa = if let Some(device_id) = device_id {
-            state_guard = Some(self.shared.state.read());
-            match self
-                .shared
-                .translate_locked(state_guard.as_ref().unwrap(), device_id, addr, true)
-            {
-                Ok(gpa) => gpa,
-                Err(fault) => {
-                    drop(state_guard);
-                    self.shared.queue_event(fault.to_event_entry());
-                    return Err(GuestMemoryBackingError::other(
-                        addr,
-                        IommuTranslationError(fault),
-                    ));
-                }
-            }
-        } else {
-            addr
-        };
-
-        macro_rules! compare_exchange {
-            ($ty:ty, $len:literal) => {{
-                let mut current_bytes = [0; $len];
-                current_bytes.copy_from_slice(current);
-                let mut new_bytes = [0; $len];
-                new_bytes.copy_from_slice(new);
-                let result = self.inner_gm.compare_exchange(
-                    gpa,
-                    <$ty>::from_ne_bytes(current_bytes),
-                    <$ty>::from_ne_bytes(new_bytes),
-                );
-                drop(state_guard);
-                match result.map_err(|e| GuestMemoryBackingError::other(addr, e))? {
-                    Ok(_) => Ok(true),
-                    Err(actual) => {
-                        current.copy_from_slice(&actual.to_ne_bytes());
-                        Ok(false)
-                    }
-                }
-            }};
-        }
-
-        match len {
-            1 => compare_exchange!(u8, 1),
-            2 => compare_exchange!(u16, 2),
-            4 => compare_exchange!(u32, 4),
-            8 => compare_exchange!(u64, 8),
-            _ => unreachable!(),
-        }
-    }
-}
-
-/// Compute the size of the next chunk for a page-splitting DMA access.
-///
-/// Returns the number of bytes from `iova` to the end of the current 4KB
-/// page, or `remaining` if that is smaller. This ensures each chunk stays
-/// within a single translated page.
-fn chunk_size(iova: u64, remaining: usize) -> usize {
-    let page_offset = (iova & 0xFFF) as usize;
-    let bytes_in_page = 0x1000 - page_offset;
-    remaining.min(bytes_in_page)
 }
 
 /// Return a ring buffer size in bytes from a log2-entry-count field, or
@@ -1182,36 +951,6 @@ fn cmd_buf_size_bytes(state: &AmdIommuState) -> Option<u64> {
 fn evt_log_size_bytes(state: &AmdIommuState) -> Option<u64> {
     ring_size_bytes(EvtLogBase::from_bits(state.evt_log_base).length())
 }
-
-/// Error type wrapping an IOMMU translation fault for `GuestMemoryBackingError`.
-#[derive(Debug)]
-struct IommuTranslationError(IommuFault);
-
-impl std::fmt::Display for IommuTranslationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IOMMU translation fault: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for IommuTranslationError {}
-
-/// Error type for unsupported translated compare-exchange requests.
-#[derive(Debug)]
-struct UnsupportedIommuCompareExchange {
-    len: usize,
-}
-
-impl std::fmt::Display for UnsupportedIommuCompareExchange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unsupported IOMMU translated compare-exchange length {}",
-            self.len
-        )
-    }
-}
-
-impl std::error::Error for UnsupportedIommuCompareExchange {}
 
 // =============================================================================
 // Per-Device MSI Remapping Wrapper
@@ -1541,6 +1280,14 @@ impl AmdIommuDevice {
                         gpa = entry_gpa,
                         "failed to read command buffer entry"
                     );
+                    // §2.5.7: log COMMAND_HARDWARE_ERROR event.
+                    let event = EventEntry::command_hardware_error(entry_gpa);
+                    IommuSharedState::write_event_inner(
+                        &shared.guest_memory,
+                        state,
+                        event,
+                        shared.msi_interrupt.as_ref(),
+                    );
                     let mut status = IommuStatus::from_bits(state.iommu_status);
                     status.set_cmd_buf_run(false);
                     state.iommu_status = status.into_bits();
@@ -1612,11 +1359,15 @@ impl AmdIommuDevice {
         }
 
         if fields.i() {
+            // §2.4.1: "If the i bit is set, the IOMMU sets MMIO Offset
+            // 2020h[ComWaitInt]." The status bit is set unconditionally;
+            // ComWaitIntEn only gates MSI delivery.
+            let mut status = IommuStatus::from_bits(state.iommu_status);
+            status.set_com_wait_int(true);
+            state.iommu_status = status.into_bits();
+
             let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
             if ctrl.com_wait_int_en() {
-                let mut status = IommuStatus::from_bits(state.iommu_status);
-                status.set_com_wait_int(true);
-                state.iommu_status = status.into_bits();
                 shared.deliver_interrupt();
             }
         }
@@ -1682,10 +1433,11 @@ pub struct RemappedInterrupt {
 ///
 /// These correspond to events that would be logged to the event log and
 /// indicate a translation or lookup failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IommuFault {
     /// The DeviceID is out of range or the DTE has reserved field
     /// values (§2.5.2).
+    #[error("illegal device table entry for device {device_id:#06x} at {address:#x}")]
     IllegalDevTableEntry {
         /// The device that caused the fault (BDF).
         device_id: u16,
@@ -1697,6 +1449,9 @@ pub enum IommuFault {
         is_write: bool,
     },
     /// An I/O page fault — page not present, or permission violation (§2.5.3).
+    #[error(
+        "I/O page fault for device {device_id:#06x} domain {domain_id} at {address:#x} (write={is_write})"
+    )]
     IoPageFault {
         /// The device that caused the fault (BDF).
         device_id: u16,
@@ -1708,6 +1463,7 @@ pub enum IommuFault {
         is_write: bool,
     },
     /// Hardware error reading the device table (§2.5.4).
+    #[error("device table hardware error for device {device_id:#06x} at {address:#x}")]
     DevTabHardwareError {
         /// The device that caused the fault (BDF).
         device_id: u16,
@@ -1715,6 +1471,7 @@ pub enum IommuFault {
         address: u64,
     },
     /// Hardware error reading a page table (§2.5.5).
+    #[error("page table hardware error for device {device_id:#06x} at {address:#x}")]
     PageTabHardwareError {
         /// The device that caused the fault (BDF).
         device_id: u16,
@@ -4937,14 +4694,37 @@ mod tests {
         dev
     }
 
+    /// Test helper: create per-device wrappers for DMA translation and MSI
+    /// remapping.
+    fn device_context(
+        shared: &Arc<IommuSharedState>,
+        bus_range: pci_core::bus_range::AssignedBusRange,
+        inner_gm: &GuestMemory,
+        inner_msi: Arc<dyn SignalMsi>,
+    ) -> (GuestMemory, Arc<IommuSignalMsi>) {
+        let translator = shared.translator();
+        let gm = iommu_common::TranslatingMemory::new_guest_memory(
+            "amd-iommu-translating",
+            translator,
+            bus_range,
+            inner_gm.clone(),
+        );
+        let msi = shared.wrap_signal_msi(inner_msi);
+        (gm, msi)
+    }
+
     #[test]
     fn test_translating_memory_basic_read() {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
 
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write data at GPA 0xA_0000 (the target page).
         dev.shared
@@ -4964,8 +4744,12 @@ mod tests {
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
 
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write via IOVA 0x100 through the translating memory.
         iommu_gm.write_at(0x100, &[0xCA, 0xFE]).unwrap();
@@ -4992,8 +4776,12 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write data at GPA 0x2000.
         dev.shared.guest_memory.write_at(0x2000, &[0x42]).unwrap();
@@ -5010,8 +4798,12 @@ mod tests {
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
 
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Read from unmapped IOVA (page index 1 is not mapped in the L1 table).
         let mut buf = [0u8; 4];
@@ -5029,8 +4821,12 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         dev.shared.guest_memory.write_at(0x5000, &[0xAA]).unwrap();
 
@@ -5045,7 +4841,8 @@ mod tests {
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, iommu_msi) = shared.create_device_context(
+        let (_gm, iommu_msi) = device_context(
+            &shared,
             wrapper_bus_range(),
             &dev.shared.guest_memory,
             mock_msi.clone(),
@@ -5070,7 +4867,8 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (_gm, iommu_msi) = shared.create_device_context(
+        let (_gm, iommu_msi) = device_context(
+            &shared,
             wrapper_bus_range(),
             &dev.shared.guest_memory,
             mock_msi.clone(),
@@ -5096,7 +4894,8 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (_gm, iommu_msi) = shared.create_device_context(
+        let (_gm, iommu_msi) = device_context(
+            &shared,
             wrapper_bus_range(),
             &dev.shared.guest_memory,
             mock_msi.clone(),
@@ -5112,13 +4911,17 @@ mod tests {
     }
 
     #[test]
-    fn test_create_device_context() {
+    fn test_device_context() {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
 
-        let (gm, msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (gm, msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Verify the returned GuestMemory works.
         dev.shared.guest_memory.write_at(0xA_0000, &[0x55]).unwrap();
@@ -5443,7 +5246,8 @@ mod tests {
         // -----------------------------------------------------------------
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, iommu_msi) = shared.create_device_context(
+        let (iommu_gm, iommu_msi) = device_context(
+            &shared,
             bus_range_for_device_id(device_id),
             &dev.shared.guest_memory,
             mock_msi.clone(),
@@ -5653,8 +5457,12 @@ mod tests {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // write_plain<u32> at IOVA offset 0x100.
         iommu_gm.write_plain::<u32>(0x100, &0xDEAD_BEEFu32).unwrap();
@@ -5668,8 +5476,12 @@ mod tests {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         dev.shared
             .guest_memory
@@ -5685,8 +5497,12 @@ mod tests {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Fill 64 bytes at IOVA 0x300 with 0xAB.
         iommu_gm.fill_at(0x300, 0xAB, 64).unwrap();
@@ -5701,8 +5517,12 @@ mod tests {
         let dev = setup_iommu_for_wrappers();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write a full 4KB page via IOMMU-translated memory.
         let data: Vec<u8> = (0..4096u32).map(|i| (i & 0xFF) as u8).collect();
@@ -5726,8 +5546,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write known patterns at the end of page 0 and start of page 1
         // in the raw guest memory (non-contiguous GPAs).
@@ -5753,8 +5577,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write 32 bytes spanning IOVA 0x0FF0–0x100F.
         let data: Vec<u8> = (0..32u8).collect();
@@ -5782,8 +5610,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Fill 256 bytes spanning the page boundary at IOVA 0x0F80–0x107F.
         iommu_gm.fill_at(0x0F80, 0xCC, 256).unwrap();
@@ -5810,8 +5642,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         let subrange = iommu_gm.subrange(0x0FF0, 0x20, true).unwrap();
         let data: Vec<u8> = (0..32u8).map(|n| n.wrapping_add(0x40)).collect();
@@ -5837,8 +5673,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         let iova_gpns = [0, 1];
         let range = guestmem::ranges::PagedRange::new(0x0FF0, 0x20, &iova_gpns).unwrap();
@@ -5861,53 +5701,16 @@ mod tests {
     }
 
     #[test]
-    fn test_translating_memory_compare_exchange_and_probe() {
-        let dev = setup_iommu_two_pages();
-        let shared = dev.shared_state().clone();
-        let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
-
-        dev.shared
-            .guest_memory
-            .write_plain(0xA_0000, &0x1122_3344u32)
-            .unwrap();
-
-        let result = iommu_gm
-            .compare_exchange(0, 0x1122_3344u32, 0x5566_7788u32)
-            .unwrap();
-        assert_eq!(result, Ok(0x5566_7788));
-        assert_eq!(
-            dev.shared.guest_memory.read_plain::<u32>(0xA_0000).unwrap(),
-            0x5566_7788
-        );
-
-        let result = iommu_gm
-            .compare_exchange(0, 0x1122_3344u32, 0x99AA_BBCCu32)
-            .unwrap();
-        assert_eq!(result, Err(0x5566_7788));
-        assert_eq!(
-            dev.shared.guest_memory.read_plain::<u32>(0xA_0000).unwrap(),
-            0x5566_7788
-        );
-
-        dev.shared.guest_memory.write_at(0xC_0008, &[0xAB]).unwrap();
-        iommu_gm.probe_gpa_writable(0x1008).unwrap();
-        let mut byte = [0];
-        dev.shared
-            .guest_memory
-            .read_at(0xC_0008, &mut byte)
-            .unwrap();
-        assert_eq!(byte, [0xAB]);
-    }
-
-    #[test]
     fn test_translating_memory_multi_region_target() {
         let dev = setup_iommu_multi_region_target();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         let data: Vec<u8> = (0..32u8).map(|n| n.wrapping_add(0x20)).collect();
         iommu_gm.write_at(0x0FF0, &data).unwrap();
@@ -5932,8 +5735,12 @@ mod tests {
         let dev = setup_iommu_two_pages();
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write single bytes at the last byte of page 0 and first byte of page 1.
         iommu_gm.write_at(0x0FFF, &[0xAA]).unwrap();
@@ -5955,8 +5762,12 @@ mod tests {
         let dev = setup_iommu_for_wrappers(); // only IOVA page 0 mapped
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Read 32 bytes starting at IOVA 0x0FF0 — last 16 bytes cross into
         // unmapped page 1.
@@ -6061,8 +5872,12 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write test pattern at GPA 0x15_0000 (target for IOVA 0xFFFFF000).
         dev.shared
@@ -6233,8 +6048,12 @@ mod tests {
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
-        let (iommu_gm, _msi) =
-            shared.create_device_context(wrapper_bus_range(), &dev.shared.guest_memory, mock_msi);
+        let (iommu_gm, _msi) = device_context(
+            &shared,
+            wrapper_bus_range(),
+            &dev.shared.guest_memory,
+            mock_msi,
+        );
 
         // Write a known byte at the target GPA + 0xFFF so the first
         // chunk's read succeeds with real data.
@@ -6250,5 +6069,342 @@ mod tests {
         let mut buf = [0u8; 2];
         let result = iommu_gm.read_at(u64::MAX, &mut buf);
         assert!(result.is_err(), "should fail on IOVA overflow, not wrap");
+    }
+
+    // =========================================================================
+    // Spec Deviation Regression Tests
+    // =========================================================================
+
+    /// §2.4.1: COMPLETION_WAIT with i=1 must set ComWaitInt in IOMMU_STATUS
+    /// regardless of whether ComWaitIntEn is set. ComWaitIntEn only gates
+    /// MSI delivery, not the status bit.
+    ///
+    /// Deviation #4: the emulator only sets ComWaitInt when ComWaitIntEn=1.
+    #[test]
+    fn test_completion_wait_sets_comwaitint_without_comwaitinten() {
+        let mut dev = create_test_device_with_memory();
+
+        // Enable IOMMU with command buffer and event log, but
+        // ComWaitIntEn = false (interrupt delivery disabled).
+        let cmd_base = CmdBufBase::new()
+            .with_base_addr(0x0000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::CMD_BUF_BASE.0 as u64,
+            cmd_base.into_bits(),
+        );
+        let evt_base = EvtLogBase::new()
+            .with_base_addr(0x1000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_BASE.0 as u64,
+            evt_base.into_bits(),
+        );
+        let ctrl = IommuCtrl::new()
+            .with_iommu_en(true)
+            .with_cmd_buf_en(true)
+            .with_evt_log_en(true)
+            .with_com_wait_int_en(false); // <-- interrupt delivery disabled
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+
+        // Issue COMPLETION_WAIT with i=1.
+        write_cmd(&dev, 0, &completion_wait_interrupt());
+        poke_tail(&mut dev, 1);
+
+        // Per spec §2.4.1: "If the i bit is set, the IOMMU sets
+        // MMIO Offset 2020h[ComWaitInt]."
+        // This must happen regardless of ComWaitIntEn.
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(
+            status.com_wait_int(),
+            "ComWaitInt must be set when COMPLETION_WAIT has i=1, \
+             even when ComWaitIntEn is disabled (spec §2.4.1)"
+        );
+    }
+
+    /// §2.5.1: When EventOverflow is set and EventIntEn=1, the IOMMU must
+    /// deliver an MSI so the guest discovers the overflow promptly.
+    ///
+    /// Deviation #5: the emulator sets EventOverflow but does not deliver
+    /// the MSI.
+    #[test]
+    fn test_evtlog_overflow_delivers_msi() {
+        let guest_memory = GuestMemory::allocate(0x10000);
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let msi_controller = pci_core::test_helpers::TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+
+        // Enable MSI on PCI config space.
+        let iommu_cap_header = pci_read(&mut dev, 0x40);
+        let msi_cap_offset = ((iommu_cap_header >> 8) & 0xFF) as u16;
+        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
+        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
+        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let control = pci_read(&mut dev, msi_cap_offset);
+        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+
+        setup_iommu_enabled(&mut dev);
+
+        // Drain any MSIs from setup.
+        while msi_controller.get_next_interrupt().is_some() {}
+
+        // Fill the event log (255 entries to leave ring "full").
+        for i in 0..255 {
+            let event = EventEntry::io_page_fault(i as u16, 0x0001, false, false, 0x0);
+            dev.write_event(event);
+        }
+
+        // Drain MSIs from the 255 normal events.
+        while msi_controller.get_next_interrupt().is_some() {}
+
+        // Clear EventLogInt so we observe only the overflow path.
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_STATUS.0 as u64,
+            IommuStatus::new().with_evt_log_int(true).into_bits(),
+        );
+
+        // This event should trigger overflow.
+        let event = EventEntry::io_page_fault(0xFFFF, 0x0001, false, false, 0x0);
+        dev.write_event(event);
+
+        // Verify overflow is set.
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(status.evt_overflow(), "EventOverflow should be set");
+
+        // Per spec §2.5.1: overflow with EventIntEn=1 must deliver MSI.
+        let msi = msi_controller.get_next_interrupt();
+        assert!(
+            msi.is_some(),
+            "MSI must be delivered on event log overflow when EventIntEn=1 (spec §2.5.1)"
+        );
+    }
+
+    /// §2.5: "When an event log overflow condition exists, the IOMMU
+    /// ceases recording events until software resets the event logging
+    /// function." Events must be dropped while EventOverflow is set.
+    ///
+    /// Deviation #6: the emulator continues writing events as long as
+    /// the ring buffer has physical space (e.g., after head advances).
+    #[test]
+    fn test_evtlog_drops_events_while_overflow_set() {
+        let mut dev = create_test_device_with_memory();
+        setup_iommu_enabled(&mut dev);
+
+        // Fill the event log to trigger overflow.
+        for i in 0..255 {
+            let event = EventEntry::io_page_fault(i as u16, 0x0001, false, false, 0x0);
+            dev.write_event(event);
+        }
+        // Trigger overflow.
+        dev.write_event(EventEntry::io_page_fault(0xFFFF, 0x0001, false, false, 0x0));
+
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(status.evt_overflow(), "precondition: overflow is set");
+
+        // Advance head to free physical space, but do NOT clear EventOverflow.
+        let head = EvtLogHead::new().with_head_ptr(10);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_HEAD.0 as u64,
+            head.into_bits(),
+        );
+
+        // Record the tail before attempting another event.
+        let tail_before =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+
+        // Write another event while EventOverflow is still set.
+        dev.write_event(EventEntry::io_page_fault(0xBEEF, 0x0001, false, false, 0x0));
+
+        // Per spec: events must be dropped while overflow is set.
+        let tail_after =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+        assert_eq!(
+            tail_before.tail_ptr(),
+            tail_after.tail_ptr(),
+            "event log tail must not advance while EventOverflow is set — \
+             events must be dropped until software clears overflow (spec §2.5)"
+        );
+    }
+
+    /// §2.5.7: A hardware error reading from the command buffer must
+    /// generate a COMMAND_HARDWARE_ERROR event (code 0x06) and halt the
+    /// command buffer.
+    ///
+    /// Deviation #7: the emulator halts the command buffer but does not
+    /// log the event.
+    #[test]
+    fn test_cmdbuf_read_failure_logs_hardware_error_event() {
+        // Allocate only 0x10000 bytes of guest memory.
+        // Place the event log within valid memory and the command buffer
+        // beyond it so that reading a command entry fails.
+        let guest_memory = GuestMemory::allocate(0x10000);
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+
+        // Event log at valid GPA 0x1000.
+        let evt_base = EvtLogBase::new()
+            .with_base_addr(0x1000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_BASE.0 as u64,
+            evt_base.into_bits(),
+        );
+
+        // Command buffer at GPA 0x2_0000 — beyond the 0x10000 allocation,
+        // so reading a command entry will fail.
+        let cmd_base = CmdBufBase::new()
+            .with_base_addr(0x2_0000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::CMD_BUF_BASE.0 as u64,
+            cmd_base.into_bits(),
+        );
+
+        let ctrl = IommuCtrl::new()
+            .with_iommu_en(true)
+            .with_cmd_buf_en(true)
+            .with_evt_log_en(true)
+            .with_evt_int_en(true);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+
+        // Poke tail to trigger a read from the unmapped command buffer.
+        poke_tail(&mut dev, 1);
+
+        // CmdBufRun should be cleared (halted).
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(
+            !status.cmd_buf_run(),
+            "CmdBufRun should be clear after command read failure"
+        );
+
+        // Per spec §2.5.7: a COMMAND_HARDWARE_ERROR event must be logged.
+        let tail =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+        assert_eq!(
+            tail.tail_ptr(),
+            1,
+            "event log should contain one COMMAND_HARDWARE_ERROR entry (spec §2.5.7)"
+        );
+
+        let event: EventEntry = dev
+            .shared
+            .guest_memory
+            .read_plain(0x1000)
+            .expect("should read event");
+        assert_eq!(
+            event.event_code(),
+            EventCode::COMMAND_HARDWARE_ERROR,
+            "event must be COMMAND_HARDWARE_ERROR (code 0x06) per spec §2.5.7"
+        );
+    }
+
+    /// §2.2.3: "Virtual addresses are [Mode×9+12]-bit." If any upper bits
+    /// of the IOVA are non-zero, the IOMMU must generate an IO_PAGE_FAULT.
+    ///
+    /// Deviation #9: the emulator does not validate the IOVA width. With
+    /// Mode=4 (48-bit VA), an IOVA with bits above 47 set is silently
+    /// accepted and translated (the upper bits are ignored by va_index).
+    #[test]
+    fn test_translate_rejects_iova_exceeding_va_width() {
+        let mut dev = create_test_device_for_translation();
+        let devtab_gpa = 0x1_0000;
+        setup_iommu_with_devtab(&mut dev, devtab_gpa, 256);
+
+        // Set up a 4-level page table mapping IOVA 0x0 → GPA 0xA_0000.
+        let l4_gpa = 0x2_0000u64;
+        let l3_gpa = 0x3_0000u64;
+        let l2_gpa = 0x4_0000u64;
+        let l1_gpa = 0x5_0000u64;
+        let target_gpa = 0xA_0000u64;
+
+        write_pte(
+            &dev,
+            l4_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(3)
+                .with_address(l3_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l3_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(2)
+                .with_address(l2_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l2_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(1)
+                .with_address(l1_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l1_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(0)
+                .with_address(target_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+
+        let dte = make_dte_with_translation(l4_gpa, 4, true, true, 1);
+        write_dte(&dev, devtab_gpa, 0x10, &dte);
+
+        // Sanity: IOVA 0x0 should translate successfully.
+        assert!(dev.translate(0x10, 0x0, false).is_ok());
+
+        // Mode=4 → VA width = 4*9+12 = 48 bits. Bits 63:48 must be zero.
+        // An IOVA with bit 48 set exceeds the configured VA width and must
+        // produce an IO_PAGE_FAULT, not silently alias to IOVA 0x0.
+        let bad_iova = 1u64 << 48; // bit 48 set, all lower bits zero
+        let result = dev.translate(0x10, bad_iova, false);
+        assert!(
+            result.is_err(),
+            "IOVA {:#x} has bits above the 48-bit VA width (Mode=4) and must \
+             be rejected with IO_PAGE_FAULT (spec §2.2.3)",
+            bad_iova
+        );
+        match result.unwrap_err() {
+            IommuFault::IoPageFault { device_id, .. } => {
+                assert_eq!(device_id, 0x10);
+            }
+            other => panic!("expected IoPageFault, got {:?}", other),
+        }
     }
 }

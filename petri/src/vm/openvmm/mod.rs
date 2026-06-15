@@ -190,6 +190,13 @@ struct PetriVmResourcesOpenVmm {
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
 
+    /// When set, the host connects to pipette via TCP through consomme
+    /// port forwarding instead of accepting on the Unix socket listener.
+    /// Used for Windows no-vmbus guests where virtio-vsock is unavailable.
+    /// The receiver yields the OS-assigned host port once the consomme
+    /// resolver has bound the socket.
+    tcp_pipette_port: Option<mesh::OneshotReceiver<u16>>,
+
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
     openvmm_path: ResolvedArtifact,

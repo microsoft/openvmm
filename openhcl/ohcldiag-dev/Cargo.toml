@@ -17,6 +17,7 @@ term.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crossterm = { workspace = true, features = ["windows"] }
 ctrlc.workspace = true
 fs-err.workspace = true
 futures.workspace = true

@@ -71,7 +71,6 @@ impl Assembler {
         }
     }
 
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }

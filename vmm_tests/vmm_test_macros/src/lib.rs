@@ -588,6 +588,15 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
             )),
         },
+        "windows_datacenter_core_2022_x64_no_vmbus_prepped" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2022 no-vmbus prepped is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED
+            )),
+        },
         "ubuntu_2404_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64
         )),
@@ -751,6 +760,8 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
 /// - `windows_datacenter_core_2025_x64_prepped`: Windows Server Datacenter Core 2025 from the Azure Marketplace,
 ///   pre-prepped with the pipette guest agent configured.
+/// - `windows_datacenter_core_2022_x64_no_vmbus_prepped`: Windows Server Datacenter Core 2022,
+///   pre-prepped with NetKVM driver and TCP pipette transport for no-vmbus testing.
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:

@@ -7,15 +7,21 @@ use crate::ChecksumState;
 use crate::Client;
 use crate::Consomme;
 use crate::ConsommeParams;
+use crate::IpVersion;
+use crate::PortForwardKey;
 use futures::AsyncRead;
+use futures::AsyncWrite;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use std::io::ErrorKind;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::sync::Arc;
 
 // ── Mock client ────────────────────────────────────────────────────
@@ -137,11 +143,17 @@ impl TcpTestHarness {
     /// and completes with an ACK. Returns the harness with an
     /// established connection ready for data transfer.
     async fn connect(driver: DefaultDriver) -> Self {
+        Self::connect_with_params(driver, ConsommeParams::new().unwrap()).await
+    }
+
+    /// Like [`connect`](Self::connect), but with caller-provided params, e.g.
+    /// to set custom per-connection TCP buffer bounds.
+    async fn connect_with_params(driver: DefaultDriver, params: ConsommeParams) -> Self {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let dst_port = std_listener.local_addr().unwrap().port();
         let mut listener = PolledSocket::new(&driver, std_listener).unwrap();
 
-        let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+        let mut consomme = Consomme::new(params);
         let mut client = TestClient::new(driver);
 
         let guest_mac = consomme.params_mut().client_mac;
@@ -383,9 +395,77 @@ impl TcpTestHarness {
     }
 
     /// Write data from the host side into the connection.
+    ///
+    /// Polls consomme concurrently while writing so it can drain the host
+    /// socket into `tx_buffer`. Without this, a write larger than the kernel
+    /// socket buffer would block forever, since consomme is the only reader.
+    /// Returns once all of `data` has been handed to the kernel socket.
     async fn host_write(&mut self, data: &[u8]) {
-        use futures::AsyncWriteExt;
-        self.host_stream.write_all(data).await.unwrap();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let mut written = 0;
+        std::future::poll_fn(move |cx| {
+            // Drive consomme so it drains the host socket into the tx ring,
+            // relieving backpressure on the write below.
+            consomme.access(client).poll(cx);
+            while written < data.len() {
+                match Pin::new(&mut *host_stream).poll_write(cx, &data[written..]) {
+                    Poll::Ready(Ok(0)) => panic!("host write returned 0"),
+                    Poll::Ready(Ok(n)) => written += n,
+                    Poll::Ready(Err(e)) => panic!("host write error: {e}"),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    /// Push `data` from the host side while polling consomme, returning as soon
+    /// as `done` holds for the connection (even if not all of `data` has been
+    /// written).
+    ///
+    /// This is needed when consomme intentionally stops reading the host socket
+    /// (e.g. once the tx ring caps at `max`): the unread remainder stays in the
+    /// kernel socket buffer, and a blocking `write_all` would deadlock. Polling
+    /// consomme concurrently lets it drain the socket and reach the target
+    /// state, which the caller observes via `done`.
+    async fn host_write_until(
+        &mut self,
+        data: &[u8],
+        mut done: impl FnMut(&TcpConnectionInner) -> bool,
+    ) {
+        let ft = self.four_tuple();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let mut written = 0;
+        std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            let inner = &consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner;
+            if done(inner) {
+                return Poll::Ready(());
+            }
+            // Feed more data until the kernel socket buffer is full, then keep
+            // polling consomme so it drains the socket and makes progress toward
+            // `done`.
+            while written < data.len() {
+                match Pin::new(&mut *host_stream).poll_write(cx, &data[written..]) {
+                    Poll::Ready(Ok(0)) => panic!("host write returned 0"),
+                    Poll::Ready(Ok(n)) => written += n,
+                    Poll::Ready(Err(e)) => panic!("host write error: {e}"),
+                    Poll::Pending => break,
+                }
+            }
+            Poll::Pending
+        })
+        .await;
     }
 
     /// Shut down the host side write half (sends EOF to consomme).
@@ -396,6 +476,50 @@ impl TcpTestHarness {
     /// Clear captured guest packets so subsequent searches don't match old ones.
     fn clear_guest_packets(&mut self) {
         self.client.received_packets.lock().clear();
+    }
+
+    /// The four-tuple identifying the established connection.
+    fn four_tuple(&self) -> FourTuple {
+        FourTuple {
+            src: SocketAddr::V4(SocketAddrV4::new(self.guest_ip, self.guest_port)),
+            dst: SocketAddr::V4(SocketAddrV4::new(self.dst_ip, self.dst_port)),
+        }
+    }
+
+    /// Borrow the established connection's inner state for assertions.
+    fn connection_inner(&self) -> &TcpConnectionInner {
+        let ft = self.four_tuple();
+        &self
+            .consomme
+            .tcp
+            .connections
+            .get(&ft)
+            .expect("connection should exist")
+            .inner
+    }
+
+    /// Poll consomme until `cond` holds for the established connection, leaving
+    /// the future pending between polls so the async reactor can run and socket
+    /// readiness can fire.
+    async fn poll_until(&mut self, mut cond: impl FnMut(&TcpConnectionInner) -> bool) {
+        let ft = self.four_tuple();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        std::future::poll_fn(|cx| {
+            consomme.access(client).poll(cx);
+            let inner = &consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner;
+            if cond(inner) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
     }
 }
 
@@ -584,7 +708,11 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
             .expect("bind should succeed");
 
         assert!(
-            access.inner.tcp.listeners.contains_key(&guest_port),
+            access
+                .inner
+                .tcp
+                .listeners
+                .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
             "listener should be registered"
         );
     }
@@ -744,6 +872,55 @@ async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
     assert!(
         matches!(err, BindError::PortAlreadyBound(_)),
         "error should be PortAlreadyBound"
+    );
+}
+
+/// Test that the same guest TCP port can be bound separately for IPv4 and IPv6.
+#[pal_async::async_test]
+async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver);
+
+    let guest_port = 8889;
+
+    let socket_v4 = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket_v4
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+
+    let socket_v6 = Socket::new(Domain::IPV6, Type::STREAM, None).unwrap();
+    socket_v6.set_only_v6(true).unwrap();
+    match socket_v6.bind(&SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0).into()) {
+        Ok(()) => {}
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::AddrNotAvailable | ErrorKind::Unsupported
+            ) =>
+        {
+            return;
+        }
+        Err(err) => panic!("IPv6 bind failed: {err}"),
+    }
+
+    let mut access = consomme.access(&mut client);
+    access
+        .bind_tcp_port(socket_v4, guest_port)
+        .expect("IPv4 bind should succeed");
+    access
+        .bind_tcp_port(socket_v6, guest_port)
+        .expect("IPv6 bind should succeed");
+
+    access
+        .unbind_tcp_port(IpVersion::Ipv4, guest_port)
+        .expect("IPv4 unbind should succeed");
+    assert!(
+        access
+            .inner
+            .tcp
+            .listeners
+            .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
+        "IPv6 listener should remain registered"
     );
 }
 
@@ -1341,5 +1518,98 @@ async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
     assert!(
         !src_ip.is_loopback(),
         "loopback SYN source IP should not be 127.x.x.x, got {src_ip}"
+    );
+}
+
+/// `NormalizedBufferBounds::from_bounds` clamps to `[16 KiB, 4 MiB]`, rounds up
+/// to a power of two, and keeps `initial <= max`.
+#[test]
+fn test_normalized_buffer_bounds() {
+    use crate::TcpBufferBounds;
+    let n = |initial, max| NormalizedBufferBounds::from_bounds(TcpBufferBounds { initial, max });
+    // Clamp up to the 16 KiB floor.
+    let b = n(1, 1);
+    assert_eq!((b.initial, b.max), (16 << 10, 16 << 10));
+    // Clamp down to the 4 MiB ceiling.
+    let b = n(64 << 20, 64 << 20);
+    assert_eq!((b.initial, b.max), (4 << 20, 4 << 20));
+    // Round non-powers-of-two up.
+    let b = n(100 << 10, 100 << 10);
+    assert_eq!((b.initial, b.max), (128 << 10, 128 << 10));
+    // initial is clamped to be no greater than max.
+    let b = n(4 << 20, 64 << 10);
+    assert_eq!((b.initial, b.max), (64 << 10, 64 << 10));
+}
+
+/// The rx window scale derived from `max` must let the advertised receive
+/// window reach `max` without renegotiating window scaling mid-connection.
+#[pal_async::async_test]
+async fn test_tcp_rx_window_scale_reaches_max(driver: DefaultDriver) {
+    let h = TcpTestHarness::connect(driver).await;
+    let c = h.connection_inner();
+    assert_eq!(c.rx_buffer_max, 4 << 20, "default rx max should be 4 MiB");
+    assert!(
+        c.rx_window_scale > 0,
+        "window scaling must be enabled to grow past 64 KiB"
+    );
+    let max_advertisable = (u16::MAX as usize) << c.rx_window_scale;
+    assert!(
+        max_advertisable >= c.rx_buffer_max,
+        "advertised window ceiling {max_advertisable} must reach rx max {}",
+        c.rx_buffer_max,
+    );
+}
+
+/// Autotune: the tx ring grows past its initial size when the host floods data
+/// faster than the guest ACKs, and stays a power of two within `max`.
+#[pal_async::async_test]
+async fn test_tcp_tx_buffer_autotune_grows(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let initial = h.connection_inner().tx_buffer.capacity();
+
+    // Flood the host->guest direction without ever ACKing from the guest, so
+    // the unacked data piles up in the tx ring and forces it to grow.
+    let payload = vec![0xABu8; 64 << 10];
+    h.host_write(&payload).await;
+    h.poll_until(|c| c.tx_buffer.capacity() > initial).await;
+
+    let cap = h.connection_inner().tx_buffer.capacity();
+    assert!(
+        cap > initial,
+        "tx ring should have grown past {initial}, got {cap}"
+    );
+    assert!(
+        cap.is_power_of_two(),
+        "tx ring capacity must stay a power of two: {cap}"
+    );
+    assert!(
+        cap <= 4 << 20,
+        "tx ring must not exceed the 4 MiB ceiling: {cap}"
+    );
+}
+
+/// Autotune: tx ring growth stops at the configured `max` and never exceeds it.
+#[pal_async::async_test]
+async fn test_tcp_tx_buffer_autotune_caps_at_max(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Small ceiling so a modest flood saturates it.
+    params.tcp_tx_buffer = crate::TcpBufferBounds {
+        initial: 16 << 10,
+        max: 32 << 10,
+    };
+    let mut h = TcpTestHarness::connect_with_params(driver, params).await;
+
+    // 64 KiB exceeds the 32 KiB ceiling; consomme only ingests up to the cap
+    // (the rest stays in the host socket buffer). Stop writing as soon as the
+    // ring caps so the unread remainder can't block the write.
+    let payload = vec![0xABu8; 64 << 10];
+    h.host_write_until(&payload, |c| c.tx_buffer.capacity() >= 32 << 10)
+        .await;
+
+    let cap = h.connection_inner().tx_buffer.capacity();
+    assert_eq!(
+        cap,
+        32 << 10,
+        "tx ring must cap at the configured 32 KiB max"
     );
 }

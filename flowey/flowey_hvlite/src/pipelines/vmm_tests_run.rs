@@ -131,6 +131,9 @@ struct ResolvedArtifactSelections {
     build: BuildSelections,
     /// What to download
     downloads: BTreeSet<KnownTestArtifacts>,
+    /// Downloads that must happen even when lazy fetch is enabled (e.g.
+    /// VHDs needed by prep_steps, which copies them to create prepped images).
+    force_downloads: BTreeSet<KnownTestArtifacts>,
     /// Whether any tests need release IGVM files from GitHub
     needs_release_igvm: bool,
     /// Whether any of the tests require Hyper-V
@@ -258,6 +261,11 @@ impl IntoPipeline for VmmTestsRunCli {
             }
 
             resolved.downloads.retain(|a| !a.supports_blob_disk());
+
+            // Re-add force_downloads (prep_steps dependencies) that were removed.
+            resolved
+                .downloads
+                .extend(resolved.force_downloads.iter().cloned());
 
             if hyperv_tests == 0 {
                 log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
@@ -681,14 +689,21 @@ impl ResolvedArtifactSelections {
             }
 
             // VmgsTool
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.vmgstool = true;
             }
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.vmgstool = true;
+
+            // VmgsTool-Dev
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmgstool_dev = true;
             }
 
             // TPM guest tests
@@ -736,7 +751,19 @@ impl ResolvedArtifactSelections {
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID =>
             {
-                self.build.prep_steps = true;
+                self.build.prep_steps_standard = true;
+                // prep_steps needs actual VHD files on disk to copy them.
+                // Force download even when lazy fetch is enabled.
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.prep_steps_no_vmbus = true;
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Vhd);
@@ -787,6 +814,9 @@ impl ResolvedArtifactSelections {
 
             // Common artifacts (always available, no build needed)
             petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
+
+            // Virtio-win drivers (downloaded from openvmm-deps, always available)
+            petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS::GLOBAL_UNIQUE_ID => {}
 
             // Pipette binaries (from petri_artifacts_common)
             petri_artifacts_common::artifacts::PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID

@@ -7,9 +7,11 @@
 //! need for translation: stream table base, CR0 state, and a reference to
 //! guest memory for walking page tables.
 //!
-//! [`SmmuTranslatingMemory`] implements [`GuestMemoryAccess`], translating
-//! IOVAs to GPAs via the SMMU page tables before accessing the underlying
-//! guest memory.
+//! [`SmmuTranslator`] implements
+//! [`IommuTranslator`](iommu_common::IommuTranslator), translating IOVAs to
+//! GPAs via the SMMU page tables. The generic
+//! [`TranslatingMemory`](iommu_common::TranslatingMemory) in `iommu_common`
+//! provides the [`GuestMemoryAccess`] boilerplate.
 //!
 //! [`SmmuSignalMsi`] implements [`SignalMsi`], translating the MSI address
 //! (which may be an IOVA) to a GPA before forwarding to the inner MSI
@@ -24,65 +26,15 @@ use crate::spec::events::EvtEntry;
 use crate::spec::registers;
 use crate::translate;
 use guestmem::GuestMemory;
-use guestmem::GuestMemoryBackingError;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::SignalMsi;
-use std::fmt;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
-
-/// Composes an SMMU-local stream ID from a bus range, a base offset,
-/// and an optional per-device BDF.
-///
-/// The stream ID is `stream_id_base + (bdf & 0xFFFF)`. When `devid`
-/// is `None`, the default BDF `(secondary_bus, dev 0, fn 0)` is used.
-///
-/// Returns `None` if the secondary bus has not been assigned yet
-/// (still 0) or if the BDF's bus number falls outside the port's
-/// assigned range.
-fn compose_stream_id(
-    bus_range: &AssignedBusRange,
-    stream_id_base: u32,
-    devid: Option<u32>,
-) -> Option<u32> {
-    let (secondary, subordinate) = bus_range.bus_range();
-    if secondary == 0 {
-        return None;
-    }
-    let bdf = devid.unwrap_or((secondary as u32) << 8);
-    let bus = (bdf >> 8) as u8;
-    if bus < secondary || bus > subordinate {
-        tracelimit::warn_ratelimited!(bus, secondary, subordinate, "BDF out of port bus range");
-        return None;
-    }
-    Some(stream_id_base + (bdf & 0xFFFF))
-}
-
-/// Translation error for SMMU DMA access.
-#[derive(Debug)]
-struct SmmuTranslationError {
-    iova: u64,
-    msg: &'static str,
-}
-
-impl fmt::Display for SmmuTranslationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "SMMU translation failed: {} at IOVA {:#x}",
-            self.msg, self.iova
-        )
-    }
-}
-
-impl std::error::Error for SmmuTranslationError {}
 
 /// Result of an SMMU translation attempt.
 #[derive(Debug)]
@@ -159,6 +111,19 @@ struct QueueErrorState {
     gerrorn: registers::Gerror,
     /// Whether the GERROR interrupt is enabled (IRQ_CTRL.GERROR_IRQEN).
     gerror_irqen: bool,
+}
+
+/// Saved portion of [`QueueErrorState`] for state save/restore.
+///
+/// Only the producer/consumer indices and error toggle registers need
+/// saving — the remaining fields (`evtq_base_addr`, `evtq_log2size`,
+/// `evtq_enabled`, `evtq_irqen`, `gerror_irqen`) are derived from
+/// SMMU register state and re-synced on restore.
+pub(crate) struct SavedQueueState {
+    pub evtq_prod: u32,
+    pub evtq_cons: u32,
+    pub gerror: u32,
+    pub gerrorn: u32,
 }
 
 impl SmmuSharedState {
@@ -332,6 +297,59 @@ impl SmmuSharedState {
         self.update_gerror_irq(&qs);
     }
 
+    /// Saves the queue and error state that must be persisted.
+    ///
+    /// Fields derived from SMMU registers (`evtq_base_addr`, `evtq_log2size`,
+    /// `evtq_enabled`, `evtq_irqen`, `gerror_irqen`) are re-synced on
+    /// restore and are not included in the saved state.
+    pub(crate) fn save_queue_state(&self) -> SavedQueueState {
+        let qs = self.queue_state.lock();
+        // Exhaustively destructure to get a compile error if a field is added.
+        let QueueErrorState {
+            evtq_base_addr: _,
+            evtq_log2size: _,
+            evtq_enabled: _,
+            evtq_irqen: _,
+            evtq_prod,
+            evtq_cons,
+            gerror,
+            gerrorn,
+            gerror_irqen: _,
+        } = *qs;
+        SavedQueueState {
+            evtq_prod,
+            evtq_cons,
+            gerror: gerror.into(),
+            gerrorn: gerrorn.into(),
+        }
+    }
+
+    /// Restores the queue and error state from a saved snapshot.
+    ///
+    /// The caller must re-sync derived fields (`set_evtq_config`,
+    /// `set_evtq_enabled`, `set_irq_ctrl`) before this call, since
+    /// this function uses `evtq_irqen` to sync the EVTQ interrupt line.
+    pub(crate) fn restore_queue_state(&self, state: SavedQueueState) {
+        let SavedQueueState {
+            evtq_prod,
+            evtq_cons,
+            gerror,
+            gerrorn,
+        } = state;
+        let mut qs = self.queue_state.lock();
+        qs.evtq_prod = evtq_prod;
+        qs.evtq_cons = evtq_cons;
+        qs.gerror = registers::Gerror::from(gerror);
+        qs.gerrorn = registers::Gerror::from(gerrorn);
+        self.update_gerror_irq(&qs);
+        // Sync EVTQ wired interrupt line to match restored queue state.
+        if qs.evtq_irqen {
+            if let Some(irq) = &self.evtq_irq {
+                irq.set_level(qs.evtq_prod != qs.evtq_cons);
+            }
+        }
+    }
+
     /// Translate an IOVA to a GPA for the given stream ID.
     ///
     /// Callers that need to hold the lock across translation and a subsequent
@@ -453,25 +471,16 @@ impl SmmuSharedState {
         }
     }
 
-    /// Creates a translating `GuestMemory` for a PCI device behind this SMMU.
+    /// Creates a translator for PCI devices behind this SMMU.
     ///
-    /// DMA accesses through the returned `GuestMemory` translate IOVAs to
-    /// GPAs via the SMMU page tables. This does not depend on MSI
-    /// availability — DMA translation is always active when an SMMU covers
-    /// the device.
-    pub fn create_translating_memory(
-        self: &Arc<Self>,
-        bus_range: AssignedBusRange,
-        stream_id_base: u32,
-        inner_gm: &GuestMemory,
-    ) -> GuestMemory {
-        let translating_mem = SmmuTranslatingMemory {
+    /// `stream_id_base` is the offset into this SMMU's stream table for the
+    /// root complex this device belongs to. The translator computes the
+    /// stream ID as `stream_id_base + rid` at each access.
+    pub fn translator(self: &Arc<Self>, stream_id_base: u32) -> SmmuTranslator {
+        SmmuTranslator {
             shared: self.clone(),
-            bus_range,
             stream_id_base,
-            inner_gm: inner_gm.clone(),
-        };
-        GuestMemory::new("smmu-translating", translating_mem)
+        }
     }
 
     /// Creates an SMMU irqfd wrapper for a PCI device behind this SMMU.
@@ -482,7 +491,7 @@ impl SmmuSharedState {
     /// Irqfd routes created from the returned wrapper will translate MSI
     /// addresses through the SMMU page tables before programming the
     /// kernel route.
-    pub fn create_irqfd(
+    pub fn wrap_irqfd(
         self: &Arc<Self>,
         stream_id_base: u32,
         inner: Arc<dyn IrqFd>,
@@ -495,160 +504,79 @@ impl SmmuSharedState {
     }
 }
 
-/// A [`guestmem::GuestMemoryAccess`] implementation that translates IOVAs via the SMMU.
+/// An [`IommuTranslator`](iommu_common::IommuTranslator) for the ARM SMMUv3.
 ///
-/// Each PCI device behind the SMMU gets its own `SmmuTranslatingMemory`.
-/// When the device reads or writes guest memory using an IOVA, this
-/// wrapper translates the IOVA to a GPA using the SMMU page tables, then
-/// delegates to the underlying guest memory.
-pub struct SmmuTranslatingMemory {
+/// One `SmmuTranslator` is shared by all PCI devices behind the same SMMU.
+/// The requester ID (RID / BDF) is passed at each translation call and
+/// combined with the `stream_id_base` to form the SMMU stream ID.
+pub struct SmmuTranslator {
     shared: Arc<SmmuSharedState>,
-    bus_range: AssignedBusRange,
     /// Offset into the SMMU's stream table for this root complex.
     stream_id_base: u32,
-    inner_gm: GuestMemory,
 }
 
-impl SmmuTranslatingMemory {
-    /// Perform a translated memory operation, handling page-crossing accesses.
-    ///
-    /// Holds the SMMU read lock across both translation and memory access
-    /// for each page chunk, preventing config changes between translation
-    /// and the actual DMA. Splits at page boundaries when the IOVA range
-    /// spans multiple pages (which may have different translations).
-    fn do_translated_op(
+/// DMA translation error from the SMMU.
+///
+/// The fault event has already been queued to the SMMU's event queue;
+/// this error carries the key fields for diagnostic purposes.
+#[derive(Debug, thiserror::Error)]
+#[error("SMMU DMA fault: event {event_id:#04x} SID {sid:#x} addr {input_addr:#x}")]
+pub struct SmmuDmaFault {
+    /// Event type ID.
+    event_id: u8,
+    /// StreamID of the faulting device.
+    sid: u32,
+    /// Faulting input address.
+    input_addr: u64,
+}
+
+impl SmmuDmaFault {
+    fn from_event(event: &EvtEntry) -> Self {
+        Self {
+            event_id: event.header.event_id(),
+            sid: event.sid,
+            input_addr: event.input_addr,
+        }
+    }
+}
+
+impl iommu_common::IommuTranslator for SmmuTranslator {
+    type Error = SmmuDmaFault;
+
+    fn max_iova(&self) -> u64 {
+        // The SMMUv3 architecture supports up to 48-bit input addresses.
+        // This is the maximum across all configurations: stage-1 only,
+        // stage-2 only, and nested (stage-1 IAS and stage-2 IPA width
+        // are both bounded by 48 bits).
+        1u64 << 48
+    }
+
+    fn translate<R>(
         &self,
+        rid: u16,
         iova: u64,
-        len: usize,
         write: bool,
-        mut op: impl FnMut(u64, usize, usize) -> Result<(), GuestMemoryBackingError>,
-    ) -> Result<(), GuestMemoryBackingError> {
-        let sid = match compose_stream_id(&self.bus_range, self.stream_id_base, None) {
-            Some(sid) => sid,
-            None => {
-                // Bus not assigned — bypass, no lock needed.
-                let mut offset = 0usize;
-                let mut remaining = len;
-                while remaining > 0 {
-                    let current_iova = iova.wrapping_add(offset as u64);
-                    let page_offset = (current_iova & 0xFFF) as usize;
-                    let bytes_in_page = (0x1000 - page_offset).min(remaining);
-                    op(current_iova, offset, bytes_in_page)?;
-                    offset += bytes_in_page;
-                    remaining -= bytes_in_page;
-                }
-                return Ok(());
+        op: impl FnOnce(u64) -> R,
+    ) -> Result<R, iommu_common::TranslationFault<SmmuDmaFault>> {
+        let sid = self.stream_id_base + (rid as u32);
+
+        // Hold the read lock across translate + op to prevent SMMU config
+        // from changing between getting the GPA and using it.
+        let inner = self.shared.inner.read();
+        let gpa = match self.shared.translate_locked(&inner, sid, iova, write) {
+            TranslateResult::Bypass => iova,
+            TranslateResult::Translated(gpa) => gpa,
+            TranslateResult::Abort(event) | TranslateResult::Fault(event) => {
+                drop(inner);
+                let error = SmmuDmaFault::from_event(&event);
+                self.shared.write_event(event);
+                return Err(iommu_common::TranslationFault { iova, error });
             }
         };
 
-        let mut offset = 0usize;
-        let mut remaining = len;
-
-        while remaining > 0 {
-            let current_iova = iova.wrapping_add(offset as u64);
-
-            // Compute how many bytes until the next page boundary.
-            let page_offset = (current_iova & 0xFFF) as usize;
-            let bytes_in_page = (0x1000 - page_offset).min(remaining);
-
-            // Hold the read lock across translate + memory access to prevent
-            // SMMU config from changing between getting the GPA and using it.
-            let inner = self.shared.inner.read();
-            let gpa = match self
-                .shared
-                .translate_locked(&inner, sid, current_iova, write)
-            {
-                TranslateResult::Bypass => current_iova,
-                TranslateResult::Translated(gpa) => gpa,
-                TranslateResult::Abort(event) => {
-                    drop(inner);
-                    self.shared.write_event(event);
-                    return Err(GuestMemoryBackingError::other(
-                        current_iova,
-                        SmmuTranslationError {
-                            iova: current_iova,
-                            msg: "DMA aborted by STE config",
-                        },
-                    ));
-                }
-                TranslateResult::Fault(event) => {
-                    drop(inner);
-                    self.shared.write_event(event);
-                    return Err(GuestMemoryBackingError::other(
-                        current_iova,
-                        SmmuTranslationError {
-                            iova: current_iova,
-                            msg: "translation fault",
-                        },
-                    ));
-                }
-            };
-
-            op(gpa, offset, bytes_in_page)?;
-            drop(inner);
-
-            offset += bytes_in_page;
-            remaining -= bytes_in_page;
-        }
-
-        Ok(())
-    }
-}
-
-// UNSAFETY: SmmuTranslatingMemory returns `None` from `mapping()`, so the
-// caller never gets a raw pointer. All accesses go through the fallback
-// methods which translate IOVAs to GPAs and delegate to the inner
-// GuestMemory. The inner GuestMemory is itself safe.
-#[expect(unsafe_code)]
-unsafe impl guestmem::GuestMemoryAccess for SmmuTranslatingMemory {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        // Force all accesses through the fallback path for translation.
-        None
-    }
-
-    fn max_address(&self) -> u64 {
-        // IOVAs can use the full address range; translation determines
-        // the actual valid range.
-        u64::MAX
-    }
-
-    unsafe fn read_fallback(
-        &self,
-        addr: u64,
-        dest: *mut u8,
-        len: usize,
-    ) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, false, |gpa, offset, chunk_len| {
-            // SAFETY: dest is valid for len bytes per the trait contract.
-            // We slice into dest at the correct offset.
-            let chunk_dest = unsafe { std::slice::from_raw_parts_mut(dest.add(offset), chunk_len) };
-            self.inner_gm
-                .read_at(gpa, chunk_dest)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
-    }
-
-    unsafe fn write_fallback(
-        &self,
-        addr: u64,
-        src: *const u8,
-        len: usize,
-    ) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, true, |gpa, offset, chunk_len| {
-            // SAFETY: src is valid for len bytes per the trait contract.
-            let chunk_src = unsafe { std::slice::from_raw_parts(src.add(offset), chunk_len) };
-            self.inner_gm
-                .write_at(gpa, chunk_src)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
-    }
-
-    fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError> {
-        self.do_translated_op(addr, len, true, |gpa, _offset, chunk_len| {
-            self.inner_gm
-                .fill_at(gpa, val, chunk_len)
-                .map_err(|e| GuestMemoryBackingError::other(addr, e))
-        })
+        let result = op(gpa);
+        drop(inner);
+        Ok(result)
     }
 }
 
@@ -805,6 +733,7 @@ mod tests {
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
     use parking_lot::Mutex;
+    use pci_core::bus_range::AssignedBusRange;
     use std::sync::Arc;
 
     // Memory layout for tests. All addresses fit within a 6 MB allocation
@@ -865,14 +794,20 @@ mod tests {
 
     /// Test-only helper: creates a translating GuestMemory and SmmuSignalMsi
     /// pair for a device behind the SMMU.
-    fn create_device_context(
+    fn device_context(
         state: &Arc<SmmuSharedState>,
         bus_range: AssignedBusRange,
         stream_id_base: u32,
         inner_gm: &GuestMemory,
         inner_msi: Arc<dyn SignalMsi>,
     ) -> (GuestMemory, Arc<SmmuSignalMsi>) {
-        let gm = state.create_translating_memory(bus_range, stream_id_base, inner_gm);
+        let translator = state.translator(stream_id_base);
+        let gm = iommu_common::TranslatingMemory::new_guest_memory(
+            "smmu-translating",
+            translator,
+            bus_range,
+            inner_gm.clone(),
+        );
         let signal_msi = Arc::new(SmmuSignalMsi::new(state.clone(), stream_id_base, inner_msi));
         (gm, signal_msi)
     }
@@ -987,7 +922,7 @@ mod tests {
     }
 
     // =========================================================================
-    // SmmuTranslatingMemory tests
+    // TranslatingMemory tests
     // =========================================================================
 
     #[test]
@@ -1005,7 +940,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Read via IOVA 0 → should get data from DATA_GPA.
         let mut buf = vec![0u8; data.len()];
@@ -1024,7 +959,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Write via IOVA.
         let data = b"write test";
@@ -1051,7 +986,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Read via IOVA 0x100 → DATA_GPA + 0x100.
         let mut buf = vec![0u8; data.len()];
@@ -1087,7 +1022,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Read 32 bytes starting at IOVA 0xFF0, crossing into page 2.
         let mut buf = vec![0u8; 0x20];
@@ -1113,7 +1048,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Read via IOVA = GPA (identity mapping in bypass mode).
         let mut buf = vec![0u8; data.len()];
@@ -1134,7 +1069,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Read should fail.
         let mut buf = vec![0u8; 4];
@@ -1160,7 +1095,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         let mut buf = vec![0u8; 4];
         let result = translating_gm.read_at(0, &mut buf);
@@ -1177,22 +1112,18 @@ mod tests {
     fn test_translating_memory_unassigned_bus() {
         let gm = GuestMemory::allocate(0x60_0000);
 
-        // Write data at GPA 0x2000.
-        let data = b"unassigned bus data";
-        gm.write_at(0x2000, data).unwrap();
-
         let state = make_shared_state(&gm);
-        // Bus range NOT assigned (secondary_bus = 0).
+        // Bus range NOT assigned (secondary_bus = 0) → RID = 0.
+        // With SMMU enabled, stream ID 0 has no valid STE → fault.
         let bus_range = AssignedBusRange::new();
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
-        // Should bypass translation (IOVA = GPA).
-        let mut buf = vec![0u8; data.len()];
-        translating_gm.read_at(0x2000, &mut buf).unwrap();
-        assert_eq!(&buf, data);
+        // Should fault because STE 0 is not configured.
+        let mut buf = vec![0u8; 10];
+        translating_gm.read_at(0x2000, &mut buf).unwrap_err();
     }
 
     #[test]
@@ -1208,7 +1139,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
 
         // Should bypass translation.
         let mut buf = vec![0u8; data.len()];
@@ -1233,7 +1164,7 @@ mod tests {
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, smmu_msi) = create_device_context(
+        let (_gm, smmu_msi) = device_context(
             &state,
             bus_range,
             TEST_STREAM_ID_BASE,
@@ -1262,7 +1193,7 @@ mod tests {
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, smmu_msi) = create_device_context(
+        let (_gm, smmu_msi) = device_context(
             &state,
             bus_range,
             TEST_STREAM_ID_BASE,
@@ -1291,7 +1222,7 @@ mod tests {
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, smmu_msi) = create_device_context(
+        let (_gm, smmu_msi) = device_context(
             &state,
             bus_range,
             TEST_STREAM_ID_BASE,
@@ -1321,7 +1252,7 @@ mod tests {
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, smmu_msi) = create_device_context(
+        let (_gm, smmu_msi) = device_context(
             &state,
             bus_range,
             TEST_STREAM_ID_BASE,
@@ -1345,7 +1276,7 @@ mod tests {
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
-        let (_gm, smmu_msi) = create_device_context(
+        let (_gm, smmu_msi) = device_context(
             &state,
             bus_range,
             TEST_STREAM_ID_BASE,
@@ -1391,7 +1322,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, _msi) =
-            create_device_context(&state, bus_range, stream_id_base, &gm, mock_msi);
+            device_context(&state, bus_range, stream_id_base, &gm, mock_msi);
 
         // Read via IOVA 0 → should find the STE at the remapped stream ID.
         let mut buf = vec![0u8; data.len()];
@@ -1417,7 +1348,7 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (_gm, smmu_msi) =
-            create_device_context(&state, bus_range, stream_id_base, &gm, mock_msi.clone());
+            device_context(&state, bus_range, stream_id_base, &gm, mock_msi.clone());
 
         // Fire MSI — bypass mode means address passes through unchanged.
         let rid = (bus as u32) << 8;

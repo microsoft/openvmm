@@ -294,7 +294,7 @@ pub struct HyperVNewCustomVMArgs {
     /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
     /// Physical NVMe devices, used exclusively in closed source tests
-    pub physical_nvme_devices: Vec<crate::PhysicalNvmeDevice>,
+    pub physical_nvme_devices: HashMap<Guid, crate::PhysicalNvmeDevice>,
     /// Temporary file containing initial machine configuration data
     pub imc_hiv: Option<NamedTempFile>,
     /// Enable COM1 at \\.\pipe\<VMID>-1
@@ -726,9 +726,9 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         None
     } else {
         Some(ps::HashTable::new(args.physical_nvme_devices.iter().map(
-            |dev| {
+            |(vsid, dev)| {
                 (
-                    format!("\"{}\"", dev.vsid),
+                    format!("\"{}\"", vsid),
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(dev.target_vtl as u32)),
                         ("Nsid", ps::Value::new(dev.nsid)),
@@ -821,7 +821,7 @@ pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
 pub async fn request_physical_nvme(
     namespace_size_mib: u64,
     target_vtl: crate::Vtl,
-) -> anyhow::Result<crate::PhysicalNvmeDevice> {
+) -> anyhow::Result<(Guid, crate::PhysicalNvmeDevice)> {
     let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -841,12 +841,14 @@ pub async fn request_physical_nvme(
 
     let vsid = Guid::new_random();
 
-    Ok(crate::PhysicalNvmeDevice {
-        target_vtl,
+    Ok((
         vsid,
-        nsid,
-        namespace_size_mib,
-    })
+        crate::PhysicalNvmeDevice {
+            target_vtl,
+            nsid,
+            namespace_size_mib,
+        },
+    ))
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet
@@ -1378,13 +1380,6 @@ pub async fn run_restart_openhcl(
     ps_mod: &Path,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
-    // No NVMe storage, so no keepalive. Prevent us from silently thinking that we're testing this feature.
-    // Tracked by #1649.
-    if flags.enable_nvme_keepalive {
-        return Err(anyhow::anyhow!(
-            "enable_nvme_keepalive is not yet supported for HyperV VMs"
-        ));
-    }
     run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")

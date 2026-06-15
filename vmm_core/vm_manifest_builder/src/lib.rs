@@ -115,6 +115,7 @@ impl UefiManifest {
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
+        diagnostics_rate_limit: Option<u32>,
         nvram_storage: Resource<NonVolatileStoreKind>,
         storage_quirks: Option<HclCompatNvramQuirks>,
     ) -> Self {
@@ -131,6 +132,7 @@ impl UefiManifest {
                     MachineArch::Aarch64 => UefiCommandSet::Aarch64,
                 },
                 diagnostics_log_level,
+                diagnostics_rate_limit,
             },
             storage_quirks,
             generation_id_recv: mesh::channel().1,

@@ -119,9 +119,10 @@ impl SimpleFlowNode for Node {
         } else {
             OpenvmmHclBuildProfile::Debug
         };
-        let mut recipe_details = base_recipe.recipe_details(release_cfg);
 
-        {
+        let recipe_details = {
+            let mut recipe_details = base_recipe.recipe_details(release_cfg);
+
             let OpenhclIgvmRecipeDetails {
                 local_only,
                 igvm_manifest,
@@ -142,9 +143,6 @@ impl SimpleFlowNode for Node {
             if with_sidecar || custom_sidecar.is_some() {
                 *with_sidecar_details = true;
             }
-
-            // Debug configurations include --interactive by default, for busybox, gdbserver, and perf.
-            *with_interactive = !release_cfg || with_perf_tools;
 
             assert!(local_only.is_none());
             *local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
@@ -204,7 +202,21 @@ impl SimpleFlowNode for Node {
             if let Some(p) = custom_vtl0_kernel {
                 *vtl0_kernel_type = Some(Vtl0KernelType::LocalOnlyCustom(p.absolute()?))
             }
-        }
+
+            // Debug configurations already include --interactive by default
+            // on x86 for busybox, gdbserver, and perf (aarch64 is currently
+            // broken and always disabled by default to allow the shell to
+            // work with ohcldiag-dev. see #1234).
+            *with_interactive |= with_perf_tools;
+
+            if *with_interactive && target.common_arch()? == CommonArch::Aarch64 {
+                log::warn!(
+                    "Please note that using perf tools on ARM currently breaks ohcldiag-dev shell"
+                );
+            }
+
+            recipe_details
+        };
 
         let build_label = if let Some(label) = build_label {
             label

@@ -34,6 +34,7 @@ pub struct VmmTestsDepArtifacts {
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
     pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
+    pub vmgstool_dev: Option<ReadVar<VmgstoolOutput>>,
     pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
     pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
     pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
@@ -55,8 +56,9 @@ flowey_request! {
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
         /// Test artifacts to download
         pub test_artifacts: Vec<KnownTestArtifacts>,
-        /// Whether the prep steps should be run before the tests
-        pub needs_prep_run: bool,
+        /// Which prep_steps variants to run before tests (e.g. "standard", "no-vmbus").
+        /// Empty means no prep steps are needed.
+        pub prep_steps_variants: Vec<String>,
         /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
@@ -98,7 +100,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
-            needs_prep_run,
+            prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
             done,
@@ -121,6 +123,7 @@ impl SimpleFlowNode for Node {
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
             vmgstool: register_vmgstool,
+            vmgstool_dev: register_vmgstool_dev,
             tpm_guest_tests_windows: register_tpm_guest_tests_windows,
             tpm_guest_tests_linux: register_tpm_guest_tests_linux,
             test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
@@ -185,6 +188,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
@@ -210,12 +214,16 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        if needs_prep_run {
-            pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
-                prep_steps: register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given"),
-                env: extra_env.clone(),
-                done,
-            }));
+        if !prep_steps_variants.is_empty() {
+            let prep_steps = register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given");
+            for variant in &prep_steps_variants {
+                pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                    prep_steps: prep_steps.clone(),
+                    args: vec![variant.clone()],
+                    env: extra_env.clone(),
+                    done,
+                }));
+            }
         } else if let Some(register_prep_steps) = register_prep_steps {
             register_prep_steps.claim_unused(ctx);
         }

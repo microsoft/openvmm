@@ -15,10 +15,12 @@ ttrpc = []
 [dependencies]
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
+crypto.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
+memory_range.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 vmm_core_defs.workspace = true
@@ -81,6 +83,7 @@ tracing_helpers.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
+crossterm = { workspace = true, features = ["windows"] }
 dirs.workspace = true
 fs-err.workspace = true
 futures.workspace = true
@@ -88,7 +91,6 @@ futures-concurrency.workspace = true
 getrandom.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
-sha2.workspace = true
 shell-words.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tempfile.workspace = true

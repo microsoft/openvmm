@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "iommu_common"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guestmem.workspace = true
+pci_core.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

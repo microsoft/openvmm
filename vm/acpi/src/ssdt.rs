@@ -40,6 +40,31 @@ pub struct Ssdt {
     pcie_ecam_ranges: Vec<MemoryRange>,
 }
 
+/// Parameters for adding a PCIe host bridge to the SSDT.
+pub struct PcieHostBridgeEntry {
+    /// Unique index of this host bridge.
+    pub index: u32,
+    /// PCIe segment number.
+    pub segment: u16,
+    /// Lowest valid bus number.
+    pub start_bus: u8,
+    /// Highest valid bus number.
+    pub end_bus: u8,
+    /// Memory range for ECAM configuration space access.
+    pub ecam_range: MemoryRange,
+    /// Memory range for low MMIO.
+    pub low_mmio: MemoryRange,
+    /// Memory range for high MMIO.
+    pub high_mmio: MemoryRange,
+    /// Whether this host bridge supports CXL.
+    pub cxl: bool,
+    /// NUMA proximity domain.
+    pub vnode: Option<u32>,
+    /// When true, emit a `_DSM` method instructing the OS to preserve
+    /// firmware-assigned BAR values. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
+}
+
 impl Ssdt {
     pub fn new() -> Self {
         Self {
@@ -115,17 +140,19 @@ impl Ssdt {
     ///     })
     /// }
     /// ```
-    pub fn add_pcie(
-        &mut self,
-        index: u32,
-        segment: u16,
-        start_bus: u8,
-        end_bus: u8,
-        ecam_range: MemoryRange,
-        low_mmio: MemoryRange,
-        high_mmio: MemoryRange,
-        cxl: bool,
-    ) {
+    pub fn add_pcie(&mut self, entry: PcieHostBridgeEntry) {
+        let PcieHostBridgeEntry {
+            index,
+            segment,
+            start_bus,
+            end_bus,
+            ecam_range,
+            low_mmio,
+            high_mmio,
+            cxl,
+            vnode,
+            preserve_bars,
+        } = entry;
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
         if cxl {
             // As recommended by the CXL specification, describe CXL host bridges with _HID "ACPI0016"
@@ -149,6 +176,9 @@ impl Ssdt {
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
         pcie.add_object(&NamedInteger::new(b"_CCA", 1));
+        if let Some(vnode) = vnode {
+            pcie.add_object(&NamedInteger::new(b"_PXM", vnode.into()));
+        }
 
         // _OSC method: negotiate native control with the guest OS.
         //
@@ -281,6 +311,77 @@ impl Ssdt {
 
         pcie.add_object(&osc_method);
 
+        // _DSM: Device Specific Method for preserving firmware BAR assignments.
+        //
+        // UUID {E5C937D0-3553-4D7A-9117-EA4D19C3434D} is the PCI/PCIe host
+        // bridge _DSM defined in the PCI Firmware Specification §4.6.
+        //
+        // Function 0: returns a buffer with supported function bitmask
+        // Function 5: returns 0 to indicate firmware-assigned BAR values
+        //             should be preserved by the OS
+        //
+        // When preserve_bars is false, no _DSM is emitted and the guest
+        // OS is free to reprogram BARs.
+        if preserve_bars {
+            let mut dsm_method = Method::new(b"_DSM");
+            dsm_method.set_arg_count(4);
+
+            let dsm_uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+            let dsm_uuid_buffer = Buffer(dsm_uuid.as_bytes()).to_bytes();
+
+            // If (LEqual(Arg0, UUID))
+            let uuid_match = LEqualOp {
+                left: encode_arg(0),
+                right: dsm_uuid_buffer,
+            };
+
+            // Function 0: return supported function bitmask (bits 0 and 5).
+            // Bit 0 = Function 0 supported, Bit 5 = Function 5 supported.
+            let fn0_match = LEqualOp {
+                left: encode_arg(2),
+                right: encode_integer(0),
+            };
+            let fn0_return = ReturnOp {
+                result: Buffer(&[0x21u8]).to_bytes(),
+            };
+            let fn0_if = IfOp {
+                predicate: fn0_match.to_bytes(),
+                body: fn0_return.to_bytes(),
+            };
+
+            // Function 5: return 0 (preserve firmware BAR assignments).
+            let fn5_match = LEqualOp {
+                left: encode_arg(2),
+                right: encode_integer(5),
+            };
+            let fn5_return = ReturnOp {
+                result: encode_integer(0),
+            };
+            let fn5_if = IfOp {
+                predicate: fn5_match.to_bytes(),
+                body: fn5_return.to_bytes(),
+            };
+
+            let uuid_if = IfOp {
+                predicate: uuid_match.to_bytes(),
+                body: {
+                    let mut body = Vec::new();
+                    fn0_if.append_to_vec(&mut body);
+                    fn5_if.append_to_vec(&mut body);
+                    body
+                },
+            };
+
+            dsm_method.add_operation(&uuid_if);
+
+            // Unrecognized UUID or function: return empty buffer.
+            dsm_method.add_operation(&ReturnOp {
+                result: Buffer(&[] as &[u8]).to_bytes(),
+            });
+
+            pcie.add_object(&dsm_method);
+        }
+
         let mut crs = CurrentResourceSettings::new();
         crs.add_resource(&BusNumber::new(
             start_bus.into(),
@@ -381,19 +482,33 @@ mod tests {
         verify_expected_bytes(&bytes[36..], &[8, b'_', b'S', b'0', b'_', 0x12, 4, 2, 0, 0]);
     }
 
+    fn test_pcie_entry(vnode: Option<u32>) -> PcieHostBridgeEntry {
+        PcieHostBridgeEntry {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0x1000_0000..0x2000_0000),
+            low_mmio: MemoryRange::new(0xdc00_0000..0xe000_0000),
+            high_mmio: MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
+            cxl: false,
+            vnode,
+            preserve_bars: false,
+        }
+    }
+
+    fn contains_name(bytes: &[u8], name: &[u8; 4]) -> bool {
+        bytes.windows(4).any(|w| w == name)
+    }
+
+    fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
+        bytes.windows(needle.len()).any(|w| w == needle)
+    }
+
     #[test]
     fn pcie_includes_cca() {
         let mut ssdt = Ssdt::new();
-        ssdt.add_pcie(
-            0,
-            0,
-            0,
-            255,
-            MemoryRange::new(0x1000_0000..0x2000_0000),
-            MemoryRange::new(0xdc00_0000..0xe000_0000),
-            MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
-            false,
-        );
+        ssdt.add_pcie(test_pcie_entry(None));
 
         let bytes = ssdt.to_bytes();
         verify_header(&bytes);
@@ -402,5 +517,94 @@ mod tests {
                 .windows(6)
                 .any(|window| window == [8, b'_', b'C', b'C', b'A', 1,])
         );
+    }
+
+    #[test]
+    fn pcie_no_pxm_when_vnode_none() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(None));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM should NOT be present when vnode is None.
+        assert!(
+            !bytes
+                .windows(4)
+                .any(|window| window == [b'_', b'P', b'X', b'M']),
+            "_PXM should not be emitted when vnode is None"
+        );
+    }
+
+    #[test]
+    fn pcie_includes_pxm() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(Some(0)));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM with value 0
+        assert!(
+            bytes
+                .windows(6)
+                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0,])
+        );
+    }
+
+    #[test]
+    fn pcie_pxm_nonzero_node() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(Some(3)));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM with value 3: Name op (0x08) + "_PXM" + BytePrefix (0x0a) + 3
+        assert!(
+            bytes
+                .windows(7)
+                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0x0a, 3,])
+        );
+    }
+
+    #[test]
+    fn pcie_dsm_present_when_preserve_bars() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(PcieHostBridgeEntry {
+            preserve_bars: true,
+            ..test_pcie_entry(None)
+        });
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+
+        // _DSM method name must be present.
+        assert!(contains_name(&bytes, b"_DSM"));
+
+        // The PCI firmware _DSM UUID must appear in mixed-endian form
+        // (GUID wire format).
+        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        assert!(contains_bytes(&bytes, uuid.as_bytes()));
+
+        // The supported-functions bitmask byte (0x21 = bits 0+5) must
+        // appear somewhere in the buffer encoding.
+        assert!(contains_bytes(&bytes, &[0x21]));
+    }
+
+    #[test]
+    fn pcie_dsm_absent_without_preserve_bars() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(PcieHostBridgeEntry {
+            preserve_bars: false,
+            ..test_pcie_entry(None)
+        });
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+
+        // _DSM must NOT be present.
+        assert!(!contains_name(&bytes, b"_DSM"));
+
+        // The PCI firmware _DSM UUID must NOT appear.
+        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        assert!(!contains_bytes(&bytes, uuid.as_bytes()));
     }
 }

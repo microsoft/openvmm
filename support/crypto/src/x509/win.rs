@@ -8,6 +8,7 @@
 use super::X509Error;
 use crate::win::KeyHandle;
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use windows::Win32::Security::Cryptography::CERT_AUTHORITY_KEY_ID2_INFO;
 use windows::Win32::Security::Cryptography::CERT_CONTEXT;
@@ -49,7 +50,7 @@ fn last_err(op: &'static str) -> X509Error {
 }
 
 /// RAII wrapper around `PCCERT_CONTEXT`.
-struct CertContext(*const CERT_CONTEXT);
+pub(crate) struct CertContext(pub(crate) NonNull<CERT_CONTEXT>);
 
 // SAFETY: cert context can be sent across threads.
 unsafe impl Send for CertContext {}
@@ -61,19 +62,21 @@ impl Drop for CertContext {
         // SAFETY: handle is valid; CertFreeCertificateContext tolerates
         // the call exactly once per CertCreateCertificateContext.
         let _ = unsafe {
-            windows::Win32::Security::Cryptography::CertFreeCertificateContext(Some(self.0))
+            windows::Win32::Security::Cryptography::CertFreeCertificateContext(Some(
+                self.0.as_ptr().cast_const(),
+            ))
         };
     }
 }
 
 impl CertContext {
-    fn cert_context(&self) -> &CERT_CONTEXT {
+    pub(crate) fn cert_context(&self) -> &CERT_CONTEXT {
         // SAFETY: self.0 is a valid PCCERT_CONTEXT owned by `self`, and the
         // pointed-to CERT_CONTEXT is immutable for the lifetime of `self`.
-        unsafe { &*self.0 }
+        unsafe { self.0.as_ref() }
     }
 
-    fn cert_info(&self) -> &CERT_INFO {
+    pub(crate) fn cert_info(&self) -> &CERT_INFO {
         // SAFETY: pCertInfo is a valid pointer owned by the cert context
         // and the pointed-to CERT_INFO is immutable for the lifetime of
         // `self`.
@@ -81,7 +84,7 @@ impl CertContext {
     }
 }
 
-pub struct X509CertificateInner(CertContext);
+pub(crate) struct X509CertificateInner(pub(crate) CertContext);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -92,9 +95,7 @@ impl X509CertificateInner {
                 data,
             )
         };
-        if p.is_null() {
-            return Err(last_err("CertCreateCertificateContext"));
-        }
+        let p = NonNull::new(p).ok_or_else(|| last_err("CertCreateCertificateContext"))?;
         Ok(Self(CertContext(p)))
     }
 
@@ -343,13 +344,59 @@ impl X509CertificateInner {
         Ok(s.to_vec())
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        use windows::Win32::Security::Cryptography::CERT_X500_NAME_STR;
+        let info = self.0.cert_info();
+        let blob = &info.Issuer;
+        // SAFETY: blob is a valid CRYPT_INTEGER_BLOB owned by the cert info;
+        // passing None for psz queries the required length in WCHARs.
+        let needed = unsafe {
+            windows::Win32::Security::Cryptography::CertNameToStrW(
+                X509_ASN_ENCODING,
+                blob,
+                CERT_X500_NAME_STR,
+                None,
+            )
+        };
+        if needed <= 1 {
+            return Ok(String::new());
+        }
+        let mut buf = vec![0u16; needed as usize];
+        // SAFETY: buf is sized per the previous query.
+        let written = unsafe {
+            windows::Win32::Security::Cryptography::CertNameToStrW(
+                X509_ASN_ENCODING,
+                blob,
+                CERT_X500_NAME_STR,
+                Some(&mut buf),
+            )
+        };
+        if written == 0 {
+            return Err(last_err("CertNameToStrW"));
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Ok(String::from_utf16_lossy(&buf[..len]))
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        let info = self.0.cert_info();
+        blob_as_slice(&info.SerialNumber)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                err(
+                    windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+                    "malformed serial number blob",
+                )
+            })
+    }
+
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         let oid = szOID_COMMON_NAME.0.cast::<c_void>();
         // SAFETY: ctx is valid; passing None for psznamestring queries the
         // required size.
         let needed = unsafe {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
-                self.0.0,
+                self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
                 0,
                 Some(oid),
@@ -368,7 +415,7 @@ impl X509CertificateInner {
         // SAFETY: buf is sized per the previous query.
         let written = unsafe {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
-                self.0.0,
+                self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
                 0,
                 Some(oid),
@@ -401,9 +448,9 @@ impl X509CertificateInner {
             .context("encoding X.500 name")?;
 
         // 2. Build the SubjectPublicKeyInfo DER.
-        let n = key.modulus();
-        let e = key.public_exponent();
-        let pkcs1_pub = encode_pkcs1_rsa_pubkey(&n, &e).context("encoding RSA public key")?;
+        let components = key.to_components();
+        let pkcs1_pub = encode_pkcs1_rsa_pubkey(&components.modulus, &components.public_exponent)
+            .context("encoding RSA public key")?;
 
         // 3. Build CERT_INFO and encode TBS.
         let mut serial_bytes: [u8; 1] = [1];
@@ -454,11 +501,8 @@ impl X509CertificateInner {
             rgExtension: std::ptr::null_mut(),
         };
 
-        let tbs = encode_object(
-            X509_CERT_TO_BE_SIGNED,
-            std::ptr::from_ref(&cert_info).cast(),
-        )
-        .context("encoding TBS certificate")?;
+        let tbs = encode_object(X509_CERT_TO_BE_SIGNED, &cert_info)
+            .context("encoding TBS certificate")?;
 
         // 4. Sign the TBS.
         let signature = key.pkcs1_sign(&tbs, crate::HashAlgorithm::Sha256)?;
@@ -485,8 +529,7 @@ impl X509CertificateInner {
                 cUnusedBits: 0,
             },
         };
-        let cert_der = encode_object(X509_CERT, std::ptr::from_ref(&signed).cast())
-            .context("encoding X.509 certificate")?;
+        let cert_der = encode_object(X509_CERT, &signed).context("encoding X.509 certificate")?;
 
         Ok(Self::from_der(&cert_der)?)
     }
@@ -528,7 +571,7 @@ fn find_extension(info: &CERT_INFO, oid: PCSTR) -> Option<&CERT_EXTENSION> {
 /// RAII wrapper for a CryptoAPI-allocated decoded structure. Frees with
 /// `LocalFree` when dropped.
 struct Decoded<T> {
-    raw: *mut c_void,
+    raw: NonNull<c_void>,
     /// Layout-compatible reference to the decoded structure inside `raw`.
     value: T,
     _phantom: std::marker::PhantomData<*const T>,
@@ -539,7 +582,7 @@ impl<T> Drop for Decoded<T> {
         // SAFETY: raw was allocated by CryptoAPI via CRYPT_DECODE_ALLOC_FLAG.
         unsafe {
             let _ = windows::Win32::Foundation::LocalFree(Some(
-                windows::Win32::Foundation::HLOCAL(self.raw),
+                windows::Win32::Foundation::HLOCAL(self.raw.as_ptr()),
             ));
         }
     }
@@ -575,12 +618,12 @@ fn decode_object<T: Copy>(
         )
     }
     .map_err(|e| err(e, "CryptDecodeObjectEx"))?;
-    if raw.is_null() {
-        return Err(err(
+    let raw = NonNull::new(raw).ok_or_else(|| {
+        err(
             windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
             "CryptDecodeObjectEx returned null",
-        ));
-    }
+        )
+    })?;
     // Validate the API actually wrote a `T`-sized header before reading
     // it. A short buffer here would mean `read_unaligned` reads past the
     // allocation.
@@ -588,7 +631,7 @@ fn decode_object<T: Copy>(
         // SAFETY: raw was allocated by CryptoAPI via CRYPT_DECODE_ALLOC_FLAG.
         unsafe {
             let _ = windows::Win32::Foundation::LocalFree(Some(
-                windows::Win32::Foundation::HLOCAL(raw),
+                windows::Win32::Foundation::HLOCAL(raw.as_ptr()),
             ));
         }
         return Err(err(
@@ -599,7 +642,7 @@ fn decode_object<T: Copy>(
     // SAFETY: raw points to a `T` written by CryptoAPI (validated above to
     // be at least size_of::<T>() bytes). We copy it out so that `value`
     // lives at a stable address.
-    let value = unsafe { std::ptr::read_unaligned(raw.cast::<T>()) };
+    let value = unsafe { std::ptr::read_unaligned(raw.as_ptr().cast::<T>()) };
     Ok(Decoded {
         raw,
         value,
@@ -608,11 +651,12 @@ fn decode_object<T: Copy>(
 }
 
 #[cfg(any(test, feature = "test_helpers"))]
-fn encode_object(
+fn encode_object<T: ?Sized>(
     struct_type: PCSTR,
-    value: *const c_void,
+    value: &T,
 ) -> Result<Vec<u8>, windows_result::Error> {
     let mut size: u32 = 0;
+    let value = std::ptr::from_ref(value).cast();
     // SAFETY: first call queries size.
     unsafe {
         windows::Win32::Security::Cryptography::CryptEncodeObjectEx(
@@ -715,7 +759,7 @@ fn encode_x500_name(
     };
     let out = encode_object(
         windows::Win32::Security::Cryptography::X509_NAME,
-        std::ptr::from_ref(&name_info).cast(),
+        &name_info,
     )?;
     drop(rdns);
     drop(attrs);
@@ -765,5 +809,5 @@ fn encode_pkcs1_rsa_pubkey(n: &[u8], e: &[u8]) -> Result<Vec<u8>, windows_result
     blob.extend_from_slice(e);
     blob.extend_from_slice(n);
 
-    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_ptr().cast())
+    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_slice())
 }

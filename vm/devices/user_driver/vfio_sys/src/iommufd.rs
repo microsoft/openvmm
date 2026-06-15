@@ -157,10 +157,15 @@ impl IommufdCtx {
         iova: u64,
         user_va: u64,
         length: u64,
+        writable: bool,
     ) -> anyhow::Result<()> {
+        let mut flags = IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_READABLE;
+        if writable {
+            flags |= IOMMU_IOAS_MAP_WRITEABLE;
+        }
         let mut cmd = IommuIoasMap {
             size: size_of::<IommuIoasMap>() as u32,
-            flags: IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_READABLE | IOMMU_IOAS_MAP_WRITEABLE,
+            flags,
             ioas_id,
             __reserved: 0,
             user_va,

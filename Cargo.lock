@@ -95,9 +95,11 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "iommu_common",
  "open_enum",
  "parking_lot",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vmcore",
@@ -866,6 +868,7 @@ name = "console_relay"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "futures",
  "getrandom 0.4.2",
  "pal_async",
@@ -1372,7 +1375,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "inspect_proto",
- "libc",
  "mesh",
  "mesh_rpc",
  "net_packet_capture",
@@ -1382,6 +1384,7 @@ dependencies = [
  "profiler_worker",
  "safe_intrinsics",
  "socket2",
+ "term",
  "tracing",
  "underhill_confidentiality",
  "unix_socket",
@@ -3851,6 +3854,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iommu_common"
+version = "0.0.0"
+dependencies = [
+ "guestmem",
+ "pci_core",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4643,7 +4655,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=5b8ca3b5b423859da441f51ec8b1610708ed53c2#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
 dependencies = [
  "cc",
  "once_cell",
@@ -5149,6 +5161,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_dyn_complete",
+ "crossterm",
  "ctrlc",
  "diag_client",
  "fs-err",
@@ -5233,6 +5246,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "arrayvec",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "crc32fast",
  "fdt",
@@ -5432,6 +5446,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "iommu_common",
  "loader",
  "membacking",
  "memory_range",
@@ -5523,6 +5538,8 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "crossterm",
+ "crypto",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -5547,6 +5564,7 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_rpc",
@@ -5568,7 +5586,6 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
- "sha2",
  "shell-words",
  "socket2",
  "sparse_mmap",
@@ -6044,6 +6061,7 @@ dependencies = [
 name = "pci_resource_assignment"
 version = "0.0.0"
 dependencies = [
+ "memory_range",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -6318,10 +6336,12 @@ dependencies = [
  "libc",
  "mesh",
  "mesh_remote",
+ "pal",
  "pal_async",
  "parking_lot",
  "pipette_protocol",
  "socket2",
+ "term",
  "tracing",
  "tracing-subscriber",
  "unicycle",
@@ -6342,6 +6362,7 @@ dependencies = [
  "mesh_remote",
  "pal_async",
  "pipette_protocol",
+ "term",
  "tracing",
  "typed-path",
  "xshell-macros",
@@ -6451,6 +6472,7 @@ name = "prep_steps"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "gptman",
  "guid",
  "openvmm_defs",
  "openvmm_helpers",
@@ -6459,6 +6481,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "pipette_protocol",
  "scsidisk_resources",
  "storvsp_resources",
  "tracing",
@@ -7446,10 +7469,14 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "iommu_common",
+ "mesh",
  "open_enum",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "vmcore",
  "zerocopy",
@@ -7842,9 +7869,7 @@ dependencies = [
 name = "term"
 version = "0.0.0"
 dependencies = [
- "crossterm",
  "libc",
- "thiserror 2.0.16",
  "windows-sys 0.61.0",
 ]
 
@@ -7863,12 +7888,12 @@ name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "crypto",
  "get_resources",
+ "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
- "rsa",
  "serde_json",
- "sha2",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
@@ -10152,7 +10177,7 @@ dependencies = [
 
 [[package]]
 name = "vmgstool"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10288,6 +10313,7 @@ dependencies = [
  "anyhow",
  "disk_backend_resources",
  "disk_vhd1",
+ "fs-err",
  "futures",
  "get_resources",
  "guid",

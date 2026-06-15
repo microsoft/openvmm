@@ -7,12 +7,14 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
+use anyhow::Context;
 use guid::Guid;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
 use std::time::Duration;
@@ -736,5 +738,110 @@ async fn verify_net_interface_count(
         net_count >= min_count,
         "expected at least {min_count} network interfaces, got {net_count}: {net_devs}"
     );
+    Ok(())
+}
+
+/// Boot Windows with VMBus entirely disabled.
+///
+/// Uses a prepped Windows image with NetKVM pre-installed and pipette
+/// configured for TCP transport. Boots from PCIe NVMe, uses virtio-net +
+/// consomme for TCP pipette communication.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
+async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_tcp_pipette_nic("s0rc0rp2")
+        })
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot Windows with a virtio-net NIC on PCIe, install the NetKVM driver
+/// online via pipette, and verify the NIC gets a DHCP address from consomme.
+///
+/// This validates that our virtio-net emulation works with the upstream
+/// virtio-win NetKVM driver on Windows.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WIN_DRIVERS])]
+async fn virtio_net_windows(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_virtio_nic("s0rc0rp0")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.windows_shell();
+
+    // Create the driver directory in the guest
+    cmd!(sh, "cmd.exe /c mkdir C:\\drivers").run().await?;
+
+    // Push driver files into the guest
+    let driver_files = [
+        "netkvm.cat",
+        "netkvm.inf",
+        "netkvm.sys",
+        "netkvmco.exe",
+        "netkvmp.exe",
+    ];
+    for filename in &driver_files {
+        let local_path = driver_dir.join(filename);
+        let file = fs_err::File::open(&local_path)?;
+        let guest_path = format!("C:/drivers/{filename}");
+        agent
+            .write_file(&guest_path, futures::io::AllowStdIo::new(file))
+            .await
+            .with_context(|| format!("failed to write {guest_path}"))?;
+    }
+
+    // Install the driver
+    let output = cmd!(sh, "pnputil.exe /add-driver C:/drivers/netkvm.inf /install")
+        .read()
+        .await?;
+    tracing::info!(%output, "pnputil output");
+
+    // Wait for the NIC to get a DHCP address from consomme.
+    // Consomme assigns 10.0.0.2 to the client.
+    let mut timer = PolledTimer::new(&driver);
+    let mut found = false;
+    for attempt in 0..30 {
+        let ipconfig = cmd!(sh, "ipconfig").read().await?;
+        if ipconfig.contains("10.0.0.2") {
+            tracing::info!(attempt, "virtio-net NIC got DHCP address");
+            found = true;
+            break;
+        }
+        tracing::debug!(attempt, "waiting for DHCP address...");
+        timer.sleep(Duration::from_secs(2)).await;
+    }
+    assert!(
+        found,
+        "virtio-net NIC did not get a DHCP address (expected 10.0.0.2)"
+    );
+
+    // Verify we can ping the gateway
+    let ping_output = cmd!(sh, "ping -n 1 10.0.0.1").read().await?;
+    tracing::info!(%ping_output, "ping output");
+    assert!(
+        ping_output.contains("Reply from 10.0.0.1"),
+        "ping to consomme gateway failed: {ping_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }

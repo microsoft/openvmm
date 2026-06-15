@@ -11,14 +11,20 @@ anyhow.workspace = true
 bitfield-struct.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
+iommu_common.workspace = true
 inspect.workspace = true
+mesh.workspace = true
 open_enum.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true
 pci_core.workspace = true
+thiserror.workspace = true
 tracelimit.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+pal_async.workspace = true
 
 [lints]
 workspace = true

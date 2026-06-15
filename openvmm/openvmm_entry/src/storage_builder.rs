@@ -43,14 +43,13 @@ const OPENVMM_CONTROLLER_NS: Guid = guid::guid!("a3f1e2d4-5b6c-4a8d-9e0f-1234567
 /// §5.8) with SHA-256. The result is stable across Rust versions and
 /// process restarts for the same input name.
 pub(super) fn deterministic_guid(name: &str) -> Guid {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(OPENVMM_CONTROLLER_NS.data1.to_le_bytes());
-    hasher.update(OPENVMM_CONTROLLER_NS.data2.to_le_bytes());
-    hasher.update(OPENVMM_CONTROLLER_NS.data3.to_le_bytes());
-    hasher.update(OPENVMM_CONTROLLER_NS.data4);
+    let mut hasher = crypto::sha_256::Sha256::new();
+    hasher.update(&OPENVMM_CONTROLLER_NS.data1.to_le_bytes());
+    hasher.update(&OPENVMM_CONTROLLER_NS.data2.to_le_bytes());
+    hasher.update(&OPENVMM_CONTROLLER_NS.data3.to_le_bytes());
+    hasher.update(&OPENVMM_CONTROLLER_NS.data4);
     hasher.update(name.as_bytes());
-    let hash = hasher.finalize();
+    let hash = hasher.finish();
     let b = &hash[..16];
     Guid {
         data1: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
@@ -775,6 +774,7 @@ impl StorageBuilder {
                                     requests: ctrl.requests,
                                 }
                                 .into_resource(),
+                                vnode: None,
                             });
 
                             // Tell UEFI to try to enumerate VPCI devices since there
@@ -804,6 +804,7 @@ impl StorageBuilder {
                     requests: None,
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             // Tell UEFI to try to enumerate VPCI devices since there might be
@@ -841,6 +842,7 @@ impl StorageBuilder {
                     requests: Some(recv),
                 }
                 .into_resource(),
+                vnode: None,
             });
             resources.nvme_vtl2_rpc = Some(send);
         }
@@ -862,6 +864,7 @@ impl StorageBuilder {
                     .into_resource(),
                 )
                 .into_resource(),
+                vnode: None,
             });
         }
 

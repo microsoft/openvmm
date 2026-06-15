@@ -148,6 +148,12 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(iter_by_index, hex)]
     bar_flags: [u32; 6],
 
+    /// BAR values to restore on reset. For passthrough BARs, these include
+    /// the physical addresses from sysfs overlaid on the encoding bits.
+    /// For non-passthrough BARs, these are the same as `bar_flags`.
+    #[inspect(iter_by_index, hex)]
+    bar_reset_defaults: [u32; 6],
+
     /// Current MMIO-enabled state (from PCI Command register bit 1).
     mmio_enabled: bool,
 
@@ -264,6 +270,7 @@ impl VfioAssignedPciDevice {
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
+        bar_pt: [bool; 6],
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let retry = vfio_sys::VfioRetry::new(&driver, &pci_id);
@@ -290,6 +297,7 @@ impl VfioAssignedPciDevice {
             register_mmio,
             msi_target,
             memory_mapper,
+            bar_pt,
         )
         .await
     }
@@ -301,6 +309,7 @@ impl VfioAssignedPciDevice {
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
+        bar_pt: [bool; 6],
     ) -> anyhow::Result<Self> {
         let (device, binding) = cdev_binding.into_parts();
         Self::from_device(
@@ -310,6 +319,7 @@ impl VfioAssignedPciDevice {
             register_mmio,
             msi_target,
             memory_mapper,
+            bar_pt,
         )
         .await
     }
@@ -321,6 +331,7 @@ impl VfioAssignedPciDevice {
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
+        bar_pt: [bool; 6],
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -332,16 +343,11 @@ impl VfioAssignedPciDevice {
             config_size: config_info.size,
         };
 
-        // Read BAR values and derive masks from VFIO region sizes.
-        // This avoids the standard write-all-ones probe cycle — VFIO already
-        // knows the BAR sizes from the host kernel.
+        // Read BAR encoding bits from config space and derive masks from
+        // VFIO region sizes. This avoids the standard write-all-ones probe
+        // cycle — VFIO already knows the BAR sizes from the host kernel.
         let mut bar_masks = [0u32; 6];
         let mut bar_flags = [0u32; 6];
-
-        let mut bars = [0u32; 6];
-        for (i, bar) in bars.iter_mut().enumerate() {
-            *bar = vfio_device.read_config_u32(HeaderType00::BAR0.0 + (i as u16) * 4)?;
-        }
 
         let mut bar_regions = [None; 6];
         let mut bar_mmio_controls = [(); 6].map(|_| None);
@@ -357,7 +363,7 @@ impl VfioAssignedPciDevice {
                 continue;
             }
 
-            let flags = bars[i] & 0xf;
+            let flags = vfio_device.read_config_u32(HeaderType00::BAR0.0 + (i as u16) * 4)? & 0xf;
             bar_flags[i] = flags;
             let encoded = cfg_space::BarEncodingBits::from(flags);
             if encoded.use_pio() {
@@ -466,12 +472,19 @@ impl VfioAssignedPciDevice {
             "VFIO assigned PCI device initialized"
         );
 
+        // Build initial BAR values. Start from bar_flags (encoding bits
+        // only — guaranteed clean). For passthrough BARs, overlay the
+        // physical addresses from sysfs.
+        let bars = apply_bar_passthrough(&pci_id, &bar_flags, &bar_masks, &bar_pt)?;
+        let bar_reset_defaults = bars;
+
         Ok(Self {
             pci_id,
             vfio_device,
             bar_masks,
-            bars: bar_flags, // Ignore the current BAR values--we don't care what the device thinks the BARs are.
+            bars,
             bar_flags,
+            bar_reset_defaults,
             mmio_enabled: false,
             pm_csr_offset,
             in_d0: true,
@@ -706,6 +719,97 @@ fn subtract_msix_regions(bar_mmap_areas: &mut [Vec<MemoryRange>; 6], msix: &Msix
 
 fn page_size() -> u64 {
     vfio_sys::host_page_size()
+}
+
+/// Apply BAR passthrough: validate the `bar_pt` flags against the discovered
+/// BAR layout and overlay physical addresses from sysfs.
+///
+/// Rejects requests for unimplemented BARs (zero mask) and for the upper half
+/// of a 64-bit BAR pair (the lower BAR implicitly covers both halves).
+fn apply_bar_passthrough(
+    pci_id: &str,
+    bar_flags: &[u32; 6],
+    bar_masks: &[u32; 6],
+    bar_pt: &[bool; 6],
+) -> anyhow::Result<[u32; 6]> {
+    if !bar_pt.iter().any(|&pt| pt) {
+        return Ok(*bar_flags);
+    }
+
+    // Validate before reading sysfs.
+    for i in 0..6 {
+        if !bar_pt[i] {
+            continue;
+        }
+        if bar_masks[i] == 0 {
+            anyhow::bail!("BAR {i} is not implemented by the device");
+        }
+        // If the previous BAR is 64-bit, this index is its upper half.
+        if i > 0
+            && cfg_space::BarEncodingBits::from(bar_flags[i - 1]).type_64_bit()
+            && bar_masks[i - 1] != 0
+        {
+            anyhow::bail!("BAR {i} is the upper half of a 64-bit BAR pair");
+        }
+    }
+
+    // VFIO config space returns cleared BARs after device reset, so sysfs
+    // is the only reliable source of physical addresses.
+    let phys = read_physical_bar_addresses(pci_id)?;
+    let mut bars = *bar_flags;
+    for i in 0..6 {
+        if bar_pt[i] {
+            let addr = phys[i];
+            if addr == 0 {
+                anyhow::bail!("BAR {i} passthrough requested but sysfs address is 0");
+            }
+            let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
+            if !is_64bit && addr > u32::MAX as u64 {
+                anyhow::bail!("BAR {i} is 32-bit but sysfs address {addr:#x} exceeds 4 GB");
+            }
+            bars[i] = (addr as u32 & !0xf) | bar_flags[i];
+            if is_64bit && i + 1 < 6 {
+                bars[i + 1] = (addr >> 32) as u32;
+            }
+            tracing::info!(
+                pci_id,
+                bar_index = i,
+                addr = format_args!("{:#x}", addr),
+                "passthrough BAR"
+            );
+        }
+    }
+    Ok(bars)
+}
+
+/// Read physical BAR base addresses from the host kernel's resource table.
+///
+/// Parses `/sys/bus/pci/devices/<bdf>/resource` which has one line per
+/// PCI resource: `start end flags` in hex. Lines 0–5 correspond to
+/// BAR0–BAR5. For 64-bit BARs, the full 64-bit address appears on the
+/// line for the lower BAR index; the upper-half line is zero.
+///
+/// This is necessary because VFIO config space returns cleared BARs after
+/// device reset — only the encoding bits (type, prefetchable) survive.
+/// The kernel's resource table retains the physical addresses.
+fn read_physical_bar_addresses(pci_id: &str) -> anyhow::Result<[u64; 6]> {
+    let path = format!("/sys/bus/pci/devices/{pci_id}/resource");
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("failed to read {path}"))?;
+
+    let mut addresses = [0u64; 6];
+    for (i, line) in content.lines().take(6).enumerate() {
+        let start_str = line
+            .split_whitespace()
+            .next()
+            .with_context(|| format!("malformed resource line {i} in {path}"))?;
+        addresses[i] = start_str
+            .strip_prefix("0x")
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .with_context(|| format!("failed to parse BAR{i} address '{start_str}' in {path}"))?;
+    }
+
+    Ok(addresses)
 }
 
 /// Abstraction over PCI config space reads, allowing the capability
@@ -984,7 +1088,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             ref vfio_device,
             bar_masks: _, // immutable device geometry
             ref mut bars,
-            bar_flags,
+            bar_flags: _,
+            bar_reset_defaults,
             mmio_enabled: _,  // handled above
             pm_csr_offset: _, // not used during reset
             ref mut in_d0,
@@ -1006,9 +1111,10 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             msix.capability.reset();
         }
 
-        // Reset cached BAR addresses to power-on defaults (flags only, no
-        // address bits). The guest will re-probe and re-program BARs.
-        *bars = bar_flags;
+        // Reset cached BAR addresses to power-on defaults. For passthrough
+        // BARs, this restores the physical addresses so that preserve_bars
+        // in the PCI assignment pass will see them after VM reset.
+        *bars = bar_reset_defaults;
 
         // Reset the physical device via VFIO so it starts in a clean state.
         //
