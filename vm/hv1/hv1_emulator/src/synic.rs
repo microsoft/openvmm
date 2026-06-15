@@ -242,10 +242,7 @@ impl GlobalSynic {
         }
         let sint = vp.sint[sint_index];
         let flag = flag as usize;
-        // Each SINT owns this many event flags in the SIEFP page. `flag` is
-        // guest-controllable (e.g. via a guest-configured event port), so an
-        // out-of-range value must be rejected rather than indexing past the
-        // page below (which would be a guest-triggerable OOB panic).
+        // Each SINT owns this many event flags in the SIEFP page
         if flag >= (HV_PAGE_SIZE_USIZE / NUM_SINTS) * 8 {
             return Ok(false);
         }
@@ -445,8 +442,6 @@ impl ProcessorSynic {
         message: &HvMessage,
         interrupt: &mut dyn RequestInterrupt,
     ) -> Result<(), HvError> {
-        // `sint_index` may be caller/guest-influenced; reject out-of-range
-        // values rather than indexing the SINT array (and shifting by it) below.
         if sint_index as usize >= NUM_SINTS {
             return Err(HvError::InvalidSynicState);
         }
