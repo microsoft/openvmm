@@ -323,10 +323,7 @@ pub struct Flags {
     pub dhcp6_link_layer_address: bool,
     pub cxl_memory_enabled: bool,
     pub mtrrs_initialized_at_load: bool,
-    
-    #[bits(1)]
-    _reserved_hv_sint: u64,
-
+    _reserved_hv_sint: bool,
     pub vmbus_disabled: bool,
     pub pci_resources_pre_assigned: bool,
     pub force_dma_bounce_enabled: bool,
