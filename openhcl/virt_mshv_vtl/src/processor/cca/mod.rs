@@ -17,8 +17,8 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::processor::InterceptMessageState;
 use aarch64defs::EsrEl2;
-use aarch64defs::FaultStatusCode;
 use aarch64defs::HpfarEl2;
+use aarch64defs::InstructionAbortReason;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssInstructionAbort;
 use aarch64defs::SystemReg;
@@ -70,99 +70,6 @@ enum CcaUnsupportedExit {
 }
 
 const AARCH64_ZERO_REGISTER_INDEX: u8 = 31;
-
-#[derive(Debug, Clone, Copy)]
-enum InstructionAbortReason {
-    AddressSizeFaultLevel0,
-    AddressSizeFaultLevel1,
-    AddressSizeFaultLevel2,
-    AddressSizeFaultLevel3,
-    TranslationFaultLevel0,
-    TranslationFaultLevel1,
-    TranslationFaultLevel2,
-    TranslationFaultLevel3,
-    AccessFlagFaultLevel0,
-    AccessFlagFaultLevel1,
-    AccessFlagFaultLevel2,
-    AccessFlagFaultLevel3,
-    PermissionFaultLevel0,
-    PermissionFaultLevel1,
-    PermissionFaultLevel2,
-    PermissionFaultLevel3,
-    SynchronousExternalAbort,
-    SyncTagCheckFault,
-    SynchronousExternalAbortOnTableWalkLevelNeg1,
-    SynchronousExternalAbortOnTableWalkLevel0,
-    SynchronousExternalAbortOnTableWalkLevel1,
-    SynchronousExternalAbortOnTableWalkLevel2,
-    SynchronousExternalAbortOnTableWalkLevel3,
-    EccParity,
-    EccParityOnTableWalkLevelNeg1,
-    EccParityOnTableWalkLevel0,
-    EccParityOnTableWalkLevel1,
-    EccParityOnTableWalkLevel2,
-    EccParityOnTableWalkLevel3,
-    GranuleProtectionFaultLevelNeg1,
-    GranuleProtectionFaultLevel0,
-    GranuleProtectionFaultLevel1,
-    GranuleProtectionFaultLevel2,
-    GranuleProtectionFaultLevel3,
-    AddressSizeFaultLevelNeg1,
-    TranslationFaultLevelNeg1,
-    TlbConflictAbort,
-    UnsupportedHardwareUpdateFault,
-    Unknown,
-}
-
-impl From<FaultStatusCode> for InstructionAbortReason {
-    fn from(value: FaultStatusCode) -> Self {
-        match value {
-            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL0 => Self::AddressSizeFaultLevel0,
-            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL1 => Self::AddressSizeFaultLevel1,
-            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL2 => Self::AddressSizeFaultLevel2,
-            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL3 => Self::AddressSizeFaultLevel3,
-            FaultStatusCode::TRANSLATION_FAULT_LEVEL0 => Self::TranslationFaultLevel0,
-            FaultStatusCode::TRANSLATION_FAULT_LEVEL1 => Self::TranslationFaultLevel1,
-            FaultStatusCode::TRANSLATION_FAULT_LEVEL2 => Self::TranslationFaultLevel2,
-            FaultStatusCode::TRANSLATION_FAULT_LEVEL3 => Self::TranslationFaultLevel3,
-            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL0 => Self::AccessFlagFaultLevel0,
-            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL1 => Self::AccessFlagFaultLevel1,
-            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL2 => Self::AccessFlagFaultLevel2,
-            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL3 => Self::AccessFlagFaultLevel3,
-            FaultStatusCode::PERMISSION_FAULT_LEVEL0 => Self::PermissionFaultLevel0,
-            FaultStatusCode::PERMISSION_FAULT_LEVEL1 => Self::PermissionFaultLevel1,
-            FaultStatusCode::PERMISSION_FAULT_LEVEL2 => Self::PermissionFaultLevel2,
-            FaultStatusCode::PERMISSION_FAULT_LEVEL3 => Self::PermissionFaultLevel3,
-            FaultStatusCode::SYNCHRONOUS_EXTERNAL_ABORT => Self::SynchronousExternalAbort,
-            FaultStatusCode::SYNC_TAG_CHECK_FAULT => Self::SyncTagCheckFault,
-            FaultStatusCode::SEA_TTW_LEVEL_NEG1 => {
-                Self::SynchronousExternalAbortOnTableWalkLevelNeg1
-            }
-            FaultStatusCode::SEA_TTW_LEVEL0 => Self::SynchronousExternalAbortOnTableWalkLevel0,
-            FaultStatusCode::SEA_TTW_LEVEL1 => Self::SynchronousExternalAbortOnTableWalkLevel1,
-            FaultStatusCode::SEA_TTW_LEVEL2 => Self::SynchronousExternalAbortOnTableWalkLevel2,
-            FaultStatusCode::SEA_TTW_LEVEL3 => Self::SynchronousExternalAbortOnTableWalkLevel3,
-            FaultStatusCode::ECC_PARITY => Self::EccParity,
-            FaultStatusCode::ECC_PARITY_TTW_LEVEL_NEG1 => Self::EccParityOnTableWalkLevelNeg1,
-            FaultStatusCode::ECC_PARITY_TTW_LEVEL0 => Self::EccParityOnTableWalkLevel0,
-            FaultStatusCode::ECC_PARITY_TTW_LEVEL1 => Self::EccParityOnTableWalkLevel1,
-            FaultStatusCode::ECC_PARITY_TTW_LEVEL2 => Self::EccParityOnTableWalkLevel2,
-            FaultStatusCode::ECC_PARITY_TTW_LEVEL3 => Self::EccParityOnTableWalkLevel3,
-            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL_NEG => {
-                Self::GranuleProtectionFaultLevelNeg1
-            }
-            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL0 => Self::GranuleProtectionFaultLevel0,
-            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL1 => Self::GranuleProtectionFaultLevel1,
-            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL2 => Self::GranuleProtectionFaultLevel2,
-            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL3 => Self::GranuleProtectionFaultLevel3,
-            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL_NEG1 => Self::AddressSizeFaultLevelNeg1,
-            FaultStatusCode::TRANSLATION_FAULT_LEVEL_NEG1 => Self::TranslationFaultLevelNeg1,
-            FaultStatusCode::TLB_CONFLICT_ABORT => Self::TlbConflictAbort,
-            FaultStatusCode::UNSUPPORTED_HW_UPDATE_FAULT => Self::UnsupportedHardwareUpdateFault,
-            _ => Self::Unknown,
-        }
-    }
-}
 
 // For use with Hyper-V synthetic interrupt controller allocated by paravisor.
 enum UhDirectOverlay {
@@ -485,17 +392,7 @@ impl BackingPrivate for CcaBacked {
                                 .map_err(|_| Error::Hcl);
 
                             let reason = InstructionAbortReason::from(iss.ifsc());
-                            tracing::warn!(
-                                esr_el2 = cca_exit.0.esr_el2,
-                                elr_el2 = cca_exit.elr_el2(),
-                                far_el2 = cca_exit.far_el2(),
-                                fipa = fipa,
-                                fipa_state = plane_state.state as u8,
-                                ifsc = iss.ifsc().0,
-                                ?reason,
-                                far_not_valid = iss.fnv(),
-                                "CCA instruction abort"
-                            );
+
                             return Err(dev.fatal_error(
                                 CcaUnsupportedExit::InstructionAbort {
                                     esr_el2: cca_exit.0.esr_el2,
