@@ -23,7 +23,7 @@ use igvmfilegen_config::ResourceType;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-/// Path to a folder containing IGVM files
+/// OpenHCL IGVM output
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 pub enum OpenhclIgvmOutput {
@@ -38,19 +38,19 @@ pub enum OpenhclIgvmOutput {
         igvm_vbs_json: Option<PathBuf>,
     },
     X64 {
-        #[serde(rename = "openhcl.bin")]
+        #[serde(rename = "openhcl-x64.bin")]
         igvm_bin: PathBuf,
     },
     X64Devkern {
-        #[serde(rename = "openhcl-dev.bin")]
+        #[serde(rename = "openhcl-x64-devkern.bin")]
         igvm_bin: PathBuf,
     },
     X64TestLinuxDirect {
-        #[serde(rename = "openhcl-direct.bin")]
+        #[serde(rename = "openhcl-x64-test-linux-direct.bin")]
         igvm_bin: PathBuf,
     },
     X64TestLinuxDirectDevkern {
-        #[serde(rename = "openhcl-direct-dev.bin")]
+        #[serde(rename = "openhcl-x64-test-linux-direct-devkern.bin")]
         igvm_bin: PathBuf,
     },
     X64Cvm {
@@ -64,7 +64,7 @@ pub enum OpenhclIgvmOutput {
         igvm_vbs_json: PathBuf,
     },
     X64CvmDevkern {
-        #[serde(rename = "openhcl-cvm-dev.bin")]
+        #[serde(rename = "openhcl-x64-cvm-devkern.bin")]
         igvm_bin: PathBuf,
         #[serde(rename = "openhcl-tdx.json")]
         igvm_tdx_json: PathBuf,
@@ -74,11 +74,11 @@ pub enum OpenhclIgvmOutput {
         igvm_vbs_json: PathBuf,
     },
     Aarch64 {
-        #[serde(rename = "openhcl-aarch64.bin")]
+        #[serde(rename = "openhcl-x64-aarch64.bin")]
         igvm_bin: PathBuf,
     },
     Aarch64Devkern {
-        #[serde(rename = "openhcl-aarch64-dev.bin")]
+        #[serde(rename = "openhcl-x64-aarch64-devkern.bin")]
         igvm_bin: PathBuf,
     },
 }
