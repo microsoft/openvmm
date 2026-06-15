@@ -278,7 +278,6 @@ Examples:
             "vmbus_max_version",
             "vmbus_com1_serial",
             "vmbus_com2_serial",
-            "disk",
             "vtl2",
             "get",
             "pcat",

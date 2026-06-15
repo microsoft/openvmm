@@ -517,6 +517,12 @@ async fn vm_config_from_command_line(
         } else if pcie_port.is_some() {
             anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
         } else {
+            if opt.no_vmbus {
+                anyhow::bail!(
+                    "`--disk` without `on=` attaches to the default VMBus SCSI controller and \
+                     cannot be used with `--no-vmbus`; use `on=<name>` to attach to a named controller"
+                );
+            }
             storage_builder::DiskLocation::Scsi(None)
         };
 
