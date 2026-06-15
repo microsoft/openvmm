@@ -18,8 +18,6 @@
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
-
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target_env != "musl" {
         return;
