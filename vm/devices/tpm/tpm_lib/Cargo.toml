@@ -11,7 +11,7 @@ edition.workspace = true
 test_tpm = ["ms-tpm-20-ref"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
+ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_protocol.workspace = true
 cvm_tracing.workspace = true
 inspect.workspace = true
@@ -22,7 +22,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["vendored"] }
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [dev-dependencies]
 getrandom.workspace = true

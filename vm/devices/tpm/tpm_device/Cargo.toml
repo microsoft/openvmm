@@ -12,7 +12,7 @@ rust-version.workspace = true
 tpm = ["ms-tpm-20-ref"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
+ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
 tpm_resources.workspace = true
@@ -42,7 +42,7 @@ zerocopy.workspace = true
 base64.workspace = true
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["vendored"] }
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [lints]
 workspace = true
