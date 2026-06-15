@@ -862,11 +862,25 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            low_mmio: PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
+            low_mmio: if let Some(base) = rc_cli.low_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: low_mmio_size,
+                }
             },
-            high_mmio: PcieMmioRangeConfig::Dynamic {
-                size: high_mmio_size,
+            high_mmio: if let Some(base) = rc_cli.high_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: high_mmio_size,
+                }
             },
             cxl,
             ports,
@@ -883,6 +897,7 @@ async fn vm_config_from_command_line(
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
             vnode: rc_cli.vnode,
+            preserve_bars: rc_cli.preserve_bars,
         });
     }
 
@@ -974,6 +989,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -1000,6 +1016,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })

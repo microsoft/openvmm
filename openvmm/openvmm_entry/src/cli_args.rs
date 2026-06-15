@@ -2915,6 +2915,9 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub low_mmio_base: Option<u64>,
+    pub high_mmio_base: Option<u64>,
+    pub preserve_bars: bool,
     pub hdm: u64,
     pub hdm_window_restrictions: CfmwsWindowRestrictions,
     pub vnode: Option<u32>,
@@ -2941,6 +2944,9 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut low_mmio_base = None;
+        let mut high_mmio_base = None;
+        let mut preserve_bars = false;
         let mut hdm = DEFAULT_PCIE_HDM_SIZE;
         let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
         let mut vnode = None;
@@ -2971,6 +2977,21 @@ impl FromStr for PcieRootComplexCli {
                     let high_mmio_str = s.next().context("expected high MMIO size")?;
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
+                }
+                "low_mmio_base" => {
+                    let base_str = s.next().context("expected low MMIO base address")?;
+                    low_mmio_base = Some(
+                        parse_memory(base_str).context("failed to parse low MMIO base address")?,
+                    );
+                }
+                "high_mmio_base" => {
+                    let base_str = s.next().context("expected high MMIO base address")?;
+                    high_mmio_base = Some(
+                        parse_memory(base_str).context("failed to parse high MMIO base address")?,
+                    );
+                }
+                "preserve_bars" => {
+                    preserve_bars = true;
                 }
                 "hdm" => {
                     let hdm_str = s.next().context("expected HDM decoder size")?;
@@ -3004,6 +3025,9 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            low_mmio_base,
+            high_mmio_base,
+            preserve_bars,
             hdm,
             hdm_window_restrictions,
             vnode,
@@ -3237,7 +3261,7 @@ impl FromStr for PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -3248,6 +3272,9 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 #[cfg(target_os = "linux")]
@@ -3258,6 +3285,7 @@ impl FromStr for VfioDeviceCli {
         let mut host: Option<String> = None;
         let mut port: Option<String> = None;
         let mut iommu: Option<String> = None;
+        let mut bar_pt = [false; 6];
 
         for kv in s.split(',') {
             let (key, value) = kv
@@ -3285,6 +3313,13 @@ impl FromStr for VfioDeviceCli {
                     }
                     iommu = Some(value.to_string());
                 }
+                "bar0" | "bar1" | "bar2" | "bar3" | "bar4" | "bar5" => {
+                    if value != "pt" {
+                        anyhow::bail!("--vfio: '{key}' only accepts 'pt' as a value");
+                    }
+                    let idx: usize = key[3..].parse().unwrap();
+                    bar_pt[idx] = true;
+                }
                 _ => anyhow::bail!("unknown --vfio key: '{key}'"),
             }
         }
@@ -3301,6 +3336,7 @@ impl FromStr for VfioDeviceCli {
             port_name,
             pci_id,
             iommu,
+            bar_pt,
         })
     }
 }
@@ -4274,6 +4310,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4289,6 +4328,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4304,6 +4346,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4319,6 +4364,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4334,6 +4382,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4349,6 +4400,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4364,6 +4418,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4379,6 +4436,9 @@ mod tests {
                 hdm: 2 * ONE_GB,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4394,6 +4454,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4428,6 +4491,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: Some(1),
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
     }

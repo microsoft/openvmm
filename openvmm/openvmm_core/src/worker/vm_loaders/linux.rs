@@ -241,6 +241,7 @@ fn build_dt(
     let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
     let p_iommu_cells = builder.add_string("#iommu-cells")?;
     let p_iommu_map = builder.add_string("iommu-map")?;
+    let p_linux_pci_probe_only = builder.add_string("linux,pci-probe-only")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
@@ -507,6 +508,11 @@ fn build_dt(
             // through its SMMU instance. stream_id_base is 0 because each
             // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
             node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
+        }
+        if bridge.preserve_bars {
+            // Tell Linux to keep firmware-assigned BAR values instead of
+            // reprogramming them. Linux checks this via of_pci_preserve_config().
+            node = node.add_u32(p_linux_pci_probe_only, 1)?;
         }
         root_builder = node.end_node()?;
     }
