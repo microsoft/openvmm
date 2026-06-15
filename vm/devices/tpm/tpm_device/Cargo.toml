@@ -9,7 +9,7 @@ rust-version.workspace = true
 [features]
 # Without this feature, the crate is a no-op. Disable it by default
 # to avoid requiring openssl on Windows.
-tpm = ["ms-tpm-20-ref"]
+tpm = ["dep:ms-tpm-20-ref"]
 
 [dependencies]
 tpm_lib.workspace = true

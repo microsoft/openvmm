@@ -8,7 +8,7 @@ edition.workspace = true
 
 [features]
 # Use this feature to enable tests that pull in `ms-tpm-20-ref`.
-test_tpm = ["ms-tpm-20-ref"]
+test_tpm = ["dep:ms-tpm-20-ref"]
 
 [dependencies]
 tpm_protocol.workspace = true
