@@ -1131,7 +1131,6 @@ impl PetriVmConfigSetupCore<'_> {
                     get_resources::ged::EfiDiagnosticsLogLevelType::Full
                 }
             },
-            hv_sint_enabled: false,
             force_dma_bounce_enabled: *force_dma_bounce,
         };
 

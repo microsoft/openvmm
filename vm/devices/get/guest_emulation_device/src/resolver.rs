@@ -207,7 +207,6 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                         get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL
                     }
                 },
-                hv_sint_enabled: resource.hv_sint_enabled,
                 force_dma_bounce_enabled: resource.force_dma_bounce_enabled,
             },
             halt,

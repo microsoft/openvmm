@@ -161,8 +161,6 @@ pub struct GuestConfig {
     /// EFI diagnostics log level
     #[inspect(debug)]
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-    /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
-    pub hv_sint_enabled: bool,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce_enabled: bool,
 }
@@ -1357,7 +1355,6 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
-                    hv_sint_enabled: state.config.hv_sint_enabled,
                     force_dma_bounce_enabled: state.config.force_dma_bounce_enabled,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {

@@ -3780,7 +3780,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
-        hv_sint_enabled: _,
         force_dma_bounce_enabled: _,
         battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;

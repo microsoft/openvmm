@@ -220,8 +220,6 @@ pub struct HclDevicePlatformSettingsV2Static {
     #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
     #[serde(default)]
-    pub hv_sint_enabled: bool,
-    #[serde(default)]
     pub force_dma_bounce_enabled: bool,
 }
 

@@ -323,7 +323,12 @@ pub struct Flags {
     pub dhcp6_link_layer_address: bool,
     pub cxl_memory_enabled: bool,
     pub mtrrs_initialized_at_load: bool,
-    pub hv_sint_enabled: bool,
+    // The SINT-PPI UEFI feature was reverted, but its bit is retained as
+    // reserved padding so that the following flags stay ABI-aligned with the
+    // MSVM UEFI firmware, which froze this bit position rather than reclaiming
+    // it (later flags were stacked on top of it).
+    #[bits(1)]
+    _reserved_hv_sint: u64,
     pub vmbus_disabled: bool,
     pub pci_resources_pre_assigned: bool,
     pub force_dma_bounce_enabled: bool,

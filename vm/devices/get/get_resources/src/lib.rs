@@ -95,8 +95,6 @@ pub mod ged {
         pub test_gsp_by_id: bool,
         /// EFI diagnostics log level
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-        /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
-        pub hv_sint_enabled: bool,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
     }
