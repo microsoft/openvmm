@@ -749,3 +749,223 @@ async fn test_full_cq_does_not_leak_io_count(driver: DefaultDriver) {
         "missing FLUSH completions — likely io_count leak throttled the SQ"
     );
 }
+
+/// Regression test for the Asynchronous Event Configuration feature
+/// (Set/Get Features FID 0Bh).
+///
+/// The NVMe Base specification lists this Feature as mandatory for I/O
+/// controllers (Base 2.0c section 3.1.2.1.1 / Base 2.3 section 3.1.3.6
+/// Figure 32). Initiators that strictly follow the spec may refuse to
+/// allocate any Asynchronous Event Request resources when the Set
+/// Features command for this Feature is rejected, which breaks
+/// downstream AEN delivery (including the changed-namespace AEN that
+/// drives namespace hot-add notification).
+///
+/// This test pins the contract: Set Features 0Bh must succeed and Get
+/// Features 0Bh must return the same value the host last wrote.
+#[async_test]
+async fn test_set_get_features_async_event_config(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // A non-trivial mask that exercises bits in both the low SMART/Health
+    // byte and the higher notice classes (including bit 8 — Attached
+    // Namespace Attribute Notices, which is the bit that gates the
+    // namespace-change AEN). Also flips a high opaque bit (bit 21, Lost
+    // Host Communication Notices) to prove the round-trip is byte-exact
+    // rather than masked to a subset.
+    const MASK: u32 = 0x0020_011F;
+
+    // ----- Set Features 0Bh -----
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(601);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = MASK;
+    write_command_to_queue(&gm, &admin_sq_buf, 0, &cmd);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let set_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 0);
+    assert_eq!(set_cqe.cid, 601);
+    assert_eq!(
+        set_cqe.status.status(),
+        spec::Status::SUCCESS.0,
+        "Set Features 0Bh must succeed (mandatory for I/O controllers)"
+    );
+
+    // Advance the admin CQ head past slot 0 so the worker can post the
+    // next completion into slot 1.
+    nvmec.write_bar0(cq_db(0), 1u32.as_bytes()).unwrap();
+
+    // ----- Get Features 0Bh -----
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::GET_FEATURES.0);
+    cmd.cdw0.set_cid(602);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10GetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    write_command_to_queue(&gm, &admin_sq_buf, 1, &cmd);
+    nvmec.write_bar0(0x1000, 2u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let get_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 1);
+    assert_eq!(get_cqe.cid, 602);
+    assert_eq!(get_cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(
+        get_cqe.dw0, MASK,
+        "Get Features 0Bh must echo back the previously configured mask byte-exactly"
+    );
+}
+
+/// Regression test for Asynchronous Event Configuration mask
+/// enforcement.
+///
+/// The Asynchronous Event Configuration feature (FID 0Bh) controls
+/// which classes of asynchronous event notification the controller
+/// is allowed to fire (NVMe Base 2.0c section 5.21.1.11 / Base 2.3
+/// section 5.2.26.1.5). Bit 8 ("Attached Namespace Attribute Notices")
+/// gates the changed-namespace AEN; per spec, "If this bit is cleared
+/// to '0', then the controller shall not send the Attached Namespace
+/// Attribute Changed asynchronous event to the host."
+///
+/// This test exercises both the negative path (mask cleared suppresses
+/// the queued namespace-change AEN) and the positive path (toggling
+/// the mask back on causes the previously-suppressed event to be
+/// delivered without needing a fresh trigger). It also confirms the
+/// emitted completion encodes the correct event type and log page
+/// identifier so a host that reads it knows to fetch the
+/// CHANGED_NAMESPACE_LIST log page.
+#[async_test]
+async fn test_async_event_config_masks_namespace_aen(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // -------------------------------------------------------------
+    // Step 1: Set the AEC mask to 0 (every notification class
+    // disabled, including bit 8 / Attached Namespace Attribute
+    // Notices).
+    // -------------------------------------------------------------
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(701);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = 0;
+    write_command_to_queue(&gm, &admin_sq_buf, 0, &cmd);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, 0);
+    assert_eq!(cqe.cid, 701);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    nvmec.write_bar0(cq_db(0), 1u32.as_bytes()).unwrap();
+
+    // -------------------------------------------------------------
+    // Step 2: Park an Asynchronous Event Request. With no AERs in
+    // flight, the controller has nothing to complete an AEN against
+    // even if the mask permitted firing, so this is required to make
+    // the negative assertion meaningful.
+    // -------------------------------------------------------------
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0
+        .set_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0);
+    cmd.cdw0.set_cid(702);
+    write_command_to_queue(&gm, &admin_sq_buf, 1, &cmd);
+    nvmec.write_bar0(0x1000, 2u32.as_bytes()).unwrap();
+    // No MSI is expected at this point - the AER simply parks.
+
+    // -------------------------------------------------------------
+    // Step 3: Trigger a namespace change. With the mask cleared the
+    // controller MUST NOT fire the corresponding AEN.
+    // -------------------------------------------------------------
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(2, disk).await.unwrap();
+
+    // Wait ~500ms watching for any MSI. None should fire.
+    let mut backoff = Backoff::new(&driver);
+    for _ in 0..50 {
+        if let Some(int) = int_controller.get_next_interrupt() {
+            panic!(
+                "unexpected AEN MSI while AEC mask=0: addr={:#x} data={:#x}",
+                int.0, int.1
+            );
+        }
+        backoff.back_off().await;
+    }
+
+    // -------------------------------------------------------------
+    // Step 4: Toggle the mask back on (just bit 8 / NAN). The
+    // namespace change from step 3 is still queued in
+    // state.changed_namespaces; the parked AER is still outstanding.
+    // The next loop iteration after the Set Features completes must
+    // observe the now-enabled mask and fire the AEN.
+    // -------------------------------------------------------------
+    let mask_on =
+        u32::from(spec::Cdw11FeatureAsyncEventConfig::new().with_namespace_attribute_notices(true));
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(703);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = mask_on;
+    write_command_to_queue(&gm, &admin_sq_buf, 2, &cmd);
+    nvmec.write_bar0(0x1000, 3u32.as_bytes()).unwrap();
+
+    // Set Features completion arrives in admin CQ slot 1.
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let set_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 1);
+    assert_eq!(set_cqe.cid, 703);
+    assert_eq!(set_cqe.status.status(), spec::Status::SUCCESS.0);
+    nvmec.write_bar0(cq_db(0), 2u32.as_bytes()).unwrap();
+
+    // The AEN completion (against the AER parked in step 2) arrives in
+    // admin CQ slot 2.
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let aen_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 2);
+    assert_eq!(
+        aen_cqe.cid, 702,
+        "AEN completion must be posted against the parked AER's cid"
+    );
+    assert_eq!(aen_cqe.status.status(), spec::Status::SUCCESS.0);
+
+    let dw0 = spec::AsynchronousEventRequestDw0::from(aen_cqe.dw0);
+    assert_eq!(
+        dw0.event_type(),
+        spec::AsynchronousEventType::NOTICE.0,
+        "AEN event_type must be NOTICE"
+    );
+    assert_eq!(
+        dw0.log_page_identifier(),
+        spec::LogPageIdentifier::CHANGED_NAMESPACE_LIST.0,
+        "AEN log_page_identifier must point at CHANGED_NAMESPACE_LIST"
+    );
+}

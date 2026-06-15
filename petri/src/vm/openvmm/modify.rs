@@ -396,6 +396,7 @@ impl PetriVmConfigOpenVmm {
                     ports,
                     iommu: None,
                     vnode: None,
+                    preserve_bars: false,
                 });
             }
         }

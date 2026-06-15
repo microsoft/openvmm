@@ -289,6 +289,15 @@ pub struct Options {
     /// Overrides the value in DPS when set.
     pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
+    /// (HCL_EFI_DIAGNOSTICS_RATE_LIMIT=\<number\>)
+    /// Override the per-period rate limit applied to EFI diagnostics log
+    /// entries forwarded to host tracing.
+    ///
+    /// - Not set: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    pub efi_diagnostics_rate_limit: Option<u32>,
+
     /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
     pub strict_encryption_policy: Option<bool>,
 
@@ -491,6 +500,9 @@ impl Options {
                 })
                 .ok()
         });
+        let efi_diagnostics_rate_limit = parse_env_number("HCL_EFI_DIAGNOSTICS_RATE_LIMIT")?
+            .map(|x| u32::try_from(x).context("HCL_EFI_DIAGNOSTICS_RATE_LIMIT out of range"))
+            .transpose()?;
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
@@ -560,6 +572,7 @@ impl Options {
             guest_state_lifetime,
             guest_state_encryption_policy,
             efi_diagnostics_log_level,
+            efi_diagnostics_rate_limit,
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,

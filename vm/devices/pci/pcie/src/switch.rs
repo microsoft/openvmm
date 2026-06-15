@@ -1557,7 +1557,7 @@ mod tests {
             .cfg_space()
             .read_u32(0x100, &mut upstream_header)
             .unwrap();
-        assert_eq!(upstream_header, 0xffff_ffff);
+        assert_eq!(upstream_header, 0);
 
         let mut switch = switch;
         let (_, downstream_port) = switch

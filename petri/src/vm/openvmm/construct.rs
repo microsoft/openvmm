@@ -389,6 +389,7 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
+            let diagnostics_rate_limit = uefi_cfg.and_then(|c| c.efi_diagnostics_rate_limit);
             let nvram_storage = if vmgs.disk().is_some() {
                 VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
             } else {
@@ -402,6 +403,7 @@ impl PetriVmConfigOpenVmm {
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
+                diagnostics_rate_limit,
                 nvram_storage,
                 None,
             ));
@@ -883,6 +885,7 @@ impl PetriVmConfigSetupCore<'_> {
                             default_boot_always_attempt,
                             enable_vpci_boot,
                             efi_diagnostics_log_level: _, // applied to top-level Config below
+                            efi_diagnostics_rate_limit: _, // applied to top-level Config below
                         },
                 },
             ) => {
@@ -971,6 +974,23 @@ impl PetriVmConfigSetupCore<'_> {
                     }
                 }
 
+                // Plumb the EFI diagnostics rate-limit override to the
+                // OpenHCL-side UEFI device via env var.
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            efi_diagnostics_rate_limit: Some(limit),
+                            ..
+                        },
+                    ..
+                } = self.firmware
+                {
+                    append_cmdline(
+                        &mut cmdline,
+                        format!("HCL_EFI_DIAGNOSTICS_RATE_LIMIT={limit}"),
+                    );
+                }
+
                 let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
                     if isolated {
                         // Isolated VMs must load at the location specified by
@@ -1044,6 +1064,7 @@ impl PetriVmConfigSetupCore<'_> {
                 default_boot_always_attempt,
                 enable_vpci_boot,
                 efi_diagnostics_log_level,
+                efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {

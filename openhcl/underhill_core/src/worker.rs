@@ -309,6 +309,8 @@ pub struct UnderhillEnvCfg {
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
     /// EFI diagnostics log level filter (overrides DPS value when set)
     pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    /// EFI diagnostics rate-limit override (overrides device defaults when set)
+    pub efi_diagnostics_rate_limit: Option<u32>,
     /// Strict guest state encryption policy
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
@@ -2572,6 +2574,7 @@ async fn new_underhill_vm(
                     _ => LogLevel::make_default(),
                 }
             },
+            diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
         };
 
         // Register the platform resolvers used by the resource-model UEFI

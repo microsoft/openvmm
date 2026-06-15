@@ -2529,16 +2529,10 @@ async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
-    let get_guest_os_id = Box::new(move || -> HvGuestOsId {
-        let id: u64 = HvGuestOsMicrosoft::new()
-            .with_os_id(HvGuestOsMicrosoftIds::WINDOWS_NT.0)
-            .into();
-        HvGuestOsId::from(id)
-    });
     let builder = Nic::builder();
     let nic = builder
         .virtual_function(test_vf)
-        .get_guest_os_id(get_guest_os_id)
+        .get_guest_os_id(windows_guest_os_id_provider())
         .build(
             &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
             Guid::new_random(),
@@ -3844,23 +3838,31 @@ async fn remove_vf_with_async_messages(
     Ok(())
 }
 
-#[async_test]
-async fn dynamic_vf_support(driver: DefaultDriver) {
+async fn test_dynamic_vf_support_common(
+    driver: DefaultDriver,
+    initial_vfid: u32,
+    adapter_index: u32,
+    get_guest_os_id: Option<Box<dyn Fn() -> HvGuestOsId + Send + Sync>>,
+    serial_for_vfid: impl Fn(u32, u32) -> u32,
+) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let (mut proxy_endpoint, mut proxy_endpoint_control) = DisconnectableEndpoint::new();
     proxy_endpoint_control.connect(Box::new(endpoint)).unwrap();
     proxy_endpoint.wait_for_endpoint_action().await;
 
-    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(initial_vfid)));
     let test_vf_state = test_vf.state();
-    let builder = Nic::builder();
-    let nic = builder.virtual_function(test_vf).build(
+    let mut builder = Nic::builder().virtual_function(test_vf);
+    if let Some(get_guest_os_id) = get_guest_os_id {
+        builder = builder.get_guest_os_id(get_guest_os_id);
+    }
+    let nic = builder.build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         Guid::new_random(),
         Box::new(proxy_endpoint),
         [1, 2, 3, 4, 5, 6].into(),
-        0,
+        adapter_index,
     );
 
     let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
@@ -3889,13 +3891,26 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
         .await
         .unwrap();
-    let transaction_id = channel
+    let (transaction_id, associated_serial_number) = channel
         .read_with(|packet| match packet {
             IncomingPacket::Data(data) => {
                 let mut reader = data.reader();
-                let _: protocol::MessageHeader = reader.read_plain().unwrap();
-                let _: protocol::Message4SendVfAssociation = reader.read_plain().unwrap();
-                data.transaction_id().expect("should request completion")
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
+                );
+                let association_data: protocol::Message4SendVfAssociation =
+                    reader.read_plain().unwrap();
+                assert_eq!(association_data.vf_allocated, 1);
+                assert_eq!(
+                    association_data.serial_number,
+                    serial_for_vfid(test_vf_state.id().unwrap(), adapter_index)
+                );
+                (
+                    data.transaction_id().expect("should request completion"),
+                    association_data.serial_number,
+                )
             }
             _ => panic!("Unexpected packet"),
         })
@@ -3936,6 +3951,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
                 let association_data: protocol::Message4SendVfAssociation =
                     reader.read_plain().unwrap();
                 assert_eq!(association_data.vf_allocated, 0);
+                assert_eq!(association_data.serial_number, associated_serial_number);
                 data.transaction_id().expect("should request completion")
             }
             _ => panic!("Unexpected packet"),
@@ -3960,7 +3976,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     // Add back VF capability and switch data path
     //
     test_vf_state
-        .update_id(Some(124), Some(Duration::from_millis(100)))
+        .update_id(Some(initial_vfid + 1), Some(Duration::from_millis(100)))
         .await
         .unwrap();
     let transaction_id = channel
@@ -3975,7 +3991,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
                 let association_data: protocol::Message4SendVfAssociation =
                     reader.read_plain().unwrap();
                 assert_eq!(association_data.vf_allocated, 1);
-                assert_eq!(association_data.serial_number, test_vf_state.id().unwrap());
+                assert_eq!(
+                    association_data.serial_number,
+                    serial_for_vfid(test_vf_state.id().unwrap(), adapter_index)
+                );
                 data.transaction_id().expect("should request completion")
             }
             _ => panic!("Unexpected packet"),
@@ -4061,7 +4080,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     // Add back guest VF and switch data path
     //
     test_vf_state
-        .update_id(Some(125), Some(Duration::from_millis(100)))
+        .update_id(Some(initial_vfid + 2), Some(Duration::from_millis(100)))
         .await
         .unwrap();
     let transaction_id = channel
@@ -4076,7 +4095,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
                 let association_data: protocol::Message4SendVfAssociation =
                     reader.read_plain().unwrap();
                 assert_eq!(association_data.vf_allocated, 1);
-                assert_eq!(association_data.serial_number, test_vf_state.id().unwrap());
+                assert_eq!(
+                    association_data.serial_number,
+                    serial_for_vfid(test_vf_state.id().unwrap(), adapter_index)
+                );
                 data.transaction_id().expect("should request completion")
             }
             _ => panic!("Unexpected packet"),
@@ -4145,6 +4167,194 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     );
     assert!(test_vf_state.is_ready_unchanged());
     assert!(endpoint_state.lock().use_vf.is_none());
+}
+
+#[async_test]
+async fn save_restore_vf_disassociate_reuses_association_serial(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let test_vf_state = test_vf.state();
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    let mock_vmbus = nic.mock_vmbus.clone();
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    let (transaction_id, associated_serial_number) = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let mut reader = data.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
+                );
+                let association_data: protocol::Message4SendVfAssociation =
+                    reader.read_plain().unwrap();
+                assert_eq!(association_data.vf_allocated, 1);
+                assert_eq!(association_data.serial_number, test_vf_state.id().unwrap());
+                (
+                    data.transaction_id().expect("should request completion"),
+                    association_data.serial_number,
+                )
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &[],
+        })
+        .await;
+
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
+
+    channel.stop().await;
+    let restore_state = channel.save().await.unwrap().unwrap();
+
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let test_vf_state = test_vf.state();
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic_and_vmbus(&driver, mock_vmbus, nic).await;
+    let mut channel = channel.restore(&mut nic, restore_state).await.unwrap();
+    channel.start();
+
+    test_vf_state
+        .update_id(None, Some(Duration::from_millis(100)))
+        .await
+        .unwrap();
+
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let mut reader = data.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
+                );
+                let association_data: protocol::Message4SendVfAssociation =
+                    reader.read_plain().unwrap();
+                assert_eq!(association_data.vf_allocated, 0);
+                assert_eq!(association_data.serial_number, associated_serial_number);
+                data.transaction_id().expect("should request completion")
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("disassociation packet");
+
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &[],
+        })
+        .await;
+}
+
+#[async_test]
+async fn dynamic_vf_support(driver: DefaultDriver) {
+    let mut initial_vf_id = 123;
+    let mut adapter_index = 99;
+    test_dynamic_vf_support_common(
+        driver.clone(),
+        initial_vf_id,
+        adapter_index,
+        None,
+        |vfid, _adapter_index| vfid,
+    )
+    .await;
+    initial_vf_id = 223;
+    adapter_index = 7;
+    test_dynamic_vf_support_common(
+        driver,
+        initial_vf_id,
+        adapter_index,
+        None,
+        |vfid, _adapter_index| vfid,
+    )
+    .await;
+}
+
+fn windows_guest_os_id_provider() -> Box<dyn Fn() -> HvGuestOsId + Send + Sync> {
+    Box::new(move || -> HvGuestOsId {
+        let id: u64 = HvGuestOsMicrosoft::new()
+            .with_os_id(HvGuestOsMicrosoftIds::WINDOWS_NT.0)
+            .into();
+        HvGuestOsId::from(id)
+    })
+}
+
+#[async_test]
+async fn dynamic_vf_support_windows_guest_os_id(driver: DefaultDriver) {
+    let mut initial_vf_id = 123;
+    let mut adapter_index = 99;
+    test_dynamic_vf_support_common(
+        driver.clone(),
+        initial_vf_id,
+        adapter_index,
+        Some(windows_guest_os_id_provider()),
+        |_vfid, adapter_index| adapter_index,
+    )
+    .await;
+    initial_vf_id = 223;
+    adapter_index = 7;
+    test_dynamic_vf_support_common(
+        driver,
+        initial_vf_id,
+        adapter_index,
+        Some(windows_guest_os_id_provider()),
+        |_vfid, adapter_index| adapter_index,
+    )
+    .await;
 }
 
 #[async_test]

@@ -1268,7 +1268,7 @@ mod tests {
             None,
         );
         without_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
-        assert_eq!(value, 0xffff_ffff);
+        assert_eq!(value, 0);
     }
 
     #[test]
@@ -1316,7 +1316,7 @@ mod tests {
         let mut value = 0u32;
         port.cfg_space.read_u32(0x100, &mut value).unwrap();
         assert_eq!(
-            value, 0xffff_ffff,
+            value, 0,
             "CXL DVSECs should be absent when CXL component-register BAR backing is invalid"
         );
         assert!(

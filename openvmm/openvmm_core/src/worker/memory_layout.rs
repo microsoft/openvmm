@@ -640,6 +640,7 @@ mod tests {
             cxl: None,
             iommu: None,
             vnode: None,
+            preserve_bars: false,
         }
     }
 
@@ -754,6 +755,7 @@ mod tests {
                 cxl: None,
                 iommu: None,
                 vnode: None,
+                preserve_bars: false,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -767,6 +769,7 @@ mod tests {
                 cxl: None,
                 iommu: None,
                 vnode: None,
+                preserve_bars: false,
             },
         ];
         let mut config = input(&[2 * GB], None);
@@ -804,6 +807,7 @@ mod tests {
             cxl: None,
             iommu: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;

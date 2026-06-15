@@ -224,6 +224,9 @@ pub struct PcieRootComplexConfig {
     /// the ACPI SSDT so the guest OS sees correct NUMA locality for devices
     /// under this root complex.
     pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 #[derive(Debug, MeshPayload)]

@@ -205,9 +205,9 @@ impl Test {
             Ok(()) => Ok(()),
             Err(err)
                 if self.test.0.unstable()
-                    && std::env::var("PETRI_REPORT_UNSTABLE_FAIL")
+                    && std::env::var("PETRI_IGNORE_UNSTABLE_FAILURES")
                         .ok()
-                        .is_none_or(|v| v.is_empty() || v == "0") =>
+                        .is_some_and(|v| !v.is_empty() && v != "0") =>
             {
                 tracing::warn!("ignoring unstable test failure: {err:#}");
                 Ok(())

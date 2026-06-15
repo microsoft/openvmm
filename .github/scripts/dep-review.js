@@ -223,7 +223,37 @@ const DEP_REVIEW_TEAM = "openvmm-dependency-reviewers";
  */
 async function run(github, context, core) {
   const prNumber = context.payload.pull_request.number;
-  const baseSha = context.payload.pull_request.base.sha;
+  const baseTipSha = context.payload.pull_request.base.sha;
+  const headSha = context.payload.pull_request.head.sha;
+
+  // Use merge-base (base...head) as the baseline so we only review dependency
+  // deltas introduced by this PR, not unrelated changes that landed on base.
+  let baseSha = baseTipSha;
+  try {
+    const { data: compare } = await github.request(
+      "GET /repos/{owner}/{repo}/compare/{basehead}",
+      {
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        basehead: `${baseTipSha}...${headSha}`,
+      }
+    );
+    const mergeBaseSha = compare?.merge_base_commit?.sha;
+    if (mergeBaseSha) {
+      baseSha = mergeBaseSha;
+      console.log(`Using merge-base ${mergeBaseSha} for dependency diff baseline.`);
+    } else {
+      core.warning(
+        "Could not determine merge-base from compare API response; " +
+          "falling back to pull_request.base.sha."
+      );
+    }
+  } catch (e) {
+    core.warning(
+      `Failed to compute merge-base (${e.status || "unknown"}): ${e.message}. ` +
+        "Falling back to pull_request.base.sha."
+    );
+  }
 
   // Step 1: Check if Cargo.lock was modified
   let allFiles = [];

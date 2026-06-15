@@ -72,13 +72,14 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 ```
 
 Unstable tests run in the same CI job as stable tests. When an unstable test fails
-the CI run will pass with a warning
+the CI run will pass with a warning. Outside of CI, an unstable test failure is
+reported as a failure like any other test.
 
 To promote an unstable test to stable, remove `unstable` from the macro. This is
 a single-place change — no CI or configuration updates are required.
 
-To ignore these `unstable` tags and report failures for all tests when running
-locally, set the following environment variable: `PETRI_REPORT_UNSTABLE_FAIL=1`
+To suppress failures from `unstable` tests when running locally (matching the CI
+behavior), set the following environment variable: `PETRI_IGNORE_UNSTABLE_FAILURES=1`
 
 ## Running VMM Tests (Flowey)
 

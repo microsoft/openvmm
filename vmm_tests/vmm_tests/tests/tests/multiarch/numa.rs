@@ -347,6 +347,7 @@ async fn pcie_device_numa_affinity(
                     }],
                     iommu: None,
                     vnode: Some(1),
+                    preserve_bars: false,
                 });
 
                 // Attach an NVMe device to the root port.
