@@ -229,7 +229,7 @@ pub fn enumerate_tests(tmk: &File) -> anyhow::Result<Vec<TestInfo>> {
         tests.push(TestInfo {
             name: name.to_string(),
             index: i as u64,
-            expected_failure: t.flags & tmk_protocol::TEST_FLAG_EXPECTED_FAILURE != 0,
+            expected_failure: t.flags.expected_failure(),
         });
     }
 

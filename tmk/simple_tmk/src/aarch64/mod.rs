@@ -8,6 +8,7 @@
 )]
 
 use crate::prelude::*;
+use tmk_protocol as _;
 
 core::arch::global_asm! {
     ".global instruction_abort_outside_par_entry",

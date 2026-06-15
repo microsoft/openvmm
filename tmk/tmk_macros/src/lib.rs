@@ -19,8 +19,10 @@ pub fn tmk_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = &item.sig.ident;
 
     let flags = match attr.to_string().as_str() {
-        "" => quote! { 0 },
-        "expected_failure" => quote! { ::tmk_core::TEST_FLAG_EXPECTED_FAILURE },
+        "" => quote! { ::tmk_protocol::TestFlags64::new() },
+        "expected_failure" => {
+            quote! { ::tmk_protocol::TestFlags64::new().with_expected_failure(true) }
+        }
         attr => {
             let msg = format!("unsupported tmk_test option: {attr}");
             return quote! {

@@ -12,6 +12,7 @@ pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 use aarch64 as arch;
+use tmk_protocol::TestFlags64;
 #[cfg(target_arch = "x86_64")]
 use x86_64 as arch;
 
@@ -20,9 +21,6 @@ use core::marker::PhantomData;
 use core::ptr::null_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
-
-/// The test is expected to fail.
-pub const TEST_FLAG_EXPECTED_FAILURE: u64 = tmk_protocol::TEST_FLAG_EXPECTED_FAILURE;
 
 /// A TMK test context, passed to each test function.
 pub struct TestContext<'scope> {
@@ -184,7 +182,7 @@ pub struct TestDescriptor {
     /// The test entry point.
     pub entrypoint: for<'scope> fn(TestContext<'scope>),
     /// Test flag - expected failure or not
-    pub flags: u64,
+    pub flags: TestFlags64,
 }
 
 #[cfg_attr(minimal_rt, panic_handler)]

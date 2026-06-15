@@ -6,13 +6,12 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::TryFromBytes;
-
-/// The test is expected to fail.
-pub const TEST_FLAG_EXPECTED_FAILURE: u64 = 1 << 0;
 
 /// Start input from the VMM to the TMK.
 #[repr(C)]
@@ -22,6 +21,17 @@ pub struct StartInput {
     pub command: u64,
     /// The test index.
     pub test_index: u64,
+}
+
+/// Test metadata flags.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TestFlags64 {
+    #[bits(1)]
+    pub expected_failure: bool,
+
+    #[bits(63)]
+    reserved: u64,
 }
 
 /// A 64-bit TMK test descriptor.
@@ -35,7 +45,7 @@ pub struct TestDescriptor64 {
     /// The test entry point.
     pub entrypoint: u64,
     /// Test metadata flags.
-    pub flags: u64,
+    pub flags: TestFlags64,
 }
 
 /// TMK command.
