@@ -271,8 +271,8 @@ struct RelayChannelTask {
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
     async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<()> {
-        // If the guest uses the channel bitmap, the host can't send interrupts
-        // directly and they must be relayed.
+        // With VMBus message redirection, host interrupts target VTL2 and must
+        // be relayed to VTL0. This is always the case when a relay is active.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
         let (incoming_event, notify) = if redirect_interrupt {
             let event = Event::new();
@@ -580,7 +580,7 @@ impl RelayTask {
             channels: HashMap::new(),
             channel_workers: FuturesUnordered::new(),
             intercept_channels: HashMap::new(),
-            use_interrupt_relay: Arc::new(AtomicBool::new(false)),
+            use_interrupt_relay: Arc::new(AtomicBool::new(true)),
             server_response_send,
             hvsock_relay,
             running: false,
