@@ -84,7 +84,8 @@ impl FlowNode for Node {
                     [
                         ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
                         // Forbid cc-rs from compiling anything
-                        ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                        // TODO: Soon
+                        // ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
                     ]
                     .into_iter()
                     .collect(),
