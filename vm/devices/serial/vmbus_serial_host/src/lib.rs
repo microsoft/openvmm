@@ -410,9 +410,6 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     ) -> Result<(), Error> {
         match notification {
             HostNotifications::RX_CLEAR_BUFFER => {
-                // The guest asked to discard buffered host->guest RX data. This
-                // is guest-controlled, so it must not panic (the previous
-                // `todo!()` was a guest-triggerable DoS); just clear the buffer.
                 self.state.rx_bytes.clear();
             }
             HostNotifications::TX_DATA_AVAILABLE => {
