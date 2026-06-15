@@ -537,14 +537,18 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     let vm = config
         .with_uefi_frontpage(true)
         .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .with_efi_diagnostics_rate_limit(0)
         .run_without_agent()
         .await?;
 
-    // Marker emitted by `firmware_uefi::service::diagnostics` for every
-    // UEFI log entry tagged with `DEBUG_INFO`.
-    //
-    // Presence of this marker in the kmsg output validates that.
-    const INFO_MARKER: &str = "debug_level=INFO";
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
+    // before it hands control to `firmware_uefi::service::diagnostics` to
+    // collect entries. It only appears in the trace stream when:
+    //   1. The diagnostics log level is INFO
+    //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
+    //      single burst, and this is one of the very last; with the default
+    //      rate limit it gets dropped.
+    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
 
     let mut kmsg = vm.kmsg().await?;
 
@@ -552,12 +556,12 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = msg.message.as_raw();
-        if raw.contains(INFO_MARKER) {
+        if raw.contains(MARKER) {
             return Ok(());
         }
     }
 
-    anyhow::bail!("Did not find any INFO-level UEFI diagnostics entry ({INFO_MARKER:?}) in kmsg");
+    anyhow::bail!("Did not find expected INFO-level UEFI diagnostics entry ({MARKER:?}) in kmsg");
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,

@@ -516,6 +516,9 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_vmgstool, use_vmgstool) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
 
+            let (pub_vmgstool_dev, use_vmgstool_dev) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool-dev"));
+
             let (pub_tpm_guest_tests, use_tpm_guest_tests_windows) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-tpm_guest_tests"));
 
@@ -529,6 +532,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_prep_steps = Some(use_prep_steps.clone());
                     vmm_tests_artifacts_windows_x86.use_vmgstool = Some(use_vmgstool.clone());
+                    vmm_tests_artifacts_windows_x86.use_vmgstool_dev =
+                        Some(use_vmgstool_dev.clone());
                     vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_windows =
                         Some(use_tpm_guest_tests_windows.clone());
                     vmm_tests_artifacts_windows_x86.use_test_igvm_agent_rpc_server =
@@ -538,6 +543,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_vmgstool = Some(use_vmgstool.clone());
+                    vmm_tests_artifacts_windows_aarch64.use_vmgstool_dev =
+                        Some(use_vmgstool_dev.clone());
                 }
             }
             // emit a job for artifacts which _are not_ in the VMM tests "hot
@@ -663,6 +670,15 @@ impl IntoPipeline for CheckinGatesCli {
                 })
                 .publish(pub_vmgstool, |vmgstool| {
                     flowey_lib_hvlite::build_vmgstool::Request {
+                        target: vmgstool_target.clone(),
+                        profile: CommonProfile::from_release(release),
+                        with_crypto: true,
+                        with_test_helpers: false,
+                        vmgstool,
+                    }
+                })
+                .publish(pub_vmgstool_dev, |vmgstool| {
+                    flowey_lib_hvlite::build_vmgstool::Request {
                         target: vmgstool_target,
                         profile: CommonProfile::from_release(release),
                         with_crypto: true,
@@ -741,6 +757,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgs_lib"));
             let (pub_vmgstool, use_vmgstool) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool"));
+            let (pub_vmgstool_dev, _use_vmgstool_dev) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool-dev"));
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
             // Also build openvmm and openvmm_vhost for musl on this job,
@@ -818,6 +836,15 @@ impl IntoPipeline for CheckinGatesCli {
                     }
                 })
                 .publish(pub_vmgstool, |vmgstool| {
+                    flowey_lib_hvlite::build_vmgstool::Request {
+                        target: vmgstool_target.clone(),
+                        profile: CommonProfile::from_release(release),
+                        with_crypto: true,
+                        with_test_helpers: false,
+                        vmgstool,
+                    }
+                })
+                .publish(pub_vmgstool_dev, |vmgstool| {
                     flowey_lib_hvlite::build_vmgstool::Request {
                         target: vmgstool_target,
                         profile: CommonProfile::from_release(release),
@@ -1776,6 +1803,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: None,
                 prep_steps: use_prep_steps.as_ref().map(|a| ctx.use_typed_artifact(a)),
                 vmgstool: None,
+                vmgstool_dev: None,
                 tpm_guest_tests_windows: None,
                 tpm_guest_tests_linux: None,
                 test_igvm_agent_rpc_server: None,
@@ -1791,6 +1819,7 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_vmgstool_dev: Option<UseTypedArtifact<VmgstoolOutput>>,
         pub use_tpm_guest_tests_windows: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         pub use_tpm_guest_tests_linux: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         pub use_test_igvm_agent_rpc_server: Option<UseTypedArtifact<TestIgvmAgentRpcServerOutput>>,
@@ -1816,6 +1845,7 @@ mod vmm_tests_artifact_builders {
                 use_tmks,
                 use_prep_steps,
                 use_vmgstool,
+                use_vmgstool_dev,
                 use_tpm_guest_tests_windows,
                 use_tpm_guest_tests_linux,
                 use_test_igvm_agent_rpc_server,
@@ -1831,6 +1861,7 @@ mod vmm_tests_artifact_builders {
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_vmgstool_dev = use_vmgstool_dev.ok_or("vmgstool_dev")?;
             let use_tpm_guest_tests_windows =
                 use_tpm_guest_tests_windows.ok_or("tpm_guest_tests_windows")?;
             let use_tpm_guest_tests_linux =
@@ -1850,6 +1881,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                vmgstool_dev: Some(ctx.use_typed_artifact(&use_vmgstool_dev)),
                 tpm_guest_tests_windows: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_windows)),
                 tpm_guest_tests_linux: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_linux)),
                 test_igvm_agent_rpc_server: Some(
@@ -1866,6 +1898,7 @@ mod vmm_tests_artifact_builders {
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_vmgstool_dev: Option<UseTypedArtifact<VmgstoolOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1887,6 +1920,7 @@ mod vmm_tests_artifact_builders {
                 use_tmk_vmm_linux_musl,
                 use_tmks,
                 use_vmgstool,
+                use_vmgstool_dev,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1898,6 +1932,7 @@ mod vmm_tests_artifact_builders {
             let use_tmk_vmm_linux_musl = use_tmk_vmm_linux_musl.ok_or("tmk_vmm_linux_musl")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_vmgstool_dev = use_vmgstool_dev.ok_or("vmgstool_dev")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1911,6 +1946,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: None,
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                vmgstool_dev: Some(ctx.use_typed_artifact(&use_vmgstool_dev)),
                 tpm_guest_tests_windows: None,
                 tpm_guest_tests_linux: None,
                 test_igvm_agent_rpc_server: None,

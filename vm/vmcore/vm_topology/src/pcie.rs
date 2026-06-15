@@ -34,4 +34,9 @@ pub struct PcieHostBridge {
     pub high_mmio: MemoryRange,
     /// CXL metadata when this host bridge supports CXL.
     pub cxl: Option<PcieHostBridgeCxlInfo>,
+    /// NUMA node affinity for this host bridge.
+    pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }

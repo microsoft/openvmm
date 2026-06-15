@@ -52,6 +52,7 @@ pub struct BuildSelections {
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
+    pub vmgstool_dev: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
@@ -603,12 +604,12 @@ impl SimpleFlowNode for Node {
             (output, cmds)
         });
 
-        let register_vmgstool = build.vmgstool.then(|| {
+        let mut build_vmgstool = |with_test_helpers| {
             let output = ctx.reqv(|v| crate::build_vmgstool::Request {
                 target: target.clone(),
                 profile: CommonProfile::from_release(release),
                 with_crypto: true,
-                with_test_helpers: true,
+                with_test_helpers,
                 vmgstool: v,
             });
             if copy_extras {
@@ -625,7 +626,11 @@ impl SimpleFlowNode for Node {
                 ));
             }
             output
-        });
+        };
+
+        let register_vmgstool = build.vmgstool.then(|| build_vmgstool(false));
+
+        let register_vmgstool_dev = build.vmgstool_dev.then(|| build_vmgstool(true));
 
         let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
@@ -719,6 +724,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,

@@ -193,6 +193,38 @@ The `BACKEND` argument is the same for all serial devices:
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
 
+## Guest power events
+
+By default OpenVMM keeps running when the guest powers itself off, hibernates,
+or triple-faults: the virtual processors stop, but the VMM process stays up so
+you can inspect the VM or restart it from the
+[interactive console](./interactive_console.md). A guest-requested reset reboots
+the VM in place, as does a guest watchdog timeout when `--guest-watchdog` is
+enabled.
+
+Four flags override what happens on each guest power event, so a supervising
+process can treat the OpenVMM process lifetime as the VM lifetime. Each takes a
+`reset` (reboot in place), `halt` (stop the processors but keep the VMM process,
+as above), or `exit` (exit the VMM process) action. The `exit` action may carry a
+status code as `exit:<code>` (0-255); a bare `exit` uses 0:
+
+* `--guest-reset-action <reset|halt|exit[:<code>]>` (default `reset`): the guest requested
+  a reset.
+* `--guest-shutdown-action <reset|halt|exit[:<code>]>` (default `halt`): the guest powered
+  off or hibernated.
+* `--guest-crash-action <reset|halt|exit[:<code>]>` (default `halt`): the guest
+  triple-faulted. The fault registers are written to the trace log.
+* `--guest-watchdog-action <reset|halt|exit[:<code>]>` (default `reset`): the guest
+  watchdog timer expired without being petted (requires `--guest-watchdog`).
+
+A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
+a supervisor can tell the exit reasons apart.
+
+`--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
+firmware frontpage (the menu shown when there is no bootable device). Combined
+with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
+Requires `--uefi`.
+
 ## PCIe Device Support
 
 OpenVMM can emulate a PCI Express topology using `--pcie-root-complex` and
@@ -217,6 +249,12 @@ complex name:
 - `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
   root complex.
 - `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `low_mmio_base=<ADDR>` and `high_mmio_base=<ADDR>`: pin the low/high
+  MMIO window to a fixed base address instead of letting the VM topology
+  allocate it dynamically. Used with `preserve_bars` for P2P DMA.
+- `preserve_bars`: treat non-zero BAR values found during PCI probing as
+  pinned addresses (GPA = HPA). Required for peer-to-peer DMA between
+  VFIO passthrough devices without ATS.
 - `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
   is `1G`.
 - `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
@@ -230,6 +268,9 @@ complex name:
   4: fixed device configuration
   5: BI
   Bits 15:6 are reserved and rejected.
+- `node=<N>`: NUMA node affinity for this root complex. The guest sees
+  this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
+  and the guest uses its default allocation policy.
 
 ### Root port and switch options
 
@@ -320,6 +361,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+# Pin BAR0 to its physical address for P2P DMA:
+--vfio host=0000:01:00.0,port=rp0,bar0=pt
 ```
 
 ### SMMU (aarch64 only)

@@ -185,6 +185,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                             requests: None,
                         }
                         .into_resource(),
+                        vnode: None,
                     },
                     VpciDeviceConfig {
                         vtl: DeviceVtl::Vtl0,
@@ -198,6 +199,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                             .into_resource(),
                         )
                         .into_resource(),
+                        vnode: None,
                     },
                 ])
             })
@@ -253,6 +255,7 @@ async fn vpci_relay_tdisp_device(
                         enable_tdisp_tests: true,
                     }
                     .into_resource(),
+                    vnode: None,
                 }])
             })
         })

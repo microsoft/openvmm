@@ -188,16 +188,18 @@ pub fn build_pcie_acpi_tables(
     let mut has_cedt_entries = false;
 
     for bridge in pcie_host_bridges {
-        ssdt.add_pcie(
-            bridge.index,
-            bridge.segment,
-            bridge.start_bus,
-            bridge.end_bus,
-            bridge.ecam_range,
-            bridge.low_mmio,
-            bridge.high_mmio,
-            bridge.cxl.is_some(),
-        );
+        ssdt.add_pcie(acpi::ssdt::PcieHostBridgeEntry {
+            index: bridge.index,
+            segment: bridge.segment,
+            start_bus: bridge.start_bus,
+            end_bus: bridge.end_bus,
+            ecam_range: bridge.ecam_range,
+            low_mmio: bridge.low_mmio,
+            high_mmio: bridge.high_mmio,
+            cxl: bridge.cxl.is_some(),
+            vnode: bridge.vnode,
+            preserve_bars: bridge.preserve_bars,
+        });
 
         if let Some(cxl) = &bridge.cxl {
             if let Err(source) = cedt.add_cxl_host_bridge(
@@ -1289,6 +1291,8 @@ mod test {
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1299,6 +1303,8 @@ mod test {
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
         ];
 
@@ -1396,6 +1402,8 @@ mod test {
                 low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 7,
@@ -1406,6 +1414,8 @@ mod test {
                 low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
         ];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
@@ -1465,6 +1475,8 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
@@ -1495,6 +1507,8 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1554,6 +1568,8 @@ mod test {
                 hdm_range: MemoryRange::new(0x1000000000..0x1040000000),
                 hdm_window_restrictions: Default::default(),
             }),
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1577,6 +1593,8 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 
@@ -1653,6 +1671,8 @@ mod test {
                 low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1663,6 +1683,8 @@ mod test {
                 low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
                 cxl: None,
+                vnode: None,
+                preserve_bars: false,
             },
         ];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
@@ -1714,6 +1736,8 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1746,6 +1770,8 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 

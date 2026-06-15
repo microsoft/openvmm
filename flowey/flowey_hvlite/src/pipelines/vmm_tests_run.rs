@@ -689,14 +689,21 @@ impl ResolvedArtifactSelections {
             }
 
             // VmgsTool
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.vmgstool = true;
             }
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.vmgstool = true;
+
+            // VmgsTool-Dev
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmgstool_dev = true;
             }
 
             // TPM guest tests

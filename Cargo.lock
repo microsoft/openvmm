@@ -4655,7 +4655,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=5b8ca3b5b423859da441f51ec8b1610708ed53c2#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
 dependencies = [
  "cc",
  "once_cell",
@@ -5564,6 +5564,7 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_rpc",
@@ -6060,6 +6061,7 @@ dependencies = [
 name = "pci_resource_assignment"
 version = "0.0.0"
 dependencies = [
+ "memory_range",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -10175,7 +10177,7 @@ dependencies = [
 
 [[package]]
 name = "vmgstool"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -31,6 +31,7 @@ use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
+use cli_args::GuestPowerAction;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
@@ -154,7 +155,7 @@ pub fn openvmm_main() {
 
     let mut pidfile_guard: Option<pidfile::Pidfile> = None;
     let exit_code = match do_main(&mut pidfile_guard) {
-        Ok(_) => 0,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
             1
@@ -793,6 +794,7 @@ async fn vm_config_from_command_line(
                     },
                     instance_id,
                     resource: handle.into_resource(),
+                    vnode: None,
                 })
             }),
     );
@@ -860,11 +862,25 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            low_mmio: PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
+            low_mmio: if let Some(base) = rc_cli.low_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: low_mmio_size,
+                }
             },
-            high_mmio: PcieMmioRangeConfig::Dynamic {
-                size: high_mmio_size,
+            high_mmio: if let Some(base) = rc_cli.high_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: high_mmio_size,
+                }
             },
             cxl,
             ports,
@@ -880,6 +896,8 @@ async fn vm_config_from_command_line(
                 .iter()
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            vnode: rc_cli.vnode,
+            preserve_bars: rc_cli.preserve_bars,
         });
     }
 
@@ -971,6 +989,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -997,6 +1016,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -1152,6 +1172,7 @@ async fn vm_config_from_command_line(
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
+            None,
             nvram_storage,
             None,
         ));
@@ -1621,6 +1642,7 @@ async fn vm_config_from_command_line(
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
+                vnode: None,
             });
         }
     };
@@ -1937,7 +1959,10 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
-        automatic_guest_reset: !opt.halt_on_reset,
+        // Only let the partition auto-reset when the reset action is `reset`.
+        // For `halt` or `exit`, the guest reset must surface as a halt event so
+        // the controller can hold the VM or exit instead of rebooting in place.
+        automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
         efi_diagnostics_log_level: {
             match opt.efi_diagnostics_log_level.unwrap_or_default() {
                 EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
@@ -2369,7 +2394,7 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2385,7 +2410,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
-        return Ok(());
+        return Ok(0);
     }
 
     if let Some(ref path) = opt.pidfile {
@@ -2394,7 +2419,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
 
     if let Some(path) = opt.relay_console_path {
         let console_title = opt.relay_console_title.unwrap_or_default();
-        return console_relay::relay_console(&path, console_title.as_str());
+        return console_relay::relay_console(&path, console_title.as_str()).map(|()| 0);
     }
 
     #[cfg(any(feature = "grpc", feature = "ttrpc"))]
@@ -2425,7 +2450,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
 
             handle.join().await?;
 
-            Ok(())
+            Ok(0)
         });
     }
 
@@ -2441,7 +2466,7 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<()> {
+async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32> {
     let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
     let result = run_control_inner(driver, &mut mesh, opt).await;
     // If setup failed before the mesh was handed to the controller, shut it
@@ -2456,7 +2481,7 @@ async fn run_control_inner(
     driver: &DefaultDriver,
     mesh_slot: &mut Option<VmmMesh>,
     opt: Options,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
@@ -2660,6 +2685,12 @@ async fn run_control_inner(
         memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
+        guest_power_actions: vm_controller::GuestPowerActions {
+            shutdown: opt.guest_shutdown_action,
+            reset: opt.guest_reset_action,
+            crash: opt.guest_crash_action,
+            watchdog: opt.guest_watchdog_action,
+        },
     };
 
     // Spawn the VmController as a task.
@@ -2689,6 +2720,8 @@ async fn run_control_inner(
     // shuts down the mesh).
     controller_task.await;
 
+    // run_repl returns the exit status: the code the guest drove via an opt-in
+    // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.
     repl_result
 }
 

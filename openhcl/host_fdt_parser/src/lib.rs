@@ -1096,7 +1096,10 @@ fn parse_pl011<'a>(
     let base = reg.read_u32(1).map_err(ErrorKind::Prop)?;
     let intid = interrupts.read_u32(1).map_err(ErrorKind::Prop)?;
 
-    if intid == 3 {
+    // use the first serial port found in the dt.
+    // this could be made to be configurable, but
+    // hyper-v only provides one today
+    if matches!(com3_serial, ComInfo::None) {
         *com3_serial = ComInfo::Pl011 {
             base,
             intid,
@@ -1105,7 +1108,7 @@ fn parse_pl011<'a>(
     } else {
         #[cfg(feature = "tracing")]
         tracing::warn!(?node.name, ?base, ?intid, ?current_speed,
-            "unrecognized arm,sbsa-uart device"
+            "multiple serial devices"
         );
     }
 

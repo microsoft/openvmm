@@ -8,11 +8,16 @@ use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::VpAssignment;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 
 const SIZE_1_GB: u64 = 1024 * 1024 * 1024;
@@ -281,6 +286,124 @@ async fn boot_numa_complex_topology(
     assert_eq!(guest_node_distances(&agent, 1).await?, vec![15, 10, 20, 25]);
     assert_eq!(guest_node_distances(&agent, 2).await?, vec![25, 20, 10, 15]);
     assert_eq!(guest_node_distances(&agent, 3).await?, vec![30, 25, 15, 10]);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot a 2-node NUMA VM with a PCIe root complex on node 1 and verify
+/// that the guest sees the correct NUMA affinity on the PCIe device.
+///
+/// Linux populates `/sys/bus/pci/devices/<BDF>/numa_node` from the ACPI
+/// `_PXM` object on the host bridge.
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
+async fn pcie_device_numa_affinity(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let nvme_subsystem_id = guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789");
+
+    let (vm, agent) = config
+        .with_processor_topology(petri::ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.numa = NumaTopology {
+                    nodes: vec![
+                        NumaNode {
+                            mem: Some(make_mem(SIZE_2_GB)),
+                            vps: VpAssignment::Explicit(vec![0, 1]),
+                        },
+                        NumaNode {
+                            mem: Some(make_mem(SIZE_2_GB)),
+                            vps: VpAssignment::Explicit(vec![2, 3]),
+                        },
+                    ],
+                    distances: vec![],
+                };
+
+                // Add a PCIe root complex on NUMA node 1.
+                c.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: 0,
+                    name: "rc0".to_string(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    low_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: 64 * 1024 * 1024,
+                    },
+                    high_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: 1024 * 1024 * 1024,
+                    },
+                    cxl: None,
+                    ports: vec![PcieRootPortConfig {
+                        name: "rp0".to_string(),
+                        hotplug: false,
+                        acs_capabilities_supported: None,
+                        cxl: false,
+                    }],
+                    iommu: None,
+                    vnode: Some(1),
+                    preserve_bars: false,
+                });
+
+                // Attach an NVMe device to the root port.
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "rp0".to_string(),
+                    resource: nvme_resources::NvmeControllerHandle {
+                        subsystem_id: nvme_subsystem_id,
+                        max_io_queues: 64,
+                        msix_count: 64,
+                        namespaces: vec![nvme_resources::NamespaceDefinition {
+                            nsid: 1,
+                            disk: disk_backend_resources::LayeredDiskHandle::single_layer(
+                                disk_backend_resources::layer::RamDiskLayerHandle {
+                                    len: Some(1024 * 1024),
+                                    sector_size: None,
+                                },
+                            )
+                            .into_resource(),
+                            read_only: false,
+                        }],
+                        requests: None,
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    // Verify 2 NUMA nodes are visible.
+    assert_eq!(guest_numa_node_count(&agent).await?, 2);
+
+    // Find PCI devices and check their numa_node attribute.
+    let sh = agent.unix_shell();
+    let devices = cmd!(sh, "ls /sys/bus/pci/devices/").read().await?;
+    let mut found_nvme = false;
+    for bdf in devices.split_whitespace() {
+        // Read the class to identify NVMe (class 0x010802).
+        let class_path = format!("/sys/bus/pci/devices/{bdf}/class");
+        let class = sh.read_file(&class_path).await.unwrap_or_default();
+        let class = class.trim();
+        if class == "0x010802" {
+            let numa_path = format!("/sys/bus/pci/devices/{bdf}/numa_node");
+            let numa_node = sh
+                .read_file(&numa_path)
+                .await
+                .with_context(|| format!("reading numa_node for {bdf}"))?;
+            let numa_node: i32 = numa_node.trim().parse()?;
+            assert_eq!(
+                numa_node, 1,
+                "NVMe device {bdf} should be on NUMA node 1, got {numa_node}"
+            );
+            found_nvme = true;
+        }
+    }
+    assert!(found_nvme, "no NVMe device found in guest PCI devices");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

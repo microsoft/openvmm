@@ -93,6 +93,31 @@ On Linux guests, the topology is visible via `numactl --hardware`.
 On Windows guests, it appears in Task Manager and via the
 `GetLogicalProcessorInformationEx` API.
 
+## Device NUMA affinity
+
+PCIe root complexes and VPCI devices can optionally be assigned to a
+NUMA node so the guest OS sees correct device locality. When no node is
+specified, the ACPI `_PXM` object is omitted and the VPCI NUMA flag is
+not set — the guest treats the device as having no specific NUMA
+affinity and uses its default (current-node) allocation policy.
+
+For PCIe, each root complex can specify a `vnode` that is exposed via
+the ACPI `_PXM` object on the host bridge. Linux reads this to populate
+`/sys/bus/pci/devices/<BDF>/numa_node` for all devices under that root
+complex. Use `node=N` on `--pcie-root-complex`:
+
+```bash
+# Root complex on NUMA node 1
+openvmm --numa size=2G --numa size=2G \
+        --pcie-root-complex rc0,node=1 \
+        --pcie-root-port rc0:rp0 ...
+```
+
+For VPCI devices, the NUMA node can be set in the config (`vnode` field
+on `VpciDeviceConfig`) and is reported to the guest via the VPCI
+protocol's `BusRelations2` message. There is no CLI flag for VPCI
+device affinity yet — it is set programmatically.
+
 ## CLI usage
 
 The `--numa` flag replaces `--memory` for multi-node VMs. It is
@@ -124,8 +149,6 @@ reference.
 
 ## Limitations
 
-- **Device NUMA affinity** is not yet implemented. PCIe root complexes
-  and VPCI devices do not expose NUMA node assignments to the guest.
 - **Snapshot/restore** with multi-node topologies is not yet supported.
 - **Linux direct boot with devicetree** (aarch64) does not include
   NUMA information in the generated devicetree. The guest sees a flat

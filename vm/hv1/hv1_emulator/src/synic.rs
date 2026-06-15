@@ -347,16 +347,10 @@ impl ProcessorSynic {
         let siefp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?siefp, "setting siefp");
         let mut shared = self.shared.write();
-        if siefp.enabled()
-            && (!self.sints.siefp.enabled() || siefp.base_gpn() != self.sints.siefp.base_gpn())
-        {
-            shared
-                .siefp_page
-                .remap(siefp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !siefp.enabled() {
-            shared.siefp_page.unmap(prot_access);
-        }
+        shared
+            .siefp_page
+            .sync(siefp.enabled(), siefp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.siefp = siefp;
         Ok(())
     }
@@ -369,16 +363,10 @@ impl ProcessorSynic {
     ) -> Result<(), MsrError> {
         let simp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?simp, "setting simp");
-        if simp.enabled()
-            && (!self.sints.simp.enabled() || simp.base_gpn() != self.sints.simp.base_gpn())
-        {
-            self.sints
-                .simp_page
-                .remap(simp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !simp.enabled() {
-            self.sints.simp_page.unmap(prot_access);
-        }
+        self.sints
+            .simp_page
+            .sync(simp.enabled(), simp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.simp = simp;
         Ok(())
     }

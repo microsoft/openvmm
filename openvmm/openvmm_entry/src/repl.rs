@@ -403,7 +403,7 @@ pub(crate) struct ReplResources {
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
     resources: ReplResources,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let ReplResources {
         vm_rpc,
         vm_controller,
@@ -587,7 +587,10 @@ pub(crate) async fn run_repl(
     let mut inspect_completion_engine_recv =
         inspect_completion_engine_recv.map(Event::InspectRequestFromCompletionEngine);
 
-    loop {
+    // The exit status to return: 0 normally, or the code the controller asks to
+    // exit with on a guest power event the user opted into. The top-level runner
+    // does cleanup and exits with it.
+    let exit_request: i32 = loop {
         let event = {
             let pulse_save_restore = pin!(async {
                 match pulse_save_restore_interval {
@@ -646,7 +649,7 @@ pub(crate) async fn run_repl(
                 res.send(deferred);
                 continue;
             }
-            Event::Quit => break,
+            Event::Quit => break 0,
             Event::PulseSaveRestore => {
                 vm_rpc.call(VmRpc::PulseSaveRestore, ()).await??;
                 continue;
@@ -737,7 +740,8 @@ pub(crate) async fn run_repl(
                         if let Some(err) = &error {
                             tracing::error!(error = err.as_str(), "vm worker stopped");
                         }
-                        break;
+                        // Non-zero exit when the worker stopped with an error.
+                        break i32::from(error.is_some());
                     }
                     VmControllerEvent::VncWorkerStopped { .. } => {
                         // VNC stopped but VM is still running, continue.
@@ -745,6 +749,7 @@ pub(crate) async fn run_repl(
                     VmControllerEvent::GuestHalt(reason) => {
                         tracing::info!(reason = reason.as_str(), "guest halted");
                     }
+                    VmControllerEvent::ExitRequested { code } => break code,
                 }
                 continue;
             }
@@ -1472,9 +1477,9 @@ pub(crate) async fn run_repl(
             }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
         }
-    }
+    };
 
-    Ok(())
+    Ok(exit_request)
 }
 
 // -- Rustyline helpers --

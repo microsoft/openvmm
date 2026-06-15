@@ -143,6 +143,7 @@ use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::acpi_builder::SlitInfo;
+use vmm_core::device_builder::VpciBusConfig;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
@@ -1605,8 +1606,8 @@ impl InitializedVm {
             // Create the base watchdog platform
             let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
-            // Create callback to reset on watchdog timeout
-            let watchdog_callback = WatchdogTimeoutReset {
+            // Create the callback that raises the watchdog halt reason on timeout
+            let watchdog_callback = WatchdogTimeout {
                 halt_vps: halt_vps.clone(),
                 watchdog_send: None, // This is not the UEFI watchdog, so no need to send
                                      // watchdog notifications
@@ -2019,6 +2020,8 @@ impl InitializedVm {
                     low_mmio: ranges.low_mmio,
                     high_mmio: ranges.high_mmio,
                     cxl,
+                    vnode: rc.vnode,
+                    preserve_bars: rc.preserve_bars,
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2484,8 +2487,16 @@ impl InitializedVm {
                             software_iommu: false,
                         },
                         vmbus.control(),
-                        dev_cfg.instance_id,
                         &chipset_builder,
+                        VpciBusConfig {
+                            instance_id: dev_cfg.instance_id,
+                            vtom: None,
+                            vnode: dev_cfg
+                                .vnode
+                                .map(u16::try_from)
+                                .transpose()
+                                .context("vpci device vnode exceeds 65535")?,
+                        },
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2500,7 +2511,6 @@ impl InitializedVm {
                                 hv_device.clone().interrupt_mapper(),
                             ))
                         },
-                        None,
                     )
                     .await?;
                 }
@@ -2540,12 +2550,15 @@ impl InitializedVm {
                         .try_add_async(async |services| {
                             VpciBus::new(
                                 &driver_source,
-                                instance_id,
+                                VpciBusConfig {
+                                    instance_id,
+                                    vtom: None,
+                                    vnode: None,
+                                },
                                 device,
                                 &mut services.register_mmio(),
                                 vmbus,
                                 crate::partition::VpciDevice::interrupt_mapper(hv_device),
-                                None,
                             )
                             .await
                         })
@@ -3829,15 +3842,17 @@ fn add_devices_to_dsdt_arm64(
     }
 }
 
-struct WatchdogTimeoutReset {
+struct WatchdogTimeout {
     halt_vps: Arc<Halt>,
     watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutReset {
+impl WatchdogCallback for WatchdogTimeout {
     async fn on_timeout(&mut self) {
-        self.halt_vps.halt(HaltReason::Reset);
+        // Report the timeout as its own halt reason; the VMM's guest-watchdog
+        // action decides whether to reset (default), halt, or exit.
+        self.halt_vps.halt(HaltReason::Watchdog);
 
         if let Some(watchdog_send) = &self.watchdog_send {
             watchdog_send.send(());

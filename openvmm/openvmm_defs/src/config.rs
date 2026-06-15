@@ -220,6 +220,13 @@ pub struct PcieRootComplexConfig {
     pub cxl: Option<RootComplexCxlConfig>,
     /// Optional IOMMU for this root complex.
     pub iommu: Option<PcieIommuConfig>,
+    /// NUMA node affinity for this root complex. Used to generate `_PXM` in
+    /// the ACPI SSDT so the guest OS sees correct NUMA locality for devices
+    /// under this root complex.
+    pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -259,6 +266,8 @@ pub struct VpciDeviceConfig {
     /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
+    /// NUMA node affinity for this VPCI device.
+    pub vnode: Option<u32>,
 }
 
 #[derive(Debug, Protobuf)]

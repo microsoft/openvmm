@@ -691,6 +691,9 @@ struct PrimaryChannelState {
     tx_spread_sent: bool,
     guest_link_up: bool,
     pending_link_action: PendingLinkAction,
+    /// The serial number sent in the most recent VF association message, so
+    /// that the matching disassociation message uses the same serial number.
+    advertised_vf_serial_number: Option<u32>,
 }
 
 impl Inspect for PrimaryChannelState {
@@ -897,6 +900,7 @@ impl PrimaryChannelState {
             tx_spread_sent: false,
             guest_link_up: true,
             pending_link_action: PendingLinkAction::Default,
+            advertised_vf_serial_number: None,
         }
     }
 
@@ -905,6 +909,7 @@ impl PrimaryChannelState {
         rndis_state: &saved_state::RndisState,
         offload_config: &saved_state::OffloadConfig,
         pending_offload_change: bool,
+        advertised_vf_serial_number: Option<u32>,
         num_queues: u16,
         indirection_table_size: u16,
         rx_bufs: &RxBuffers,
@@ -1006,6 +1011,7 @@ impl PrimaryChannelState {
             tx_spread_sent,
             guest_link_up: !guest_link_down,
             pending_link_action,
+            advertised_vf_serial_number,
         })
     }
 }
@@ -1693,6 +1699,7 @@ impl Nic {
                         guest_link_down,
                         pending_link_action,
                         packet_filter,
+                        advertised_vf_serial_number,
                     } = ready;
 
                     // If saved state does not have a packet filter set, default to directed, multicast, and broadcast.
@@ -1750,6 +1757,7 @@ impl Nic {
                                 &rndis_state,
                                 &offload_config,
                                 pending_offload_change,
+                                advertised_vf_serial_number,
                                 channels.len() as u16,
                                 self.adapter.indirection_table_size,
                                 &active.rx_bufs,
@@ -1980,6 +1988,7 @@ impl Nic {
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
                         packet_filter: Some(worker_0_packet_filter),
+                        advertised_vf_serial_number: primary.advertised_vf_serial_number,
                     })
                 }
                 WorkerState::WaitingForCoordinator(None) => {
@@ -2702,26 +2711,32 @@ impl<T: RingMem> NetChannel<T> {
 
     /// Notify the adapter that the guest VF state has changed and it may
     /// need to send a message to the guest.
+    /// Pass `vfid: Some(id)` to advertise VF availability; if an association
+    /// message is queued successfully, its serial number is stored in
+    /// `primary.advertised_vf_serial_number`.
+    /// Pass `vfid: None` to send a disassociation; the stored serial number
+    /// from the most recent association is reused.
     fn guest_vf_is_available(
         &mut self,
-        guest_vf_id: Option<u32>,
+        primary: &mut PrimaryChannelState,
+        vfid: Option<u32>,
         version: Version,
         config: NdisConfig,
     ) -> Result<bool, WorkerError> {
-        let serial_number = guest_vf_id.map(|vfid| self.adapter.get_guest_vf_serial_number(vfid));
+        let (serial_number, available) = if let Some(vfid) = vfid {
+            (self.adapter.get_guest_vf_serial_number(vfid), true)
+        } else {
+            (primary.advertised_vf_serial_number.unwrap_or(0), false)
+        };
         if version >= Version::V4 && config.capabilities.sriov() {
-            tracing::info!(
-                available = serial_number.is_some(),
-                serial_number,
-                "sending VF association message"
-            );
+            tracing::info!(available, serial_number, "sending VF association message");
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
                 self.message(
                     protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
                     protocol::Message4SendVfAssociation {
-                        vf_allocated: if serial_number.is_some() { 1 } else { 0 },
-                        serial_number: serial_number.unwrap_or(0),
+                        vf_allocated: if available { 1 } else { 0 },
+                        serial_number,
                     },
                 )
             };
@@ -2741,10 +2756,17 @@ impl<T: RingMem> NetChannel<T> {
                     }
                     queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
                 })?;
+
+            // Update the advertised VF serial number once the message has been successfully queued.
+            if available {
+                primary.advertised_vf_serial_number = Some(serial_number);
+            } else {
+                primary.advertised_vf_serial_number = None;
+            }
             Ok(true)
         } else {
             tracing::info!(
-                available = serial_number.is_some(),
+                available,
                 serial_number,
                 major = version.major(),
                 minor = version.minor(),
@@ -2861,7 +2883,12 @@ impl<T: RingMem> NetChannel<T> {
         if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
             // Notify guest that a VF capability has recently arrived.
             if primary.rndis_state == RndisState::Operational {
-                if self.guest_vf_is_available(Some(vfid), buffers.version, buffers.ndis_config)? {
+                if self.guest_vf_is_available(
+                    primary,
+                    Some(vfid),
+                    buffers.version,
+                    buffers.ndis_config,
+                )? {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::Update(
                         CoordinatorMessageUpdateType {
@@ -2882,7 +2909,12 @@ impl<T: RingMem> NetChannel<T> {
                 PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                     // Notify guest that the VF is unavailable. It has already been surprise removed.
                     if primary.rndis_state == RndisState::Operational {
-                        self.guest_vf_is_available(None, buffers.version, buffers.ndis_config)?;
+                        self.guest_vf_is_available(
+                            primary,
+                            None,
+                            buffers.version,
+                            buffers.ndis_config,
+                        )?;
                     }
                     PrimaryChannelGuestVfState::Unavailable
                 }
@@ -2997,6 +3029,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
                 if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
                     if self.guest_vf_is_available(
+                        primary,
                         Some(vfid),
                         buffers.version,
                         buffers.ndis_config,
