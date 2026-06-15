@@ -36,86 +36,12 @@ open_enum! {
         VM_WR = 8,
         VP_RD = 9,
         VP_WR = 10,
-        SYS_RD = 11,
         MEM_PAGE_ATTR_RD = 23,
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
         MEM_PAGE_RELEASE = 30,
     }
-}
-
-#[bitfield(u64)]
-pub struct TdFeatures0 {
-    pub migration: bool,
-    pub preserving_updates: bool,
-    pub service_td: bool,
-    pub enchanced_metadata: bool,
-    pub relaxed_mem_mgmt: bool,
-    pub cpuid_virt_guest_ctl: bool,
-    pub tdx_connect: bool,
-    pub td_partitioning: bool,
-    pub local_attestation: bool,
-    pub entry_enhancements: bool,
-    pub host_priority_locks: bool,
-    pub config_ia32_arch_caps: bool,
-    pub hw_sealing: bool,
-    pub s4: bool,
-    pub act: bool,
-    pub wbinvd_domains: bool,
-    pub pending_ept_violation_v2: bool,
-    pub fms_config: bool,
-    pub no_rbp_mod: bool,
-    pub l2_tld_invd_opt: bool,
-    pub topology_enum: bool,
-    pub partitioned_td_migration: bool,
-    pub signing_and_svn: bool,
-    pub clflush_before_alloc: bool,
-    pub event_filtering: bool,
-    pub icssd: bool,
-    pub fixed_ctr12_prof: bool,
-    pub maxpa_virt: bool,
-    pub apx: bool,
-    pub cpuid2_virt: bool,
-    pub ve_reduction: bool,
-    pub enhanced_event_filtering: bool,
-    pub tdx_connect_partitioning: bool,
-    pub maxgpa_virt: bool,
-    pub skip_phymem_cache_wb: bool,
-    pub non_blocking_resize: bool,
-    pub dynamic_pamt: bool,
-    pub fatal_diagnostics: bool,
-    pub page_release: bool,
-    pub ext: bool,
-    pub enhanced_intr_state: bool,
-    pub non_blocking_export: bool,
-    pub perf_mask: bool,
-    pub scan_export_restore: bool,
-    pub import_page_status: bool,
-    pub enhanced_intr_virtualization: bool,
-    pub veinfo_intr_state: bool,
-    pub update_compatibility: bool,
-    pub servtd_rebind: bool,
-    pub tdid_vmid_reporting: bool,
-    pub quote: bool,
-    pub enhanced_demote_interruptibility: bool,
-    pub debug_ro_td_migration: bool,
-    pub sys_disable: bool,
-    pub list_error_count: bool,
-    pub mig_setup: bool,
-    pub sealkey_128: bool,
-    pub sealkey_256: bool,
-    pub sys_wr: bool,
-    pub l2_ept_violation_exit_ctrl: bool,
-    pub enhanced_import: bool,
-    pub features_enabled: bool,
-    pub reserved: bool,
-    pub features1_valid: bool,
-}
-
-pub enum TdgSysRdResult {
-    Features0(TdFeatures0),
-    Unknown(u64),
 }
 
 #[bitfield(u64)]
@@ -610,12 +536,8 @@ pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
 pub const TDX_FIELD_CODE_CONFIG_FLAGS: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0x9110000300000016);
 
-// Global-Scope Metadata
-pub const TDX_FIELD_CODE_TDX_FEATURES0: TdxExtendedFieldCode =
-    TdxExtendedFieldCode(0x0A00000300000008);
-
 /// Extended field code for the Metadata Access Interface TDCalls:
-/// TDG.VP.WR, TDG.VP.RD, TDG.VM.WR, TDG.VM.RD, TDG.SYS.WR, TDG.SYS.RD
+/// TDG.VP.WR, TDG.VP.RD, TDG.VM.WR, TDG.VM.RD
 #[bitfield(u64)]
 #[derive(PartialEq, Eq)]
 pub struct TdxExtendedFieldCode {

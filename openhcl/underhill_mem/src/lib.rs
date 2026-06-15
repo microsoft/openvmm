@@ -240,10 +240,9 @@ impl MemoryAcceptor {
         if isolation == IsolationType::Tdx {
             // Check if TDX Connect is enabled on this TD. If so, page release is required when
             // unaccepting pages.
-            let sys_features = mshv_vtl.tdx_get_sys_features();
             let config_flags = mshv_vtl.tdx_get_config_flags();
-            if sys_features.tdx_connect() && config_flags.tdx_connect() {
-                assert!(sys_features.page_release() && config_flags.tdx_connect());
+            if config_flags.tdx_connect() {
+                assert!(config_flags.page_release());
 
                 flags.tdx_page_release_required = true;
             }
