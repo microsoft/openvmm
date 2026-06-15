@@ -558,14 +558,22 @@ fn resolve_pool_base(
         return Err(AssignmentError::MmioExhaustion {
             required,
             available: aperture.len(),
+            alignment,
             aperture: aperture_name,
         });
     }
+    // After aligning the window base up to the pool's natural alignment,
+    // the usable space is what remains before the aperture end. A large
+    // alignment (e.g. a 512 GB BAR) can push the base past the end of a
+    // small window, leaving zero usable bytes. Report the actual window
+    // size and the alignment so the failure is diagnosable rather than
+    // surfacing a misleading `have 0x0`.
     let available = aperture.end().saturating_sub(base);
     if required > available {
         return Err(AssignmentError::MmioExhaustion {
             required,
-            available,
+            available: aperture.len(),
+            alignment,
             aperture: aperture_name,
         });
     }
