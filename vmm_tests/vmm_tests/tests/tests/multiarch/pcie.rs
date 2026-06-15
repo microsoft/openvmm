@@ -276,7 +276,7 @@ async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 ///
 /// NOTE: This test relies on device specific software (drivers,
 /// tooling) within the guest OS to perform the validation.
-#[openvmm_test(unstable_linux_direct_x64)]
+#[openvmm_test(linux_direct_x64)]
 async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
