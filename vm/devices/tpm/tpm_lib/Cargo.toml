@@ -11,7 +11,6 @@ edition.workspace = true
 test_tpm = ["ms-tpm-20-ref"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_protocol.workspace = true
 cvm_tracing.workspace = true
 inspect.workspace = true
@@ -20,6 +19,10 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(target_env = "musl")'.dependencies]
+# TODO: Change this to symcrypt if the OSS TPM can be made to work with it
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
