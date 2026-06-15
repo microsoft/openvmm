@@ -18,6 +18,11 @@
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_ENV");
+    println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_MI_SECURE");
+    println!("cargo::rerun-if-env-changed=CARGO_MANIFEST_DIR");
+
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target_env != "musl" {
         return;
