@@ -204,6 +204,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                 Err(err) => {
                     tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,
+                        vp = this.vp_index().index(),
                         "unable to set internal activity register, falling back to deferred init"
                     );
                     true
