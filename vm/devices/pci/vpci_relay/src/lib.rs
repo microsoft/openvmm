@@ -657,16 +657,6 @@ impl TdispIsolationReporter for RelayedVpciDevice {
                 // which now wipes `tdi_report`.
                 let snapshot = device.tdisp_isolation_snapshot().await;
 
-                if let Err(err) = device
-                    .tdisp_unbind(tdisp::TdispGuestUnbindReason::Graceful)
-                    .await
-                {
-                    tracing::warn!(
-                        error = &*err as &dyn std::error::Error,
-                        "tdisp_isolation_report: post-attest unbind failed",
-                    );
-                }
-
                 return build(snapshot);
             }
 

@@ -231,7 +231,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         let accept_dma = self
             .sev_guest
-            .tio_msg_sdte_write_req(device_id, vtom, Self::vtl_to_vmpl(target_vtl))
+            .tio_msg_sdte_write_req(device_id, true, vtom, Self::vtl_to_vmpl(target_vtl))
             .context("failed to send SDTE write request")
             .unwrap();
         tracing::info!(msg = format!("SDTE write request response"), response = ?accept_dma);
@@ -280,24 +280,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         // cached because the VP that created the handle must be the one using
         // it.
         let mshv = Self::open_mshv_hvcall()?;
-        let mshv_vtl = Self::open_mshv_vtl()?;
-
-        // Revoke VTL0 access so the guest cannot touch these pages anymore.
-        match mshv_vtl.rmpadjust_pages(
-            MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
-            SevRmpAdjust::new()
-                .with_enable_read(false)
-                .with_enable_write(false)
-                .with_target_vmpl(Self::vtl_to_vmpl(target_vtl))
-                .with_vmsa(false),
-            false,
-        ) {
-            Ok(_) => tracing::info!("revoked VTL0 RMP access for MMIO block"),
-            Err(e) => {
-                tracing::error!(?e, "failed to rmpadjust pages for MMIO block");
-                anyhow::bail!("failed to rmpadjust pages for MMIO block: {e:?}");
-            }
-        }
 
         // Modify the pages to private and immutable before un-validation
         // New SEV-TIO requirement: pages must be marked immutable in addition to private
@@ -305,11 +287,11 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         {
             Ok(_) => tracing::info!(
                 page_count = pfns.len(),
-                "successfully modified GPA page visibility to private + immutable for MMIO unblock"
+                "successfully modified GPA page visibility to private + immutable for MMIO block"
             ),
             Err(e) => {
-                tracing::error!(?e, "failed to modify GPA page visibility for MMIO unblock");
-                anyhow::bail!("failed to modify GPA page visibility for MMIO unblock: {e:?}");
+                tracing::error!(?e, "failed to modify GPA page visibility for MMIO block");
+                anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
             }
         }
 
@@ -391,7 +373,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         // Write a zero-valued SDTE so the IOMMU blocks DMA from this device.
         let block_dma = self
             .sev_guest
-            .tio_msg_sdte_write_req(device_id, 0, Self::vtl_to_vmpl(target_vtl))
+            .tio_msg_sdte_write_req(device_id, false, 0, Self::vtl_to_vmpl(target_vtl))
             .context("failed to send SDTE block request")
             .unwrap();
         tracing::info!(response = ?block_dma, "SDTE block request response");

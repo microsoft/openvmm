@@ -389,7 +389,7 @@ impl VpciClientTdispState {
                     continue;
                 }
                 if let Err(e) = validator.tdisp_block_mmio(
-                    self.target_vtl,
+                    Vtl::Vtl2,
                     device_id,
                     mmio.base_gpa,
                     0,
@@ -407,7 +407,7 @@ impl VpciClientTdispState {
             }
 
             if self.mutable_state.dma_unblocked {
-                if let Err(e) = validator.tdisp_block_dma(self.target_vtl, device_id) {
+                if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, device_id) {
                     tracing::error!(
                         device_id,
                         error = &*e as &dyn std::error::Error,
