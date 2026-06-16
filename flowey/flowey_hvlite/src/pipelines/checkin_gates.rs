@@ -988,6 +988,7 @@ impl IntoPipeline for CheckinGatesCli {
                     OpenhclIgvmRecipe::X64,
                     OpenhclIgvmRecipe::X64Devkern,
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
+                    OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
                     OpenhclIgvmRecipe::X64Cvm,
                 ],
                 (CommonArch::X86_64, true) => vec![
@@ -1029,6 +1030,8 @@ impl IntoPipeline for CheckinGatesCli {
                         .cloned();
                 }
                 (CommonArch::X86_64, true) => {
+                    // we'll skim these off later so we can reuse most of the
+                    // standard x64 builder
                     use_openhcl_igvm_files_mi_secure_x86 = use_openhcl_igvms;
                 }
                 (CommonArch::Aarch64, false) => {

@@ -692,6 +692,10 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-extras" | flowey v 11 'artifact_publish_from_x64-openhcl-igvm-extras' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct"
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct" | flowey v 11 'artifact_publish_from_x64-openhcl-igvm-test-linux-direct' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern" | flowey v 11 'artifact_publish_from_x64-openhcl-igvm-test-linux-direct-devkern' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern-extras"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern-extras" | flowey v 11 'artifact_publish_from_x64-openhcl-igvm-test-linux-direct-devkern-extras' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-extras"
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-test-linux-direct-extras" | flowey v 11 'artifact_publish_from_x64-openhcl-igvm-test-linux-direct-extras' --is-raw-string update
       shell: bash
@@ -795,7 +799,7 @@ jobs:
       shell: bash
     - name: building openhcl initrd
       run: |-
-        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 1
+        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 2
         flowey e 11 flowey_lib_hvlite::init_cross_build 0
         flowey e 11 flowey_lib_hvlite::run_cargo_build 7
         flowey e 11 flowey_lib_hvlite::run_cargo_build 8
@@ -807,7 +811,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
         flowey e 11 flowey_lib_hvlite::run_cargo_build 10
         flowey e 11 flowey_lib_hvlite::build_sidecar 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
@@ -822,7 +826,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 11 flowey_lib_hvlite::run_cargo_build 5
         flowey e 11 flowey_lib_hvlite::build_openhcl_boot 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
@@ -840,7 +844,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 11 flowey_lib_hvlite::run_cargo_build 1
         flowey e 11 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
@@ -848,7 +852,7 @@ jobs:
       shell: bash
     - name: building igvm file
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 1
+        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 2
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
         flowey e 11 flowey_core::pipeline::artifact::publish 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
@@ -864,14 +868,14 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
       shell: bash
     - name: building openhcl initrd
       run: |-
-        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 3
+        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 4
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
@@ -879,7 +883,7 @@ jobs:
       shell: bash
     - name: building igvm file
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 3
+        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 4
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
         flowey e 11 flowey_core::pipeline::artifact::publish 2
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
@@ -919,6 +923,33 @@ jobs:
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 48
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 49
         flowey e 11 flowey_core::pipeline::artifact::publish 5
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 54
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 51
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 55
+      shell: bash
+    - name: building openhcl initrd
+      run: |-
+        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 1
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 56
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 57
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 58
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 59
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 60
+      shell: bash
+    - name: building igvm file
+      run: |-
+        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 1
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 63
+        flowey e 11 flowey_core::pipeline::artifact::publish 6
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 61
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 62
+        flowey e 11 flowey_core::pipeline::artifact::publish 7
       shell: bash
     - name: extract and resolve kernel package
       run: |-
@@ -928,14 +959,14 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
       shell: bash
     - name: building openhcl initrd
       run: |-
-        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 2
+        flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 3
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
@@ -943,12 +974,12 @@ jobs:
       shell: bash
     - name: building igvm file
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 2
+        flowey e 11 flowey_lib_hvlite::run_igvmfilegen 3
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
-        flowey e 11 flowey_core::pipeline::artifact::publish 6
+        flowey e 11 flowey_core::pipeline::artifact::publish 8
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
-        flowey e 11 flowey_core::pipeline::artifact::publish 7
+        flowey e 11 flowey_core::pipeline::artifact::publish 9
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 11 flowey_lib_common::cache 3
@@ -994,6 +1025,18 @@ jobs:
       with:
         name: x64-openhcl-igvm-test-linux-direct
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-test-linux-direct/
+        include-hidden-files: true
+    - name: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-devkern
+      uses: actions/upload-artifact@v7
+      with:
+        name: x64-openhcl-igvm-test-linux-direct-devkern
+        path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern/
+        include-hidden-files: true
+    - name: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-devkern-extras
+      uses: actions/upload-artifact@v7
+      with:
+        name: x64-openhcl-igvm-test-linux-direct-devkern-extras
+        path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-test-linux-direct-devkern-extras/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-extras
       uses: actions/upload-artifact@v7
@@ -3870,6 +3913,8 @@ jobs:
         flowey.exe e 20 flowey_lib_common::git_checkout 3
         flowey.exe e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 20 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 15
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 13
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 3
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 11
@@ -3883,8 +3928,6 @@ jobs:
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 8
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 9
         flowey.exe e 20 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 15
       shell: bash
     - name: creating new test content dir
       run: flowey.exe e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0

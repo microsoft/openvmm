@@ -1025,21 +1025,6 @@ impl PipelineJobCtx<'_> {
         write
     }
 
-    /// Claim that this job will publish the artifacts, obtaining variables to
-    /// write the artifacts' contents to. The artifacts will be published at
-    /// the end of the job.
-    pub fn publish_typed_artifact_collection<T: Artifact, U: ArtifactType>(
-        &mut self,
-        artifacts: BTreeMap<U, PublishTypedArtifact<T>>,
-    ) -> BTreeMap<U, WriteVar<T>> {
-        artifacts
-            .into_iter()
-            .map(|(artifact_type, pub_artifact)| {
-                (artifact_type, self.publish_typed_artifact(pub_artifact))
-            })
-            .collect()
-    }
-
     /// Obtain a `ReadVar<T>` corresponding to a pipeline parameter which is
     /// specified at runtime.
     pub fn use_parameter<T>(&mut self, param: UseParameter<T>) -> ReadVar<T>

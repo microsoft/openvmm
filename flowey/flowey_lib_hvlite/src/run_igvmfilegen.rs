@@ -17,8 +17,6 @@ pub struct IgvmOutput {
     pub igvm_vbs_json: Option<PathBuf>,
 }
 
-impl Artifact for IgvmOutput {}
-
 flowey_request! {
     pub struct Request {
         /// Path to igvmfilegen bin to use
