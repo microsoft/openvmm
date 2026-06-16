@@ -3,6 +3,7 @@
 
 //! CXL Register Locator PCIe DVSEC extended capability implementation.
 
+use chipset_device::pci::ByteEnabledDword;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -102,7 +103,7 @@ impl CxlRegisterLocatorDvsecExtendedCapability {
         }
     }
 
-    fn write_dvsec_u32(&mut self, _offset: u16, _value: u32) {
+    fn write_dvsec(&mut self, _offset: u16, _value: ByteEnabledDword) {
         // Register Locator fields are HwInit/RO from software perspective.
     }
 
@@ -146,17 +147,17 @@ impl PciExtendedCapability for CxlRegisterLocatorDvsecExtendedCapability {
         self.dvsec_len()
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
-        if offset == 0 {
+    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
+        value.set_value(if offset == 0 {
             u32::from(self.extended_capability_id()) | (u32::from(self.capability_version()) << 16)
         } else {
             self.read_dvsec_u32(offset)
-        }
+        });
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write(&mut self, offset: u16, value: ByteEnabledDword) {
         if offset != 0 {
-            self.write_dvsec_u32(offset, val);
+            self.write_dvsec(offset, value);
         }
     }
 
@@ -235,6 +236,7 @@ mod save_restore {
 mod tests {
     use pci_core::capabilities::extended::PciExtendedCapability;
     use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
+    use pci_core::test_helpers::read_extended_cap_u32;
     use vmcore::save_restore::SaveRestore;
 
     use super::CxlRegisterLocatorDvsecExtendedCapability;
@@ -267,11 +269,12 @@ mod tests {
             .expect("third block should configure");
 
         assert_eq!(
-            cap.read_u32(DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
+            read_extended_cap_u32(&cap, DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
             0x0240_1e98
         );
         assert_eq!(
-            cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2) & 0xffff,
+            read_extended_cap_u32(&cap, CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2)
+                & 0xffff,
             0x0008
         );
     }
@@ -312,18 +315,23 @@ mod tests {
             .expect("block should configure");
 
         assert_eq!(
-            cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW),
+            read_extended_cap_u32(
+                &cap,
+                CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW
+            ),
             0x0001_0100
         );
         assert_eq!(
-            cap.read_u32(
+            read_extended_cap_u32(
+                &cap,
                 CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW + 0x04
             ),
             0x0000_0000
         );
 
         assert_eq!(
-            cap.read_u32(
+            read_extended_cap_u32(
+                &cap,
                 CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW + 0x08
             ),
             0x0002_0302
@@ -351,23 +359,33 @@ mod tests {
         restored.restore(saved).expect("restore should succeed");
 
         assert_eq!(
-            restored.read_u32(DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
-            cap.read_u32(DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0)
+            read_extended_cap_u32(&restored, DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
+            read_extended_cap_u32(&cap, DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0)
         );
         assert_eq!(
-            restored.read_u32(CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2),
-            cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2)
+            read_extended_cap_u32(
+                &restored,
+                CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2
+            ),
+            read_extended_cap_u32(&cap, CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2)
         );
         assert_eq!(
-            restored
-                .read_u32(CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW),
-            cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW)
+            read_extended_cap_u32(
+                &restored,
+                CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW
+            )
         );
         assert_eq!(
-            restored.read_u32(
+            read_extended_cap_u32(
+                &restored,
                 CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW + 0x08
             ),
-            cap.read_u32(
+            read_extended_cap_u32(
+                &cap,
                 CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW + 0x08
             )
         );
@@ -383,13 +401,18 @@ mod tests {
             )
             .expect("block should configure");
 
-        let before = cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2);
+        let before =
+            read_extended_cap_u32(&cap, CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2);
         cap.reset();
-        let after = cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2);
+        let after =
+            read_extended_cap_u32(&cap, CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2);
 
         assert_eq!(before, after);
         assert_eq!(
-            cap.read_u32(CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW),
+            read_extended_cap_u32(
+                &cap,
+                CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW
+            ),
             0x0000_0100
         );
     }

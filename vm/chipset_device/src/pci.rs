@@ -6,6 +6,138 @@
 use crate::ChipsetDevice;
 use crate::io::IoResult;
 
+/// Byte enables for the four lanes of a PCI configuration DWORD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciConfigByteEnable(u8);
+
+impl PciConfigByteEnable {
+    /// All byte lanes enabled.
+    pub const FULL: Self = Self(0xf);
+
+    /// Create byte enables from raw lane bits.
+    pub const fn new(bits: u8) -> Option<Self> {
+        if bits != 0 && bits <= 0xf {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Create byte enables for an access at `offset` with byte length `len`.
+    pub const fn from_offset_len(offset: u16, len: usize) -> Option<Self> {
+        let lane = (offset & 0x3) as u8;
+        match len {
+            1 => Some(Self(1 << lane)),
+            2 if lane & 1 == 0 && lane <= 2 => Some(Self(0x3 << lane)),
+            4 if lane == 0 => Some(Self::FULL),
+            _ => None,
+        }
+    }
+
+    /// Raw byte-lane bits.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// `u32` mask corresponding to the enabled byte lanes.
+    pub const fn mask(self) -> u32 {
+        let mut mask = 0;
+        let mut lane = 0;
+        while lane < 4 {
+            if self.0 & (1 << lane) != 0 {
+                mask |= 0xff << (lane * 8);
+            }
+            lane += 1;
+        }
+        mask
+    }
+
+    /// Merge enabled byte lanes from `write_value` into `current_value`.
+    pub const fn merge(self, current_value: u32, write_value: u32) -> u32 {
+        let mask = self.mask();
+        (current_value & !mask) | (write_value & mask)
+    }
+
+    /// Keep only enabled byte lanes from `value`.
+    pub const fn extract(self, value: u32) -> u32 {
+        value & self.mask()
+    }
+}
+
+/// A DWORD value with byte enables for PCI configuration space access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteEnabledDword {
+    value: u32,
+    byte_enable: PciConfigByteEnable,
+}
+
+impl ByteEnabledDword {
+    /// Create a byte-enabled DWORD value.
+    pub const fn new(value: u32, byte_enable: PciConfigByteEnable) -> Self {
+        Self {
+            value: value & byte_enable.mask(),
+            byte_enable,
+        }
+    }
+
+    /// Create a full-DWORD value with all byte lanes enabled.
+    pub const fn with_all_bytes_enabled(value: u32) -> Self {
+        Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Update the value of the DWORD, honoring byte enables.
+    pub fn set_value(&mut self, value: u32) {
+        self.value = self.byte_enable.merge(self.value, value)
+    }
+
+    /// Merge enabled byte lanes from this value into `current_value`.
+    pub const fn merge(self, current_value: u32) -> u32 {
+        self.byte_enable.merge(current_value, self.value)
+    }
+
+    /// Keep only enabled byte lanes from this value.
+    pub const fn extract(self) -> u32 {
+        self.byte_enable.extract(self.value)
+    }
+}
+
+/// A PCI configuration space request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciConfigAddress {
+    /// Target bus number.
+    pub bus: u8,
+    /// Target packed device/function number (`device << 3 | function`).
+    pub device_function: u8,
+    /// Aligned DWORD register number in configuration space.
+    pub dword_number: u16,
+}
+
+impl PciConfigAddress {
+    /// Create a new PCI configuration-space request.
+    pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Self {
+        Self {
+            bus,
+            device_function,
+            dword_number,
+        }
+    }
+
+    /// Target device number.
+    pub const fn device(self) -> u8 {
+        self.device_function >> 3
+    }
+
+    /// Target function number.
+    pub const fn function(self) -> u8 {
+        self.device_function & 0x7
+    }
+
+    /// Aligned byte offset of the addressed DWORD in configuration space.
+    pub const fn byte_offset(self) -> u16 {
+        self.dword_number * 4
+    }
+}
+
 /// Implemented by devices which have a PCI config space.
 pub trait PciConfigSpace: ChipsetDevice {
     /// Dispatch a PCI config space read to the device with the given address.
@@ -132,5 +264,79 @@ pub trait PciConfigSpace: ChipsetDevice {
     ///     functions at the same bus and device.
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_enable_from_offset_len_rejects_invalid_accesses() {
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(0, 1).unwrap().bits(),
+            0b0001
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(1, 1).unwrap().bits(),
+            0b0010
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(2, 1).unwrap().bits(),
+            0b0100
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(3, 1).unwrap().bits(),
+            0b1000
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(0, 2).unwrap().bits(),
+            0b0011
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(2, 2).unwrap().bits(),
+            0b1100
+        );
+        assert_eq!(
+            PciConfigByteEnable::from_offset_len(0, 4).unwrap().bits(),
+            0b1111
+        );
+
+        assert_eq!(PciConfigByteEnable::from_offset_len(1, 2), None);
+        assert_eq!(PciConfigByteEnable::from_offset_len(3, 2), None);
+        assert_eq!(PciConfigByteEnable::from_offset_len(1, 4), None);
+        assert_eq!(PciConfigByteEnable::from_offset_len(0, 3), None);
+    }
+
+    #[test]
+    fn byte_enable_masks_and_merges_lanes() {
+        let byte_enable = PciConfigByteEnable::from_offset_len(1, 1).unwrap();
+        assert_eq!(byte_enable.bits(), 0b0010);
+        assert_eq!(byte_enable.mask(), 0x0000_ff00);
+        assert_eq!(byte_enable.extract(0x1234_5678), 0x0000_5600);
+        assert_eq!(byte_enable.merge(0xaaaa_aaaa, 0x1234_5678), 0xaaaa_56aa);
+
+        let byte_enable = PciConfigByteEnable::from_offset_len(2, 2).unwrap();
+        assert_eq!(byte_enable.bits(), 0b1100);
+        assert_eq!(byte_enable.mask(), 0xffff_0000);
+        assert_eq!(byte_enable.extract(0x1234_5678), 0x1234_0000);
+        assert_eq!(byte_enable.merge(0xaaaa_aaaa, 0x1234_5678), 0x1234_aaaa);
+
+        let byte_enable = PciConfigByteEnable::from_offset_len(0, 4).unwrap();
+        assert_eq!(byte_enable.bits(), 0b1111);
+        assert_eq!(byte_enable.mask(), 0xffff_ffff);
+        assert_eq!(byte_enable.extract(0x1234_5678), 0x1234_5678);
+        assert_eq!(byte_enable.merge(0xaaaa_aaaa, 0x1234_5678), 0x1234_5678);
+    }
+
+    #[test]
+    fn config_request_decodes_bdf() {
+        let address = PciConfigAddress::new(0x12, 0x1d, 0x40);
+
+        assert_eq!(address.bus, 0x12);
+        assert_eq!(address.device_function, 0x1d);
+        assert_eq!(address.device(), 3);
+        assert_eq!(address.function(), 5);
+        assert_eq!(address.byte_offset(), 0x100);
     }
 }

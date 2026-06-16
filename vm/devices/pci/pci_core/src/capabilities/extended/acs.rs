@@ -9,6 +9,7 @@ use crate::spec::caps::acs::AcsCapabilities;
 use crate::spec::caps::acs::AcsControl;
 use crate::spec::caps::acs::AcsExtendedCapabilityHeader;
 use crate::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use chipset_device::pci::ByteEnabledDword;
 use inspect::Inspect;
 
 /// PCIe Access Control Services (ACS) extended capability emulator.
@@ -33,6 +34,20 @@ impl AcsExtendedCapability {
             control: AcsControl::new(),
         }
     }
+
+    fn read_u32(&self, offset: u16) -> u32 {
+        match AcsExtendedCapabilityHeader(offset) {
+            AcsExtendedCapabilityHeader::HEADER => {
+                u32::from(self.extended_capability_id())
+                    | (u32::from(self.capability_version()) << 16)
+            }
+            AcsExtendedCapabilityHeader::CAPS_CONTROL => {
+                self.capabilities.into_bits() as u32 | ((self.control.into_bits() as u32) << 16)
+            }
+            AcsExtendedCapabilityHeader::EGRESS_CONTROL_VECTOR => 0,
+            _ => !0,
+        }
+    }
 }
 
 impl PciExtendedCapability for AcsExtendedCapability {
@@ -52,21 +67,13 @@ impl PciExtendedCapability for AcsExtendedCapability {
         12
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
-        match AcsExtendedCapabilityHeader(offset) {
-            AcsExtendedCapabilityHeader::HEADER => {
-                u32::from(self.extended_capability_id())
-                    | (u32::from(self.capability_version()) << 16)
-            }
-            AcsExtendedCapabilityHeader::CAPS_CONTROL => {
-                self.capabilities.into_bits() as u32 | ((self.control.into_bits() as u32) << 16)
-            }
-            AcsExtendedCapabilityHeader::EGRESS_CONTROL_VECTOR => 0,
-            _ => !0,
-        }
+    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
+        value.set_value(self.read_u32(offset));
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write(&mut self, offset: u16, val: ByteEnabledDword) {
+        let val = val.merge(self.read_u32(offset));
+
         // Note that all ACS control only affect the emulated port, and do not reflect
         // any underlying hardware capabilities.
         match AcsExtendedCapabilityHeader(offset) {
@@ -142,6 +149,8 @@ mod save_restore {
 mod tests {
     use super::*;
     use crate::capabilities::extended::assert_extended_header_contract;
+    use crate::test_helpers::read_extended_cap_u32;
+    use crate::test_helpers::write_extended_cap_u32;
     use vmcore::save_restore::SaveRestore;
 
     #[test]
@@ -154,7 +163,7 @@ mod tests {
         assert_eq!(cap.len(), 12);
         assert_extended_header_contract(&cap);
 
-        let caps_ctl = cap.read_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
+        let caps_ctl = read_extended_cap_u32(&cap, AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
         assert_eq!(caps_ctl as u16, DEFAULT_ACS_CAP_MASK);
         assert_eq!((caps_ctl >> 16) as u16, 0);
     }
@@ -163,8 +172,12 @@ mod tests {
     fn test_acs_control_write_masks_unsupported_bits() {
         let mut cap = AcsExtendedCapability::new();
 
-        cap.write_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0, 0xffff_0000);
-        let caps_ctl = cap.read_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
+        write_extended_cap_u32(
+            &mut cap,
+            AcsExtendedCapabilityHeader::CAPS_CONTROL.0,
+            0xffff_0000,
+        );
+        let caps_ctl = read_extended_cap_u32(&cap, AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
 
         assert_eq!((caps_ctl >> 16) as u16, DEFAULT_ACS_CAP_MASK);
     }
@@ -173,29 +186,37 @@ mod tests {
     fn test_acs_reset_clears_control() {
         let mut cap = AcsExtendedCapability::new();
 
-        cap.write_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0, 0xffff_0000);
+        write_extended_cap_u32(
+            &mut cap,
+            AcsExtendedCapabilityHeader::CAPS_CONTROL.0,
+            0xffff_0000,
+        );
         cap.reset();
 
-        let caps_ctl = cap.read_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
+        let caps_ctl = read_extended_cap_u32(&cap, AcsExtendedCapabilityHeader::CAPS_CONTROL.0);
         assert_eq!((caps_ctl >> 16) as u16, 0);
     }
 
     #[test]
     fn test_acs_save_restore() {
         let mut cap = AcsExtendedCapability::new();
-        cap.write_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0, 0xffff_0000);
+        write_extended_cap_u32(
+            &mut cap,
+            AcsExtendedCapabilityHeader::CAPS_CONTROL.0,
+            0xffff_0000,
+        );
 
         let saved = cap.save().expect("save should succeed");
 
         cap.reset();
         assert_eq!(
-            (cap.read_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0) >> 16) as u16,
+            (read_extended_cap_u32(&cap, AcsExtendedCapabilityHeader::CAPS_CONTROL.0) >> 16) as u16,
             0
         );
 
         cap.restore(saved).expect("restore should succeed");
         assert_eq!(
-            (cap.read_u32(AcsExtendedCapabilityHeader::CAPS_CONTROL.0) >> 16) as u16,
+            (read_extended_cap_u32(&cap, AcsExtendedCapabilityHeader::CAPS_CONTROL.0) >> 16) as u16,
             DEFAULT_ACS_CAP_MASK
         );
     }
