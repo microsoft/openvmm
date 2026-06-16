@@ -21,16 +21,25 @@ Every VM has a NUMA topology — even a single-node VM (which is what
 
 ### VP assignment
 
-By default, VPs are distributed across nodes by round-robin over
-sockets: `(vp_index / vps_per_socket) % num_nodes`. This matches
-QEMU's default and works well for symmetric topologies.
+By default, VPs are distributed across nodes by round-robin over sockets:
+`(vp_index / vps_per_socket) % num_cpu_nodes`, where `num_cpu_nodes` counts only
+nodes that participate in VP assignment (CPU-less nodes are skipped). This works
+well for symmetric topologies.
 
 For asymmetric cases — AMD sub-socket NUMA boundaries, ARM clusters,
 or any layout where the socket-based formula is wrong — VPs can be
 assigned explicitly per node using the `vps=` option.
 
 Explicit VP lists must be disjoint (no VP in two nodes), complete
-(every VP assigned to exactly one node), and in range.
+(every VP assigned to exactly one node), and in range. A non-empty
+explicit list cannot be mixed with nodes that use the default
+round-robin assignment.
+
+An empty list, `vps=[]`, declares a CPU-less node (for example, a
+memory-only node or a generic-initiator target). It claims no VPs and,
+unlike a non-empty list, may be combined with default round-robin
+nodes — so you can add a CPU-less node without having to spell out the
+VP set for every other node.
 
 ### Inter-node distances
 

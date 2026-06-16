@@ -613,6 +613,7 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices,
             vmbus_devices,
 

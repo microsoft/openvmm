@@ -29,6 +29,7 @@ pub struct Config {
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
+    pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub numa: NumaTopology,
     pub processor_topology: ProcessorTopologyConfig,
@@ -253,6 +254,24 @@ pub struct PcieSwitchConfig {
     pub acs_capabilities_supported: Option<u16>,
 }
 
+/// Declares that the device directly behind a named PCIe port (a root port or
+/// a switch downstream port) is a generic initiator (GI) for the given NUMA
+/// node. Used to generate an SRAT Generic Initiator Affinity structure so the
+/// guest attaches the device's memory to that (typically CPU-less) proximity
+/// domain.
+///
+/// The port is resolved against the live topology by port name after switch
+/// downstream ports have been enumerated, so it can target devices that sit
+/// behind a switch.
+#[derive(Debug, MeshPayload)]
+pub struct PcieGenericInitiatorConfig {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
 #[derive(Debug, MeshPayload)]
 pub struct PcieDeviceConfig {
     pub port_name: String,
@@ -420,6 +439,11 @@ pub enum VpAssignment {
     FromTopology,
     /// Explicit VP indices assigned to this node.
     Explicit(Vec<u32>),
+    /// A CPU-less node: no VPs are assigned to it. Unlike `Explicit`, this
+    /// may be combined with `FromTopology` nodes, so a memory- or
+    /// device-only node can be declared without forcing every other node to
+    /// spell out its VP set.
+    Empty,
 }
 
 /// An inter-node distance entry for the ACPI SLIT.

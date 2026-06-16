@@ -509,9 +509,12 @@ fn build_dt(
             // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
             node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
         }
-        if bridge.preserve_bars {
-            // Tell Linux to keep firmware-assigned BAR values instead of
-            // reprogramming them. Linux checks this via of_pci_preserve_config().
+        if bridge.preserve_boot_config {
+            // Tell Linux to keep the firmware-assigned PCI boot configuration
+            // (bus numbers and BARs) instead of re-enumerating. Linux checks
+            // this via of_pci_preserve_config(). This is the device-tree
+            // equivalent of the host-bridge "Ignore PCI Boot Configurations"
+            // _DSM emitted on the ACPI path.
             node = node.add_u32(p_linux_pci_probe_only, 1)?;
         }
         root_builder = node.end_node()?;

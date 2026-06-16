@@ -281,6 +281,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         cache_topology: None,
         pcie_host_bridges: &vec![],
         slit_info: None,
+        generic_initiators: &[],
         arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
             with_ioapic: true, // openhcl always runs with ioapic
             with_pic: chipset_capabilities.with_pic,
@@ -481,6 +482,7 @@ pub fn write_uefi_config(
             cache_topology: None,
             pcie_host_bridges: &vec![],
             slit_info: None,
+            generic_initiators: &[],
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: true,

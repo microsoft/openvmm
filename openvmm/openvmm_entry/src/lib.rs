@@ -918,7 +918,14 @@ async fn vm_config_from_command_line(
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
+    let pcie_generic_initiators = opt
+        .pcie_generic_initiator
+        .iter()
+        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
+            port_name: gi.port_name.clone(),
+            node: gi.node,
+        })
+        .collect();
     #[cfg(target_os = "linux")]
     let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
         use std::collections::HashMap;
@@ -1845,6 +1852,7 @@ async fn vm_config_from_command_line(
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
+        pcie_generic_initiators,
         vpci_devices,
         ide_disks: Vec::new(),
         numa: {
@@ -1864,6 +1872,7 @@ async fn vm_config_from_command_line(
                                 host_numa_node: n.host_numa_node,
                             }),
                             vps: match &n.vps {
+                                Some(vps) if vps.is_empty() => VpAssignment::Empty,
                                 Some(vps) => VpAssignment::Explicit(vps.clone()),
                                 None => VpAssignment::FromTopology,
                             },

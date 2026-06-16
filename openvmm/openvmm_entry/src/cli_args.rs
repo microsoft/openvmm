@@ -173,13 +173,16 @@ Options:
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
   VP lists use bracket syntax with comma-separated indices and dash
-  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5].
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5]. An empty list, vps=[],
+  declares a CPU-less node (e.g. a generic-initiator target); unlike a
+  non-empty list, it may be combined with nodes that omit vps.
 
 Examples:
     --numa size=2G --numa size=2G
     --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
     --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
-    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]"#
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+    --numa size=2G --numa size=0,vps=[]"#
     )]
     pub numa: Option<Vec<NumaNodeCli>>,
 
@@ -1096,6 +1099,33 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Declare the device behind a PCIe port as an SRAT generic initiator
+    #[clap(long_help = r#"
+Declare that the device directly behind a PCIe port is a generic initiator
+(GI) for a NUMA node, generating an SRAT Generic Initiator Affinity structure.
+
+The port may be a root port or a switch downstream port, so this works for
+devices that sit behind a switch (e.g. a GPU placed under a switch shared
+with a NIC for peer-to-peer DMA). The port is resolved by name against the
+live topology after switch downstream ports are enumerated.
+
+Examples:
+    # The device behind switch downstream port sw1-downstream-0 is a generic
+    # initiator for NUMA node 1
+    --pcie-generic-initiator port=sw1-downstream-0,node=1
+
+    # Also works for a root port name
+    --pcie-generic-initiator port=rp0,node=2
+
+Syntax: port=<port_name>,node=<node>
+"#)]
+    #[clap(
+        long = "pcie-generic-initiator",
+        value_name = "port=<name>,node=<node>",
+        conflicts_with("pcat")
+    )]
+    pub pcie_generic_initiator: Vec<PcieGenericInitiatorCli>,
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
@@ -3185,6 +3215,57 @@ impl FromStr for GenericPcieSwitchCli {
     }
 }
 
+/// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieGenericInitiatorCli {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut port_name = None;
+        let mut node = None;
+
+        for opt in s.split(',') {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+            if kv.next().is_some() {
+                anyhow::bail!("option '{key}' expects a single value")
+            }
+
+            match key {
+                "port" => {
+                    let value = value.context("port option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("port option requires a value");
+                    }
+                    port_name = Some(value.to_string());
+                }
+                "node" => {
+                    let value = value.context("node option requires a value")?;
+                    node = Some(
+                        u32::from_str(value)
+                            .context("failed to parse generic initiator NUMA node")?,
+                    );
+                }
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: port_name.context("expected 'port=<name>'")?,
+            node: node.context("expected 'node=<node>'")?,
+        })
+    }
+}
+
 /// CLI configuration for a PCIe remote device.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PcieRemoteCli {
@@ -4570,6 +4651,35 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+    }
+
+    #[test]
+    fn test_pcie_generic_initiator_from_str() {
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+            }
+        );
+
+        // Order should not matter.
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("node=2,port=sw0-downstream-1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "sw0-downstream-1".to_string(),
+                node: 2,
+            }
+        );
+
+        // Error cases
+        assert!(PcieGenericInitiatorCli::from_str("").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
     #[test]

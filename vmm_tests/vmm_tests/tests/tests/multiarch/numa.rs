@@ -182,7 +182,7 @@ async fn boot_numa_complex_topology(
                         // Node 3: memory-only (1 GB), no VPs
                         NumaNode {
                             mem: Some(make_mem(SIZE_1_GB)),
-                            vps: VpAssignment::Explicit(vec![]),
+                            vps: VpAssignment::Empty,
                         },
                     ],
                     distances: vec![

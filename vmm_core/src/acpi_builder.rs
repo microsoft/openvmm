@@ -60,6 +60,27 @@ pub struct SlitInfo {
     pub distances: Vec<(u32, u32, u8)>,
 }
 
+/// A PCI generic initiator to expose in the SRAT.
+///
+/// Associates a passthrough PCI device with a (typically CPU-less) NUMA node
+/// via an SRAT Generic Initiator Affinity structure. Guest drivers that look
+/// up a device's proximity domain by walking the SRAT (e.g. NVIDIA's
+/// coherent-memory onlining path for Grace-based GPUs) use this to attach the
+/// device's memory to a node.
+#[derive(Debug, Clone, Copy)]
+pub struct GenericInitiator {
+    /// PCI segment of the device.
+    pub segment: u16,
+    /// PCI bus number of the device.
+    pub bus: u8,
+    /// PCI device number.
+    pub device: u8,
+    /// PCI function number.
+    pub function: u8,
+    /// Proximity domain (NUMA node) this initiator is associated with.
+    pub vnode: u32,
+}
+
 /// Builder to construct a set of [`BuiltAcpiTables`]
 pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     /// The processor topology.
@@ -81,6 +102,9 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     ///
     /// If set, a SLIT table will be generated.
     pub slit_info: Option<&'a SlitInfo>,
+    /// PCI generic initiators to expose in the SRAT, associating passthrough
+    /// devices with (typically CPU-less) NUMA nodes.
+    pub generic_initiators: &'a [GenericInitiator],
     /// Architecture-specific ACPI configuration.
     pub arch: AcpiArchConfig,
 }
@@ -198,7 +222,7 @@ pub fn build_pcie_acpi_tables(
             high_mmio: bridge.high_mmio,
             cxl: bridge.cxl.is_some(),
             vnode: bridge.vnode,
-            preserve_bars: bridge.preserve_bars,
+            preserve_boot_config: bridge.preserve_boot_config,
         });
 
         if let Some(cxl) = &bridge.cxl {
@@ -389,6 +413,18 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     range.range.start(),
                     range.range.len(),
                     range.vnode,
+                )
+                .as_bytes(),
+            );
+        }
+        for gi in self.generic_initiators {
+            srat_extra.extend_from_slice(
+                acpi_spec::srat::SratGenericInitiator::new_pci(
+                    gi.segment,
+                    gi.bus,
+                    gi.device,
+                    gi.function,
+                    gi.vnode,
                 )
                 .as_bytes(),
             );
@@ -1223,6 +1259,7 @@ mod test {
             cache_topology: None,
             pcie_host_bridges,
             slit_info: None,
+            generic_initiators: &[],
             arch: AcpiArchConfig::X86 {
                 with_ioapic: true,
                 with_pic: false,
@@ -1293,6 +1330,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1305,6 +1343,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
         ];
 
@@ -1365,6 +1404,7 @@ mod test {
             cache_topology: None,
             pcie_host_bridges,
             slit_info: None,
+            generic_initiators: &[],
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,
@@ -1404,6 +1444,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
             PcieHostBridge {
                 index: 7,
@@ -1416,6 +1457,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
         ];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
@@ -1477,6 +1519,7 @@ mod test {
             cxl: None,
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
@@ -1509,6 +1552,7 @@ mod test {
             cxl: None,
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1529,6 +1573,7 @@ mod test {
             cache_topology: None,
             pcie_host_bridges,
             slit_info: None,
+            generic_initiators: &[],
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,
@@ -1570,6 +1615,7 @@ mod test {
             }),
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1595,6 +1641,7 @@ mod test {
             cxl: None,
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 
@@ -1673,6 +1720,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1685,6 +1733,7 @@ mod test {
                 cxl: None,
                 vnode: None,
                 preserve_bars: false,
+                preserve_boot_config: false,
             },
         ];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
@@ -1738,6 +1787,7 @@ mod test {
             cxl: None,
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1772,6 +1822,7 @@ mod test {
             cxl: None,
             vnode: None,
             preserve_bars: false,
+            preserve_boot_config: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 

@@ -2639,6 +2639,7 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 slit_info: None,
+                generic_initiators: &[],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
