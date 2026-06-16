@@ -131,7 +131,6 @@ impl IntoPipeline for BuildReproducibleCli {
                     ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
                 )],
                 artifact_openhcl_verify_size_baseline: None,
-                done: ctx.new_done_handle(),
             }
         });
 

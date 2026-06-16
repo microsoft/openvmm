@@ -10,8 +10,6 @@
 //! that level are only supposed to be used by flowey _infrastructure_ (e.g: in
 //! `flowey_cli`).
 
-pub use flowey_core::claim_vars;
-pub use flowey_core::read_vars;
 pub use flowey_core::shell_cmd;
 
 /// Shell abstractions for flowey command execution.
@@ -23,8 +21,10 @@ pub mod shell {
 pub mod node {
     pub mod prelude {
         // include all user-facing types in the prelude
+        pub use flowey_core::claim_vars;
         pub use flowey_core::match_arch;
         pub use flowey_core::node::user_facing::*;
+        pub use flowey_core::read_vars;
 
         // ...in addition, export various types/traits that node impls are
         // almost certainly going to require

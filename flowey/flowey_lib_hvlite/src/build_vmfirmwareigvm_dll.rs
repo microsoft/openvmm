@@ -3,10 +3,8 @@
 
 //! Build an instance of `vmfirmwareigvm.dll`
 
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 

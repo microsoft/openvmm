@@ -24,7 +24,6 @@ flowey_request! {
         pub kernel_kind: OpenhclKernelPackageKind,
         pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>, WriteVar<OpenhclIgvmExtrasOutput>)>,
         pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclOutput>>,
-        pub done: WriteVar<SideEffect>,
     }
 }
 
@@ -44,7 +43,6 @@ impl SimpleFlowNode for Node {
             kernel_kind,
             igvm_files,
             artifact_openhcl_verify_size_baseline,
-            done,
         } = request;
 
         ctx.req(crate::_jobs::cfg_nix::Params { arch, kernel_kind });

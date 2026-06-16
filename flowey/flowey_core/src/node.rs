@@ -154,6 +154,22 @@ pub mod user_facing {
             }
         };
     }
+
+    /// Claim a set of vars
+    #[macro_export]
+    macro_rules! claim_vars {
+        ($ctx:ident, ($($var:ident),* $(,)?)) => {
+            $(let $var = $var.claim($ctx);)*
+        };
+    }
+
+    /// Read a set of vars
+    #[macro_export]
+    macro_rules! read_vars {
+        ($rt:ident, ($($var:ident),* $(,)?)) => {
+            $(let $var = $rt.read($var);)*
+        };
+    }
 }
 
 /// Check if `ReadVar` / `WriteVar` instances are backed by the same underlying
@@ -3448,18 +3464,4 @@ macro_rules! shell_cmd {
         #[expect(clippy::disallowed_macros)]
         flowey_sh.wrap($crate::reexports::xshell::cmd!(flowey_sh.xshell(), $cmd))
     }};
-}
-
-#[macro_export]
-macro_rules! claim_vars {
-    ($ctx:ident, ($($var:ident),* $(,)?)) => {
-        $(let $var = $var.claim($ctx);)*
-    };
-}
-
-#[macro_export]
-macro_rules! read_vars {
-    ($rt:ident, ($($var:ident),* $(,)?)) => {
-        $(let $var = $rt.read($var);)*
-    };
 }

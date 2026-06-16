@@ -9,7 +9,6 @@
 //! pipelines / flows to depend on _precisely_ the same IGVM file, without
 //! having to duplicate the non-trivial OpenHCL IGVM build chain.
 
-use crate::_jobs::check_openvmm_hcl_size;
 use crate::build_openhcl_boot::OpenhclBootOutput;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::MaxTraceLevel;
@@ -23,9 +22,7 @@ use crate::common::CommonTriple;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::run_cargo_build::BuildProfile;
 use crate::run_igvmfilegen::IgvmOutput;
-use flowey::claim_vars;
 use flowey::node::prelude::*;
-use flowey::read_vars;
 use igvmfilegen_config::ResourceType;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -78,7 +75,7 @@ pub enum OpenhclIgvmOutput {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum OpenhclIgvmEndorsements {
     X64 {

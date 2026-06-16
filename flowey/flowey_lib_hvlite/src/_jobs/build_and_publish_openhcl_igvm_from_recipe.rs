@@ -4,7 +4,6 @@
 //! Builds and publishes an a set of OpenHCL IGVM files.
 
 use super::build_and_publish_openvmm_hcl_baseline;
-use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmExtrasOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;

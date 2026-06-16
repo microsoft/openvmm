@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use crate::build_openhcl_boot::OpenhclBootOutput;
 use crate::build_openhcl_igvm_from_recipe::IgvmManifestPath;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmEndorsements;
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetails;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
@@ -23,8 +22,6 @@ use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::build_openvmm_hcl::OpenvmmHclOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use flowey::claim_vars;
-use flowey::read_vars;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Customizations {
