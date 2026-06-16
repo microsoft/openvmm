@@ -147,9 +147,10 @@ async fn send_scsi_packet(
             (size_of::<Cdb10>(), op == ScsiOp::READ)
         }
         FuzzCdbType::ReportLuns => {
-            // REPORT_LUNS is a 12-byte CDB. Only the opcode byte matters
-            // for storvsp dispatch, but set the length correctly.
+            // REPORT_LUNS is a 12-byte CDB.
             cdb_buf[0] = ScsiOp::REPORT_LUNS.0;
+            let rest = u.bytes(11)?;
+            cdb_buf[1..12].copy_from_slice(rest);
             (12, true)
         }
         FuzzCdbType::Inquiry => {

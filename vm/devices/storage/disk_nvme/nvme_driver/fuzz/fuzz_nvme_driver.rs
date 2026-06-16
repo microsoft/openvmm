@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 //! An interface to fuzz the nvme driver with arbitrary actions
-use crate::arbitrary_data;
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 use arbitrary::Arbitrary;
+use arbitrary::Unstructured;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -34,7 +34,10 @@ pub struct FuzzNvmeDriver {
 
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
-    pub async fn new(driver: DefaultDriver) -> Result<Self, anyhow::Error> {
+    pub async fn new(
+        driver: DefaultDriver,
+        u: &mut Unstructured<'_>,
+    ) -> Result<Self, anyhow::Error> {
         let cpu_count = 64; // TODO: [use-arbitrary-input]
         let pages = 512; // 2MB
         let mem = DeviceTestMemory::new(pages, false, "fuzz_nvme_driver");
@@ -46,7 +49,7 @@ impl FuzzNvmeDriver {
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
-        let guid = arbitrary_guid()?;
+        let guid = arbitrary_guid(u)?;
         let nvme = NvmeController::new(
             &driver_source,
             mem.guest_memory().clone(),
@@ -92,8 +95,11 @@ impl FuzzNvmeDriver {
     ///
     /// All that being said, be careful when deciding to sanitize inputs here: consider
     /// and explicitly rule out adding graceful error handling in the `NvmeDriver` itself.
-    pub async fn execute_arbitrary_action(&mut self) -> Result<(), anyhow::Error> {
-        let action = arbitrary_data::<NvmeDriverAction>()?;
+    pub async fn execute_arbitrary_action(
+        &mut self,
+        u: &mut Unstructured<'_>,
+    ) -> Result<(), anyhow::Error> {
+        let action = u.arbitrary::<NvmeDriverAction>()?;
 
         match action {
             NvmeDriverAction::Read {
@@ -175,14 +181,9 @@ impl FuzzNvmeDriver {
     }
 }
 
-/// Returns a Guid with arbitrary bytes. Fails if insufficient fuzz input remains.
-fn arbitrary_guid() -> Result<Guid, arbitrary::Error> {
-    Ok(Guid {
-        data1: arbitrary_data()?,
-        data2: arbitrary_data()?,
-        data3: arbitrary_data()?,
-        data4: arbitrary_data()?,
-    })
+fn arbitrary_guid(u: &mut Unstructured<'_>) -> Result<Guid, arbitrary::Error> {
+    let bytes: [u8; 16] = u.arbitrary()?;
+    Ok(Guid::from_slice(&bytes))
 }
 
 #[derive(Debug, Arbitrary)]

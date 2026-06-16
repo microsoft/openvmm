@@ -2593,7 +2593,6 @@ dependencies = [
  "nvme_spec",
  "page_pool_alloc",
  "pal_async",
- "parking_lot",
  "pci_core",
  "scsi_buffers",
  "user_driver",

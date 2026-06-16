@@ -32,4 +32,7 @@ fn do_fuzz(input: InputKind) {
     let _b = s.as_bytes_without_nul(); // ensure this won't panic
 }
 
-fuzz_target!(|input: InputKind| do_fuzz(input));
+fuzz_target!(|input: InputKind| {
+    xtask_fuzz::init_tracing_if_repro();
+    do_fuzz(input)
+});
