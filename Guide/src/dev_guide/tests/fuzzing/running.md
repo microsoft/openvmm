@@ -21,7 +21,7 @@ sudo apt-get install -y lldb
 For coverage reports, install `llvm-tools` and `lcov`:
 
 ```bash
-rustup +nightly component add llvm-tools
+rustup component add llvm-tools
 sudo apt-get install -y lcov
 ```
 
@@ -86,7 +86,7 @@ a crash is discovered.
 To just build a fuzzer without starting it:
 
 ```bash
-cargo +nightly xtask fuzz build fuzz_ide
+cargo xtask fuzz build fuzz_ide
 ```
 
 The binary lands at `target/<triple>/release/fuzz_ide`.
@@ -97,7 +97,7 @@ When LibFuzzer finds a crash, it saves the input as an artifact. Reproduce it:
 
 ```bash
 # Through xtask (sets XTASK_FUZZ_REPRO=1 automatically for tracing)
-cargo +nightly xtask fuzz run fuzz_ide path/to/crash-artifact
+cargo xtask fuzz run fuzz_ide path/to/crash-artifact
 
 # Or run the binary directly (faster for iteration)
 ./target/<triple>/release/fuzz_ide path/to/crash-artifact
@@ -109,7 +109,7 @@ XTASK_FUZZ_REPRO=1 ./target/<triple>/release/fuzz_ide path/to/crash-artifact
 ### Minimizing crash inputs
 
 ```bash
-cargo +nightly xtask fuzz tmin fuzz_ide path/to/crash-artifact
+cargo xtask fuzz tmin fuzz_ide path/to/crash-artifact
 ```
 
 ### Corpus management
@@ -120,7 +120,7 @@ Crash artifacts land in `<crate>/fuzz/artifacts/<target>/`.
 To minimize the corpus (remove redundant inputs):
 
 ```bash
-cargo +nightly xtask fuzz cmin fuzz_ide
+cargo xtask fuzz cmin fuzz_ide
 ```
 
 ### Parallel fuzzing
@@ -128,13 +128,13 @@ cargo +nightly xtask fuzz cmin fuzz_ide
 Use `-fork=N` to run N fuzzer processes in parallel across CPUs:
 
 ```bash
-cargo +nightly xtask fuzz run fuzz_ide -- -- -fork=20 -max_total_time=3600 -print_final_stats=1
+cargo xtask fuzz run fuzz_ide -- -- -fork=20 -max_total_time=3600 -print_final_stats=1
 ```
 
 To survive crashes/timeouts/OOMs during long campaigns:
 
 ```bash
-cargo +nightly xtask fuzz run fuzz_ide -- -- \
+cargo xtask fuzz run fuzz_ide -- -- \
   -fork=20 -max_total_time=21600 \
   -ignore_crashes=1 -ignore_timeouts=1 -ignore_ooms=1 \
   -print_final_stats=1
@@ -175,14 +175,14 @@ Before you begin you'll need some additional dependencies to generate an html
 report:
 
 ```bash
-rustup +nightly component add llvm-tools
+rustup component add llvm-tools
 apt install lcov
 ```
 
 To generate a report with "sane defaults", you can simply run:
 
 ```bash
-cargo +nightly xtask fuzz coverage fuzz_ide --with-html-report
+cargo xtask fuzz coverage fuzz_ide --with-html-report
 ```
 
 Simply navigate to the `html/report/dir/index.html` on your machine and inspect the coverage!
@@ -221,9 +221,9 @@ coverage significantly faster:
 
 ```bash
 # rebuild the fuzzer with coverage instrumentation
-RUSTFLAGS="-C instrument-coverage" cargo +nightly fuzz build
+RUSTFLAGS="-C instrument-coverage" cargo fuzz build
 # set env var to rustup's llvm-preview tools
-LLVM_TOOLS_PATH=$(dirname $(find $(rustc +nightly --print sysroot) -name 'llvm-profdata'))
+LLVM_TOOLS_PATH=$(dirname $(find $(rustc --print sysroot) -name 'llvm-profdata'))
 # make an output directory for corups minimation
 mkdir min_corp
 # run the minimizer putting the raw cov data into coverage.profraw
@@ -239,7 +239,7 @@ a report:
 
 ```bash
 # set env var to rustup's llvm-preview tools
-LLVM_TOOLS_PATH=$(dirname $(find $(rustc +nightly --print sysroot) -name 'llvm-profdata'))
+LLVM_TOOLS_PATH=$(dirname $(find $(rustc --print sysroot) -name 'llvm-profdata'))
 # covert the coverage data into an lcov format
 $LLVM_TOOLS_PATH/llvm-cov export -instr-profile=coverage.profdata \
     -format=lcov \
