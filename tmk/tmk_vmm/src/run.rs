@@ -276,6 +276,11 @@ impl CommonState {
         for test in &tests {
             tracing::info!(target: "test", name = test.name, "test started");
 
+            if test.linux_only && !cfg!(target_os = "linux") {
+                tracing::info!(target: "test", name = test.name, "test skipped, incompatible os");
+                continue;
+            }
+
             let mut vmtime_keeper = VmTimeKeeper::new(&self.driver, VmTime::from_100ns(0));
             let vmtime_source = vmtime_keeper.builder().build(&self.driver).await.unwrap();
             let mut ctx = RunContext {

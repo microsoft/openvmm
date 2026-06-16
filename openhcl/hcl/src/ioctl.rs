@@ -619,7 +619,7 @@ pub(crate) mod ioctls {
     );
 
     // CCA: Get the RIPAS state of an ipa
-    ioctl_read!(
+    ioctl_readwrite!(
         hcl_rsi_ipa_state_read,
         MSHV_IOCTL,
         MSHV_VTL_RSI_GET_IPA_STATE,

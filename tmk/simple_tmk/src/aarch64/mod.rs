@@ -24,7 +24,7 @@ unsafe extern "C" {
     fn instruction_abort_outside_par_entry() -> !;
 }
 
-#[tmk_test(expected_failure)]
+#[tmk_test(expected_failure, linux_only)]
 fn instruction_abort_outside_par(_: TestContext<'_>) {
     log!("instruction_abort_outside_par");
 
@@ -47,7 +47,7 @@ unsafe extern "C" {
     fn instruction_abort_ripas_empty_entry() -> !;
 }
 
-#[tmk_test(expected_failure)]
+#[tmk_test(expected_failure, linux_only)]
 fn instruction_abort_ripas_empty(_: TestContext<'_>) {
     log!("instruction_abort_ripas_empty");
 
@@ -71,7 +71,7 @@ unsafe extern "C" {
     fn instruction_abort_permissions_enabled_entry() -> !;
 }
 
-#[tmk_test(expected_failure)]
+#[tmk_test(expected_failure, linux_only)]
 fn instruction_abort_permissions_enabled(_: TestContext<'_>) {
     log!("instruction_abort_permissions_enabled");
 

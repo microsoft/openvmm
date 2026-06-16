@@ -373,11 +373,24 @@ impl BackingPrivate for CcaBacked {
                             // Handle instruction abort
                             let iss = IssInstructionAbort::from_bits(esr_el2.iss());
 
+                            let reason = InstructionAbortReason::from(iss.ifsc());
+
                             if iss.fnv() {
                                 tracing::warn!("CCA InstructionAbort: FAR_EL2 is not valid");
-                                return Err(
-                                    dev.fatal_error(CcaUnsupportedExit::ExitReason(0).into())
-                                );
+
+                                return Err(dev.fatal_error(
+                                    CcaUnsupportedExit::InstructionAbort {
+                                        esr_el2: cca_exit.0.esr_el2,
+                                        elr_el2: cca_exit.elr_el2(),
+                                        far_el2: cca_exit.far_el2(),
+                                        fipa: 0,
+                                        fipa_state: u8::MAX,
+                                        ifsc: iss.ifsc().0,
+                                        reason,
+                                        far_not_valid: iss.fnv(),
+                                    }
+                                    .into(),
+                                ));
                             }
 
                             let far = cca_exit.far_el2();
@@ -387,11 +400,13 @@ impl BackingPrivate for CcaBacked {
                                 fipa,
                                 state: u64::MAX,
                             };
-                            let _ = this
-                                .ipa_state_read(GuestVtl::Vtl0, &mut plane_state)
-                                .map_err(|_| Error::Hcl);
-
-                            let reason = InstructionAbortReason::from(iss.ifsc());
+                            if let Err(e) = this.ipa_state_read(GuestVtl::Vtl0, &mut plane_state) {
+                                tracing::warn!(
+                                    error = ?e,
+                                    fipa,
+                                    "failed to read IPA state; state will be u8::MAX which is unavailable"
+                                );
+                            }
 
                             return Err(dev.fatal_error(
                                 CcaUnsupportedExit::InstructionAbort {

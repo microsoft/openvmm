@@ -144,9 +144,6 @@ unsafe extern "C" {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! define_tmk_test {
-    ($name:expr, $func:ident) => {
-        $crate::define_tmk_test!($name, $func, 0);
-    };
     ($name:expr, $func:ident, $flags:expr) => {
         const _: () = {
             // Strip the crate name from the module path.
@@ -181,7 +178,7 @@ pub struct TestDescriptor {
     pub name: &'static [u8],
     /// The test entry point.
     pub entrypoint: for<'scope> fn(TestContext<'scope>),
-    /// Test flag - expected failure or not
+    /// Test flags
     pub flags: TestFlags64,
 }
 

@@ -29,8 +29,9 @@ pub struct StartInput {
 pub struct TestFlags64 {
     #[bits(1)]
     pub expected_failure: bool,
-
-    #[bits(63)]
+    #[bits(1)]
+    pub linux_only: bool,
+    #[bits(62)]
     reserved: u64,
 }
 
