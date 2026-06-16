@@ -161,6 +161,28 @@ enum GuestMemAction {
     ProbeGpns {
         gpns: Vec<u64>,
     },
+    ProbeGpaReadable {
+        gpa: u64,
+    },
+    ProbeGpaWritable {
+        gpa: u64,
+    },
+    ProbeGpnReadableRange {
+        offset: usize,
+        len: usize,
+        gpns: Vec<u64>,
+    },
+    ProbeGpnWritableRange {
+        offset: usize,
+        len: usize,
+        gpns: Vec<u64>,
+    },
+    FillRange {
+        offset: usize,
+        len: usize,
+        gpns: Vec<u64>,
+        val: u8,
+    },
     ZeroRange {
         offset: usize,
         len: usize,
@@ -246,6 +268,35 @@ fn do_fuzz(input: FuzzCase) {
             }
             GuestMemAction::ProbeGpns { gpns } => {
                 _ = gm.probe_gpns(&gpns);
+            }
+            GuestMemAction::ProbeGpaReadable { gpa } => {
+                _ = gm.probe_gpa_readable(gpa);
+            }
+            GuestMemAction::ProbeGpaWritable { gpa } => {
+                _ = gm.probe_gpa_writable(gpa);
+            }
+            GuestMemAction::ProbeGpnReadableRange { offset, len, gpns } => {
+                let len = len % MAX_SIZE;
+                if let Some(range) = PagedRange::new(offset, len, &gpns) {
+                    _ = gm.probe_gpn_readable_range(&range);
+                }
+            }
+            GuestMemAction::ProbeGpnWritableRange { offset, len, gpns } => {
+                let len = len % MAX_SIZE;
+                if let Some(range) = PagedRange::new(offset, len, &gpns) {
+                    _ = gm.probe_gpn_writable_range(&range);
+                }
+            }
+            GuestMemAction::FillRange {
+                offset,
+                len,
+                gpns,
+                val,
+            } => {
+                let len = len % MAX_SIZE;
+                if let Some(range) = PagedRange::new(offset, len, &gpns) {
+                    _ = gm.fill_range(&range, val);
+                }
             }
             GuestMemAction::ZeroRange { offset, len, gpns } => {
                 let len = len % MAX_SIZE;

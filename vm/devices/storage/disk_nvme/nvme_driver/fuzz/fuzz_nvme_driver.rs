@@ -13,6 +13,7 @@ use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::NamespaceHandle;
 use nvme_driver::NvmeDriver;
+use nvme_spec::nvm;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
@@ -175,6 +176,68 @@ impl FuzzNvmeDriver {
                     .unwrap()
                     .update_servicing_flags(nvme_keepalive);
             }
+
+            NvmeDriverAction::ReservationReport { target_cpu } => {
+                let _ = self
+                    .namespace
+                    .reservation_report_extended(target_cpu % self.cpu_count)
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationAcquire {
+                target_cpu,
+                action,
+                crkey,
+                prkey,
+                reservation_type,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_acquire(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationAcquireAction(action),
+                        crkey,
+                        prkey,
+                        nvm::ReservationType(reservation_type),
+                    )
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationRelease {
+                target_cpu,
+                action,
+                crkey,
+                reservation_type,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_release(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationReleaseAction(action),
+                        crkey,
+                        nvm::ReservationType(reservation_type),
+                    )
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationRegister {
+                target_cpu,
+                action,
+                crkey,
+                nrkey,
+                ptpl,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_register(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationRegisterAction(action),
+                        crkey,
+                        nrkey,
+                        ptpl,
+                    )
+                    .await;
+            }
         }
 
         Ok(())
@@ -209,5 +272,28 @@ pub enum NvmeDriverAction {
     },
     UpdateServicingFlags {
         nvme_keepalive: bool,
+    },
+    ReservationReport {
+        target_cpu: u32,
+    },
+    ReservationAcquire {
+        target_cpu: u32,
+        action: u8,
+        crkey: u64,
+        prkey: u64,
+        reservation_type: u8,
+    },
+    ReservationRelease {
+        target_cpu: u32,
+        action: u8,
+        crkey: u64,
+        reservation_type: u8,
+    },
+    ReservationRegister {
+        target_cpu: u32,
+        action: u8,
+        crkey: Option<u64>,
+        nrkey: u64,
+        ptpl: Option<bool>,
     },
 }
