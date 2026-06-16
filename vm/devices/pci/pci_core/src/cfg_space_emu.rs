@@ -1088,7 +1088,7 @@ impl ConfigSpaceType0Emulator {
         if !offset.is_multiple_of(4) {
             return IoResult::Err(IoError::UnalignedAccess);
         }
-        let mut dword = ByteEnabledDword::with_all_bytes_enabled(*value);
+        let mut dword = ByteEnabledDword::with_all_bytes_enabled(0);
         let result = self.read(PciConfigAddress::new(0, 0, offset / 4), &mut dword);
         *value = dword.extract();
         result

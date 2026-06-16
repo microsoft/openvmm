@@ -550,7 +550,7 @@ mod tests {
         write_cap_u32(&mut cap, 0, 0x00310001); // Enable MSI with MME=3
 
         // Verify MME was clamped to MMC (1)
-        let control_reg = read_cap_u32(&mut cap, 0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         let mme = (control_val >> 4) & 0x7;
         assert_eq!(mme, 1); // Should be clamped to MMC=1
@@ -565,14 +565,14 @@ mod tests {
         cap.restore(saved_state).expect("restore should succeed");
 
         // Check that MME is still properly clamped after restore
-        let control_reg = read_cap_u32(&mut cap, 0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         let mme = (control_val >> 4) & 0x7;
         let enabled = control_val & 1 != 0;
         assert_eq!(mme, 1); // Should still be clamped to MMC=1
         assert!(enabled); // Should be enabled
-        assert_eq!(read_cap_u32(&mut cap, 4), 0x12345678);
-        assert_eq!(read_cap_u32(&mut cap, 8), 0x9abcdef0);
-        assert_eq!(read_cap_u32(&mut cap, 12), 0x5678);
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9abcdef0);
+        assert_eq!(read_cap_u32(&cap, 12), 0x5678);
     }
 }

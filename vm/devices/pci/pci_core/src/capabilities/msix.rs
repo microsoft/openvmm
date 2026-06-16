@@ -626,11 +626,11 @@ mod tests {
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
         // check capabilities
-        assert_eq!(read_cap_u32(&mut cap, 0), 0x3f0011);
-        assert_eq!(read_cap_u32(&mut cap, 4), 2);
-        assert_eq!(read_cap_u32(&mut cap, 8), 0x402);
+        assert_eq!(read_cap_u32(&cap, 0), 0x3f0011);
+        assert_eq!(read_cap_u32(&cap, 4), 2);
+        assert_eq!(read_cap_u32(&cap, 8), 0x402);
         write_cap_u32(&mut cap, 0, 0xffffffff);
-        assert_eq!(read_cap_u32(&mut cap, 0), 0x803f0011);
+        assert_eq!(read_cap_u32(&cap, 0), 0x803f0011);
         // check BAR
         // Vector[0]
         assert_eq!(msix.read_u32(0), 0);

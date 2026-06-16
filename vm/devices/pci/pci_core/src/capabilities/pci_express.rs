@@ -896,14 +896,14 @@ mod tests {
 
         // Write 1 to clear correctable error bit (bit 0 of status)
         write_cap_u32(&mut cap, 0x08, 0x00010000); // Write 1 to bit 16 (correctable error in upper 16 bits)
-        let device_ctl_sts_after = read_cap_u32(&mut cap, 0x08);
+        let device_ctl_sts_after = read_cap_u32(&cap, 0x08);
         let status_bits_after = (device_ctl_sts_after >> 16) & 0xFFFF;
         assert_eq!(status_bits_after & 0x01, 0); // Correctable error bit should be cleared
         assert_ne!(status_bits_after & 0x0E, 0); // Other error bits should still be set
 
         // Clear all remaining error bits
         write_cap_u32(&mut cap, 0x08, 0x000E0000); // Write 1 to bits 17-19 (other error bits)
-        let final_status = (read_cap_u32(&mut cap, 0x08) >> 16) & 0xFFFF;
+        let final_status = (read_cap_u32(&cap, 0x08) >> 16) & 0xFFFF;
         assert_eq!(final_status & 0x0F, 0); // All error bits should be cleared
     }
 
