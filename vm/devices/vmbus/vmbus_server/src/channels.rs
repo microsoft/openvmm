@@ -134,8 +134,8 @@ pub struct Server {
     /// Limits the protocol version and feature flags that will be accepted for the next connection.
     max_version: Option<MaxVersionInfo>,
     /// Version limit that will be applied after the next connection is established. This is used
-    /// for testing scenarios where the first client to connect (usually UEFI) may not be be able
-    /// to support the older protocol version being tested.
+    /// for testing scenarios where the first client to connect (usually UEFI) may not be able to
+    /// support the older protocol version being tested.
     delayed_max_version: Option<MaxVersionInfo>,
     /// Limits the protocol version and feature flags that will be accepted when restoring from
     /// saved state.
@@ -1416,7 +1416,7 @@ impl Server {
         }
     }
 
-    /// Sets a limit on the version and featuref flags that will be offered to nthe guest.
+    /// Sets a limit on the version and featuref flags that will be offered to the guest.
     ///
     /// If `delay` is true, the limit will not apply to the first connection, but to all subsequent
     /// connections.
