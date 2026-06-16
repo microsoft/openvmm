@@ -924,10 +924,8 @@ impl MshvHvcall {
 
     /// Modifies the host visibility and immutability of the given pages using
     /// the private-hypervisor `ModifySparsePageVisibilityWithImmutability`
-    /// variant. Uses the same hypercall code as
-    /// [`Self::modify_gpa_visibility`]; the hypervisor distinguishes the
-    /// request by the input header layout. Intended for SEV-TIO end-to-end
-    /// bring-up against a privately-built hypervisor.
+    /// variant. Intended for SEV-TIO end-to-end bring-up against a
+    /// privately-built Hyper-V hypervisor.
     ///
     /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
     /// allowed.

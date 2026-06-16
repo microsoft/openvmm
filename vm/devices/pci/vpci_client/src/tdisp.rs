@@ -606,21 +606,6 @@ impl VpciClientTdispState {
         self.tdi_state()
     }
 
-    /// Query the platform firmware (when available) for the current TDI
-    /// state of the device, bypassing the paravisor's cached
-    /// [`Self::tdi_state`]. Returns `Ok(None)` if no resource validator is
-    /// attached or the validator does not support direct firmware queries
-    /// (e.g. non-SEV platforms).
-    ///
-    /// Use this to sanity-check the cached state before issuing
-    /// state-sensitive TDISP commands.
-    pub fn tdisp_query_firmware_tdi_state(&self) -> anyhow::Result<Option<TdispTdiState>> {
-        let Some(validator) = self.resource_validator.as_ref() else {
-            return Ok(None);
-        };
-        validator.tdisp_query_firmware_tdi_state(self.mutable_state.guest_device_id)
-    }
-
     /// Mark a BAR as being intercepted and virtualized by the paravisor
     /// (e.g. a BAR whose memory is registered as [`BarMemoryKind::Intercept`]).
     /// The classic case is the MSI-X table / PBA BAR, which is handled
@@ -930,11 +915,6 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
     async fn tdisp_tdi_state(&self) -> TdispTdiState;
 
-    /// Query the platform firmware for the current TDI state of the
-    /// device, bypassing the paravisor's cached state. Returns `Ok(None)`
-    /// if the platform does not support direct firmware queries.
-    async fn tdisp_query_firmware_tdi_state(&self) -> anyhow::Result<Option<TdispTdiState>>;
-
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
     /// validator is present, unblocks the MMIO range for the device.
     ///
@@ -980,11 +960,6 @@ impl TdispVpciAttestationInterface for VpciDevice {
     async fn tdisp_tdi_state(&self) -> TdispTdiState {
         let guard = self.tdisp.0.lock().await;
         guard.tdi_state()
-    }
-
-    async fn tdisp_query_firmware_tdi_state(&self) -> anyhow::Result<Option<TdispTdiState>> {
-        let guard = self.tdisp.0.lock().await;
-        guard.tdisp_query_firmware_tdi_state()
     }
 
     async fn tdisp_on_mmio_reconfigured(

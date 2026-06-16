@@ -6,7 +6,6 @@
 //! communicate with the SEV firmware to unblock device resources after attestation.
 
 use crate::TdispResourceValidationInterface;
-use crate::TdispTdiState;
 use anyhow::Context;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
@@ -393,67 +392,5 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 )
             }
         }
-    }
-
-    #[tracing::instrument(skip(self), fields(device_id))]
-    fn tdisp_query_firmware_tdi_state(
-        &self,
-        device_id: u16,
-    ) -> anyhow::Result<Option<TdispTdiState>> {
-        // Intentionally NOT issuing `tio_msg_tdi_info_req` right now. On
-        // current SEV-TIO firmware the TDI_INFO request can only be
-        // serviced while the TDI is in the Run state, which makes it
-        // useless as a pre-Bind sanity check (which is when we actually
-        // want to cross-reference the firmware's view of the TDI state).
-        // Until the firmware is fixed to answer in other states, treat
-        // this as "not supported" so callers fall through to their cached
-        // paravisor state. The full implementation is preserved below so
-        // it can be re-enabled once the firmware side is working.
-        let _ = device_id;
-        Ok(None)
-
-        /*
-        use sev_guest_device_tio::TioMsgTdiStatus;
-
-        let resp = self
-            .sev_guest
-            .tio_msg_tdi_info_req(device_id)
-            .with_context(|| {
-                format!("tio_msg_tdi_info_req failed for guest_device_id={device_id}")
-            })?;
-
-        tracing::info!(
-            guest_device_id = device_id,
-            tdi_status = resp.tdi_status,
-            "received SEV-TIO TDI_INFO response"
-        );
-
-        let status = TioMsgTdiStatus::from_u16(resp.tdi_status).ok_or_else(|| {
-            anyhow::anyhow!(
-                "SEV firmware returned unknown tdi_status {} for guest_device_id={device_id}",
-                resp.tdi_status
-            )
-        })?;
-
-        // The firmware's `tdi_status` is a SEV-TIO lookup result, not the
-        // TDISP TDI state enumeration. Translate it into TdispTdiState per
-        // the spec:
-        //   - Success -> the TDI is bound and running (TdispTdiState::Run)
-        //   - Unbound -> the TDI is not bound (TdispTdiState::Unlocked)
-        //   - Invalid -> surface as an error to the caller
-        //
-        // TdispTdiState::Uninitialized and TdispTdiState::Locked have no
-        // corresponding firmware encoding and are therefore never returned
-        // from this path.
-        let mapped = match status {
-            TioMsgTdiStatus::Success => TdispTdiState::Run,
-            TioMsgTdiStatus::Unbound => TdispTdiState::Unlocked,
-            TioMsgTdiStatus::Invalid => anyhow::bail!(
-                "SEV firmware reports INVALID tdi_status for guest_device_id={device_id}"
-            ),
-        };
-
-        Ok(Some(mapped))
-        */
     }
 }

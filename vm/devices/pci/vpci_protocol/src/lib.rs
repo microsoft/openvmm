@@ -108,13 +108,13 @@ open_enum! {
         RESET_DEVICE = 0x4249001c,
         /// TDISP command from guest to host.
         ///
-        /// Only valid on protocol version >= `ProtocolVersion::GE_TDISP`.
+        /// Only valid on protocol version >= `ProtocolVersion::RB`.
         VPCI_TDISP_COMMAND = 0x4249001D,
         /// Query per-BAR and DMA isolation state for a TDISP device.
         ///
         /// Paravisor-only: this message is intercepted by the OpenHCL paravisor
         /// on the guest-facing VPCI channel and is not forwarded to the host VSP.
-        /// Only valid on protocol version >= `ProtocolVersion::GE_TDISP`.
+        /// Only valid on protocol version >= `ProtocolVersion::RB`.
         VPCI_QUERY_ISOLATED_RESOURCES = 0x4249001E,
     }
 }
@@ -167,9 +167,9 @@ open_enum! {
         GE = 0x00010005,
         /// Windows DT version (allows Windows guests to dynamically map interrupts)
         DT = 0x00010006,
-        /// Windows GE_TDISP version (adds TDISP support: `VPCI_TDISP_COMMAND`
+        /// Windows RB version (adds TDISP support: `VPCI_TDISP_COMMAND`
         /// and `VPCI_QUERY_ISOLATED_RESOURCES`).
-        GE_TDISP = 0x00010007,
+        RB = 0x00010007,
     }
 }
 
@@ -903,7 +903,7 @@ pub const MAX_VPCI_TDISP_COMMAND_SIZE: usize =
 /// host-inaccessible (TDISP-bound) vs host-visible (bounce-buffered).
 ///
 /// Only valid when the negotiated protocol version is
-/// `>= ProtocolVersion::GE_TDISP`.
+/// `>= ProtocolVersion::RB`.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpciQueryIsolatedResources {

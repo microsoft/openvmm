@@ -8,7 +8,6 @@ use parking_lot::Mutex;
 use hvdef::Vtl;
 
 use crate::TdispResourceValidationInterface;
-use crate::TdispTdiState;
 
 /// Recorded call to [`TdispNoopResourceValidator::tdisp_unblock_mmio`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,13 +32,6 @@ pub struct UnblockedMmioRange {
 pub struct TdispNoopResourceValidator {
     unblocked_mmio_ranges: Mutex<Vec<UnblockedMmioRange>>,
     dma_unblocked: Mutex<bool>,
-    /// Optional override for the firmware TDI state query. When set, this
-    /// value is returned by
-    /// [`TdispResourceValidationInterface::tdisp_query_firmware_tdi_state`]
-    /// so tests can simulate specific firmware responses. When `None`
-    /// (the default), the mock reports that firmware queries are not
-    /// supported on this platform, matching the trait default.
-    firmware_tdi_state_override: Mutex<Option<TdispTdiState>>,
 }
 
 impl TdispNoopResourceValidator {
@@ -58,13 +50,6 @@ impl TdispNoopResourceValidator {
     /// [`tdisp_unblock_dma`]: TdispResourceValidationInterface::tdisp_unblock_dma
     pub fn dma_unblocked(&self) -> bool {
         *self.dma_unblocked.lock()
-    }
-
-    /// Set the value returned by
-    /// [`TdispResourceValidationInterface::tdisp_query_firmware_tdi_state`].
-    /// Pass `None` to restore the default "not supported" behavior.
-    pub fn set_firmware_tdi_state_override(&self, state: Option<TdispTdiState>) {
-        *self.firmware_tdi_state_override.lock() = state;
     }
 }
 
@@ -140,18 +125,5 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         );
         *self.dma_unblocked.lock() = false;
         Ok(())
-    }
-
-    fn tdisp_query_firmware_tdi_state(
-        &self,
-        device_id: u16,
-    ) -> anyhow::Result<Option<TdispTdiState>> {
-        let override_value = *self.firmware_tdi_state_override.lock();
-        tracing::info!(
-            ?device_id,
-            ?override_value,
-            "mock resource validator returning firmware TDI state"
-        );
-        Ok(override_value)
     }
 }

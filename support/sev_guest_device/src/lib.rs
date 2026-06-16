@@ -345,13 +345,12 @@ impl SevGuestDevice {
 
         // The Linux sev-guest driver's TIO_GUEST_REQUEST ioctl returns 0 from
         // the syscall even when the ASP/VMM rejected the request — the actual
-        // firmware/VMM status is communicated out-of-band via the exitinfo1
-        // and exitinfo2 fields on the in/out struct. When the driver detects
-        // such a failure it also logs a message like
-        //     "sev-guest: Detected error from ASP request. rc: N, exitinfo2: ..."
-        // and disables VMPCK0 to prevent IV reuse. We must surface that as an
-        // error here rather than returning the zero-initialized response body
-        // as if the request had succeeded.
+        // firmware/VMM status is communicated out-of-band via the exitinfo1 and
+        // exitinfo2 fields on the in/out struct. When the driver detects such a
+        // failure it also disables VMPCK0 to prevent IV reuse making future
+        // calls fail. We must surface that as an error here rather than
+        // returning the zero-initialized response body as if the request had
+        // succeeded. Generally, the best thing we can do is stop the VM.
         let exitinfo1 = snp_guest_request.exitinfo1;
         let exitinfo2 = snp_guest_request.exitinfo2;
         if exitinfo1.fw_error != 0 || exitinfo1.vmm_error != 0 || exitinfo2 != 0 {
