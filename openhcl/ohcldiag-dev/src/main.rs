@@ -667,21 +667,19 @@ pub fn main() -> anyhow::Result<()> {
                     use diag_client::hyperv::ComPortAccessInfo;
                     use futures::AsyncBufReadExt;
 
-                    let vm_name = match &vm.id {
-                        VmId::HyperV(name) => name,
-                        #[cfg(windows)]
-                        VmId::HyperVId(_) => {
-                            anyhow::bail!(
-                                "--serial requires a VM name, not a GUID. Use a named VM instead."
-                            )
-                        }
-                        _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
-                    };
-
                     let port_access_info = if let Some(pipe_path) = pipe_path.as_ref() {
                         ComPortAccessInfo::PortPipePath(pipe_path)
                     } else {
-                        ComPortAccessInfo::NameAndPortNumber(vm_name, 3)
+                        match &vm.id {
+                            VmId::HyperV(name) => {
+                                ComPortAccessInfo::NameAndPortNumber(name, 3)
+                            }
+                            #[cfg(windows)]
+                            VmId::HyperVId(guid) => {
+                                ComPortAccessInfo::IdAndPortNumber(*guid, 3)
+                            }
+                            _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
+                        }
                     };
 
                     let pipe =
