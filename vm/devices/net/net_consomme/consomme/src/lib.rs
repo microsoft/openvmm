@@ -182,19 +182,13 @@ pub struct ConsommeParams {
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
     pub tcp_tx_buffer: TcpBufferBounds,
-    /// True if this endpoint is dedicated to loopback traffic, i.e. its own
-    /// client address is a loopback address.
+    /// True if this endpoint is dedicated to loopback traffic (its `client_ip`
+    /// is a loopback address), set when the [`Consomme`] instance is created.
     ///
-    /// Such an endpoint exists specifically to carry localhost traffic between
-    /// the host and guest, and the guest is configured to route replies to
-    /// loopback source addresses back out through this adapter (for example, via
-    /// a dedicated policy-routing table). For these endpoints the local-source
-    /// virtual address rewriting must be skipped: rewriting the source to an
-    /// address outside the loopback range causes the guest's reply to miss that
-    /// routing and never reach the gateway, breaking the connection.
-    ///
-    /// This is derived from `client_ip` when the [`Consomme`] instance is
-    /// created.
+    /// Such endpoints carry localhost traffic and the guest routes loopback
+    /// replies back through this adapter, so the host-source virtual address
+    /// rewriting must be skipped for them. Rewriting the source out of the
+    /// loopback range would break that return path.
     #[inspect(display)]
     pub is_loopback_adapter: bool,
 }
@@ -404,12 +398,7 @@ impl ConsommeState {
         // If the remote IP is loopback or matches the client IP address, replace
         // it with a unique virtual address so that the guest routes the reply
         // back through the virtual adapter and we can reverse-translate it on the
-        // outgoing path.
-        //
-        // This rewriting is skipped for endpoints that are themselves dedicated to
-        // loopback traffic (see `is_loopback_endpoint`): those endpoints already
-        // route loopback-sourced replies back through the adapter, and rewriting
-        // the source out of the loopback range would break that return path.
+        // outgoing path. Skipped for loopback adapters (see `is_loopback_adapter`).
         let src = match remote_addr {
             SocketAddr::V4(v4)
                 if params.is_local_address(remote_addr) && !params.is_loopback_adapter =>
@@ -727,9 +716,8 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        // Derive whether this endpoint is dedicated to loopback traffic from its
-        // client address, so the host-originated source rewriting can be skipped
-        // for it (see `ConsommeParams::is_loopback_adapter`).
+        // Derive the loopback-adapter flag from the client address (see
+        // `ConsommeParams::is_loopback_adapter`).
         params.is_loopback_adapter = params.client_ip.is_loopback();
 
         let host_has_ipv6 = if params.skip_ipv6_checks {
