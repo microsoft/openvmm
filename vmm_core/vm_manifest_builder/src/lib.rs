@@ -438,7 +438,9 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
-                let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                let time_source = self
+                    .time_source
+                    .expect("time source is required for CMOS RTC");
                 result.attach_piix4_cmos_rtc(time_source, self.initial_cmos);
             }
             BaseChipsetType::UnenlightenedLinuxDirect => {
@@ -480,7 +482,9 @@ impl VmManifestBuilder {
                     result.attach_guest_watchdog();
                 }
                 if is_x86 {
-                    let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                    let time_source = self
+                        .time_source
+                        .expect("time source is required for CMOS RTC");
                     result.attach_generic_cmos_rtc(time_source);
                 }
             }
@@ -526,7 +530,9 @@ impl VmManifestBuilder {
                     );
                 }
                 if is_x86 {
-                    let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                    let time_source = self
+                        .time_source
+                        .expect("time source is required for CMOS RTC");
                     result.attach_generic_cmos_rtc(time_source);
                 }
             }
