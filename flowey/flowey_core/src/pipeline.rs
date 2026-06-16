@@ -719,7 +719,8 @@ impl Pipeline {
     pub fn new_typed_artifact_collection<T: Artifact, U: ArtifactType>(
         &mut self,
         artifact_types: impl IntoIterator<Item = U>,
-        additional_tag: Option<&str>,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
     ) -> (
         BTreeMap<U, PublishTypedArtifact<T>>,
         BTreeMap<U, UseTypedArtifact<T>>,
@@ -728,7 +729,7 @@ impl Pipeline {
             .into_iter()
             .map(|artifact_type| {
                 let (pub_artifact, use_artifact) =
-                    self.new_typed_artifact(artifact_type.name(additional_tag));
+                    self.new_typed_artifact(artifact_type.name(prefix, suffix));
                 (
                     (artifact_type.clone(), pub_artifact),
                     (artifact_type, use_artifact),

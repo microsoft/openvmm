@@ -55,9 +55,9 @@ impl IntoPipeline for BuildReproducibleCli {
         let mut pipeline = Pipeline::new();
 
         let (pub_openhcl_igvm, _use_openhcl_igvm) =
-            pipeline.new_typed_artifact("x64-cvm-openhcl-igvm");
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm");
         let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
-            pipeline.new_artifact("x64-cvm-openhcl-igvm-extras");
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm-extras");
 
         let local_run_args = {
             let mut args = crate::pipelines_shared::cfg_common_params::LocalRunArgs::default();
@@ -128,8 +128,8 @@ impl IntoPipeline for BuildReproducibleCli {
                         release_cfg: release,
                     },
                     ctx.publish_typed_artifact(pub_openhcl_igvm),
+                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
                 )],
-                artifact_dir_openhcl_igvm_extras: ctx.publish_artifact(pub_openhcl_igvm_extras),
                 artifact_openhcl_verify_size_baseline: None,
                 done: ctx.new_done_handle(),
             }

@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct SidecarOutput {
+    #[serde(rename = "sidecar")]
     pub bin: PathBuf,
+    #[serde(rename = "sidecar.dbg")]
     pub dbg: PathBuf,
 }
 

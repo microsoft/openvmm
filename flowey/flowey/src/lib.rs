@@ -10,6 +10,8 @@
 //! that level are only supposed to be used by flowey _infrastructure_ (e.g: in
 //! `flowey_cli`).
 
+pub use flowey_core::claim_vars;
+pub use flowey_core::read_vars;
 pub use flowey_core::shell_cmd;
 
 /// Shell abstractions for flowey command execution.

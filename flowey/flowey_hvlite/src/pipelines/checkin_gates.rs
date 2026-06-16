@@ -1004,18 +1004,18 @@ impl IntoPipeline for CheckinGatesCli {
                 _ => unreachable!(),
             };
 
-            let (pub_openhcl_igvms, use_openhcl_igvms) =
-                pipeline.new_typed_artifact_collection(igvm_recipes, additional_tag);
-            let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
-                pipeline.new_artifact(format!("{tag}-openhcl-igvm-extras"));
-
+            let (mut pub_openhcl_igvms, use_openhcl_igvms) =
+                pipeline.new_typed_artifact_collection(igvm_recipes.clone(), additional_tag, None);
+            let (mut pub_openhcl_igvms_extras, _use_openhcl_igvms_extras) = pipeline
+                .new_typed_artifact_collection(
+                    igvm_recipes.clone(),
+                    additional_tag,
+                    Some("extras"),
+                );
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
-                if matches!(config, PipelineConfig::Ci) && !mi_secure {
-                    let (p, u) = pipeline.new_artifact(format!("{tag}-openhcl-baseline"));
-                    (Some(p), Some(u))
-                } else {
-                    (None, None)
-                };
+                (matches!(config, PipelineConfig::Ci) && !mi_secure)
+                    .then(|| pipeline.new_typed_artifact(format!("{tag}-openhcl-baseline")))
+                    .unzip();
 
             // skim off interesting artifacts required by the VMM tests job
             match (arch, mi_secure) {
@@ -1054,12 +1054,15 @@ impl IntoPipeline for CheckinGatesCli {
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
-                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
+                        .map(|baseline_artifact| ctx.publish_typed_artifact(baseline_artifact));
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
-                        igvm_files: pub_openhcl_igvms
+                        igvm_files: igvm_recipes
                             .into_iter()
-                            .map(|(recipe, pub_openhcl_igvm)| {
+                            .map(|recipe| {
+                                let pub_openhcl_igvm = pub_openhcl_igvms.remove(&recipe).unwrap();
+                                let pub_openhcl_igvm_extras =
+                                    pub_openhcl_igvms_extras.remove(&recipe).unwrap();
                                 (
                                     OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
@@ -1078,13 +1081,11 @@ impl IntoPipeline for CheckinGatesCli {
                                         release_cfg: release && !mi_secure,
                                     },
                                     ctx.publish_typed_artifact(pub_openhcl_igvm),
+                                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
                                 )
                             })
                             .collect(),
-                        artifact_dir_openhcl_igvm_extras: ctx
-                            .publish_artifact(pub_openhcl_igvm_extras),
                         artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
-                        done: ctx.new_done_handle(),
                     }
                 });
 

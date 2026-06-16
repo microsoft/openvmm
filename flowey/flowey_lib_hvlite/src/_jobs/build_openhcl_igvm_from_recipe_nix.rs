@@ -11,7 +11,9 @@
 //! like `checkin_gates` inject it across all jobs via `inject_all_jobs_with`.
 
 use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmExtrasOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
+use crate::build_openvmm_hcl::OpenvmmHclOutput;
 use crate::common::CommonArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey::node::prelude::*;
@@ -20,9 +22,8 @@ flowey_request! {
     pub struct Params {
         pub arch: CommonArch,
         pub kernel_kind: OpenhclKernelPackageKind,
-        pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>)>,
-        pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
-        pub artifact_openhcl_verify_size_baseline: Option<ReadVar<PathBuf>>,
+        pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>, WriteVar<OpenhclIgvmExtrasOutput>)>,
+        pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclOutput>>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -42,7 +43,6 @@ impl SimpleFlowNode for Node {
             arch,
             kernel_kind,
             igvm_files,
-            artifact_dir_openhcl_igvm_extras,
             artifact_openhcl_verify_size_baseline,
             done,
         } = request;
@@ -52,9 +52,7 @@ impl SimpleFlowNode for Node {
         ctx.req(
             crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                 igvm_files,
-                artifact_dir_openhcl_igvm_extras,
                 artifact_openhcl_verify_size_baseline,
-                done,
             },
         );
 

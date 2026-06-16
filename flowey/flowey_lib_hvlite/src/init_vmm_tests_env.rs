@@ -38,11 +38,7 @@ flowey_request! {
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
-        pub register_openhcl_igvm_files:
-            Vec<ReadVar<
-                OpenhclIgvmOutput>,
-            >,
-
+        pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -420,7 +416,10 @@ impl SimpleFlowNode for Node {
                             test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
                         )?;
                     } else {
-                        log::info!("petri doesn't support this OpenHCL recipe: {openhcl_igvm:?}",);
+                        log::info!(
+                            "petri doesn't support this OpenHCL recipe: {:?}",
+                            openhcl_igvm.recipe()
+                        );
                     };
                 }
 

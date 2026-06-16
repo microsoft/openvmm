@@ -222,11 +222,8 @@ impl SimpleFlowNode for Node {
 
             let mut register_openhcl_igvm_files = Vec::new();
             for recipe in openhcl_recipes {
-                let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
-                let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
-                let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
-                let (read_built_sidecar, built_sidecar) = ctx.new_var();
                 let (read_openhcl_igvm, openhcl_igvm) = ctx.new_var();
+                let (read_openhcl_igvm_extras, openhcl_igvm_extras) = ctx.new_var();
 
                 let recipe_to_use =
                     if custom_kernel_modules_abs.is_some() || custom_kernel_abs.is_some() {
@@ -256,11 +253,8 @@ impl SimpleFlowNode for Node {
                     custom_target: None,
                     extra_features: BTreeSet::new(),
                     disable_secure_avic,
-                    built_openvmm_hcl,
-                    built_openhcl_boot,
-                    built_openhcl_igvm,
-                    built_sidecar,
                     openhcl_igvm,
+                    openhcl_igvm_extras,
                 });
 
                 register_openhcl_igvm_files.push(read_openhcl_igvm);
@@ -270,33 +264,32 @@ impl SimpleFlowNode for Node {
                     copy_to_dir.extend_from_slice(&[
                         (
                             dir.clone(),
-                            read_built_openvmm_hcl.map(ctx, |x| Some(x.bin)),
-                        ),
-                        (dir.clone(), read_built_openvmm_hcl.map(ctx, |x| x.dbg)),
-                        (
-                            dir.clone(),
-                            read_built_openhcl_boot.map(ctx, |x| Some(x.bin)),
+                            read_openhcl_igvm_extras.map(ctx, |x| Some(x.openvmm_hcl.bin)),
                         ),
                         (
                             dir.clone(),
-                            read_built_openhcl_boot.map(ctx, |x| Some(x.dbg)),
+                            read_openhcl_igvm_extras.map(ctx, |x| x.openvmm_hcl.dbg),
                         ),
                         (
                             dir.clone(),
-                            read_built_sidecar.map(ctx, |x| x.map(|y| y.bin)),
+                            read_openhcl_igvm_extras.map(ctx, |x| Some(x.openhcl_boot.bin)),
                         ),
                         (
                             dir.clone(),
-                            read_built_sidecar.map(ctx, |x| x.map(|y| y.dbg)),
+                            read_openhcl_igvm_extras.map(ctx, |x| Some(x.openhcl_boot.dbg)),
+                        ),
+                        (
+                            dir.clone(),
+                            read_openhcl_igvm_extras.map(ctx, |x| x.sidecar.map(|y| y.bin)),
+                        ),
+                        (
+                            dir.clone(),
+                            read_openhcl_igvm_extras.map(ctx, |x| x.sidecar.map(|y| y.dbg)),
                         ),
                     ]);
                 } else {
-                    read_built_openvmm_hcl.claim_unused(ctx);
-                    read_built_openhcl_boot.claim_unused(ctx);
-                    read_built_sidecar.claim_unused(ctx);
+                    read_openhcl_igvm_extras.claim_unused(ctx);
                 }
-
-                read_built_openhcl_igvm.claim_unused(ctx);
             }
 
             register_openhcl_igvm_files

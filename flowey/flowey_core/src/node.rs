@@ -681,21 +681,38 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
     /// function to the Var at runtime.
     #[track_caller]
+    pub fn write_into_with_fallible<F, U>(
+        &self,
+        ctx: &mut NodeCtx<'_>,
+        write_into: WriteVar<U>,
+        f: F,
+    ) where
+        T: 'static,
+        U: Serialize + DeserializeOwned + 'static,
+        F: FnOnce(T) -> anyhow::Result<U> + 'static,
+    {
+        let this = self.clone();
+        ctx.emit_fallible_minor_rust_step("🌼 write_into Var", move |ctx| {
+            let this = this.claim(ctx);
+            let write_into = write_into.claim(ctx);
+            move |rt| {
+                let this = rt.read(this);
+                rt.write(write_into, &f(this)?);
+                Ok(())
+            }
+        });
+    }
+
+    /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
+    /// function to the Var at runtime.
+    #[track_caller]
     pub fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
     where
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
         F: FnOnce(T) -> U + 'static,
     {
-        let this = self.clone();
-        ctx.emit_minor_rust_step("🌼 write_into Var", move |ctx| {
-            let this = this.claim(ctx);
-            let write_into = write_into.claim(ctx);
-            move |rt| {
-                let this = rt.read(this);
-                rt.write(write_into, &f(this));
-            }
-        });
+        self.write_into_with_fallible(ctx, write_into, |x| Ok(f(x)));
     }
 
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
@@ -704,7 +721,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     where
         T: 'static,
     {
-        self.write_into_with(ctx, write_into, |x| x);
+        self.write_into_with_fallible(ctx, write_into, |x| Ok(x));
     }
 
     /// Zips self (`ReadVar<T>`) with another `ReadVar<U>`, returning a new
@@ -1148,13 +1165,9 @@ impl<'ctx> NodeCtx<'ctx> {
 
     /// Emit a Rust-based step that cannot fail.
     ///
-    /// This is equivalent to `emit_rust_step`, but it is for steps that cannot
+    /// This is equivalent to [`NodeCtx::emit_rust_step`], but it is for steps that cannot
     /// fail and that do not need to be emitted as a separate step in a YAML
     /// pipeline. This simplifies the pipeline logs.
-    ///
-    /// As a convenience feature, this function returns a special _optional_
-    /// [`ReadVar<SideEffect>`], which will not result in a "unused variable"
-    /// error if no subsequent step ends up claiming it.
     pub fn emit_minor_rust_step<F, G>(
         &mut self,
         label: impl AsRef<str>,
@@ -1171,6 +1184,21 @@ impl<'ctx> NodeCtx<'ctx> {
                 Ok(())
             }
         })
+    }
+
+    /// Emit a fallible minor Rust-based step.
+    ///
+    /// This is equivalent to [`NodeCtx::emit_minor_rust_step`] except that it can fail.
+    pub fn emit_fallible_minor_rust_step<F, G>(
+        &mut self,
+        label: impl AsRef<str>,
+        code: F,
+    ) -> ReadVar<SideEffect>
+    where
+        F: for<'a> FnOnce(&'a mut StepCtx<'_>) -> G,
+        G: for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
+    {
+        self.emit_rust_step_inner(label.as_ref(), true, code)
     }
 
     /// Emit a Rust-based step, creating a new `ReadVar<T>` from the step's
@@ -3420,4 +3448,18 @@ macro_rules! shell_cmd {
         #[expect(clippy::disallowed_macros)]
         flowey_sh.wrap($crate::reexports::xshell::cmd!(flowey_sh.xshell(), $cmd))
     }};
+}
+
+#[macro_export]
+macro_rules! claim_vars {
+    ($ctx:ident, ($($var:ident),* $(,)?)) => {
+        $(let $var = $var.claim($ctx);)*
+    };
+}
+
+#[macro_export]
+macro_rules! read_vars {
+    ($rt:ident, ($($var:ident),* $(,)?)) => {
+        $(let $var = $rt.read($var);)*
+    };
 }
