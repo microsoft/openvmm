@@ -2560,6 +2560,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_mesh_protobuf"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "mesh_protobuf",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_mesh_ttrpc"
 version = "0.0.0"
 dependencies = [

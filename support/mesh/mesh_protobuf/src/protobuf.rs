@@ -66,8 +66,7 @@ fn zigzag(n: i64) -> u64 {
 
 /// Reverses the zigzag encoding.
 fn unzigzag(n: u64) -> i64 {
-    let n = n as i64;
-    ((n << 63) >> 63) ^ (n >> 1)
+    ((n >> 1) as i64) ^ -((n & 1) as i64)
 }
 
 /// The protobuf wire type.
