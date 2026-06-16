@@ -289,7 +289,8 @@ impl CxlDeviceDevsecExtendedCapability {
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW => {
                 let preserved = self.range1_base_low.into_bits()
                     & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
-                let writable = value.extract() & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let value = value.merge(self.read_dvsec_u32(offset));
+                let writable = value & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
                 self.range1_base_low = CxlDeviceDvsecRangeBaseLow::from_bits(preserved | writable);
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_HIGH => {
@@ -298,7 +299,8 @@ impl CxlDeviceDevsecExtendedCapability {
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_LOW => {
                 let preserved = self.range2_base_low.into_bits()
                     & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
-                let writable = value.extract() & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let value = value.merge(self.read_dvsec_u32(offset));
+                let writable = value & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
                 self.range2_base_low = CxlDeviceDvsecRangeBaseLow::from_bits(preserved | writable);
             }
             _ => {}
