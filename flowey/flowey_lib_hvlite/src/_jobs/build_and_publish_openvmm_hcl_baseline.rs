@@ -8,15 +8,22 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
-use crate::build_openvmm_hcl::OpenvmmHclOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
+#[derive(Serialize, Deserialize)]
+pub struct OpenvmmHclBaselineOutput {
+    #[serde(rename = "openhcl")]
+    pub bin: PathBuf,
+}
+
+impl Artifact for OpenvmmHclBaselineOutput {}
+
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
-        pub baseline: WriteVar<OpenvmmHclOutput>,
+        pub baseline: WriteVar<OpenvmmHclBaselineOutput>,
     }
 }
 
@@ -50,10 +57,8 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_output: v,
         });
 
-        baseline_hcl_build.write_into_with(ctx, baseline, |mut b| {
-            b.dbg = None;
-            b
-        });
+        baseline_hcl_build
+            .write_into_with(ctx, baseline, |b| OpenvmmHclBaselineOutput { bin: b.bin });
 
         Ok(())
     }

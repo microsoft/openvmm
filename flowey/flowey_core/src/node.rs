@@ -697,38 +697,21 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
     /// function to the Var at runtime.
     #[track_caller]
-    pub fn write_into_with_fallible<F, U>(
-        &self,
-        ctx: &mut NodeCtx<'_>,
-        write_into: WriteVar<U>,
-        f: F,
-    ) where
-        T: 'static,
-        U: Serialize + DeserializeOwned + 'static,
-        F: FnOnce(T) -> anyhow::Result<U> + 'static,
-    {
-        let this = self.clone();
-        ctx.emit_fallible_minor_rust_step("🌼 write_into Var", move |ctx| {
-            let this = this.claim(ctx);
-            let write_into = write_into.claim(ctx);
-            move |rt| {
-                let this = rt.read(this);
-                rt.write(write_into, &f(this)?);
-                Ok(())
-            }
-        });
-    }
-
-    /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
-    /// function to the Var at runtime.
-    #[track_caller]
     pub fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
     where
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
         F: FnOnce(T) -> U + 'static,
     {
-        self.write_into_with_fallible(ctx, write_into, |x| Ok(f(x)));
+        let this = self.clone();
+        ctx.emit_minor_rust_step("🌼 write_into Var", move |ctx| {
+            let this = this.claim(ctx);
+            let write_into = write_into.claim(ctx);
+            move |rt| {
+                let this = rt.read(this);
+                rt.write(write_into, &f(this));
+            }
+        });
     }
 
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
@@ -737,7 +720,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     where
         T: 'static,
     {
-        self.write_into_with_fallible(ctx, write_into, |x| Ok(x));
+        self.write_into_with(ctx, write_into, |x| x);
     }
 
     /// Zips self (`ReadVar<T>`) with another `ReadVar<U>`, returning a new
@@ -1200,21 +1183,6 @@ impl<'ctx> NodeCtx<'ctx> {
                 Ok(())
             }
         })
-    }
-
-    /// Emit a fallible minor Rust-based step.
-    ///
-    /// This is equivalent to [`NodeCtx::emit_minor_rust_step`] except that it can fail.
-    pub fn emit_fallible_minor_rust_step<F, G>(
-        &mut self,
-        label: impl AsRef<str>,
-        code: F,
-    ) -> ReadVar<SideEffect>
-    where
-        F: for<'a> FnOnce(&'a mut StepCtx<'_>) -> G,
-        G: for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
-    {
-        self.emit_rust_step_inner(label.as_ref(), true, code)
     }
 
     /// Emit a Rust-based step, creating a new `ReadVar<T>` from the step's

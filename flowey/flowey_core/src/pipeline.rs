@@ -713,8 +713,11 @@ impl Pipeline {
         )
     }
 
-    /// Returns a pair of opaque handles to a new artifact for use across jobs
-    /// in the pipeline.
+    /// Returns a pair of sets of opaque handles to a new artifact for use
+    /// across jobs in the pipeline. The artifact names are derived by the impl
+    /// of [`ArtifactType::name`] using common prefixes and suffixes if
+    /// specified (although the implementor can choose to use those values
+    /// differently).
     #[track_caller]
     pub fn new_typed_artifact_collection<T: Artifact, U: ArtifactType>(
         &mut self,

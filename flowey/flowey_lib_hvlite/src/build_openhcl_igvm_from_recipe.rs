@@ -132,7 +132,7 @@ impl OpenhclIgvmOutput {
         }
     }
 
-    pub fn new(recipe: Option<OpenhclIgvmRecipe>, igvm: IgvmOutput) -> anyhow::Result<Self> {
+    pub fn new(recipe: Option<OpenhclIgvmRecipe>, igvm: IgvmOutput) -> Self {
         let IgvmOutput {
             igvm_bin,
             igvm_map: _,
@@ -150,10 +150,10 @@ impl OpenhclIgvmOutput {
             }
             (None, None, None) => None,
             _ => {
-                anyhow::bail!("incomplete endorsements")
+                panic!("incomplete endorsements")
             }
         };
-        let output = match recipe {
+        match recipe {
             None => OpenhclIgvmOutput::LocalOnlyCustom {
                 igvm_bin,
                 endorsements,
@@ -170,11 +170,11 @@ impl OpenhclIgvmOutput {
                     }
                     OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
                         igvm_bin,
-                        endorsements: endorsements.take().context("missing endorsements")?,
+                        endorsements: endorsements.take().expect("missing endorsements"),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
-                        endorsements: endorsements.take().context("missing endorsements")?,
+                        endorsements: endorsements.take().expect("missing endorsements"),
                     },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
@@ -182,13 +182,11 @@ impl OpenhclIgvmOutput {
                     }
                 };
                 if endorsements.is_some() {
-                    anyhow::bail!("unexpected endorsements");
+                    panic!("unexpected endorsements");
                 }
                 output
             }
-        };
-
-        Ok(output)
+        }
     }
 }
 
@@ -924,7 +922,7 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        igvm.write_into_with_fallible(ctx, openhcl_igvm, move |igvm| {
+        igvm.write_into_with(ctx, openhcl_igvm, move |igvm| {
             OpenhclIgvmOutput::new(recipe.recipe(), igvm)
         });
 

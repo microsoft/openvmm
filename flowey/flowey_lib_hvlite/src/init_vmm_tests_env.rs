@@ -416,10 +416,7 @@ impl SimpleFlowNode for Node {
                             test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
                         )?;
                     } else {
-                        log::info!(
-                            "petri doesn't support this OpenHCL recipe: {:?}",
-                            openhcl_igvm.recipe()
-                        );
+                        log::warn!("petri doesn't support custom OpenHCL files");
                     };
                 }
 

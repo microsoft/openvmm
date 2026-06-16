@@ -764,16 +764,17 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 11 flowey_lib_hvlite::run_cargo_build 1
         flowey e 11 flowey_lib_hvlite::build_openvmm_hcl 0
+        flowey e 11 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
       shell: bash
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:117:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:113:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64_openvmm_hcl_for_size_analysis
+        name: aarch64-openhcl-baseline
         path: ${{ env.floweyvar1 }}
       name: publish openvmm_hcl for analysis
     - name: cargo build xtask
@@ -1362,16 +1363,17 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 13 flowey_lib_hvlite::run_cargo_build 1
         flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
+        flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
       shell: bash
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:117:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:113:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v7
       with:
-        name: x86_64_openvmm_hcl_for_size_analysis
+        name: x64-openhcl-baseline
         path: ${{ env.floweyvar1 }}
       name: publish openvmm_hcl for analysis
     - name: cargo build xtask

@@ -13,6 +13,8 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::artifact_name_openhcl_baseline;
+use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::ResolveVmmTestsDepArtifacts;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclFeature;
@@ -974,8 +976,6 @@ impl IntoPipeline for CheckinGatesCli {
             };
 
             let additional_tag = mi_secure.then_some("mi-secure");
-            let tag =
-                additional_tag.map_or_else(|| arch_tag.to_string(), |x| format!("{arch_tag}-{x}"));
 
             let openvmm_hcl_profile = if release {
                 OpenvmmHclBuildProfile::OpenvmmHclShip
@@ -1015,7 +1015,7 @@ impl IntoPipeline for CheckinGatesCli {
                 );
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
                 (matches!(config, PipelineConfig::Ci) && !mi_secure)
-                    .then(|| pipeline.new_typed_artifact(format!("{tag}-openhcl-baseline")))
+                    .then(|| pipeline.new_typed_artifact(artifact_name_openhcl_baseline(arch)))
                     .unzip();
 
             // skim off interesting artifacts required by the VMM tests job
@@ -1374,7 +1374,7 @@ impl IntoPipeline for CheckinGatesCli {
             ado_pool: Option<AdoPool>,
             label: &'a str,
             target: CommonTriple,
-            resolve_vmm_tests_artifacts: flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::ResolveVmmTestsDepArtifacts,
+            resolve_vmm_tests_artifacts: ResolveVmmTestsDepArtifacts,
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
             prep_steps_variants: Vec<String>,

@@ -4,13 +4,13 @@
 //! Builds and publishes an a set of OpenHCL IGVM files.
 
 use super::build_and_publish_openvmm_hcl_baseline;
+use crate::_jobs::build_and_publish_openvmm_hcl_baseline::OpenvmmHclBaselineOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmExtrasOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeType;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
-use crate::build_openvmm_hcl::OpenvmmHclOutput;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
@@ -35,7 +35,7 @@ pub struct OpenhclIgvmBuildParams {
 flowey_request! {
     pub struct Params {
         pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>, WriteVar<OpenhclIgvmExtrasOutput>)>,
-        pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclOutput>>,
+        pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclBaselineOutput>>,
     }
 }
 
