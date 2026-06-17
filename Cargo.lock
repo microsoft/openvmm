@@ -2013,6 +2013,7 @@ name = "firmware_pcat"
 version = "0.0.0"
 dependencies = [
  "chipset_device",
+ "chipset_resources",
  "generation_id",
  "getrandom 0.4.2",
  "guestmem",
@@ -2025,6 +2026,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "vm_resource",
  "vm_topology",
  "vmcore",
  "zerocopy",
@@ -5628,6 +5630,7 @@ dependencies = [
  "chipset_resources",
  "debug_worker",
  "disk_striped",
+ "firmware_pcat",
  "firmware_uefi",
  "guest_watchdog",
  "hyperv_ic",
@@ -5714,6 +5717,7 @@ dependencies = [
  "disk_vhdmp",
  "disklayer_ram",
  "disklayer_sqlite",
+ "firmware_pcat",
  "firmware_uefi",
  "gdma",
  "guest_crash_device",

@@ -444,6 +444,16 @@ impl<'a> BaseChipsetBuilder<'a> {
                 .resolve(time_source, ())
                 .await
                 .map_err(BaseChipsetBuilderError::ResolveResource)?;
+            let initial_cmos = match initial_cmos {
+                Some(resource) => Some(
+                    resolver
+                        .resolve(resource, ())
+                        .await
+                        .map_err(BaseChipsetBuilderError::ResolveResource)?
+                        .0,
+                ),
+                None => None,
+            };
             builder.arc_mutex_device("rtc").add(|services| {
                 cmos_rtc::Rtc::new(
                     resolved.0,
@@ -466,6 +476,16 @@ impl<'a> BaseChipsetBuilder<'a> {
                 .resolve(time_source, ())
                 .await
                 .map_err(BaseChipsetBuilderError::ResolveResource)?;
+            let initial_cmos = match initial_cmos {
+                Some(resource) => Some(
+                    resolver
+                        .resolve(resource, ())
+                        .await
+                        .map_err(BaseChipsetBuilderError::ResolveResource)?
+                        .0,
+                ),
+                None => None,
+            };
             builder.arc_mutex_device("piix4-rtc").add(|services| {
                 // hard-coded to IRQ line 8, as per PIIX4 spec
                 let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
@@ -1176,16 +1196,16 @@ pub mod options {
             pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Which CMOS RAM register contains the century register
             pub century_reg_idx: u8,
-            /// Initial state of CMOS RAM
-            pub initial_cmos: Option<[u8; 256]>,
+            /// Initial state of CMOS RAM, resolved at device build time.
+            pub initial_cmos: Option<Resource<chipset_resources::CmosRtcInitialValuesKind>>,
         }
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
         pub struct Piix4CmosRtcDeps {
             /// A time source resource, resolved at device build time.
             pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
-            /// Initial state of CMOS RAM
-            pub initial_cmos: Option<[u8; 256]>,
+            /// Initial state of CMOS RAM, resolved at device build time.
+            pub initial_cmos: Option<Resource<chipset_resources::CmosRtcInitialValuesKind>>,
             /// Whether enlightened interrupts are enabled. Needed when
             /// advertised by ACPI WAET table.
             pub enlightened_interrupts: bool,

@@ -2873,7 +2873,12 @@ async fn new_underhill_vm(
     #[cfg(guest_arch = "x86_64")]
     let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
         time_source: PlatformResource.into_resource(),
-        initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
+        initial_cmos: Some(
+            chipset_resources::cmos_rtc_initial_values::PcatDefaultCmosValuesHandle {
+                first_ram_block_size: mem_layout.ram()[0].range.len(),
+            }
+            .into_resource(),
+        ),
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
 

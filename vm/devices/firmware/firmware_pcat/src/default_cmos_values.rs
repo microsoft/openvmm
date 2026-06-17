@@ -621,6 +621,15 @@ fn set_token_value(token: u16, value: u16, cmos: &mut [u8; 256]) {
 /// By pre-initializing the CMOS values the first time the VM is booted, we
 /// prevent the BIOS from reporting an error to the user.
 pub fn default_cmos_values(mem_layout: &MemoryLayout) -> [u8; 256] {
+    default_cmos_values_from_ram_size(mem_layout.ram()[0].range.len())
+}
+
+/// Returns the default PCAT CMOS values given the size of the first RAM block.
+///
+/// This is the core computation extracted from [`default_cmos_values`] so that
+/// callers without access to a full [`MemoryLayout`] can still produce the
+/// correct initial CMOS state.
+pub fn default_cmos_values_from_ram_size(first_ram_block_size: u64) -> [u8; 256] {
     let mut cmos_data = [0; 256];
     let cmos = &mut cmos_data;
 
@@ -637,7 +646,7 @@ pub fn default_cmos_values(mem_layout: &MemoryLayout) -> [u8; 256] {
     //
     // Set base memory to 640k, and extended memory to the top of the first
     // memory block.
-    let total_extended_mem = mem_layout.ram()[0].range.len() >> 20;
+    let total_extended_mem = first_ram_block_size >> 20;
     assert_eq!(total_extended_mem & !0xFFFF, 0);
     set_token_value(Q_EXT_MEMORY_LSB, (total_extended_mem & 0xFF) as u16, cmos);
     set_token_value(

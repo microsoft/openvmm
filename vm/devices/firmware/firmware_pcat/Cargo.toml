@@ -10,8 +10,10 @@ rust-version.workspace = true
 generation_id.workspace = true
 
 chipset_device.workspace = true
+chipset_resources.workspace = true
 guestmem.workspace = true
 memory_range.workspace = true
+vm_resource.workspace = true
 vmcore.workspace = true
 vm_topology = { workspace = true, features = ["inspect"] }
 

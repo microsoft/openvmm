@@ -13,10 +13,13 @@
 #![forbid(unsafe_code)]
 
 mod bios_boot_order;
+mod cmos_resolver;
 mod default_cmos_values;
 mod root_cpu_data;
 
+pub use cmos_resolver::PcatDefaultCmosValuesResolver;
 pub use default_cmos_values::default_cmos_values;
+pub use default_cmos_values::default_cmos_values_from_ram_size;
 
 use self::bios_boot_order::bios_boot_order;
 use chipset_device::ChipsetDevice;

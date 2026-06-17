@@ -1620,10 +1620,12 @@ impl InitializedVm {
             )));
         }
 
-        let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
-            Some(firmware_pcat::default_cmos_values(&mem_layout))
-        } else {
-            None
+        let is_pcat = matches!(cfg.load_mode, LoadMode::Pcat { .. });
+        let pcat_cmos_resource = || {
+            chipset_resources::cmos_rtc_initial_values::PcatDefaultCmosValuesHandle {
+                first_ram_block_size: mem_layout.ram()[0].range.len(),
+            }
+            .into_resource()
         };
 
         let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
@@ -1634,7 +1636,7 @@ impl InitializedVm {
                 }
                 .into_resource(),
                 century_reg_idx: 0x32, // TODO: automatically sync with FADT
-                initial_cmos: initial_rtc_cmos,
+                initial_cmos: is_pcat.then(&pcat_cmos_resource),
             }
         });
 
@@ -1744,7 +1746,7 @@ impl InitializedVm {
                     delta_milliseconds: cfg.rtc_delta_milliseconds,
                 }
                 .into_resource(),
-                initial_cmos: initial_rtc_cmos,
+                initial_cmos: is_pcat.then(&pcat_cmos_resource),
                 enlightened_interrupts: true, // As advertised by the PCAT BIOS.
             }
         });

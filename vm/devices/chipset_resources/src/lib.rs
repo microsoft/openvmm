@@ -26,6 +26,23 @@ impl CanResolveTo<ResolvedCmosRtcTimeSource> for CmosRtcTimeSourceHandleKind {
     type Input<'a> = ();
 }
 
+/// Resource kind for CMOS RTC initial values.
+///
+/// Resolving a resource of this kind produces a 256-byte array of initial CMOS
+/// RAM contents.
+pub enum CmosRtcInitialValuesKind {}
+
+impl ResourceKind for CmosRtcInitialValuesKind {
+    const NAME: &'static str = "cmos_rtc_initial_values";
+}
+
+/// Resolved initial CMOS RAM values (256 bytes).
+pub struct ResolvedCmosRtcInitialValues(pub [u8; 256]);
+
+impl CanResolveTo<ResolvedCmosRtcInitialValues> for CmosRtcInitialValuesKind {
+    type Input<'a> = ();
+}
+
 pub mod cmos_rtc_time_source {
     //! Resource definitions and resolvers for CMOS RTC time sources.
 
@@ -73,6 +90,30 @@ pub mod cmos_rtc_time_source {
                 LocalClockDelta::from_millis(resource.delta_milliseconds),
             ))))
         }
+    }
+}
+
+pub mod cmos_rtc_initial_values {
+    //! Resource definitions for CMOS RTC initial values.
+
+    use super::CmosRtcInitialValuesKind;
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+
+    /// A handle that provides PCAT-default CMOS values computed from VM memory
+    /// topology.
+    ///
+    /// The resolver uses the first RAM block size to compute extended memory
+    /// fields in the 256-byte CMOS image, matching what the PCAT BIOS expects.
+    #[derive(MeshPayload)]
+    pub struct PcatDefaultCmosValuesHandle {
+        /// Size of the first RAM block in bytes. Used to compute the extended
+        /// memory CMOS fields.
+        pub first_ram_block_size: u64,
+    }
+
+    impl ResourceId<CmosRtcInitialValuesKind> for PcatDefaultCmosValuesHandle {
+        const ID: &'static str = "pcat_default_cmos_values";
     }
 }
 
