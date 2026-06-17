@@ -302,6 +302,90 @@ enum DescribedChoice {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Arbitrary, Protobuf)]
+#[mesh(transparent)]
+struct TransparentMessage(Simple);
+
+#[derive(Debug, Clone, PartialEq, Eq, Arbitrary, Protobuf)]
+struct WithSigned {
+    #[mesh(1, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    a: i32,
+    #[mesh(2, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    b: i64,
+    #[mesh(3, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    c: i16,
+    #[mesh(4, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    d: i8,
+    #[mesh(5, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    e: isize,
+    #[mesh(6, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    nz_a: NonZeroI32,
+    #[mesh(7, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    nz_b: NonZeroI64,
+    #[mesh(8, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    flag: bool,
+    #[mesh(9, encoding = "mesh_protobuf::encoding::SignedVarintField")]
+    ch: char,
+    #[mesh(
+        10,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::SignedVarintField>"
+    )]
+    packed: Vec<i64>,
+    #[mesh(
+        11,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::SignedVarintField>>"
+    )]
+    nested: Vec<Vec<i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Arbitrary, Protobuf)]
+struct WithFixedInts {
+    #[mesh(1, encoding = "mesh_protobuf::encoding::Fixed32Field")]
+    a: u32,
+    #[mesh(2, encoding = "mesh_protobuf::encoding::Fixed32Field")]
+    b: i32,
+    #[mesh(3, encoding = "mesh_protobuf::encoding::Fixed64Field")]
+    c: u64,
+    #[mesh(4, encoding = "mesh_protobuf::encoding::Fixed64Field")]
+    d: i64,
+    #[mesh(
+        5,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::Fixed32Field>"
+    )]
+    packed32: Vec<u32>,
+    #[mesh(
+        6,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::Fixed64Field>"
+    )]
+    packed64: Vec<u64>,
+    #[mesh(
+        7,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::Fixed32Field>>"
+    )]
+    nested32: Vec<Vec<u32>>,
+    #[mesh(
+        8,
+        encoding = "mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::VecField<mesh_protobuf::encoding::Fixed64Field>>"
+    )]
+    nested64: Vec<Vec<u64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Arbitrary, Protobuf)]
+struct WithBytesField {
+    #[mesh(1, encoding = "mesh_protobuf::encoding::BytesField")]
+    raw: Vec<u8>,
+    #[mesh(2)]
+    tail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Protobuf)]
+struct WithBorrowedCow<'a> {
+    #[mesh(1, encoding = "mesh_protobuf::encoding::BorrowedCowField")]
+    text: Cow<'a, str>,
+    #[mesh(2, encoding = "mesh_protobuf::encoding::BorrowedCowField")]
+    bytes: Cow<'a, [u8]>,
+}
+
 #[derive(Debug, Arbitrary)]
 enum TargetType {
     /// Tuple of a single varint primitive.
@@ -390,6 +474,18 @@ enum TargetType {
     DescribedSimpleT,
     /// Described `oneof` message (`#[mesh(package = ...)]`).
     DescribedChoiceT,
+    /// Transparent newtype wrapping a message (`MessageDecode` path).
+    TransparentMessageT,
+    /// Struct of zigzag (`SignedVarintField`) integer fields.
+    WithSignedT,
+    /// Struct of `Fixed32`/`Fixed64`-encoded integer fields.
+    WithFixedIntsT,
+    /// Struct with a `BytesField`-encoded `Vec<u8>`.
+    WithBytesFieldT,
+    /// `Box<Simple>` — exercises the `Box` message decoder.
+    BoxSimpleT,
+    /// `Arc<Simple>` — exercises the `Arc` message decoder.
+    ArcSimpleT,
 }
 
 #[derive(Debug, Arbitrary)]
@@ -433,6 +529,21 @@ enum Action {
     RoundtripF32Vec(Vec<f32>),
     RoundtripF64Vec(Vec<f64>),
     RoundtripSerialized(Vec<u8>),
+    RoundtripTransparentMessage(TransparentMessage),
+    RoundtripWithSigned(WithSigned),
+    RoundtripWithFixedInts(WithFixedInts),
+    RoundtripWithBytesField(WithBytesField),
+    RoundtripBoxSimple(Simple),
+    RoundtripArcSimple(Simple),
+    RoundtripDuration {
+        secs: u64,
+        nanos: u32,
+    },
+    RoundtripProtobufMessage(Simple),
+    RoundtripBorrowedCow {
+        text: String,
+        bytes: Vec<u8>,
+    },
 
     /// Decode arbitrary bytes and merge them into an existing value. Merge
     /// semantics differ per encoding: scalars overwrite, repeated fields
@@ -498,6 +609,20 @@ enum Action {
         initial: Celsius,
         data: Vec<u8>,
     },
+    MergeTransparentMessage {
+        initial: TransparentMessage,
+        data: Vec<u8>,
+    },
+    MergeWithSigned {
+        initial: WithSigned,
+        data: Vec<u8>,
+    },
+    MergeWithFixedInts {
+        initial: WithFixedInts,
+        data: Vec<u8>,
+    },
+
+    DecodeBorrowedCow(Vec<u8>),
 
     /// Serialize a message via [`SerializedMessage::from_message`] and decode it
     /// back via [`SerializedMessage::into_message`].
@@ -561,6 +686,12 @@ fn try_decode_target(target: TargetType, data: &[u8]) {
         TargetType::ProtobufAnyT => try_decode::<ProtobufAny>(data),
         TargetType::DescribedSimpleT => try_decode::<DescribedSimple>(data),
         TargetType::DescribedChoiceT => try_decode::<DescribedChoice>(data),
+        TargetType::TransparentMessageT => try_decode::<TransparentMessage>(data),
+        TargetType::WithSignedT => try_decode::<WithSigned>(data),
+        TargetType::WithFixedIntsT => try_decode::<WithFixedInts>(data),
+        TargetType::WithBytesFieldT => try_decode::<WithBytesField>(data),
+        TargetType::BoxSimpleT => try_decode::<Box<Simple>>(data),
+        TargetType::ArcSimpleT => try_decode::<Arc<Simple>>(data),
     }
 }
 
@@ -639,15 +770,59 @@ fn roundtrip_f64_vec(value: Vec<f64>) {
     }
 }
 
-/// Round-trips a value through the [`EncodeAs`] translation encoding.
 fn roundtrip_encode_as(value: Celsius) {
-    let bytes = encode(EncodeAs::<Celsius, CelsiusEncoded>::new(value.clone()));
+    let wrapper: EncodeAs<Celsius, CelsiusEncoded> = value.clone().into();
+    let mut cloned = wrapper.clone();
+    assert_eq!(*cloned, value, "EncodeAs must deref to the inner value");
+    // Touch the value through `DerefMut` and `Debug` so those impls are covered.
+    std::hint::black_box(&mut *cloned);
+    std::hint::black_box(format!("{cloned:?}"));
+    let bytes = encode(wrapper);
     let decoded = decode::<EncodeAs<Celsius, CelsiusEncoded>>(&bytes)
         .expect("a value produced by encode() must decode without error");
     assert_eq!(
         value,
         decoded.into_inner(),
         "EncodeAs round-trip must preserve the value"
+    );
+}
+
+fn roundtrip_duration(secs: u64, nanos: u32) {
+    let value = Duration::new(secs & i64::MAX as u64, nanos % 1_000_000_000);
+    let bytes = encode(value);
+    let decoded =
+        decode::<Duration>(&bytes).expect("a value produced by encode() must decode without error");
+    assert_eq!(
+        value, decoded,
+        "Duration round-trip must preserve the value"
+    );
+}
+
+fn roundtrip_protobuf_message(value: Simple) {
+    let message = ProtobufMessage::new(value.clone());
+    let bytes = encode(message);
+    let decoded = decode::<ProtobufMessage>(&bytes)
+        .expect("a value produced by encode() must decode without error");
+    let parsed = decoded
+        .parse::<Simple>()
+        .expect("the inner message must decode back into its original type");
+    assert_eq!(
+        value, parsed,
+        "ProtobufMessage round-trip must preserve the value"
+    );
+}
+
+fn roundtrip_borrowed_cow(text: String, bytes: Vec<u8>) {
+    let value = WithBorrowedCow {
+        text: Cow::Owned(text),
+        bytes: Cow::Owned(bytes),
+    };
+    let encoded = encode(value.clone());
+    let decoded = decode::<WithBorrowedCow<'_>>(&encoded)
+        .expect("a value produced by encode() must decode without error");
+    assert_eq!(
+        value, decoded,
+        "BorrowedCow round-trip must preserve the value"
     );
 }
 
@@ -691,6 +866,9 @@ fn exercise_any(value: DescribedSimple) {
         any.parse::<DescribedChoice>().is_err(),
         "ProtobufAny must reject a type-URL mismatch"
     );
+    // Exercise both the compact and the alternate `Debug` representations.
+    std::hint::black_box(format!("{any:?}"));
+    std::hint::black_box(format!("{any:#?}"));
 }
 
 fn do_fuzz(action: Action) {
@@ -784,6 +962,27 @@ fn do_fuzz(action: Action) {
                 EncodeAs::<Celsius, CelsiusEncoded>::new(initial),
                 &data,
             );
+        }
+        Action::MergeTransparentMessage { initial, data } => {
+            let _ = merge::<TransparentMessage>(initial, &data);
+        }
+        Action::MergeWithSigned { initial, data } => {
+            let _ = merge::<WithSigned>(initial, &data);
+        }
+        Action::MergeWithFixedInts { initial, data } => {
+            let _ = merge::<WithFixedInts>(initial, &data);
+        }
+        Action::RoundtripTransparentMessage(v) => roundtrip(v),
+        Action::RoundtripWithSigned(v) => roundtrip(v),
+        Action::RoundtripWithFixedInts(v) => roundtrip(v),
+        Action::RoundtripWithBytesField(v) => roundtrip(v),
+        Action::RoundtripBoxSimple(v) => roundtrip(Box::new(v)),
+        Action::RoundtripArcSimple(v) => roundtrip(Arc::new(v)),
+        Action::RoundtripDuration { secs, nanos } => roundtrip_duration(secs, nanos),
+        Action::RoundtripProtobufMessage(v) => roundtrip_protobuf_message(v),
+        Action::RoundtripBorrowedCow { text, bytes } => roundtrip_borrowed_cow(text, bytes),
+        Action::DecodeBorrowedCow(data) => {
+            let _ = decode::<WithBorrowedCow<'_>>(&data);
         }
     }
 }
