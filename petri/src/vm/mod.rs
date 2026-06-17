@@ -169,6 +169,9 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     openhcl_agent_image: Option<AgentImage>,
     /// The boot device type for the VM
     boot_device_type: BootDeviceType,
+    /// Override for the PCIe root port the boot NVMe controller is placed on
+    /// when [`BootDeviceType::PcieNvme`] is used. Defaults to `s0rc0rp0`.
+    pcie_boot_port: Option<String>,
 
     // Minimal mode: skip default devices, serial, save/restore.
     minimal_mode: bool,
@@ -200,6 +203,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("agent_image", &self.agent_image)
             .field("openhcl_agent_image", &self.openhcl_agent_image)
             .field("boot_device_type", &self.boot_device_type)
+            .field("pcie_boot_port", &self.pcie_boot_port)
             .field("minimal_mode", &self.minimal_mode)
             .field("enable_serial", &self.enable_serial)
             .field("enable_screenshots", &self.enable_screenshots)
@@ -455,6 +459,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             agent_image: artifacts.agent_image,
             openhcl_agent_image: artifacts.openhcl_agent_image,
             boot_device_type,
+            pcie_boot_port: None,
 
             minimal_mode: false,
             pipette_binary: artifacts.pipette_binary,
@@ -531,6 +536,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             agent_image: artifacts.agent_image,
             openhcl_agent_image: artifacts.openhcl_agent_image,
             boot_device_type,
+            pcie_boot_port: None,
 
             minimal_mode: true,
             pipette_binary: artifacts.pipette_binary,
@@ -922,8 +928,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 BootDeviceType::NvmeViaScsi => todo!(),
                 BootDeviceType::NvmeViaNvme => todo!(),
                 BootDeviceType::PcieNvme => {
+                    let port_name = self
+                        .pcie_boot_port
+                        .clone()
+                        .unwrap_or_else(|| "s0rc0rp0".into());
                     self.config.pcie_nvme_drives.push(PcieNvmeDrive {
-                        port_name: "s0rc0rp0".into(),
+                        port_name,
                         nsid: 1,
                         drive: boot_drive,
                     });
@@ -1512,6 +1522,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// This overrides the default, which is determined by the firmware type.
     pub fn with_boot_device_type(mut self, boot: BootDeviceType) -> Self {
         self.boot_device_type = boot;
+        self
+    }
+
+    /// Override the PCIe root port that the boot NVMe controller is placed on
+    /// when using [`BootDeviceType::PcieNvme`].
+    ///
+    /// The named port must exist in the PCIe topology added via the backend's
+    /// `with_pcie_root_topology`. Defaults to `s0rc0rp0`.
+    pub fn with_pcie_boot_port(mut self, port_name: &str) -> Self {
+        self.pcie_boot_port = Some(port_name.to_string());
         self
     }
 
