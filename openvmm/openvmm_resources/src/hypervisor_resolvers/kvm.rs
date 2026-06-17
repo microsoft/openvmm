@@ -23,6 +23,8 @@ impl vm_resource::ResolveResource<HypervisorKind, KvmHandle> for KvmResolver {
         #[cfg(guest_arch = "x86_64")]
         {
             backend.nested_virt = resource.nested_virt;
+            backend.hv_enlightenments = resource.hv_enlightenments;
+            backend.cpu_model = resource.cpu_model;
         }
         Ok(ResolvedHypervisorBackend::new(backend))
     }

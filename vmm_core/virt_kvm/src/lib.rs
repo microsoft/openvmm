@@ -66,6 +66,9 @@ pub enum KvmError {
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,
     #[cfg(guest_arch = "x86_64")]
+    #[error("unknown CPU model: {0}; expected `host`, `max`, or a known model name")]
+    UnknownCpuModel(String),
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
@@ -115,6 +118,12 @@ struct KvmPartitionInner {
 
     #[cfg(guest_arch = "x86_64")]
     reserved_vps_per_socket: u32,
+
+    /// The Hyper-V enlightenments configured for this partition, consulted at
+    /// VP bind time to enable the matching KVM capabilities.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    hv_enlightenments: hypervisor_resources::HvEnlightenments,
 
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
