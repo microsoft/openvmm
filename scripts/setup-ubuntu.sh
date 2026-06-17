@@ -59,7 +59,7 @@ OUTDIR="${1:-./ubuntu-uefi}"
 # --- Check required tools ---
 
 missing=()
-for tool in curl qemu-img mkfs.vfat mcopy; do
+for tool in curl qemu-img mkfs.vfat mcopy iconv; do
     if ! command -v "$tool" &>/dev/null; then
         missing+=("$tool")
     fi
@@ -114,7 +114,6 @@ echo "Creating cloud-init seed disk..."
 cat > user-data <<USERDATA
 #cloud-config
 hostname: ubuntu
-ssh_pwauth: true
 chpasswd:
   expire: false
   users:
@@ -171,7 +170,7 @@ To boot with OpenVMM (from the openvmm repo root):
     --uefi \\
     --com1 console \\
     --uefi-console-mode com1 \\
-    --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=256M,high_mmio=512G \\
+    --pcie-root-complex rc0 \\
     --pcie-root-port rc0:disk \\
     --pcie-root-port rc0:cidata \\
     --pcie-root-port rc0:net \\
