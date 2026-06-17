@@ -2177,6 +2177,33 @@ async fn new_underhill_vm(
         (None, None)
     };
 
+    // For hibernate-enabled VMs, decide at boot whether the VMGS backing store
+    // is large enough to also hold a firmware image snapshot. This decision is
+    // saved and used to choose the power token value written at hibernate time
+    // (see `halt_task`), avoiding a query on the power-off path.
+    //
+    // TODO: when `hibernation_firmware_stored` is true, stash the loaded UEFI
+    // firmware image into `vmgs::FileId::HIBERNATION_FIRMWARE` so it can be
+    // restored on resume.
+    let hibernation_firmware_stored = if dps.general.hibernation_enabled {
+        match &vmgs_client {
+            Some(vmgs_client) => match vmgs_client.device_size().await {
+                Ok(size) => size >= hibernation_token::VMGS_FIRMWARE_THRESHOLD_BYTES,
+                Err(err) => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "failed to query VMGS size; assuming no firmware snapshot"
+                    );
+                    false
+                }
+            },
+            None => false,
+        }
+    } else {
+        false
+    };
+
     // Enable remote chipset devices.
     resolver.add_async_resolver(
         chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
@@ -3610,6 +3637,7 @@ async fn new_underhill_vm(
             control_send.clone(),
             get_client.clone(),
             vmgs_client.clone(),
+            hibernation_firmware_stored,
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3890,6 +3918,7 @@ async fn halt_task(
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
     vmgs_client: Option<vmgs_broker::VmgsClient>,
+    hibernation_firmware_stored: bool,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3956,24 +3985,13 @@ async fn halt_task(
                 }
                 HaltRequest::Hibernate => {
                     // Write the power token before signaling the host, matching
-                    // the legacy HCL flow. A VMGS large enough to hold a
-                    // firmware image snapshot gets the "firmware stored" marker.
+                    // the legacy HCL flow. Whether the VMGS is large enough to
+                    // hold a firmware image snapshot was decided at boot.
                     if let Some(vmgs_client) = &vmgs_client {
-                        let token = match vmgs_client.device_size().await {
-                            Ok(size)
-                                if size >= hibernation_token::VMGS_FIRMWARE_THRESHOLD_BYTES =>
-                            {
-                                hibernation_token::FIRMWARE_STORED
-                            }
-                            Ok(_) => hibernation_token::HIBERNATED,
-                            Err(err) => {
-                                tracing::error!(
-                                    CVM_ALLOWED,
-                                    error = &err as &dyn std::error::Error,
-                                    "failed to query VMGS size; assuming no firmware snapshot"
-                                );
-                                hibernation_token::HIBERNATED
-                            }
+                        let token = if hibernation_firmware_stored {
+                            hibernation_token::FIRMWARE_STORED
+                        } else {
+                            hibernation_token::HIBERNATED
                         };
                         write_hibernation_token(vmgs_client, token).await;
                     }
