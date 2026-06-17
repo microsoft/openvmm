@@ -59,11 +59,7 @@ pub struct LoadUefiParams<'a> {
     pub pcie_host_bridges: &'a [PcieHostBridge],
     pub settings: UefiLoadSettings,
     pub chipset_mmio: &'a ChipsetMmioRanges,
-    pub madt: &'a [u8],
-    pub srat: &'a [u8],
-    pub slit: Option<&'a [u8]>,
-    pub mcfg: Option<&'a [u8]>,
-    pub pptt: Option<&'a [u8]>,
+    pub acpi_tables: &'a [&'a [u8]],
 }
 
 /// Loads the UEFI firmware.
@@ -76,11 +72,7 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         pcie_host_bridges,
         ref settings,
         chipset_mmio,
-        madt,
-        srat,
-        slit,
-        mcfg,
-        pptt,
+        acpi_tables,
     } = *params;
 
     let mut loaded_image;
@@ -147,8 +139,6 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         bios_size_pages: (IMAGE_SIZE / HV_PAGE_SIZE) as u32,
         flags: 0,
     })
-    .add_raw(config::BlobStructureType::Madt, madt)
-    .add_raw(config::BlobStructureType::Srat, srat)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
     .add(&config::BiosGuid(settings.bios_guid))
     .add(&config::Entropy(entropy))
@@ -190,22 +180,14 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         });
     }
 
-    if let Some(mcfg) = mcfg {
-        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
-    }
-
-    if let Some(slit) = slit {
-        cfg.add_raw(config::BlobStructureType::Slit, slit);
-    }
-
-    if let Some(pptt) = pptt {
-        cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    for table in acpi_tables {
+        cfg.add_raw(config::BlobStructureType::AcpiTable, table);
     }
 
     if !pcie_host_bridges.is_empty() {
         let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
             .map_err(Error::PcieAcpi)?;
-        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
+        cfg.add_raw(config::BlobStructureType::AcpiTable, &pcie_tables.ssdt);
         if let Some(cedt) = pcie_tables.cedt {
             cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }

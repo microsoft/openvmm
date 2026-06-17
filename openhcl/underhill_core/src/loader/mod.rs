@@ -77,8 +77,6 @@ pub enum Error {
     Finalize(#[source] vtl0_config::Error),
     #[error("invalid acpi table: too short")]
     InvalidAcpiTableLength,
-    #[error("invalid acpi table: unknown header signature {0:?}")]
-    InvalidAcpiTableSignature([u8; 4]),
     #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
@@ -455,20 +453,11 @@ pub fn write_uefi_config(
                 .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 .0;
             match &header.signature {
-                b"APIC" => {
-                    build_madt = false;
-                    cfg.add_raw(config::BlobStructureType::Madt, table)
-                }
-                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
-                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
-                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
-                b"SRAT" => {
-                    build_srat = false;
-                    cfg.add_raw(config::BlobStructureType::Srat, table)
-                }
-                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
-                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
+                b"APIC" => build_madt = false,
+                b"SRAT" => build_srat = false,
+                _ => {}
             };
+            cfg.add_raw(config::BlobStructureType::AcpiTable, table);
         }
     }
 
@@ -502,13 +491,17 @@ pub fn write_uefi_config(
 
         // Build the ACPI tables as specified.
         if build_madt {
-            let madt = acpi_builder.build_madt();
-            cfg.add_raw(config::BlobStructureType::Madt, &madt);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_madt(),
+            );
         }
 
         if build_srat {
-            let srat = acpi_builder.build_srat();
-            cfg.add_raw(config::BlobStructureType::Srat, &srat);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_srat(),
+            );
         }
     }
 
@@ -549,12 +542,12 @@ pub fn write_uefi_config(
         });
 
         if let Some(slit) = igvm_parameters.slit() {
-            cfg.add_raw(config::BlobStructureType::Slit, slit);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, slit);
         }
 
         // TODO: reconstruct this instead of getting it from the host.
         if let Some(pptt) = igvm_parameters.pptt() {
-            cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
         }
     }
 
