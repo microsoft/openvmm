@@ -1442,6 +1442,13 @@ impl IntoPipeline for CheckinGatesCli {
             }
             filter
         };
+        let exclude_checkin_disabled_vmm_tests = |filter: String| {
+            // CCA has a dedicated xflowey pipeline that installs and drives the
+            // Arm emulator. Do not let broad check-in gate filters select the
+            // custom CCA Petri test binary.
+            format!("({filter}) & !binary(cca)")
+        };
+
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
@@ -1582,6 +1589,7 @@ impl IntoPipeline for CheckinGatesCli {
                 continue;
             }
 
+            let nextest_filter_expr = exclude_checkin_disabled_vmm_tests(nextest_filter_expr);
             let test_label = format!("{label}-vmm-tests");
 
             let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
