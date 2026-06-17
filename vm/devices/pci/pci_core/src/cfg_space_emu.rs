@@ -576,9 +576,9 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         value.set_value(read_value);
 
         tracing::trace!(
-            "ConfigSpaceCommonHeaderEmulator: read offset={:#x} -> value={:#x}",
+            ?value,
+            "ConfigSpaceCommonHeaderEmulator: read offset={:#x}",
             offset,
-            read_value
         );
         // Handled access
         CommonHeaderResult::Handled
@@ -595,9 +595,9 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         let offset = address.byte_offset();
 
         tracing::trace!(
-            "ConfigSpaceCommonHeaderEmulator: write offset={:#x} val={:#x}",
+            ?val,
+            "ConfigSpaceCommonHeaderEmulator: write offset={:#x}",
             offset,
-            val.extract()
         );
 
         match CommonHeader(offset) {
@@ -607,7 +607,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
                     tracelimit::warn_ratelimited!(
                         offset,
-                        val = val,
+                        val,
                         "setting invalid command bits"
                     );
                     // still do our best
@@ -727,7 +727,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             } else {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val.extract(),
+                    ?val,
                     "unhandled config space write"
                 );
                 CommonHeaderResult::Failed(IoError::InvalidRegister)
@@ -797,7 +797,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             } else {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val.extract(),
+                    ?val,
                     "unhandled extended config space write"
                 );
                 CommonHeaderResult::Failed(IoError::InvalidRegister)
@@ -1130,7 +1130,7 @@ impl ConfigSpaceType0Emulator {
             _ => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val.extract(),
+                    ?val,
                     "unexpected config space write"
                 );
                 return IoResult::Err(IoError::InvalidRegister);
@@ -1518,7 +1518,7 @@ impl ConfigSpaceType1Emulator {
             _ => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val.extract(),
+                    ?val,
                     "unexpected config space write"
                 );
                 return IoResult::Err(IoError::InvalidRegister);

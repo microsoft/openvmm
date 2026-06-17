@@ -521,7 +521,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only pcie capabilities"
                 );
             }
@@ -530,7 +530,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only device capabilities"
                 );
             }
@@ -542,7 +542,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only link capabilities"
                 );
             }
@@ -554,7 +554,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only slot capabilities"
                 );
             }
@@ -580,7 +580,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only device capabilities 2"
                 );
             }
@@ -597,7 +597,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only link capabilities 2"
                 );
             }
@@ -609,7 +609,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "write to read-only slot capabilities 2"
                 );
             }
@@ -625,7 +625,7 @@ impl PciCapability for PciExpressCapability {
                 tracelimit::warn_ratelimited!(
                     ?label,
                     offset,
-                    val = val.extract(),
+                    ?val,
                     "unhandled pci express capability write"
                 );
             }

@@ -82,8 +82,8 @@ where
     fn write(&mut self, offset: u16, val: ByteEnabledDword) {
         tracelimit::warn_ratelimited!(
             label = ?self.label,
-            offset,
-            val = val.extract(),
+            ?offset,
+            ?val,
             "write to read-only capability"
         );
     }
