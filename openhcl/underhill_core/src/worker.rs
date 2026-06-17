@@ -3609,6 +3609,7 @@ async fn new_underhill_vm(
             fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
+            vmgs_client.clone(),
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3847,6 +3848,40 @@ where
     reg_state
 }
 
+/// Power token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
+/// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
+/// is written on power off and consumed/cleared on resume.
+mod hibernation_token {
+    /// VMGS backing stores at least this large can hold a firmware image
+    /// snapshot, so a hibernate writes the "firmware stored" marker.
+    pub const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+    /// Written on hibernate when the VMGS is large enough to store firmware.
+    pub const FIRMWARE_STORED: u64 = u64::MAX;
+    /// Written on hibernate when the VMGS is too small to store firmware.
+    pub const HIBERNATED: u64 = 0x1;
+    /// Written on a clean power off / reset to clear any prior hibernate marker.
+    pub const NONE: u64 = 0x0;
+}
+
+/// Best-effort write of an 8-byte power token to the VMGS. Failures are logged
+/// but never block the power transition.
+async fn write_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
+    if let Err(err) = vmgs_client
+        .write_file(
+            vmgs::FileId::HIBERNATION_TOKEN,
+            token.to_le_bytes().to_vec(),
+        )
+        .await
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = &err as &dyn std::error::Error,
+            token,
+            "failed to write hibernation power token"
+        );
+    }
+}
+
 /// Waits for halt notifications and handles them by forwarding them to the
 /// host (when appropriate).
 async fn halt_task(
@@ -3854,6 +3889,7 @@ async fn halt_task(
     mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
+    vmgs_client: Option<vmgs_broker::VmgsClient>,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3904,9 +3940,45 @@ async fn halt_task(
 
             // Now we can notify the host about the halt.
             match halt_request {
-                HaltRequest::PowerOff => get_client.send_power_off(),
-                HaltRequest::Reset => get_client.send_reset(),
-                HaltRequest::Hibernate => get_client.send_hibernate(),
+                HaltRequest::PowerOff => {
+                    // Clear any stale hibernate marker on a clean power off.
+                    if let Some(vmgs_client) = &vmgs_client {
+                        write_hibernation_token(vmgs_client, hibernation_token::NONE).await;
+                    }
+                    get_client.send_power_off()
+                }
+                HaltRequest::Reset => {
+                    // Clear any stale hibernate marker on reset.
+                    if let Some(vmgs_client) = &vmgs_client {
+                        write_hibernation_token(vmgs_client, hibernation_token::NONE).await;
+                    }
+                    get_client.send_reset()
+                }
+                HaltRequest::Hibernate => {
+                    // Write the power token before signaling the host, matching
+                    // the legacy HCL flow. A VMGS large enough to hold a
+                    // firmware image snapshot gets the "firmware stored" marker.
+                    if let Some(vmgs_client) = &vmgs_client {
+                        let token = match vmgs_client.device_size().await {
+                            Ok(size)
+                                if size >= hibernation_token::VMGS_FIRMWARE_THRESHOLD_BYTES =>
+                            {
+                                hibernation_token::FIRMWARE_STORED
+                            }
+                            Ok(_) => hibernation_token::HIBERNATED,
+                            Err(err) => {
+                                tracing::error!(
+                                    CVM_ALLOWED,
+                                    error = &err as &dyn std::error::Error,
+                                    "failed to query VMGS size; assuming no firmware snapshot"
+                                );
+                                hibernation_token::HIBERNATED
+                            }
+                        };
+                        write_hibernation_token(vmgs_client, token).await;
+                    }
+                    get_client.send_hibernate()
+                }
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }
