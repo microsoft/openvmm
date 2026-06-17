@@ -2190,7 +2190,7 @@ async fn new_underhill_vm(
     let mut hibernation_firmware_stored = if dps.general.hibernation_enabled {
         match &vmgs_client {
             Some(vmgs_client) => match vmgs_client.device_size().await {
-                Ok(size) => size >= hibernation_token::VMGS_FIRMWARE_THRESHOLD_BYTES,
+                Ok(size) => size >= VMGS_FIRMWARE_THRESHOLD_BYTES,
                 Err(err) => {
                     tracing::error!(
                         CVM_ALLOWED,
@@ -2273,11 +2273,9 @@ async fn new_underhill_vm(
                     Some(hibernation_token::FIRMWARE_STORED)
                 );
                 let result = if resuming {
-                    restore_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
-                        .await
+                    load_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
                 } else {
-                    snapshot_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
-                        .await
+                    store_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
                 };
                 match result {
                     Ok(()) => {
@@ -3940,13 +3938,14 @@ where
     reg_state
 }
 
+/// VMGS backing stores at least this large can hold a firmware image snapshot,
+/// so a hibernate writes the "firmware stored" marker.
+const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Power token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
 /// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
 /// is written on power off and consumed/cleared on resume.
 mod hibernation_token {
-    /// VMGS backing stores at least this large can hold a firmware image
-    /// snapshot, so a hibernate writes the "firmware stored" marker.
-    pub const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
     /// Written on hibernate when the VMGS is large enough to store firmware.
     pub const FIRMWARE_STORED: u64 = u64::MAX;
     /// Written on hibernate when the VMGS is too small to store firmware.
@@ -3974,14 +3973,14 @@ async fn write_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient, token: u
     }
 }
 
-/// Snapshots the pristine UEFI firmware image out of VTL0 guest memory and into
+/// Stores the pristine UEFI firmware image out of VTL0 guest memory and into
 /// `vmgs::FileId::HIBERNATION_FIRMWARE` so it can be restored identically on
 /// resume from hibernation.
 ///
 /// This must be called *before* any dynamic configuration is written into the
 /// firmware region (i.e. before `write_uefi_config`), so that the stored image
 /// matches the measured firmware as loaded from the IGVM file.
-async fn snapshot_firmware_to_vmgs(
+async fn store_firmware_to_vmgs(
     gm: &GuestMemory,
     firmware_memory: MemoryRange,
     vmgs_client: &vmgs_broker::VmgsClient,
@@ -3997,7 +3996,7 @@ async fn snapshot_firmware_to_vmgs(
     tracing::info!(
         CVM_ALLOWED,
         size_bytes = len,
-        "snapshotted UEFI firmware image to VMGS for hibernation"
+        "stored UEFI firmware image to VMGS for hibernation"
     );
     Ok(())
 }
@@ -4014,13 +4013,13 @@ async fn read_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option
     Some(u64::from_le_bytes(bytes))
 }
 
-/// Restores a previously snapshotted UEFI firmware image from VMGS back into
-/// VTL0 guest memory. Used when resuming a hibernated guest so that the firmware
-/// binary matches what was present when the guest hibernated.
+/// Loads a previously stored UEFI firmware image from VMGS back into VTL0 guest
+/// memory. Used when resuming a hibernated guest so that the firmware binary
+/// matches what was present when the guest hibernated.
 ///
 /// This must be called *before* `write_uefi_config`, so that the current
 /// dynamic config is layered on top of the restored firmware image.
-async fn restore_firmware_from_vmgs(
+async fn load_firmware_from_vmgs(
     gm: &GuestMemory,
     firmware_memory: MemoryRange,
     vmgs_client: &vmgs_broker::VmgsClient,
