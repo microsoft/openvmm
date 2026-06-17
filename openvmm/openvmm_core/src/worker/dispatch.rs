@@ -1411,6 +1411,10 @@ impl InitializedVm {
                     generation_id_recv: mesh::channel().1,
                     rom: Some(Box::new(rom)),
                     replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
+                    rtc_time_source: SystemTimeClockHandle {
+                        delta_milliseconds: cfg.rtc_delta_milliseconds,
+                    }
+                    .into_resource(),
                     config: {
                         let pcat_slit_info =
                             if cfg.numa.nodes.len() > 1 || !cfg.numa.distances.is_empty() {

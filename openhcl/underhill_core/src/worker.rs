@@ -2709,6 +2709,7 @@ async fn new_underhill_vm(
                     .context("failed to get generation ID channel")?,
                 rom: None,
                 replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
+                rtc_time_source: PlatformResource.into_resource(),
             })
         }
         FirmwareType::Uefi | FirmwareType::None => {

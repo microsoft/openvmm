@@ -35,6 +35,7 @@ use guestmem::MapRom;
 use guestmem::UnmapRom;
 use inspect::Inspect;
 use inspect::InspectMut;
+use local_clock::InspectableLocalClock;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::task::Context;
@@ -43,6 +44,7 @@ use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::VpIndex;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::line_interrupt::LineInterrupt;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use zerocopy::IntoBytes;
@@ -204,6 +206,10 @@ pub struct PcatBiosRuntimeDeps<'a> {
     pub register_pio: &'a mut dyn RegisterPortIoIntercept,
     /// Replays the initial MTRRs on all VPs.
     pub replay_mtrrs: Box<dyn Send + FnMut()>,
+    /// Time source for the CMOS RTC sub-emulator.
+    pub rtc_time_source: Box<dyn InspectableLocalClock>,
+    /// Interrupt line for the CMOS RTC (IRQ 8).
+    pub rtc_interrupt: LineInterrupt,
 }
 
 /// PCAT BIOS helper device.
@@ -226,6 +232,8 @@ pub struct PcatBiosDevice {
     // Sub-emulators
     #[inspect(mut)]
     generation_id: generation_id::GenerationId,
+    #[inspect(mut)]
+    cmos_rtc: chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc,
 
     // Runtime book-keeping
     #[inspect(skip)]
@@ -243,6 +251,10 @@ const IO_PORT_DATA_OFFSET: u16 = 0x4;
 
 // Reports BIOS POST status.
 const POST_IO_PORT: u16 = 0x80;
+
+// PIIX4 CMOS RTC port range (standard ports 0x70-0x71 + extended 0x72-0x77).
+const CMOS_RTC_PORT_START: u16 = 0x70;
+const CMOS_RTC_PORT_END: u16 = 0x77;
 
 /// Errors which may occur during PCAT BIOS helper device initialization.
 #[derive(Debug, Error)]
@@ -270,6 +282,8 @@ impl PcatBiosDevice {
             rom,
             register_pio,
             replay_mtrrs,
+            rtc_time_source,
+            rtc_interrupt,
         } = runtime_deps;
 
         let initial_generation_id = config.initial_generation_id;
@@ -296,6 +310,8 @@ impl PcatBiosDevice {
             }
         }
 
+        let initial_cmos = Some(default_cmos_values(&config.mem_layout));
+
         Ok(PcatBiosDevice {
             gm,
             logger,
@@ -304,6 +320,13 @@ impl PcatBiosDevice {
             generation_id: generation_id::GenerationId::new(
                 initial_generation_id,
                 generation_id_deps,
+            ),
+            cmos_rtc: chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
+                rtc_time_source,
+                rtc_interrupt,
+                vmtime,
+                initial_cmos,
+                true, // enlightened_interrupts, as advertised by the PCAT BIOS
             ),
             vmtime_wait: vmtime.access("pcat-wait"),
             deferred_wait: None,
@@ -785,12 +808,17 @@ fn handle_int15_e820_query(mem_layout: &MemoryLayout, e820_entry: u8, read_count
 }
 
 impl ChangeDeviceState for PcatBiosDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        ChangeDeviceState::start(&mut self.cmos_rtc);
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        ChangeDeviceState::stop(&mut self.cmos_rtc).await;
+    }
 
     async fn reset(&mut self) {
         self.generation_id.reset();
+        self.cmos_rtc.reset().await;
         self.state = PcatBiosState::new();
     }
 }
@@ -812,6 +840,7 @@ impl ChipsetDevice for PcatBiosDevice {
 impl PollDevice for PcatBiosDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         self.generation_id.poll(cx);
+        PollDevice::poll_device(&mut self.cmos_rtc, cx);
         while self.vmtime_wait.poll_timeout(cx).is_ready() {
             if let Some(deferred) = self.deferred_wait.take() {
                 tracing::trace!("releasing deferred wait");
@@ -851,6 +880,10 @@ impl MmioIntercept for PcatBiosDevice {
 
 impl PortIoIntercept for PcatBiosDevice {
     fn io_read(&mut self, io_port: u16, data: &mut [u8]) -> IoResult {
+        if (CMOS_RTC_PORT_START..=CMOS_RTC_PORT_END).contains(&io_port) {
+            return PortIoIntercept::io_read(&mut self.cmos_rtc, io_port, data);
+        }
+
         if io_port == POST_IO_PORT {
             data.copy_from_slice(&self.state.port80.to_ne_bytes()[..data.len()]);
             return IoResult::Ok;
@@ -898,6 +931,10 @@ impl PortIoIntercept for PcatBiosDevice {
     }
 
     fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
+        if (CMOS_RTC_PORT_START..=CMOS_RTC_PORT_END).contains(&io_port) {
+            return PortIoIntercept::io_write(&mut self.cmos_rtc, io_port, data);
+        }
+
         if io_port == POST_IO_PORT {
             let mut v = [0; 4];
             v[..data.len()].copy_from_slice(data);
@@ -968,6 +1005,8 @@ impl PortIoIntercept for PcatBiosDevice {
             ("pcat_bios", IO_PORT_RANGE_BEGIN..=IO_PORT_RANGE_END),
             // NOTE: POST port 0x80 might overlap with a an ISA DMA page register.
             ("post", POST_IO_PORT..=POST_IO_PORT),
+            ("rtc", CMOS_RTC_PORT_START..=0x71),
+            ("rtc-ext", 0x72..=CMOS_RTC_PORT_END),
         ]
     }
 }
@@ -1065,6 +1104,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc;
         use generation_id::GenerationId;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SaveRestore;
@@ -1092,6 +1132,8 @@ mod save_restore {
 
             #[mesh(9)]
             pub genid: <GenerationId as SaveRestore>::SavedState,
+            #[mesh(10)]
+            pub cmos_rtc: <Piix4CmosRtc as SaveRestore>::SavedState,
         }
     }
 
@@ -1120,6 +1162,7 @@ mod save_restore {
                 entropy,
                 entropy_placed,
                 genid: self.generation_id.save()?,
+                cmos_rtc: self.cmos_rtc.save()?,
             };
 
             // sanity check that there aren't any outstanding deferred IOs
@@ -1139,6 +1182,7 @@ mod save_restore {
                 entropy,
                 entropy_placed,
                 genid,
+                cmos_rtc,
             } = state;
 
             self.state = PcatBiosState {
@@ -1153,6 +1197,7 @@ mod save_restore {
             };
 
             self.generation_id.restore(genid)?;
+            self.cmos_rtc.restore(cmos_rtc)?;
 
             Ok(())
         }

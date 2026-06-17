@@ -489,11 +489,18 @@ impl<'a> BaseChipsetBuilder<'a> {
             generation_id_recv,
             rom,
             replay_mtrrs,
+            rtc_time_source,
         }) = deps_hyperv_firmware_pcat
         {
+            let resolved_rtc = resolver
+                .resolve(rtc_time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("pcat").try_add(|services| {
                 let notify_interrupt =
                     services.new_line(GPE0_LINE_SET, "genid", GPE0_LINE_GENERATION_ID);
+                // hard-coded to IRQ line 8, as per PIIX4 spec
+                let rtc_interrupt = services.new_line(IRQ_LINE_SET, "rtc", 8);
                 firmware_pcat::PcatBiosDevice::new(
                     firmware_pcat::PcatBiosRuntimeDeps {
                         gm: foundation.trusted_vtl0_dma_memory.clone(),
@@ -507,6 +514,8 @@ impl<'a> BaseChipsetBuilder<'a> {
                         rom,
                         register_pio: &mut services.register_pio(),
                         replay_mtrrs,
+                        rtc_time_source: resolved_rtc.0,
+                        rtc_interrupt,
                     },
                     config,
                 )
@@ -1218,6 +1227,9 @@ pub mod options {
             /// Trigger the partition to replay the initially-set MTRRs across
             /// all VPs.
             pub replay_mtrrs: Box<dyn Send + FnMut()>,
+            /// Time source for the CMOS RTC sub-emulator.
+            pub rtc_time_source:
+                vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
         }
 
         /// Hyper-V specific framebuffer device

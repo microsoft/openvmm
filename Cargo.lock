@@ -2016,11 +2016,13 @@ name = "firmware_pcat"
 version = "0.0.0"
 dependencies = [
  "chipset_device",
+ "chipset_legacy",
  "generation_id",
  "getrandom 0.4.2",
  "guestmem",
  "guid",
  "inspect",
+ "local_clock",
  "memory_range",
  "mesh",
  "open_enum",
