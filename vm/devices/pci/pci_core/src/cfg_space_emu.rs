@@ -605,11 +605,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 let val = val.merge(self.state.command.into_bits() as u32);
                 let mut command = cfg_space::Command::from_bits(val as u16);
                 if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
-                    tracelimit::warn_ratelimited!(
-                        offset,
-                        val,
-                        "setting invalid command bits"
-                    );
+                    tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
                     // still do our best
                     command =
                         cfg_space::Command::from_bits(command.into_bits() & SUPPORTED_COMMAND_BITS);
@@ -725,11 +721,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 self.capabilities[cap_index].write(cap_offset, val);
                 CommonHeaderResult::Handled
             } else {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    ?val,
-                    "unhandled config space write"
-                );
+                tracelimit::warn_ratelimited!(offset, ?val, "unhandled config space write");
                 CommonHeaderResult::Failed(IoError::InvalidRegister)
             }
         } else {
@@ -1128,11 +1120,7 @@ impl ConfigSpaceType0Emulator {
             // all other base regs are noops
             _ if offset < COMMON_HEADER_END && offset.is_multiple_of(4) => (),
             _ => {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    ?val,
-                    "unexpected config space write"
-                );
+                tracelimit::warn_ratelimited!(offset, ?val, "unexpected config space write");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         }
@@ -1516,11 +1504,7 @@ impl ConfigSpaceType1Emulator {
             // all other base regs are noops
             _ if offset < COMMON_HEADER_END && offset.is_multiple_of(4) => (),
             _ => {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    ?val,
-                    "unexpected config space write"
-                );
+                tracelimit::warn_ratelimited!(offset, ?val, "unexpected config space write");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         }
