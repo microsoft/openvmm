@@ -3724,6 +3724,7 @@ async fn new_underhill_vm(
             control_send.clone(),
             get_client.clone(),
             vmgs_client.clone(),
+            dps.general.hibernation_enabled,
             hibernation_firmware_stored,
             env_cfg.halt_on_guest_halt,
         ),
@@ -4130,6 +4131,7 @@ async fn halt_task(
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
     vmgs_client: Option<vmgs_broker::VmgsClient>,
+    hibernation_enabled: bool,
     hibernation_firmware_stored: bool,
     halt_on_guest_halt: bool,
 ) {
@@ -4183,17 +4185,23 @@ async fn halt_task(
             match halt_request {
                 HaltRequest::PowerOff => {
                     // Write the NONE hibernate token to clear any stale hibernate
-                    // state on a clean power off.
-                    if let Some(vmgs_client) = &vmgs_client {
-                        write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                    // state on a clean power off. Only relevant when hibernation
+                    // is enabled; otherwise there is no token to clear.
+                    if hibernation_enabled {
+                        if let Some(vmgs_client) = &vmgs_client {
+                            write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                        }
                     }
                     get_client.send_power_off()
                 }
                 HaltRequest::Reset => {
                     // Write the NONE hibernate token to clear any stale hibernate
-                    // state on reset.
-                    if let Some(vmgs_client) = &vmgs_client {
-                        write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                    // state on reset. Only relevant when hibernation is enabled;
+                    // otherwise there is no token to clear.
+                    if hibernation_enabled {
+                        if let Some(vmgs_client) = &vmgs_client {
+                            write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                        }
                     }
                     get_client.send_reset()
                 }
