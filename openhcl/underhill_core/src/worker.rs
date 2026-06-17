@@ -2177,35 +2177,6 @@ async fn new_underhill_vm(
         (None, None)
     };
 
-    // For hibernate-enabled VMs, decide at boot whether the VMGS backing store
-    // is large enough to also hold a firmware image snapshot. This decision is
-    // saved and used to choose the hibernate token value written at hibernate time
-    // (see `halt_task`), avoiding a query on the power-off path.
-    //
-    // If the store is large enough, the pristine UEFI firmware image is later
-    // snapshotted into `vmgs::FileId::HIBERNATION_FIRMWARE` (see below, after
-    // the measured VTL0 config is read). If that snapshot fails, this flag is
-    // downgraded to `false` so the hibernate token reflects that no firmware
-    // was stored.
-    let mut hibernation_firmware_stored = if dps.general.hibernation_enabled {
-        match &vmgs_client {
-            Some(vmgs_client) => match vmgs_client.device_size().await {
-                Ok(size) => size >= VMGS_FIRMWARE_THRESHOLD_BYTES,
-                Err(err) => {
-                    tracing::error!(
-                        CVM_ALLOWED,
-                        error = &err as &dyn std::error::Error,
-                        "failed to query VMGS size; assuming no firmware snapshot"
-                    );
-                    false
-                }
-            },
-            None => false,
-        }
-    } else {
-        false
-    };
-
     // Enable remote chipset devices.
     resolver.add_async_resolver(
         chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
@@ -2244,22 +2215,27 @@ async fn new_underhill_vm(
         }
     };
 
-    // Hibernation firmware compatibility (OpenHCL-only). Both operations below
-    // happen *before* any dynamic config is written into the firmware region
-    // (that happens later in `load_firmware` via `write_uefi_config`), so the
-    // current dynamic config is layered on top of the pristine/restored image.
+    // Hibernation firmware compatibility (OpenHCL-only). Determine whether a
+    // firmware image snapshot will be present in VMGS for the next hibernation,
+    // and ensure the firmware region is correct for this boot. Both operations
+    // below happen *before* any dynamic config is written into the firmware
+    // region (that happens later in `load_firmware` via `write_uefi_config`), so
+    // the current dynamic config is layered on top of the pristine/restored
+    // image.
     //
-    // - Phase 1 (normal boot): snapshot the pristine UEFI firmware image, as
-    //   deposited into VTL0 guest memory, into VMGS so it can be restored later.
-    // - Phase 3 (resume boot): when the hibernate token written at hibernate time
-    //   indicates a firmware image was stored, restore that saved image back
-    //   into VTL0 guest memory instead, so the resumed guest sees an identical
-    //   firmware binary even if the host's firmware changed in the meantime,
-    //   then consume the token.
+    // - Resume boot (a non-NONE hibernate token is present): restore the
+    //   previously stored firmware image back into VTL0 guest memory, so the
+    //   resumed guest sees an identical firmware binary even if the host's
+    //   firmware changed in the meantime, then consume the token. The stored
+    //   image remains valid for the next hibernation.
+    // - Normal boot: snapshot the pristine UEFI firmware image, as deposited
+    //   into VTL0 guest memory, into VMGS so it can be restored later. This only
+    //   succeeds if the VMGS backing store is large enough to hold it.
     //
-    // If the operation fails (or this is not a UEFI boot), downgrade the saved
-    // flag so the next hibernate token reflects that no firmware was stored.
-    if hibernation_firmware_stored {
+    // `hibernation_firmware_stored` is set to `true` only once we know an image
+    // is actually stored; it drives the hibernate token written at hibernate
+    // time (see `halt_task`).
+    let hibernation_firmware_stored = if dps.general.hibernation_enabled {
         match (
             load_kind,
             measured_vtl0_info
@@ -2284,6 +2260,9 @@ async fn new_underhill_vm(
                             // restore a stale firmware image.
                             delete_hibernate_token(vmgs_client).await;
                         }
+                        // An image is now stored in VMGS, so the next
+                        // hibernation can rely on it.
+                        true
                     }
                     Err(err) => {
                         tracing::error!(
@@ -2292,17 +2271,19 @@ async fn new_underhill_vm(
                             resuming,
                             "failed to preserve UEFI firmware for hibernation"
                         );
-                        hibernation_firmware_stored = false;
+                        false
                     }
                 }
             }
             _ => {
                 // Not a UEFI boot, or no firmware region / VMGS available;
                 // nothing to snapshot or restore.
-                hibernation_firmware_stored = false;
+                false
             }
         }
-    }
+    } else {
+        false
+    };
 
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
@@ -3938,17 +3919,13 @@ where
     reg_state
 }
 
-/// VMGS backing stores at least this large can hold a firmware image snapshot,
-/// so a hibernate writes the "firmware stored" marker.
-const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
-
 /// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
 /// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
 /// is written on power off and consumed/cleared on resume.
 mod hibernate_token {
-    /// Written on hibernate when the VMGS is large enough to store firmware.
+    /// Written on hibernate when a firmware image snapshot is stored in VMGS.
     pub const FIRMWARE_STORED: u64 = u64::MAX;
-    /// Written on hibernate when the VMGS is too small to store firmware.
+    /// Written on hibernate when no firmware image snapshot is stored.
     pub const HIBERNATED: u64 = 0x1;
     /// Written on a clean power off / reset to clear any prior hibernate state.
     pub const NONE: u64 = 0x0;
