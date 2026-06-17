@@ -52,6 +52,7 @@ pub enum VmgsBrokerRpc {
     WriteFile(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     #[cfg(feature = "encryption")]
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
+    DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
 }
 
@@ -105,6 +106,15 @@ impl VmgsBrokerTask {
                 rpc.handle(async |(file_id, buf)| {
                     self.vmgs
                         .write_file_encrypted(file_id.into(), &buf)
+                        .await
+                        .map_err(Into::into)
+                })
+                .await
+            }
+            VmgsBrokerRpc::DeleteFile(rpc) => {
+                rpc.handle(async |file_id| {
+                    self.vmgs
+                        .delete_file(file_id.into())
                         .await
                         .map_err(Into::into)
                 })
