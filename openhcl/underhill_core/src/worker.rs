@@ -2282,7 +2282,7 @@ async fn new_underhill_vm(
                         if resuming {
                             // Consume the token so a later clean boot does not
                             // restore a stale firmware image.
-                            write_hibernation_token(vmgs_client, hibernation_token::NONE).await;
+                            delete_hibernation_token(vmgs_client).await;
                         }
                     }
                     Err(err) => {
@@ -3969,6 +3969,22 @@ async fn write_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient, token: u
             error = &err as &dyn std::error::Error,
             token,
             "failed to write hibernation power token"
+        );
+    }
+}
+
+/// Best-effort deletion of the hibernation power token from the VMGS, used to
+/// consume the token after a firmware image has been restored on resume.
+/// Failures are logged but never block boot.
+async fn delete_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient) {
+    if let Err(err) = vmgs_client
+        .delete_file(vmgs::FileId::HIBERNATION_TOKEN)
+        .await
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = &err as &dyn std::error::Error,
+            "failed to delete hibernation power token"
         );
     }
 }

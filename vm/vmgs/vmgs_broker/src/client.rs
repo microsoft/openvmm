@@ -112,6 +112,16 @@ impl VmgsClient {
         Ok(())
     }
 
+    /// Deletes the specified `file_id` from the VMGS.
+    #[instrument(skip_all, fields(file_id))]
+    pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {
+        self.control
+            .call_failable(VmgsBrokerRpc::DeleteFile, file_id.into())
+            .await?;
+
+        Ok(())
+    }
+
     /// Save the in-memory VMGS file metadata.
     ///
     /// This saved state can be used alongside `open_from_saved` to obtain a
