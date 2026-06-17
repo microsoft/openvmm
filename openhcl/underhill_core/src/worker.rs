@@ -2244,14 +2244,21 @@ async fn new_underhill_vm(
         }
     };
 
-    // Phase 1: For hibernate-enabled VMs whose VMGS is large enough, snapshot
-    // the pristine UEFI firmware image into VMGS *before* any dynamic config is
-    // written into the firmware region (that happens later in `load_firmware`
-    // via `write_uefi_config`). The firmware can then be restored identically
-    // on resume. The UEFI image has already been deposited into VTL0 guest
-    // memory at this point, so we read it directly. If the snapshot fails (or
-    // this is not a UEFI boot), downgrade the saved flag so the hibernate token
-    // reflects that no firmware was stored.
+    // Hibernation firmware compatibility (OpenHCL-only). Both operations below
+    // happen *before* any dynamic config is written into the firmware region
+    // (that happens later in `load_firmware` via `write_uefi_config`), so the
+    // current dynamic config is layered on top of the pristine/restored image.
+    //
+    // - Phase 1 (normal boot): snapshot the pristine UEFI firmware image, as
+    //   deposited into VTL0 guest memory, into VMGS so it can be restored later.
+    // - Phase 3 (resume boot): when the power token written at hibernate time
+    //   indicates a firmware image was stored, restore that saved image back
+    //   into VTL0 guest memory instead, so the resumed guest sees an identical
+    //   firmware binary even if the host's firmware changed in the meantime,
+    //   then consume the token.
+    //
+    // If the operation fails (or this is not a UEFI boot), downgrade the saved
+    // flag so the next hibernate token reflects that no firmware was stored.
     if hibernation_firmware_stored {
         match (
             load_kind,
@@ -2261,22 +2268,39 @@ async fn new_underhill_vm(
             vmgs_client.as_ref(),
         ) {
             (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
-                if let Err(err) =
+                let resuming = matches!(
+                    read_hibernation_token(vmgs_client).await,
+                    Some(hibernation_token::FIRMWARE_STORED)
+                );
+                let result = if resuming {
+                    restore_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
+                        .await
+                } else {
                     snapshot_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
                         .await
-                {
-                    tracing::error!(
-                        CVM_ALLOWED,
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "failed to snapshot UEFI firmware to VMGS; \
-                         hibernation will not preserve the firmware image"
-                    );
-                    hibernation_firmware_stored = false;
+                };
+                match result {
+                    Ok(()) => {
+                        if resuming {
+                            // Consume the token so a later clean boot does not
+                            // restore a stale firmware image.
+                            write_hibernation_token(vmgs_client, hibernation_token::NONE).await;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            error = err.as_ref() as &dyn std::error::Error,
+                            resuming,
+                            "failed to preserve UEFI firmware for hibernation"
+                        );
+                        hibernation_firmware_stored = false;
+                    }
                 }
             }
             _ => {
                 // Not a UEFI boot, or no firmware region / VMGS available;
-                // nothing to snapshot.
+                // nothing to snapshot or restore.
                 hibernation_firmware_stored = false;
             }
         }
@@ -3974,6 +3998,50 @@ async fn snapshot_firmware_to_vmgs(
         CVM_ALLOWED,
         size_bytes = len,
         "snapshotted UEFI firmware image to VMGS for hibernation"
+    );
+    Ok(())
+}
+
+/// Reads the 8-byte little-endian hibernation power token from VMGS, returning
+/// `None` if it is absent or cannot be read/parsed (e.g. on a first boot before
+/// any token has been written).
+async fn read_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
+    let buf = vmgs_client
+        .read_file(vmgs::FileId::HIBERNATION_TOKEN)
+        .await
+        .ok()?;
+    let bytes = <[u8; 8]>::try_from(buf.as_slice()).ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
+/// Restores a previously snapshotted UEFI firmware image from VMGS back into
+/// VTL0 guest memory. Used when resuming a hibernated guest so that the firmware
+/// binary matches what was present when the guest hibernated.
+///
+/// This must be called *before* `write_uefi_config`, so that the current
+/// dynamic config is layered on top of the restored firmware image.
+async fn restore_firmware_from_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<()> {
+    let firmware = vmgs_client
+        .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
+        .await
+        .context("failed to read UEFI firmware snapshot from VMGS")?;
+    let region_len = firmware_memory.len() as usize;
+    if firmware.len() != region_len {
+        anyhow::bail!(
+            "stored firmware image size {} does not match firmware region size {region_len}",
+            firmware.len(),
+        );
+    }
+    gm.write_at(firmware_memory.start(), &firmware)
+        .context("failed to write UEFI firmware image into VTL0 memory")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = region_len,
+        "restored UEFI firmware image from VMGS for hibernation resume"
     );
     Ok(())
 }
