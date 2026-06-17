@@ -843,6 +843,92 @@ async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
     );
 }
 
+/// Test that when the consomme endpoint is itself a loopback adapter (its own
+/// `client_ip` is a loopback address, as used by WSL's VirtioProxy localhost
+/// forwarding), the source IP of a forwarded loopback connection is left as
+/// loopback and is **not** rewritten to a virtual subnet address. Such adapters
+/// rely on the loopback source staying in range so the guest routes the reply
+/// back through the adapter.
+#[pal_async::async_test]
+async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Configure this endpoint as a loopback adapter.
+    params.client_ip = Ipv4Address::new(127, 0, 0, 1);
+    let mut consomme = Consomme::new(params);
+    let mut client = TestClient::new(driver.clone());
+
+    // The derived loopback-adapter flag should be set from the client IP.
+    assert!(consomme.params_mut().is_loopback_adapter);
+
+    let guest_port = 9999;
+    let received = client.received_packets.clone();
+    let client_ip = consomme.params_mut().client_ip;
+
+    // Create and bind a TCP socket on loopback.
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+
+    {
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_tcp_port(socket, guest_port)
+            .expect("bind should succeed");
+    }
+
+    // Connect from localhost to trigger the listener.
+    let connector = std::net::TcpStream::connect(host_addr).unwrap();
+    connector.set_nonblocking(true).unwrap();
+
+    // Poll until consomme delivers a SYN to the guest.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(&mut client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        let has_syn = received.lock().iter().any(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        });
+        if has_syn {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for forwarded TCP SYN"
+        );
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(10))
+            .await;
+    }
+
+    // Verify the source IP of the forwarded SYN is left as loopback (not
+    // rewritten to a virtual subnet address).
+    let packets = received.lock();
+    let syn_pkt = packets
+        .iter()
+        .find(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        })
+        .expect("should have received a SYN");
+    let (src_ip, dst_ip, _tcp) = parse_tcp_packet(syn_pkt);
+
+    // The destination should be the (loopback) guest IP.
+    assert_eq!(dst_ip, client_ip);
+    // The source must remain loopback so the guest's reply is routed back
+    // through the loopback adapter rather than out the default interface.
+    assert!(
+        src_ip.is_loopback(),
+        "forwarded SYN source IP should remain loopback, got {src_ip}"
+    );
+}
+
 /// Test that binding the same guest port twice returns `PortAlreadyBound`.
 #[pal_async::async_test]
 async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {

@@ -183,7 +183,13 @@ pub struct ConsommeParams {
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
     pub tcp_tx_buffer: TcpBufferBounds,
     /// True if this endpoint is dedicated to loopback traffic (its `client_ip`
-    /// is a loopback address), set when the [`Consomme`] instance is created.
+    /// is a loopback address).
+    ///
+    /// This is a derived field: it is computed from `client_ip` by
+    /// [`refresh_derived`](Self::refresh_derived), which runs when the
+    /// [`Consomme`] instance is created and whenever the parameters are updated
+    /// at runtime. Callers that mutate `client_ip` directly must call
+    /// `refresh_derived` to keep it in sync.
     ///
     /// Such endpoints carry localhost traffic and the guest routes loopback
     /// replies back through this adapter, so the host-source virtual address
