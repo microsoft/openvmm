@@ -889,13 +889,13 @@ fn build_root_port_definition(rp_cfg: &PcieRootPortConfig) -> GenericPcieRootPor
 /// an NVIDIA Grace GPU's coherent aperture) to a CPU-less NUMA node so the
 /// guest driver can online it.
 ///
-/// Rather than predict the device's bus number, this holds the root port's
-/// live [`AssignedBusRange`](pci_core::bus_range::AssignedBusRange) handle —
-/// the same atomic the config-space emulator updates when bridge bus-number
-/// registers are written. The secondary bus is read from it at ACPI-build
-/// time, after PCI resource assignment has run.
+/// Rather than predict the device's bus number, this holds the port's live
+/// [`AssignedBusRange`](pci_core::bus_range::AssignedBusRange) handle — the
+/// same atomic the config-space emulator updates when bridge bus-number
+/// registers are written. The secondary bus is read from it at ACPI-build time,
+/// after PCI resource assignment has run.
 struct GenericInitiatorSource {
-    /// Shared bus-range handle of the root port the device sits behind.
+    /// Shared bus-range handle of the port the device sits behind.
     bus_range: pci_core::bus_range::AssignedBusRange,
     /// PCI segment of the root complex.
     segment: u16,
