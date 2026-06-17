@@ -2244,11 +2244,16 @@ async fn new_underhill_vm(
             vmgs_client.as_ref(),
         ) {
             (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
-                let resuming = matches!(
-                    read_hibernate_token(vmgs_client).await,
-                    Some(token) if token != hibernate_token::NONE
-                );
+                let token = read_hibernate_token(vmgs_client).await;
+                let resuming = matches!(token, Some(token) if token != hibernate_token::NONE);
                 if resuming {
+                    // The token records whether a firmware image was actually
+                    // stored at hibernate time. If it was, a failure to restore
+                    // it is a real error. If it wasn't (e.g. the VMGS was too
+                    // small to hold the image), there is nothing to restore, so
+                    // a failure just means the file is absent and is logged as a
+                    // warning.
+                    let firmware_expected = token == Some(hibernate_token::FIRMWARE_STORED);
                     match load_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
                         .await
                     {
@@ -2264,11 +2269,19 @@ async fn new_underhill_vm(
                             // hibernation.
                             true
                         }
-                        Err(err) => {
+                        Err(err) if firmware_expected => {
                             tracing::error!(
                                 CVM_ALLOWED,
                                 error = err.as_ref() as &dyn std::error::Error,
                                 "failed to restore UEFI firmware image on hibernation resume"
+                            );
+                            false
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "no UEFI firmware image stored in VMGS to restore on hibernation resume"
                             );
                             false
                         }
