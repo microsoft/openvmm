@@ -857,9 +857,6 @@ async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: Defaul
     let mut consomme = Consomme::new(params);
     let mut client = TestClient::new(driver.clone());
 
-    // The derived loopback-adapter flag should be set from the client IP.
-    assert!(consomme.params_mut().is_loopback_adapter);
-
     let guest_port = 9999;
     let received = client.received_packets.clone();
     let client_ip = consomme.params_mut().client_ip;

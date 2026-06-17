@@ -182,21 +182,6 @@ pub struct ConsommeParams {
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
     pub tcp_tx_buffer: TcpBufferBounds,
-    /// True if this endpoint is dedicated to loopback traffic (its `client_ip`
-    /// is a loopback address).
-    ///
-    /// This is a derived field: it is computed from `client_ip` by
-    /// [`refresh_derived`](Self::refresh_derived), which runs when the
-    /// [`Consomme`] instance is created and whenever the parameters are updated
-    /// at runtime. Callers that mutate `client_ip` directly must call
-    /// `refresh_derived` to keep it in sync.
-    ///
-    /// Such endpoints carry localhost traffic and the guest routes loopback
-    /// replies back through this adapter, so the host-source virtual address
-    /// rewriting must be skipped for them. Rewriting the source out of the
-    /// loopback range would break that return path.
-    #[inspect(display)]
-    pub is_loopback_adapter: bool,
 }
 
 /// Bounds for a per-connection TCP ring buffer.
@@ -258,7 +243,6 @@ impl ConsommeParams {
             skip_ipv6_checks: false,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
-            is_loopback_adapter: false,
         })
     }
 
@@ -358,17 +342,6 @@ impl ConsommeParams {
             }
         }
     }
-
-    /// Recomputes fields derived from other parameters (currently
-    /// [`is_loopback_adapter`](Self::is_loopback_adapter), derived from
-    /// `client_ip`).
-    ///
-    /// Called when a [`Consomme`] instance is created and whenever the
-    /// parameters are updated at runtime, so the derived state stays in sync
-    /// with the inputs it depends on.
-    pub fn refresh_derived(&mut self) {
-        self.is_loopback_adapter = self.client_ip.is_loopback();
-    }
 }
 
 impl ConsommeState {
@@ -415,11 +388,17 @@ impl ConsommeState {
         // If the remote IP is loopback or matches the client IP address, replace
         // it with a unique virtual address so that the guest routes the reply
         // back through the virtual adapter and we can reverse-translate it on the
-        // outgoing path. Skipped for loopback adapters (see `is_loopback_adapter`).
+        // outgoing path.
+        //
+        // This is skipped for endpoints that are themselves dedicated to
+        // loopback traffic (their `client_ip` is a loopback address, as used by
+        // WSL's VirtioProxy localhost forwarding). The guest routes those
+        // replies back through this adapter based on the loopback source, so
+        // rewriting the source out of the loopback range would break the return
+        // path.
+        let is_loopback_adapter = params.client_ip.is_loopback();
         let src = match remote_addr {
-            SocketAddr::V4(v4)
-                if params.is_local_address(remote_addr) && !params.is_loopback_adapter =>
-            {
+            SocketAddr::V4(v4) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let subnet_base =
                     Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
                 let virtual_ip = local_addr_map.get_or_allocate_v4(
@@ -437,9 +416,7 @@ impl ConsommeState {
                     }
                 }
             }
-            SocketAddr::V6(v6)
-                if params.is_local_address(remote_addr) && !params.is_loopback_adapter =>
-            {
+            SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let virtual_ip = local_addr_map.get_or_allocate_v6(
                     *v6.ip(),
                     params.gateway_link_local_ipv6,
@@ -733,10 +710,6 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        // Derive parameters computed from other fields (e.g. the loopback-adapter
-        // flag) before constructing the instance.
-        params.refresh_derived();
-
         let host_has_ipv6 = if params.skip_ipv6_checks {
             true
         } else {
