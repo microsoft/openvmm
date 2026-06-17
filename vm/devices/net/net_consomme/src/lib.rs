@@ -466,6 +466,7 @@ fn process_message(
         ConsommeMessage::UpdateState(rpc) => {
             rpc.handle_sync(|f| {
                 f(consomme.get_mut().params_mut());
+                consomme.get_mut().params_mut().refresh_derived();
                 consomme.get_mut().clear_local_addr_map();
                 consomme.update_dns_nameservers()
             });

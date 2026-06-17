@@ -352,6 +352,17 @@ impl ConsommeParams {
             }
         }
     }
+
+    /// Recomputes fields derived from other parameters (currently
+    /// [`is_loopback_adapter`](Self::is_loopback_adapter), derived from
+    /// `client_ip`).
+    ///
+    /// Called when a [`Consomme`] instance is created and whenever the
+    /// parameters are updated at runtime, so the derived state stays in sync
+    /// with the inputs it depends on.
+    pub fn refresh_derived(&mut self) {
+        self.is_loopback_adapter = self.client_ip.is_loopback();
+    }
 }
 
 impl ConsommeState {
@@ -716,9 +727,9 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        // Derive the loopback-adapter flag from the client address (see
-        // `ConsommeParams::is_loopback_adapter`).
-        params.is_loopback_adapter = params.client_ip.is_loopback();
+        // Derive parameters computed from other fields (e.g. the loopback-adapter
+        // flag) before constructing the instance.
+        params.refresh_derived();
 
         let host_has_ipv6 = if params.skip_ipv6_checks {
             true
