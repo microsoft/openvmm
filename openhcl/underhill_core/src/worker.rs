@@ -2179,13 +2179,13 @@ async fn new_underhill_vm(
 
     // For hibernate-enabled VMs, decide at boot whether the VMGS backing store
     // is large enough to also hold a firmware image snapshot. This decision is
-    // saved and used to choose the power token value written at hibernate time
+    // saved and used to choose the hibernate token value written at hibernate time
     // (see `halt_task`), avoiding a query on the power-off path.
     //
     // If the store is large enough, the pristine UEFI firmware image is later
     // snapshotted into `vmgs::FileId::HIBERNATION_FIRMWARE` (see below, after
     // the measured VTL0 config is read). If that snapshot fails, this flag is
-    // downgraded to `false` so the power token reflects that no firmware
+    // downgraded to `false` so the hibernate token reflects that no firmware
     // was stored.
     let mut hibernation_firmware_stored = if dps.general.hibernation_enabled {
         match &vmgs_client {
@@ -2251,14 +2251,14 @@ async fn new_underhill_vm(
     //
     // - Phase 1 (normal boot): snapshot the pristine UEFI firmware image, as
     //   deposited into VTL0 guest memory, into VMGS so it can be restored later.
-    // - Phase 3 (resume boot): when the power token written at hibernate time
+    // - Phase 3 (resume boot): when the hibernate token written at hibernate time
     //   indicates a firmware image was stored, restore that saved image back
     //   into VTL0 guest memory instead, so the resumed guest sees an identical
     //   firmware binary even if the host's firmware changed in the meantime,
     //   then consume the token.
     //
     // If the operation fails (or this is not a UEFI boot), downgrade the saved
-    // flag so the next power token reflects that no firmware was stored.
+    // flag so the next hibernate token reflects that no firmware was stored.
     if hibernation_firmware_stored {
         match (
             load_kind,
@@ -2269,8 +2269,8 @@ async fn new_underhill_vm(
         ) {
             (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
                 let resuming = matches!(
-                    read_power_token(vmgs_client).await,
-                    Some(token) if token != power_token::NONE
+                    read_hibernate_token(vmgs_client).await,
+                    Some(token) if token != hibernate_token::NONE
                 );
                 let result = if resuming {
                     load_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
@@ -2282,7 +2282,7 @@ async fn new_underhill_vm(
                         if resuming {
                             // Consume the token so a later clean boot does not
                             // restore a stale firmware image.
-                            delete_power_token(vmgs_client).await;
+                            delete_hibernate_token(vmgs_client).await;
                         }
                     }
                     Err(err) => {
@@ -3942,10 +3942,10 @@ where
 /// so a hibernate writes the "firmware stored" marker.
 const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Power token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
+/// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
 /// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
 /// is written on power off and consumed/cleared on resume.
-mod power_token {
+mod hibernate_token {
     /// Written on hibernate when the VMGS is large enough to store firmware.
     pub const FIRMWARE_STORED: u64 = u64::MAX;
     /// Written on hibernate when the VMGS is too small to store firmware.
@@ -3954,9 +3954,9 @@ mod power_token {
     pub const NONE: u64 = 0x0;
 }
 
-/// Best-effort write of an 8-byte power token to the VMGS. Failures are logged
+/// Best-effort write of an 8-byte hibernate token to the VMGS. Failures are logged
 /// but never block the power transition.
-async fn write_power_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
+async fn write_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
     if let Err(err) = vmgs_client
         .write_file(
             vmgs::FileId::HIBERNATION_TOKEN,
@@ -3968,15 +3968,15 @@ async fn write_power_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
             CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
             token,
-            "failed to write power token"
+            "failed to write hibernate token"
         );
     }
 }
 
-/// Best-effort deletion of the power token from the VMGS, used to
+/// Best-effort deletion of the hibernate token from the VMGS, used to
 /// consume the token after a firmware image has been restored on resume.
 /// Failures are logged but never block boot.
-async fn delete_power_token(vmgs_client: &vmgs_broker::VmgsClient) {
+async fn delete_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient) {
     if let Err(err) = vmgs_client
         .delete_file(vmgs::FileId::HIBERNATION_TOKEN)
         .await
@@ -3984,7 +3984,7 @@ async fn delete_power_token(vmgs_client: &vmgs_broker::VmgsClient) {
         tracing::error!(
             CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
-            "failed to delete power token"
+            "failed to delete hibernate token"
         );
     }
 }
@@ -4034,10 +4034,10 @@ async fn store_firmware_to_vmgs(
     Ok(())
 }
 
-/// Reads the 8-byte little-endian power token from VMGS, returning
+/// Reads the 8-byte little-endian hibernate token from VMGS, returning
 /// `None` if it is absent or cannot be read/parsed (e.g. on a first boot before
 /// any token has been written).
-async fn read_power_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
+async fn read_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
     let buf = vmgs_client
         .read_file(vmgs::FileId::HIBERNATION_TOKEN)
         .await
@@ -4138,32 +4138,32 @@ async fn halt_task(
             // Now we can notify the host about the halt.
             match halt_request {
                 HaltRequest::PowerOff => {
-                    // Write the NONE power token to clear any stale hibernate
+                    // Write the NONE hibernate token to clear any stale hibernate
                     // state on a clean power off.
                     if let Some(vmgs_client) = &vmgs_client {
-                        write_power_token(vmgs_client, power_token::NONE).await;
+                        write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
                     }
                     get_client.send_power_off()
                 }
                 HaltRequest::Reset => {
-                    // Write the NONE power token to clear any stale hibernate
+                    // Write the NONE hibernate token to clear any stale hibernate
                     // state on reset.
                     if let Some(vmgs_client) = &vmgs_client {
-                        write_power_token(vmgs_client, power_token::NONE).await;
+                        write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
                     }
                     get_client.send_reset()
                 }
                 HaltRequest::Hibernate => {
-                    // Write the power token before signaling the host, matching
+                    // Write the hibernate token before signaling the host, matching
                     // the legacy HCL flow. Whether the VMGS is large enough to
                     // hold a firmware image snapshot was decided at boot.
                     if let Some(vmgs_client) = &vmgs_client {
                         let token = if hibernation_firmware_stored {
-                            power_token::FIRMWARE_STORED
+                            hibernate_token::FIRMWARE_STORED
                         } else {
-                            power_token::HIBERNATED
+                            hibernate_token::HIBERNATED
                         };
-                        write_power_token(vmgs_client, token).await;
+                        write_hibernate_token(vmgs_client, token).await;
                     }
                     get_client.send_hibernate()
                 }
