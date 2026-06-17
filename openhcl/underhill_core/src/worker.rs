@@ -2248,44 +2248,47 @@ async fn new_underhill_vm(
                 let resuming = matches!(token, Some(token) if token != hibernate_token::NONE);
                 if resuming {
                     // The token records whether a firmware image was actually
-                    // stored at hibernate time. If it was, a failure to restore
-                    // it is a real error. If it wasn't (e.g. the VMGS was too
-                    // small to hold the image), there is nothing to restore, so
-                    // a failure just means the file is absent and is logged as a
-                    // warning.
+                    // stored at hibernate time. Only attempt a restore when one
+                    // was stored; otherwise there is nothing in VMGS to restore
+                    // (e.g. the VMGS was too small to hold the image).
                     let firmware_expected = token == Some(hibernate_token::FIRMWARE_STORED);
-                    match load_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
+                    let restored = if firmware_expected {
+                        match load_firmware_from_vmgs(
+                            gm.vtl0(),
+                            uefi_info.firmware_memory,
+                            vmgs_client,
+                        )
                         .await
-                    {
-                        Ok(()) => {
-                            tracing::info!(
-                                CVM_ALLOWED,
-                                "resuming from hibernation; restored UEFI firmware image from VMGS"
-                            );
-                            // Consume the token so a later clean boot does not
-                            // restore a stale firmware image.
-                            delete_hibernate_token(vmgs_client).await;
-                            // The stored image remains valid for the next
-                            // hibernation.
-                            true
+                        {
+                            Ok(()) => {
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    "resuming from hibernation; restored UEFI firmware image from VMGS"
+                                );
+                                // The stored image remains valid for the next
+                                // hibernation.
+                                true
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    CVM_ALLOWED,
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    "failed to restore UEFI firmware image on hibernation resume"
+                                );
+                                false
+                            }
                         }
-                        Err(err) if firmware_expected => {
-                            tracing::error!(
-                                CVM_ALLOWED,
-                                error = err.as_ref() as &dyn std::error::Error,
-                                "failed to restore UEFI firmware image on hibernation resume"
-                            );
-                            false
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                CVM_ALLOWED,
-                                error = err.as_ref() as &dyn std::error::Error,
-                                "no UEFI firmware image stored in VMGS to restore on hibernation resume"
-                            );
-                            false
-                        }
-                    }
+                    } else {
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "resuming from hibernation but no UEFI firmware image was stored in VMGS"
+                        );
+                        false
+                    };
+                    // Consume the token either way so a later clean boot does
+                    // not restore a stale firmware image.
+                    delete_hibernate_token(vmgs_client).await;
+                    restored
                 } else {
                     match store_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
                         .await
