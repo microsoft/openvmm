@@ -3919,6 +3919,12 @@ where
     reg_state
 }
 
+/// A VMGS backing store must be at least this large to store a firmware image
+/// snapshot for hibernation. This is a minimum overall size so that the
+/// firmware image fits alongside the other VMGS files, not just a tight fit of
+/// the image itself.
+const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
 /// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
 /// is written on power off and consumed/cleared on resume.
@@ -3985,11 +3991,17 @@ async fn store_firmware_to_vmgs(
     let len = firmware_memory.len();
 
     // The firmware image can only be stored if the VMGS backing store is large
-    // enough to hold it.
+    // enough. Require a minimum overall size so there is room for the firmware
+    // image alongside the other VMGS files, and also verify the image fits.
     let device_size = vmgs_client
         .device_size()
         .await
         .context("failed to query VMGS size")?;
+    if device_size < VMGS_FIRMWARE_THRESHOLD_BYTES {
+        anyhow::bail!(
+            "VMGS backing store ({device_size} bytes) is smaller than the minimum required to store a firmware image ({VMGS_FIRMWARE_THRESHOLD_BYTES} bytes)"
+        );
+    }
     if len > device_size {
         anyhow::bail!(
             "UEFI firmware image ({len} bytes) does not fit in VMGS backing store ({device_size} bytes)"
