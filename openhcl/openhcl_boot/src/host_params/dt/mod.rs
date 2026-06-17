@@ -792,14 +792,17 @@ fn topology_from_persisted_state(
 
     let mut sidecar_excluded_cpus = off_stack!(ArrayVec<u32, MAX_CPU_COUNT>, ArrayVec::new_const());
     sidecar_excluded_cpus.clear();
-    sidecar_excluded_cpus.extend(cpus_with_outstanding_io.iter().copied());
-    // ArrayVec doesn't provide a dedup method, so we need to do it manually.
-    for c in cpus_with_mapped_interrupts_no_io.iter().copied() {
-        if !sidecar_excluded_cpus.contains(&c) {
-            sidecar_excluded_cpus.push(c);
+    // Keep the list sorted and deduplicated as we insert, so it's ready for
+    // binary search lookups later.
+    for c in cpus_with_outstanding_io
+        .iter()
+        .chain(cpus_with_mapped_interrupts_no_io.iter())
+        .copied()
+    {
+        if let Err(i) = sidecar_excluded_cpus.binary_search(&c) {
+            sidecar_excluded_cpus.insert(i, c);
         }
     }
-    sidecar_excluded_cpus.sort_unstable();
 
     // FUTURE: should memory allocation mode should persist in saved state and
     // verify the host did not change it?
