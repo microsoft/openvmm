@@ -63,6 +63,14 @@ impl VmgsClient {
         Ok(res)
     }
 
+    /// Returns the total size, in bytes, of the underlying VMGS backing store.
+    #[instrument(skip_all)]
+    pub async fn device_size(&self) -> Result<u64, VmgsClientError> {
+        let res = self.control.call(VmgsBrokerRpc::DeviceSize, ()).await?;
+
+        Ok(res)
+    }
+
     /// Reads the specified `file_id`.
     #[instrument(skip_all, fields(file_id))]
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
