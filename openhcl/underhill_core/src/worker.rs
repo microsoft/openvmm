@@ -2270,7 +2270,7 @@ async fn new_underhill_vm(
             (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
                 let resuming = matches!(
                     read_hibernation_token(vmgs_client).await,
-                    Some(hibernation_token::FIRMWARE_STORED)
+                    Some(token) if token != hibernation_token::NONE
                 );
                 let result = if resuming {
                     load_firmware_from_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
@@ -3996,13 +3996,30 @@ async fn delete_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient) {
 /// This must be called *before* any dynamic configuration is written into the
 /// firmware region (i.e. before `write_uefi_config`), so that the stored image
 /// matches the measured firmware as loaded from the IGVM file.
+///
+/// The image is only stored if the VMGS backing store is large enough to hold
+/// it; otherwise an error is returned and the caller falls back to not
+/// preserving the firmware across hibernation.
 async fn store_firmware_to_vmgs(
     gm: &GuestMemory,
     firmware_memory: MemoryRange,
     vmgs_client: &vmgs_broker::VmgsClient,
 ) -> anyhow::Result<()> {
-    let len = firmware_memory.len() as usize;
-    let mut firmware = vec![0u8; len];
+    let len = firmware_memory.len();
+
+    // The firmware image can only be stored if the VMGS backing store is large
+    // enough to hold it.
+    let device_size = vmgs_client
+        .device_size()
+        .await
+        .context("failed to query VMGS size")?;
+    if len > device_size {
+        anyhow::bail!(
+            "UEFI firmware image ({len} bytes) does not fit in VMGS backing store ({device_size} bytes)"
+        );
+    }
+
+    let mut firmware = vec![0u8; len as usize];
     gm.read_at(firmware_memory.start(), &mut firmware)
         .context("failed to read UEFI firmware image from VTL0 memory")?;
     vmgs_client
