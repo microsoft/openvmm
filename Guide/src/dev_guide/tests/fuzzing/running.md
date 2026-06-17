@@ -2,13 +2,11 @@
 
 ## Installing Dependencies
 
-To begin fuzzing in OpenVMM, you'll need to install `cargo-fuzz` and a nightly
-rust compiler.
+To begin fuzzing in OpenVMM, you'll need to install `cargo-fuzz`.
 
 Installation should be as simple as:
 
 ```bash
-rustup install nightly
 cargo install cargo-fuzz
 ```
 
@@ -222,9 +220,9 @@ coverage significantly faster:
 ```bash
 # rebuild the fuzzer with coverage instrumentation
 RUSTFLAGS="-C instrument-coverage" cargo fuzz build
-# set env var to rustup's llvm-preview tools
+# set env var to rustup's llvm-tools
 LLVM_TOOLS_PATH=$(dirname $(find $(rustc --print sysroot) -name 'llvm-profdata'))
-# make an output directory for corups minimation
+# make an output directory for corpus minimation
 mkdir min_corp
 # run the minimizer putting the raw cov data into coverage.profraw
 LLVM_PROFILE_FILE="coverage.profraw" ./fuzz/targets/<target-path>/release/fuzz_ide min_corp <path to input corpus directory> -merge=1
@@ -238,9 +236,9 @@ version and the tool version are in sync), and convert the coverage data into
 a report:
 
 ```bash
-# set env var to rustup's llvm-preview tools
+# set env var to rustup's llvm-tools
 LLVM_TOOLS_PATH=$(dirname $(find $(rustc --print sysroot) -name 'llvm-profdata'))
-# covert the coverage data into an lcov format
+# convert the coverage data into an lcov format
 $LLVM_TOOLS_PATH/llvm-cov export -instr-profile=coverage.profdata \
     -format=lcov \
     -object ./fuzz/targets/<target-triple>/coverage/<target-triple>/release/fuzz_ide \

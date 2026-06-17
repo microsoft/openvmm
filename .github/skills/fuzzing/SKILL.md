@@ -8,7 +8,6 @@ description: "Run, optimize, and debug OpenVMM fuzzers. Covers cargo-fuzz target
 ## Prerequisites
 
 - **Linux only** — libfuzzer-sys doesn't support Windows.
-- **Nightly toolchain**: `rustup toolchain install nightly`
 - **cargo-fuzz**: `cargo install cargo-fuzz`
 - **lldb** (for debugging): `sudo apt-get install -y lldb`
 - **aarch64 RUSTFLAGS**: On aarch64, set `RUSTFLAGS="-Ctarget-feature=+lse,+neon"` or builds fail with atomics errors. Not needed on x86_64.
@@ -285,7 +284,7 @@ of the **target crate itself** and its immediate domain dependencies.
 Use `llvm-cov report` with source path filtering:
 
 ```bash
-# Find the llvm-cov binary from nightly toolchain
+# Find the llvm-cov binary from the toolchain
 LLVM_COV=$(find $(rustc --print sysroot) -name "llvm-cov" -type f | head -1)
 
 # Full per-file report, excluding third-party code
