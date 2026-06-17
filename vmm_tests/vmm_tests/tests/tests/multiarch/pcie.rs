@@ -469,9 +469,16 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// Boot a guest through UEFI from an NVMe device on an emulated PCIe root port.
-/// Validates that UEFI's driver stack correctly enumerates and uses the NVMe
-/// device to load the guest OS.
+/// Boot a guest through UEFI from an NVMe device in an asymmetric multi-segment
+/// PCIe topology. Validates that UEFI's driver stack correctly enumerates
+/// multiple root complexes spread across multiple segments and boots from an
+/// NVMe device that is not on the first root complex.
+///
+/// Topology: five root complexes — two on segment 0 (`s0rc0`, `s0rc1`) and
+/// three on segment 1 (`s1rc0`, `s1rc1`, `s1rc2`). The boot NVMe controller is
+/// placed on the second root complex of segment 1 (`s1rc1rp0`). A second NVMe
+/// controller (with its own namespace) is placed on the first root complex
+/// (`s0rc0rp0`). The remaining root complexes are intentionally left empty.
 #[openvmm_test(
     uefi_x64(vhd(alpine_3_23_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -483,11 +490,24 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .with_default_boot_always_attempt(true)
-        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        // Boot from the NVMe controller on the second root complex of segment 1.
+        .with_pcie_boot_port("s1rc1rp0")
+        .modify_backend(|b| {
+            // Asymmetric topology: 2 root complexes on segment 0, then 3 root
+            // complexes on segment 1 (the second call appends to segment 1).
+            // One root port per root complex.
+            b.with_pcie_root_topology(1, 2, 1)
+                .with_pcie_root_topology(1, 3, 1)
+                // Second NVMe controller on the first root complex.
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+        })
         .run()
         .await?;
 
-    // Verify the NVMe device is visible from guest
+    // Booting to a working agent already proves UEFI found and booted from the
+    // NVMe device on s1rc1. Additionally confirm both NVMe controllers (the
+    // boot device on segment 1 and the extra device on segment 0) enumerate in
+    // the guest.
     let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
     tracing::info!(?guest_devices, "guest devices");
 
@@ -495,7 +515,10 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
         .iter()
         .filter(|d| d.class_code == 0x010802)
         .count();
-    assert!(nvme_count >= 1, "NVMe controller not visible in guest");
+    assert!(
+        nvme_count >= 2,
+        "expected both NVMe controllers (boot on s1rc1, extra on s0rc0) visible in guest, found {nvme_count}"
+    );
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
