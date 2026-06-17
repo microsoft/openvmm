@@ -36,12 +36,23 @@ ALPINE_RELEASE="3.21.6"
 IMAGE_NAME="nocloud_alpine-${ALPINE_RELEASE}-${ARCH}-uefi-tiny-r0"
 IMAGE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/cloud/${IMAGE_NAME}.qcow2"
 
+# Final kernel filename. On aarch64 the kernel is decompressed to a raw Linux
+# `Image`, so name it accordingly; on x86_64 the compressed `vmlinuz-virt` is
+# booted as-is.
+if [ "$ARCH" = "aarch64" ]; then
+    KERNEL="Image"
+    KERNEL_DESC="Kernel (raw uncompressed arm64 Image)"
+else
+    KERNEL="vmlinuz-virt"
+    KERNEL_DESC="Kernel (compressed bzImage)"
+fi
+
 OUTDIR="${1:-./alpine-direct-boot}"
 
 # --- Check required tools ---
 
 missing=()
-for tool in curl qemu-img mkfs.vfat mcopy; do
+for tool in curl qemu-img mkfs.vfat mcopy iconv; do
     if ! command -v "$tool" &>/dev/null; then
         missing+=("$tool")
     fi
@@ -180,20 +191,16 @@ if [ "$ARCH" = "aarch64" ]; then
         return 1
     }
 
-    if is_arm64_image vmlinuz-virt; then
-        echo "aarch64 kernel is already a raw Image."
+    echo "Decompressing aarch64 kernel to a raw Image..."
+    if extract_zboot vmlinuz-virt Image || extract_kernel vmlinuz-virt Image; then
+        rm -f vmlinuz-virt
     else
-        echo "Decompressing aarch64 kernel to a raw Image..."
-        if extract_zboot vmlinuz-virt Image || extract_kernel vmlinuz-virt Image; then
-            mv Image vmlinuz-virt
-        else
-            rm -f Image
-            echo "ERROR: could not decompress the aarch64 kernel to a raw Image." >&2
-            echo "       Inspect it with 'file vmlinuz-virt' and decompress the" >&2
-            echo "       embedded payload manually (see scripts/extract-vmlinux" >&2
-            echo "       in the Linux source tree)." >&2
-            exit 1
-        fi
+        rm -f Image
+        echo "ERROR: could not decompress the aarch64 kernel to a raw Image." >&2
+        echo "       Inspect it with 'file vmlinuz-virt' and decompress the" >&2
+        echo "       embedded payload manually (see scripts/extract-vmlinux" >&2
+        echo "       in the Linux source tree)." >&2
+        exit 1
     fi
 fi
 
@@ -241,7 +248,7 @@ tee README <<EOF
 Alpine Linux direct boot setup for OpenVMM (${ARCH})
 
 Files in ${ABSDIR}:
-  vmlinuz-virt   - Compressed kernel
+  $(printf '%-14s' "${KERNEL}") - ${KERNEL_DESC}
   initramfs-virt - Initial ramdisk
   disk.raw       - Root disk image (raw)
   cidata.img     - Cloud-init data disk (sets root password)
@@ -249,9 +256,9 @@ Files in ${ABSDIR}:
 To boot with OpenVMM (from the openvmm repo root):
 
   cargo run -p openvmm -- \\
-    -k ${ABSDIR}/vmlinuz-virt \\
+    -k ${ABSDIR}/${KERNEL} \\
     -r ${ABSDIR}/initramfs-virt \\
-    --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G \\
+    --pcie-root-complex rc0 \\
     --pcie-root-port rc0:disk \\
     --pcie-root-port rc0:cidata \\
     --pcie-root-port rc0:net \\
