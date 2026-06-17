@@ -431,11 +431,12 @@ pub struct NumaNode {
 /// How VPs are assigned to a NUMA node.
 #[derive(Debug, MeshPayload)]
 pub enum VpAssignment {
-    /// Assign VPs to nodes by round-robining sockets: a VP with socket ID
-    /// `vp_index / vps_per_socket` belongs to node
-    /// `(vp_index / vps_per_socket) % num_nodes`. `vps_per_socket` comes
-    /// from `ProcessorTopologyConfig`; `num_nodes` is the length of
-    /// `NumaTopology.nodes`.
+    /// Assign VPs to nodes by round-robining sockets over the CPU-bearing
+    /// nodes only: a VP with socket ID `vp_index / vps_per_socket` belongs to
+    /// the `(vp_index / vps_per_socket) % num_cpu_nodes`-th `FromTopology`
+    /// node. `vps_per_socket` comes from `ProcessorTopologyConfig`;
+    /// `num_cpu_nodes` is the number of `FromTopology` nodes, so `Empty`
+    /// (CPU-less) nodes are skipped and do not affect the distribution.
     FromTopology,
     /// Explicit VP indices assigned to this node.
     Explicit(Vec<u32>),
