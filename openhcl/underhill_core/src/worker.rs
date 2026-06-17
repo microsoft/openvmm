@@ -2182,10 +2182,12 @@ async fn new_underhill_vm(
     // saved and used to choose the power token value written at hibernate time
     // (see `halt_task`), avoiding a query on the power-off path.
     //
-    // TODO: when `hibernation_firmware_stored` is true, stash the loaded UEFI
-    // firmware image into `vmgs::FileId::HIBERNATION_FIRMWARE` so it can be
-    // restored on resume.
-    let hibernation_firmware_stored = if dps.general.hibernation_enabled {
+    // If the store is large enough, the pristine UEFI firmware image is later
+    // snapshotted into `vmgs::FileId::HIBERNATION_FIRMWARE` (see below, after
+    // the measured VTL0 config is read). If that snapshot fails, this flag is
+    // downgraded to `false` so the hibernate token reflects that no firmware
+    // was stored.
+    let mut hibernation_firmware_stored = if dps.general.hibernation_enabled {
         match &vmgs_client {
             Some(vmgs_client) => match vmgs_client.device_size().await {
                 Ok(size) => size >= hibernation_token::VMGS_FIRMWARE_THRESHOLD_BYTES,
@@ -2241,6 +2243,44 @@ async fn new_underhill_vm(
             (firmware_type, Some(config), load_kind)
         }
     };
+
+    // Phase 1: For hibernate-enabled VMs whose VMGS is large enough, snapshot
+    // the pristine UEFI firmware image into VMGS *before* any dynamic config is
+    // written into the firmware region (that happens later in `load_firmware`
+    // via `write_uefi_config`). The firmware can then be restored identically
+    // on resume. The UEFI image has already been deposited into VTL0 guest
+    // memory at this point, so we read it directly. If the snapshot fails (or
+    // this is not a UEFI boot), downgrade the saved flag so the hibernate token
+    // reflects that no firmware was stored.
+    if hibernation_firmware_stored {
+        match (
+            load_kind,
+            measured_vtl0_info
+                .as_ref()
+                .and_then(|info| info.supports_uefi.as_ref()),
+            vmgs_client.as_ref(),
+        ) {
+            (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
+                if let Err(err) =
+                    snapshot_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
+                        .await
+                {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to snapshot UEFI firmware to VMGS; \
+                         hibernation will not preserve the firmware image"
+                    );
+                    hibernation_firmware_stored = false;
+                }
+            }
+            _ => {
+                // Not a UEFI boot, or no firmware region / VMGS available;
+                // nothing to snapshot.
+                hibernation_firmware_stored = false;
+            }
+        }
+    }
 
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
@@ -3908,6 +3948,34 @@ async fn write_hibernation_token(vmgs_client: &vmgs_broker::VmgsClient, token: u
             "failed to write hibernation power token"
         );
     }
+}
+
+/// Snapshots the pristine UEFI firmware image out of VTL0 guest memory and into
+/// `vmgs::FileId::HIBERNATION_FIRMWARE` so it can be restored identically on
+/// resume from hibernation.
+///
+/// This must be called *before* any dynamic configuration is written into the
+/// firmware region (i.e. before `write_uefi_config`), so that the stored image
+/// matches the measured firmware as loaded from the IGVM file.
+async fn snapshot_firmware_to_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<()> {
+    let len = firmware_memory.len() as usize;
+    let mut firmware = vec![0u8; len];
+    gm.read_at(firmware_memory.start(), &mut firmware)
+        .context("failed to read UEFI firmware image from VTL0 memory")?;
+    vmgs_client
+        .write_file(vmgs::FileId::HIBERNATION_FIRMWARE, firmware)
+        .await
+        .context("failed to write UEFI firmware snapshot to VMGS")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = len,
+        "snapshotted UEFI firmware image to VMGS for hibernation"
+    );
+    Ok(())
 }
 
 /// Waits for halt notifications and handles them by forwarding them to the
