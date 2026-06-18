@@ -51,8 +51,8 @@ fn print_system_info(_rt: &mut RustRuntimeServices<'_>) {
 
     let os_info = [
         System::name(),
-        System::kernel_version(),
         System::os_version(),
+        System::kernel_version(),
     ]
     .into_iter()
     .flatten()
@@ -72,7 +72,6 @@ fn print_system_info(_rt: &mut RustRuntimeServices<'_>) {
         );
     }
 
-    // Network interfaces name, total data received and total data transmitted:
     let networks = Networks::new_with_refreshed_list();
     for (interface_name, data) in &networks {
         let ip_addresses = data
