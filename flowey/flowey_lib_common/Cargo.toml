@@ -14,6 +14,7 @@ roxmltree.workspace = true
 rustc-hash.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
+sysinfo.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
 toml_edit.workspace = true
 tempfile.workspace = true

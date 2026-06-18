@@ -654,6 +654,9 @@ windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"
 
+# --- Cross-platform bindings ---
+sysinfo = "0.39"
+
 [profile.release]
 panic = 'abort'
 debug = true
