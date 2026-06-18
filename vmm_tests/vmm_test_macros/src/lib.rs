@@ -38,7 +38,7 @@ struct ResolvedConfig {
     unstable: bool,
     requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
-    requires_env: Vec<String>,
+    requires_capabilities: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,7 +97,7 @@ struct ImageInfo {
 
 struct Args {
     configs: Vec<Config>,
-    requires_env: Vec<String>,
+    requires_capabilities: Vec<String>,
 }
 
 struct ArgsWithOverrides {
@@ -347,10 +347,11 @@ impl Parse for ArgsWithOverrides {
 impl ArgsWithOverrides {
     fn resolve(self) -> syn::Result<ResolvedArgs> {
         let ArgsWithOverrides {
-            args: Args {
-                configs,
-                requires_env,
-            },
+            args:
+                Args {
+                    configs,
+                    requires_capabilities,
+                },
             vmm,
             unstable,
             with_vtl0_pipette,
@@ -378,7 +379,7 @@ impl ArgsWithOverrides {
                 unstable: config.unstable || unstable,
                 requires_vpci,
                 requires_host_vendor,
-                requires_env: requires_env.clone(),
+                requires_capabilities: requires_capabilities.clone(),
             });
         }
 
@@ -391,19 +392,19 @@ impl ArgsWithOverrides {
 
 enum ArgItem {
     Config(Config),
-    RequiresEnv(String),
+    RequiresCapability(String),
 }
 
 impl Parse for ArgItem {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let fork = input.fork();
         let ident: Ident = fork.parse()?;
-        if ident == "requires_env" {
+        if ident == "requires_capability" {
             let _: Ident = input.parse()?;
             let content;
             syn::parenthesized!(content in input);
             let lit: syn::LitStr = content.parse()?;
-            Ok(ArgItem::RequiresEnv(lit.value()))
+            Ok(ArgItem::RequiresCapability(lit.value()))
         } else {
             Ok(ArgItem::Config(input.parse()?))
         }
@@ -422,11 +423,11 @@ impl Parse for Args {
             .collect();
 
         let mut configs = Vec::new();
-        let mut requires_env = Vec::new();
+        let mut requires_capabilities = Vec::new();
         for item in items {
             match item {
                 ArgItem::Config(c) => configs.push(c),
-                ArgItem::RequiresEnv(v) => requires_env.push(v),
+                ArgItem::RequiresCapability(v) => requires_capabilities.push(v),
             }
         }
 
@@ -451,7 +452,7 @@ impl Parse for Args {
 
         Ok(Args {
             configs,
-            requires_env,
+            requires_capabilities,
         })
     }
 }
@@ -824,10 +825,12 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
 ///
-/// Additionally, `requires_env("VAR_NAME")` can be included (comma-separated
-/// alongside the firmware entries) to mark the test as requiring a specific
-/// environment variable. When the variable is not set, the test is skipped.
-/// Multiple `requires_env` entries are supported.
+/// Additionally, `requires_capability("NAME")` can be included (comma-separated
+/// alongside the firmware entries) to mark the test as requiring a named
+/// capability advertised by the execution environment (via the
+/// `PETRI_CAPABILITIES` environment variable). When the capability is not
+/// advertised, the test is skipped, so it self-excludes on any host that
+/// cannot provide it. Multiple `requires_capability` entries are supported.
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -942,7 +945,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             config.vmm,
             config.requires_vpci,
             config.requires_host_vendor,
-            &config.requires_env,
+            &config.requires_capabilities,
         );
 
         // Now move the values for the FirmwareAndArch and extra_deps
@@ -1013,7 +1016,7 @@ fn build_requirements(
     resolved_vmm: Vmm,
     requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
-    requires_env: &[String],
+    requires_capabilities: &[String],
 ) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
@@ -1068,9 +1071,9 @@ fn build_requirements(
         ));
     }
 
-    for env_var in requires_env {
+    for capability in requires_capabilities {
         requirement_expr = quote!(#requirement_expr.and(
-            ::petri::requirements::TestRequirement::EnvVar(#env_var.to_string())
+            ::petri::requirements::TestRequirement::Capability(#capability.to_string())
         ));
     }
 

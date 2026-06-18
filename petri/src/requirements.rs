@@ -169,8 +169,16 @@ pub enum TestRequirement {
     /// Requires a hypervisor backend that supports VPCI (virtual PCI)
     /// device emulation. On Linux this means /dev/mshv (not KVM).
     VpciSupport,
-    /// Requires an environment variable to be set.
-    EnvVar(String),
+    /// Requires a named capability advertised by the execution environment.
+    ///
+    /// Capabilities are how a test says "I need a specific resource to be
+    /// provisioned for me" without naming who provides it or how. The
+    /// execution environment (e.g. the incubator) advertises the capabilities
+    /// it provides via the comma-separated `PETRI_CAPABILITIES` environment
+    /// variable. A test requiring a capability that is not advertised is
+    /// skipped, so such tests automatically self-exclude on any host that
+    /// cannot satisfy them.
+    Capability(String),
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -215,7 +223,7 @@ impl TestRequirement {
                 }
             }
             TestRequirement::VpciSupport => context.vpci_supported,
-            TestRequirement::EnvVar(name) => std::env::var(name).is_ok(),
+            TestRequirement::Capability(name) => capability_is_present(name),
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }
@@ -226,6 +234,13 @@ impl TestRequirement {
             TestRequirement::Any => true,
         }
     }
+}
+
+/// Returns whether `name` is present in the comma-separated `PETRI_CAPABILITIES`
+/// environment variable advertised by the execution environment.
+fn capability_is_present(name: &str) -> bool {
+    std::env::var("PETRI_CAPABILITIES")
+        .is_ok_and(|caps| caps.split(',').map(str::trim).any(|cap| cap == name))
 }
 
 /// Result of evaluating all requirements for a test

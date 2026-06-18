@@ -1991,10 +1991,6 @@ pub mod vmm_tests_artifact_builders {
             let use_tmk_vmm = use_tmk_vmm.ok_or("tmk_vmm")?;
 
             Ok(Box::new(move |ctx| {
-                let profile_content =
-                    include_str!("../../../../petri/incubator/profiles/aarch64-pcie.toml")
-                        .to_string();
-
                 let dep_artifacts = VmmTestsDepArtifacts {
                     openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
                     pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
@@ -2006,7 +2002,7 @@ pub mod vmm_tests_artifact_builders {
 
                 let incubator_params = IncubatorParams {
                     incubator: ctx.use_typed_artifact(&use_incubator),
-                    profile_content,
+                    profile_name: "aarch64-pcie".to_string(),
                 };
 
                 (dep_artifacts, incubator_params)

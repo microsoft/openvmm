@@ -91,13 +91,14 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// as a block device, then reads from it to exercise DMA and interrupts.
 ///
 /// Assigned to the `aarch64-tcg` nextest test group.
-#[openvmm_test(linux_direct_aarch64, requires_env("INCUBATOR_VFIO_BDF_TEST_DISK"))]
+#[openvmm_test(linux_direct_aarch64, requires_capability("test-disk-vfio"))]
 async fn boot_no_vmbus_pcie_aarch64_tcg(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     // Read the VFIO BDF from the environment. This is set by the incubator
     // when it binds a device to vfio-pci before running the test.
-    // The requires_env prerequisite ensures this is set before the test runs.
+    // The "test-disk-vfio" capability requirement ensures this is set before
+    // the test runs.
     let vfio_bdf = std::env::var("INCUBATOR_VFIO_BDF_TEST_DISK").unwrap();
 
     tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device to guest");

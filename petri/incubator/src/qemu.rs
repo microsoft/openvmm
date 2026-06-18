@@ -302,12 +302,15 @@ pub fn child_pipe_to_file(pipe: impl Into<std::os::windows::io::OwnedHandle>) ->
 /// it to vfio-pci.
 ///
 /// Returns a map of environment variables to set for the guest command,
-/// e.g., `INCUBATOR_VFIO_BDF_TEST_DISK=0000:01:00.0`.
+/// e.g., `INCUBATOR_VFIO_BDF_TEST_DISK=0000:01:00.0`. If any provisioned
+/// device declares a `provides` capability, the returned map also includes
+/// `PETRI_CAPABILITIES` listing those capabilities (comma-separated).
 pub async fn setup_vfio_devices(
     client: &pipette_client::PipetteClient,
     devices: &[DeviceConfig],
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
+    let mut capabilities = Vec::new();
 
     // Collect (device_index, config) for devices that need VFIO binding.
     let vfio_devices: Vec<_> = devices
@@ -396,6 +399,20 @@ pub async fn setup_vfio_devices(
         );
         tracing::info!(%env_name, %bdf, "VFIO device ready");
         env.insert(env_name, bdf);
+
+        // Advertise the capability this device provides, now that it has been
+        // successfully provisioned. Tests gate on this via
+        // `requires_capability(...)`.
+        if let Some(capability) = &cfg.provides {
+            capabilities.push(capability.clone());
+        }
+    }
+
+    // Advertise all provisioned capabilities to the guest command via
+    // PETRI_CAPABILITIES (comma-separated), which petri's requirement
+    // evaluation reads.
+    if !capabilities.is_empty() {
+        env.insert("PETRI_CAPABILITIES".to_string(), capabilities.join(","));
     }
 
     Ok(env)

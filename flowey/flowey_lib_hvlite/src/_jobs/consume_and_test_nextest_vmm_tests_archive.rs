@@ -83,10 +83,13 @@ macro_rules! vmm_tests_artifact_builder {
 /// Configuration for running tests inside an incubator (e.g., QEMU TCG).
 #[derive(Serialize, Deserialize)]
 pub struct IncubatorParams {
-    /// Pre-built incubator binary (runs on the CI host, not inside the VM).
+    /// Pre-built incubator binary (runs on the CI host, not inside the VM),
+    /// along with the bundled incubator profiles directory.
     pub incubator: ReadVar<IncubatorOutput>,
-    /// TOML profile content for the incubator backend configuration.
-    pub profile_content: String,
+    /// Name of the incubator profile to use (without the `.toml` extension),
+    /// resolved against the profiles directory bundled in the incubator
+    /// artifact (e.g. "aarch64-pcie").
+    pub profile_name: String,
 }
 
 flowey_request! {
@@ -289,8 +292,8 @@ impl SimpleFlowNode for Node {
 
         let results = if let Some(incubator_params) = incubator {
             let IncubatorParams {
-                incubator: incubator_bin,
-                profile_content,
+                incubator,
+                profile_name,
             } = incubator_params;
 
             let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
@@ -314,54 +317,48 @@ impl SimpleFlowNode for Node {
                 )
             });
 
-            // Write the profile content to a file and prepare the archive
-            // in the share directory.
-            let incubator_bin = incubator_bin.map(ctx, |o| o.bin);
-            let (profile_path, archive_name) = {
-                let profile_content = profile_content.clone();
-                let prep = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
-                    let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
-                    for dep in pre_run_deps {
-                        dep.claim(ctx);
+            // Resolve the incubator binary and the selected profile from the
+            // incubator artifact (which bundles the profiles directory), and
+            // prepare the archive in the share directory.
+            let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
+            let profile_path = incubator.map(ctx, move |o| {
+                o.profiles.join(format!("{profile_name}.toml"))
+            });
+            let archive_name = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
+                let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
+                for dep in pre_run_deps {
+                    dep.claim(ctx);
+                }
+                move |rt| {
+                    let archive = rt.read(nextest_archive);
+                    let test_content_dir = std::env::current_dir()?.absolute()?;
+
+                    // Copy nextest archive into the share dir
+                    let archive_name = archive
+                        .archive_file
+                        .file_name()
+                        .context("no file name on archive")?
+                        .to_string_lossy()
+                        .to_string();
+                    let archive_dest = test_content_dir.join(&archive_name);
+                    if archive.archive_file != archive_dest {
+                        std::fs::copy(&archive.archive_file, &archive_dest)?;
                     }
-                    move |rt| {
-                        let archive = rt.read(nextest_archive);
-                        let test_content_dir = std::env::current_dir()?.absolute()?;
 
-                        // Write profile
-                        let profile_path = test_content_dir.join(".incubator-profile.toml");
-                        std::fs::write(&profile_path, &profile_content)?;
-
-                        // Copy nextest archive into the share dir
-                        let archive_name = archive
-                            .archive_file
-                            .file_name()
-                            .context("no file name on archive")?
-                            .to_string_lossy()
-                            .to_string();
-                        let archive_dest = test_content_dir.join(&archive_name);
-                        if archive.archive_file != archive_dest {
-                            std::fs::copy(&archive.archive_file, &archive_dest)?;
+                    // Ensure cargo-nextest is in the share dir
+                    let nextest_bin_name = "cargo-nextest";
+                    let host_nextest = test_content_dir.join(nextest_bin_name);
+                    if !host_nextest.exists() {
+                        if let Ok(which) = which::which(nextest_bin_name) {
+                            std::fs::copy(&which, &host_nextest)?;
+                        } else {
+                            anyhow::bail!("cargo-nextest not found in test content dir or on PATH");
                         }
-
-                        // Ensure cargo-nextest is in the share dir
-                        let nextest_bin_name = "cargo-nextest";
-                        let host_nextest = test_content_dir.join(nextest_bin_name);
-                        if !host_nextest.exists() {
-                            if let Ok(which) = which::which(nextest_bin_name) {
-                                std::fs::copy(&which, &host_nextest)?;
-                            } else {
-                                anyhow::bail!(
-                                    "cargo-nextest not found in test content dir or on PATH"
-                                );
-                            }
-                        }
-
-                        Ok((profile_path, archive_name))
                     }
-                });
-                (prep.map(ctx, |(p, _)| p), prep.map(ctx, |(_, a)| a))
-            };
+
+                    Ok(archive_name)
+                }
+            });
 
             let share_dir = ctx.emit_rust_stepv("get share dir", |_| {
                 |_| Ok(std::env::current_dir()?.absolute()?)

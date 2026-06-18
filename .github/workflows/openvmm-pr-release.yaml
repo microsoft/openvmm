@@ -5865,18 +5865,17 @@ jobs:
       shell: bash
     - name: install vmm tests deps (linux)
       run: |-
+        flowey e 27 flowey_core::pipeline::artifact::resolve 6
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey e 27 flowey_core::pipeline::artifact::resolve 4
         flowey e 27 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: prepare incubator share directory
-      run: |-
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      run: flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: get share dir
       run: |-
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
         flowey e 27 flowey_core::pipeline::artifact::resolve 1
         flowey e 27 flowey_core::pipeline::artifact::resolve 2
         flowey e 27 flowey_core::pipeline::artifact::resolve 0
@@ -5981,13 +5980,12 @@ jobs:
     - name: unpack QEMU archive
       run: |-
         flowey e 27 flowey_lib_hvlite::resolve_openvmm_qemu 0
-        flowey e 27 flowey_core::pipeline::artifact::resolve 6
         flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: run tests in incubator
       run: |-
         flowey e 27 flowey_lib_hvlite::run_in_incubator 0
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey e 27 flowey_lib_common::publish_test_results 4
         flowey e 27 flowey_lib_common::publish_test_results 5
         flowey v 27 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -6002,7 +6000,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
         flowey e 27 flowey_lib_common::publish_test_results 0
         flowey e 27 flowey_lib_common::publish_test_results 1
         flowey e 27 flowey_lib_common::publish_test_results 2
@@ -6017,7 +6015,7 @@ jobs:
       name: 'publish test results: aarch64-linux-tcg-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      run: flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 27 flowey_lib_common::cache 3
