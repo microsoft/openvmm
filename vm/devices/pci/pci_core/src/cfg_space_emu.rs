@@ -659,8 +659,9 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             if bar_index < N {
                 let mut bar_value = val & self.bar_masks[bar_index];
 
-                // For even-indexed BARs, set the 64-bit type bit if the BAR is configured
-                if bar_index & 1 == 0 && self.bar_masks[bar_index] != 0 {
+                // Preserve in-band BAR attribute bits for any BAR whose mask
+                // encodes them.
+                if self.bar_masks[bar_index] != 0 {
                     let attrs = cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index]);
                     bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
                         .with_type_64_bit(attrs.type_64_bit())
