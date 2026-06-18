@@ -147,6 +147,7 @@ pub enum LoadMode {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
+        uefi: bool,
         com_serial: Option<SerialInformation>,
     },
     None,
