@@ -113,7 +113,7 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         if let Some(handle) = &state.handle {
             if let Err(e) = block_on(handle.add_mapping(
                 new_mapping.range,
-                new_mapping.mappable.clone(),
+                Some(new_mapping.mappable.clone()),
                 new_mapping.file_offset,
                 new_mapping.writable,
                 None,
@@ -170,7 +170,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                 handle
                     .add_mapping(
                         mapping.range,
-                        mapping.mappable.clone(),
+                        Some(mapping.mappable.clone()),
                         mapping.file_offset,
                         mapping.writable,
                         None,
