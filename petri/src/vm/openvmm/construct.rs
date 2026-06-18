@@ -1015,6 +1015,7 @@ impl PetriVmConfigSetupCore<'_> {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address,
+                    uefi: false,
                     com_serial: Some(SerialInformation {
                         io_port: ComPort::Com3.io_port(),
                         irq: ComPort::Com3.irq().into(),

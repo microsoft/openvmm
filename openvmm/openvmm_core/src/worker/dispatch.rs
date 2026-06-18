@@ -1470,7 +1470,7 @@ impl InitializedVm {
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
         match &cfg.load_mode {
-            LoadMode::Uefi { .. } => {
+            LoadMode::Uefi { .. } | LoadMode::Igvm { uefi: true, .. } => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
                 // device.
@@ -3303,11 +3303,15 @@ impl LoadedVmInner {
                 file: _,
                 ref cmdline,
                 vtl2_base_address,
+                uefi,
                 com_serial,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
                 let slit = acpi_builder.build_slit();
+                let mcfg = (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg());
+                let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
+                let iort = acpi_builder.build_iort();
                 const ENTROPY_SIZE: usize = 64;
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
@@ -3332,7 +3336,61 @@ impl LoadedVmInner {
                     entropy: Some(&entropy),
                     chipset_mmio: self.chipset_mmio,
                 };
-                super::vm_loaders::igvm::load_igvm(params)?
+                let (mut regs, initial_page_vis) = super::vm_loaders::igvm::load_igvm(params)?;
+
+                // The non-isolated UEFI IGVM file path uses the same fixed UEFI
+                // config GPA as direct UEFI. Supply the config blob OpenVMM
+                // normally builds for direct UEFI.
+                if uefi {
+                    let acpi_tables = [
+                        Some(madt.as_ref()),
+                        Some(srat.as_ref()),
+                        slit.as_deref(),
+                        mcfg.as_deref(),
+                        pptt.as_deref(),
+                        iort.as_deref(),
+                    ];
+                    let acpi_tables: Vec<_> = acpi_tables.iter().flatten().copied().collect();
+
+                    let uefi_config = super::vm_loaders::uefi::build_config_blob(
+                        &self.processor_topology,
+                        &self.mem_layout,
+                        &self.pcie_host_bridges,
+                        &super::vm_loaders::uefi::UefiLoadSettings {
+                            debugging: false,
+                            battery: false,
+                            memory_protections: false,
+                            frontpage: true,
+                            tpm: false,
+                            guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
+                            vpci_boot: false,
+                            serial: com_serial.is_some(),
+                            uefi_console_mode: None,
+                            default_boot_always_attempt: false,
+                            bios_guid: guid::Guid::new_random(),
+                            vmbus: self.vmbus_server.is_some(),
+                            force_dma_bounce: false,
+                        },
+                        &self.chipset_mmio,
+                        &acpi_tables,
+                    )?;
+                    self.gm
+                        .write_at(loader::uefi::CONFIG_BLOB_GPA_BASE, &uefi_config.complete())
+                        .context("failed to patch UEFI config blob for IGVM")?;
+
+                    // x64 also receives the GPA in R12 if IGVM omitted it.
+                    #[cfg(guest_arch = "x86_64")]
+                    if !regs
+                        .iter()
+                        .any(|reg| matches!(reg, loader::importer::X86Register::R12(_)))
+                    {
+                        regs.push(loader::importer::X86Register::R12(
+                            loader::uefi::CONFIG_BLOB_GPA_BASE,
+                        ));
+                    }
+                }
+
+                (regs, initial_page_vis)
             }
 
             #[expect(clippy::allow_attributes)]

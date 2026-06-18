@@ -89,6 +89,7 @@ use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -433,6 +434,7 @@ async fn vm_config_from_command_line(
     }
 
     opt.validate_memory_options()?;
+    opt.validate_igvm_options()?;
 
     const MAX_PROCESSOR_COUNT: u32 = 1024;
 
@@ -1102,9 +1104,19 @@ async fn vm_config_from_command_line(
         || serial3_cfg.is_some();
 
     let has_com3 = serial2_cfg.is_some();
+    let igvm_uses_uefi_helper = opt.igvm.as_ref().is_some_and(|igvm| igvm.uefi);
+    let igvm_vtl2_relocation_type = opt.igvm_vtl2_relocation_type.unwrap_or({
+        if igvm_uses_uefi_helper {
+            Vtl2BaseAddressType::File
+        } else {
+            Vtl2BaseAddressType::MemoryLayout { size: None }
+        }
+    });
 
     let mut chipset = VmManifestBuilder::new(
-        if opt.igvm.is_some() {
+        if igvm_uses_uefi_helper {
+            BaseChipsetType::HypervGen2Uefi
+        } else if opt.igvm.is_some() {
             BaseChipsetType::HclHost
         } else if opt.pcat {
             BaseChipsetType::HypervGen1
@@ -1188,7 +1200,7 @@ async fn vm_config_from_command_line(
         EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
     };
 
-    if opt.uefi {
+    if opt.uefi || igvm_uses_uefi_helper {
         let log_level = match efi_diagnostics_log_level {
             EfiDiagnosticsLogLevelType::Default => {
                 firmware_uefi_resources::LogLevel::make_default()
@@ -1231,8 +1243,8 @@ async fn vm_config_from_command_line(
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
         with_hv = true;
-    } else if let Some(path) = &opt.igvm {
-        let file = fs_err::File::open(path)
+    } else if let Some(igvm) = &opt.igvm {
+        let file = fs_err::File::open(&igvm.path)
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
@@ -1241,7 +1253,8 @@ async fn vm_config_from_command_line(
         load_mode = LoadMode::Igvm {
             file,
             cmdline,
-            vtl2_base_address: opt.igvm_vtl2_relocation_type,
+            vtl2_base_address: igvm_vtl2_relocation_type,
+            uefi: igvm.uefi,
             com_serial: has_com3.then(|| SerialInformation {
                 io_port: ComPort::Com3.io_port(),
                 irq: ComPort::Com3.irq().into(),
@@ -2728,7 +2741,7 @@ async fn run_control_inner(
         ged_rpc: resources.ged_rpc.clone(),
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
-        igvm_path: opt.igvm.clone(),
+        igvm_path: opt.igvm.as_ref().map(|igvm| igvm.path.clone()),
         memory_backing_file: opt.memory_backing_file().cloned(),
         memory: opt.memory_size(),
         processors: opt.processors,
