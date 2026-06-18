@@ -58,6 +58,8 @@ pub use smoltcp::wire::IpVersion;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
+use smoltcp::wire::Ipv6ExtHeader;
+use smoltcp::wire::Ipv6ExtHeaderRepr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -663,6 +665,11 @@ enum IpAddresses {
     V6(Ipv6Addresses),
 }
 
+struct Ipv6UpperLayerPayload<'a> {
+    next_header: IpProtocol,
+    payload: &'a [u8],
+}
+
 impl IpAddresses {
     fn src_addr(&self) -> IpAddress {
         match self {
@@ -705,6 +712,34 @@ pub(crate) fn is_same_ipv6_subnet(addr1: Ipv6Address, addr2: Ipv6Address, prefix
 /// address (i.e., not loopback, unspecified, or link-local).
 fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
     !addr.is_loopback() && !addr.is_unspecified() && !addr.is_unicast_link_local()
+}
+
+/// Skips IPv6 Hop-by-Hop, Routing, and Destination Options extension headers
+/// and returns the upper-layer protocol and payload.
+///
+/// Fragment headers are rejected because Consomme does not support IP
+/// reassembly.
+fn ipv6_upper_layer_payload(
+    mut next_header: IpProtocol,
+    mut payload: &[u8],
+) -> Result<Ipv6UpperLayerPayload<'_>, DropReason> {
+    loop {
+        match next_header {
+            IpProtocol::HopByHop | IpProtocol::Ipv6Route | IpProtocol::Ipv6Opts => {
+                let header = Ipv6ExtHeader::new_checked(payload)?;
+                let header = Ipv6ExtHeaderRepr::parse(&header)?;
+                next_header = header.next_header;
+                payload = &payload[header.header_len() + header.data.len()..];
+            }
+            IpProtocol::Ipv6Frag => return Err(DropReason::FragmentedPacket),
+            _ => {
+                return Ok(Ipv6UpperLayerPayload {
+                    next_header,
+                    payload,
+                });
+            }
+        }
+    }
 }
 
 impl Consomme {
@@ -932,16 +967,24 @@ impl<T: Client> Access<'_, T> {
         // may not reflect the actual buffer size. Skip the length validation
         // and use the full buffer.
         let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
+        let total_len = if segmentation_offload {
+            payload.len()
+        } else {
+            smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize
+        };
         if !segmentation_offload {
-            let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
-            if payload.len() < required_len {
+            if payload.len() < total_len {
                 return Err(DropReason::MalformedPacket);
             }
         }
 
         let next_header = ipv6.next_header();
         let src_addr = ipv6.src_addr();
-        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
+        let upper_layer = ipv6_upper_layer_payload(
+            next_header,
+            &payload[smoltcp::wire::IPV6_HEADER_LEN..total_len],
+        )?;
+        let inner = upper_layer.payload;
         let addresses = Ipv6Addresses {
             src_addr,
             dst_addr: ipv6.dst_addr(),
@@ -962,7 +1005,7 @@ impl<T: Client> Access<'_, T> {
             self.inner.state.params.client_ip_ipv6_routable = Some(src_addr);
         }
 
-        match next_header {
+        match upper_layer.next_header {
             IpProtocol::Udp => {
                 self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
             }
@@ -979,7 +1022,7 @@ impl<T: Client> Access<'_, T> {
                 {
                     self.handle_ndp(frame, inner, ipv6.src_addr())?;
                 } else {
-                    return Err(DropReason::UnsupportedIpProtocol(next_header));
+                    return Err(DropReason::UnsupportedIpProtocol(upper_layer.next_header));
                 }
             }
 
@@ -1040,5 +1083,39 @@ mod tests {
         // prefix_len > 128 should behave like /128 (exact match), not panic.
         assert!(is_same_ipv6_subnet(a, a, 200));
         assert!(!is_same_ipv6_subnet(a, b, 255));
+    }
+
+    #[test]
+    fn test_ipv6_hop_by_hop_skips_to_upper_layer_payload() {
+        let tcp_payload = [0xaa, 0xbb, 0xcc, 0xdd];
+        let mut payload = [0u8; 12];
+        payload[0] = IpProtocol::Tcp.into();
+        payload[1] = 0;
+        payload[2] = 1;
+        payload[3] = 4;
+        payload[8..].copy_from_slice(&tcp_payload);
+
+        let upper_layer = ipv6_upper_layer_payload(IpProtocol::HopByHop, &payload).unwrap();
+
+        assert_eq!(upper_layer.next_header, IpProtocol::Tcp);
+        assert_eq!(upper_layer.payload, tcp_payload);
+    }
+
+    #[test]
+    fn test_ipv6_extension_header_length_is_validated() {
+        let payload = [IpProtocol::Tcp.into(), 1, 0, 0, 0, 0, 0, 0];
+
+        assert!(matches!(
+            ipv6_upper_layer_payload(IpProtocol::HopByHop, &payload),
+            Err(DropReason::Packet(_))
+        ));
+    }
+
+    #[test]
+    fn test_ipv6_fragment_header_is_dropped() {
+        assert!(matches!(
+            ipv6_upper_layer_payload(IpProtocol::Ipv6Frag, &[0; 8]),
+            Err(DropReason::FragmentedPacket)
+        ));
     }
 }
