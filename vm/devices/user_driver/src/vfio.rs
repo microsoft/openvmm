@@ -414,9 +414,8 @@ impl DeviceBacking for VfioDevice {
             return Ok(());
         }
 
-        let count = self.interrupts.len() as u32;
         self.device
-            .unmap_msix(0, count)
+            .unmap_msix()
             .context("failed to unmap all msix vectors")?;
 
         // Clear local bookkeeping so re-mapping works correctly later.
