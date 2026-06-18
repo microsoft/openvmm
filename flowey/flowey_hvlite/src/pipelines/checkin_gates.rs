@@ -2002,7 +2002,7 @@ pub mod vmm_tests_artifact_builders {
 
                 let incubator_params = IncubatorParams {
                     incubator: ctx.use_typed_artifact(&use_incubator),
-                    profile_name: "aarch64-pcie".to_string(),
+                    profile_name: "aarch64-tcg-pcie".to_string(),
                 };
 
                 (dep_artifacts, incubator_params)

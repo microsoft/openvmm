@@ -27,6 +27,11 @@ flowey_request! {
         pub share_dir: ReadVar<PathBuf>,
         /// Filename of the nextest archive (relative to share_dir).
         pub nextest_archive_name: ReadVar<String>,
+        /// Path to the nextest config file (e.g. the repo's
+        /// `.config/nextest.toml`). This is staged into the share dir and
+        /// passed to the guest nextest invocation via `--config-file` so that
+        /// junit output, timeouts, and test-groups match host runs.
+        pub nextest_config_file: ReadVar<PathBuf>,
         /// Nextest filter expression.
         pub nextest_filter_expr: Option<String>,
         /// Nextest profile to use.
@@ -57,6 +62,7 @@ impl SimpleFlowNode for Node {
             initrd,
             share_dir,
             nextest_archive_name,
+            nextest_config_file,
             nextest_filter_expr,
             nextest_profile,
             extra_env,
@@ -72,6 +78,7 @@ impl SimpleFlowNode for Node {
             let initrd = initrd.claim(ctx);
             let share_dir = share_dir.claim(ctx);
             let nextest_archive_name = nextest_archive_name.claim(ctx);
+            let nextest_config_file = nextest_config_file.claim(ctx);
             let extra_env = extra_env.claim(ctx);
             let qemu_binary = qemu_binary.claim(ctx);
             let results = results.claim(ctx);
@@ -86,12 +93,24 @@ impl SimpleFlowNode for Node {
                 let initrd = rt.read(initrd);
                 let share_dir = rt.read(share_dir);
                 let archive_name = rt.read(nextest_archive_name);
+                let nextest_config_file = rt.read(nextest_config_file);
                 let extra_env = extra_env.map(|v| rt.read(v));
                 let qemu_binary = qemu_binary.map(|v| rt.read(v));
 
                 let nextest_bin_name = "cargo-nextest";
                 let guest_nextest = format!("/share/{nextest_bin_name}");
                 let guest_archive = format!("/share/{archive_name}");
+
+                // Stage the nextest config into the share dir so the guest can
+                // pick it up via `--config-file`. Without this, the guest run
+                // would not apply the repo's junit path, slow-timeouts, or
+                // test-groups, diverging from host runs.
+                let config_name = "nextest.toml";
+                let host_config_dest = share_dir.join(config_name);
+                if nextest_config_file != host_config_dest {
+                    fs_err::copy(&nextest_config_file, &host_config_dest)?;
+                }
+                let guest_config = format!("/share/{config_name}");
 
                 log::info!(
                     "Launching incubator with profile: {}",
@@ -119,7 +138,9 @@ impl SimpleFlowNode for Node {
                     .arg("--archive-file")
                     .arg(&guest_archive)
                     .arg("--workspace-remap")
-                    .arg("/share");
+                    .arg("/share")
+                    .arg("--config-file")
+                    .arg(&guest_config);
 
                 if let Some(ref filter) = nextest_filter_expr {
                     cmd.arg("--filter-expr").arg(filter);

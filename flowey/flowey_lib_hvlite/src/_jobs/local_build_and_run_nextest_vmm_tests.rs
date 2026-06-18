@@ -900,6 +900,7 @@ impl SimpleFlowNode for Node {
                 initrd,
                 share_dir: ReadVar::from_static(test_content_dir),
                 nextest_archive_name: ReadVar::from_static(archive_name),
+                nextest_config_file: ReadVar::from_static(nextest_config_file.clone()),
                 nextest_filter_expr: Some(nextest_filter_expr),
                 nextest_profile,
                 extra_env: Some(extra_env),

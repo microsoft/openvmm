@@ -117,7 +117,7 @@ pub struct VmmTestsRunCli {
     /// automatically overridden to match the profile's architecture,
     /// artifacts are cross-compiled, and tests run inside the incubator.
     ///
-    /// Example: `--incubator petri/incubator/profiles/aarch64-pcie.toml`
+    /// Example: `--incubator petri/incubator/profiles/aarch64-tcg-pcie.toml`
     #[clap(long)]
     incubator: Option<PathBuf>,
 }

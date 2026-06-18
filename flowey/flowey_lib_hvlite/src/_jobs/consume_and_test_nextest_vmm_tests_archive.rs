@@ -88,7 +88,7 @@ pub struct IncubatorParams {
     pub incubator: ReadVar<IncubatorOutput>,
     /// Name of the incubator profile to use (without the `.toml` extension),
     /// resolved against the profiles directory bundled in the incubator
-    /// artifact (e.g. "aarch64-pcie").
+    /// artifact (e.g. "aarch64-tcg-pcie").
     pub profile_name: String,
 }
 
@@ -133,6 +133,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -364,6 +365,12 @@ impl SimpleFlowNode for Node {
                 |_| Ok(std::env::current_dir()?.absolute()?)
             });
 
+            // The repo's nextest config is needed inside the incubator so that
+            // junit output, slow-timeouts, and test-groups match host runs.
+            let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+            let nextest_config_file =
+                openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
+
             ctx.reqv(|v| crate::run_in_incubator::Request {
                 incubator_bin,
                 profile_path,
@@ -371,6 +378,7 @@ impl SimpleFlowNode for Node {
                 initrd,
                 share_dir,
                 nextest_archive_name: archive_name,
+                nextest_config_file,
                 nextest_filter_expr: nextest_filter_expr.clone(),
                 nextest_profile,
                 extra_env: Some(extra_env),
