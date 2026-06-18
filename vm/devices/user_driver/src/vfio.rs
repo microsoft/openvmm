@@ -410,7 +410,7 @@ impl DeviceBacking for VfioDevice {
     }
 
     fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
-        if self.interrupts.is_empty() {
+        if self.interrupts.iter().all(|i| i.is_none()) {
             return Ok(());
         }
 
