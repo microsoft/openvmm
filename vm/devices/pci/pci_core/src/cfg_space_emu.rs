@@ -276,6 +276,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             let mask64 = !(len - 1);
             bar_masks[bar_index] = cfg_space::BarEncodingBits::from_bits(mask64 as u32)
                 .with_type_64_bit(true)
+                .with_prefetchable(true)
                 .into_bits();
             if bar_index + 1 < N {
                 bar_masks[bar_index + 1] = (mask64 >> 32) as u32;
@@ -660,8 +661,10 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
                 // For even-indexed BARs, set the 64-bit type bit if the BAR is configured
                 if bar_index & 1 == 0 && self.bar_masks[bar_index] != 0 {
+                    let attrs = cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index]);
                     bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
-                        .with_type_64_bit(true)
+                        .with_type_64_bit(attrs.type_64_bit())
+                        .with_prefetchable(attrs.prefetchable())
                         .into_bits();
                 }
 
