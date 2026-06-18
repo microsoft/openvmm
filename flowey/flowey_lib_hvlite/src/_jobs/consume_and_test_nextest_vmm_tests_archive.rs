@@ -145,6 +145,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
+        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
@@ -325,13 +326,26 @@ impl SimpleFlowNode for Node {
             let profile_path = incubator.map(ctx, move |o| {
                 o.profiles.join(format!("{profile_name}.toml"))
             });
+
+            // Download a standalone cargo-nextest for the guest target. The
+            // guest runs the same architecture as the test target, and the
+            // binary cannot be assumed to be on PATH in the consume job.
+            let guest_nextest_bin = ctx.reqv(|v| {
+                flowey_lib_common::download_cargo_nextest::Request::Get(
+                    ReadVar::from_static(target.clone()),
+                    v,
+                )
+            });
+
             let archive_name = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
                 let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
+                let guest_nextest_bin = guest_nextest_bin.claim(ctx);
                 for dep in pre_run_deps {
                     dep.claim(ctx);
                 }
                 move |rt| {
                     let archive = rt.read(nextest_archive);
+                    let guest_nextest_bin = rt.read(guest_nextest_bin);
                     let test_content_dir = std::env::current_dir()?.absolute()?;
 
                     // Copy nextest archive into the share dir
@@ -346,15 +360,11 @@ impl SimpleFlowNode for Node {
                         std::fs::copy(&archive.archive_file, &archive_dest)?;
                     }
 
-                    // Ensure cargo-nextest is in the share dir
-                    let nextest_bin_name = "cargo-nextest";
-                    let host_nextest = test_content_dir.join(nextest_bin_name);
-                    if !host_nextest.exists() {
-                        if let Ok(which) = which::which(nextest_bin_name) {
-                            std::fs::copy(&which, &host_nextest)?;
-                        } else {
-                            anyhow::bail!("cargo-nextest not found in test content dir or on PATH");
-                        }
+                    // Copy cargo-nextest into the share dir so the guest can
+                    // run it from `/share`.
+                    let host_nextest = test_content_dir.join("cargo-nextest");
+                    if guest_nextest_bin != host_nextest {
+                        std::fs::copy(&guest_nextest_bin, &host_nextest)?;
                     }
 
                     Ok(archive_name)

@@ -3999,7 +3999,33 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 3
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 4
+    displayName: downloading cargo-nextest
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (linux)
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: prepare incubator share directory
@@ -4040,22 +4066,22 @@ jobs:
     displayName: create gh-release-download cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 4
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar6)
+      path: $(floweyvar5)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 6
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_gh_release 1
     displayName: download artifacts from github releases
@@ -4108,6 +4134,8 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 3
+    displayName: 'validate cache entry: cargo-nextest'
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 7
     displayName: 'validate cache entry: gh-release-download'
 - job: job2
   displayName: build artifacts (shared VMM tests) [windows]
