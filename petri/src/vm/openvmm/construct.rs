@@ -251,7 +251,9 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        vmbus_devices.extend(storvsp_ide_handles);
+        if !properties.no_vmbus {
+            vmbus_devices.extend(storvsp_ide_handles);
+        }
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 

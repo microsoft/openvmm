@@ -712,7 +712,9 @@ impl StorageBuilder {
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
-        config.vmbus_devices.append(&mut self.storvsp_ide_handles);
+        if config.vmbus.is_some() {
+            config.vmbus_devices.append(&mut self.storvsp_ide_handles);
+        }
 
         // Add an empty VTL0 SCSI controller even if there are no configured disks.
         if !self.vtl0_scsi_devices.is_empty() || config.vmbus.is_some() {
