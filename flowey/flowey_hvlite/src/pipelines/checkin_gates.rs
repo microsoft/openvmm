@@ -157,9 +157,6 @@ impl IntoPipeline for CheckinGatesCli {
 
         pipeline.inject_all_jobs_with(move |job| {
             let mut job = job
-                .dep_on(|ctx| flowey_lib_common::system_info::Request {
-                    done: ctx.new_done_handle(),
-                })
                 .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                 .dep_on(
