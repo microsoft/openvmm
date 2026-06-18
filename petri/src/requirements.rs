@@ -169,6 +169,8 @@ pub enum TestRequirement {
     /// Requires a hypervisor backend that supports VPCI (virtual PCI)
     /// device emulation. On Linux this means /dev/mshv (not KVM).
     VpciSupport,
+    /// Requires an environment variable to be set.
+    EnvVar(String),
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -213,6 +215,7 @@ impl TestRequirement {
                 }
             }
             TestRequirement::VpciSupport => context.vpci_supported,
+            TestRequirement::EnvVar(name) => std::env::var(name).is_ok(),
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }

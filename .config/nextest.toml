@@ -62,6 +62,17 @@ slow-timeout = { period = "10m" }
 filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# Test groups for incubator (TCG) test passes.
+# Tests assigned to these groups are run inside an emulated VM via QEMU TCG
+# rather than on native hardware. Use `cargo nextest run -E 'group(aarch64-tcg)'`
+# to run all tests in the group locally.
+[test-groups]
+aarch64-tcg = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(~vmm_tests) and (test(smmu) | test(aarch64_tcg))'
+test-group = 'aarch64-tcg'
+
 # Profile for AI agent runs. Minimizes output noise: only prints slow, failing,
 # and flaky tests. Agents should use: cargo nextest run -p <pkg> --profile agent
 [profile.agent]

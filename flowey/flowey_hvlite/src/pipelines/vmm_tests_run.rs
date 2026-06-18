@@ -109,6 +109,17 @@ pub struct VmmTestsRunCli {
     /// `disabled` in the IGVM manifest.
     #[clap(long)]
     pub disable_secure_avic: bool,
+
+    /// Run tests inside an emulated incubator using the given profile.
+    ///
+    /// The profile is a TOML file describing the emulated platform
+    /// (e.g., AArch64 with SMMUv3). When set, the build target is
+    /// automatically overridden to match the profile's architecture,
+    /// artifacts are cross-compiled, and tests run inside the incubator.
+    ///
+    /// Example: `--incubator petri/incubator/profiles/aarch64-pcie.toml`
+    #[clap(long)]
+    incubator: Option<PathBuf>,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -165,7 +176,14 @@ impl IntoPipeline for VmmTestsRunCli {
             ci_profile,
             no_reuse_prepped_vhds,
             disable_secure_avic,
+            incubator,
         } = self;
+
+        // When --incubator is set, --target must also be specified
+        // to indicate the cross-compilation target for the incubator.
+        if incubator.is_some() && target.is_none() {
+            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
+        }
 
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
@@ -196,7 +214,11 @@ impl IntoPipeline for VmmTestsRunCli {
             // When using build-only mode, we need to enumerate tests that could be
             // run on any system so that we build all necessary dependencies. By default
             // petri marks incompatible tests as ignored.
-            include_ignored: build_only,
+            //
+            // When using an incubator, the host's context is irrelevant — the VM's
+            // context determines which tests can run. Include ignored tests so they
+            // are discovered for artifact resolution and re-evaluated inside the VM.
+            include_ignored: build_only || incubator.is_some(),
         })?;
 
         if suites.is_empty() {
@@ -358,6 +380,7 @@ impl IntoPipeline for VmmTestsRunCli {
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
                     disable_secure_avic,
+                    incubator_profile: incubator,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -531,6 +554,8 @@ enum VmmTestTargetCli {
     WindowsX64,
     /// Linux X64
     LinuxX64,
+    /// Linux Aarch64 (musl, for incubator cross-compilation)
+    LinuxAarch64Musl,
 }
 
 /// Resolve a CLI target option to a CommonTriple, defaulting to the host.
@@ -556,6 +581,7 @@ fn resolve_target(
         VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
         VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
         VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
+        VmmTestTargetCli::LinuxAarch64Musl => CommonTriple::AARCH64_LINUX_MUSL,
     })
 }
 

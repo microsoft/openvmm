@@ -88,6 +88,10 @@ flowey_request! {
 
         pub disable_secure_avic: bool,
 
+        /// Optional: incubator profile path. When set, tests run inside
+        /// an emulated VM instead of on the host.
+        pub incubator_profile: Option<PathBuf>,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -99,6 +103,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_guest_test_uefi::Node>();
+        ctx.import::<crate::build_incubator::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
@@ -120,6 +125,10 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
+        ctx.import::<crate::run_in_incubator::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
     }
@@ -138,6 +147,7 @@ impl SimpleFlowNode for Node {
             nextest_profile,
             reuse_prepped_vhds,
             disable_secure_avic,
+            incubator_profile,
             done,
         } = request;
 
@@ -826,7 +836,90 @@ impl SimpleFlowNode for Node {
             }
         }));
 
-        if build_only {
+        if let Some(profile_path) = incubator_profile {
+            // Incubator mode: build everything, then launch the incubator
+            // with the test content dir as the share. The incubator binary
+            // runs nextest inside the emulated VM.
+            if let Some((prep_steps, _)) = register_prep_steps {
+                prep_steps.claim_unused(ctx);
+            }
+
+            let profile_path = profile_path
+                .absolute()
+                .context("failed to resolve incubator profile path")?;
+
+            let host_arch = match ctx.arch() {
+                FlowArch::X86_64 => CommonArch::X86_64,
+                FlowArch::Aarch64 => CommonArch::Aarch64,
+                other => anyhow::bail!("unsupported host architecture for incubator: {other:?}"),
+            };
+            let incubator_target = CommonTriple::Common {
+                arch: host_arch,
+                platform: CommonPlatform::LinuxGnu,
+            };
+            let incubator_bin = ctx.reqv(|v| crate::build_incubator::Request {
+                target: incubator_target,
+                profile: if release {
+                    CommonProfile::Release
+                } else {
+                    CommonProfile::Debug
+                },
+                incubator: v,
+            });
+
+            let incubator_bin = incubator_bin.map(ctx, |o| o.bin);
+
+            let kernel = ctx.reqv(|v| {
+                crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                    arch,
+                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                    v,
+                )
+            });
+            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+
+            let qemu_binary = ctx.reqv(|v| {
+                crate::resolve_openvmm_qemu::Request::Get(
+                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                    host_arch,
+                    v,
+                )
+            });
+
+            let archive_name = nextest_archive_file
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+
+            let results = ctx.reqv(|v| crate::run_in_incubator::Request {
+                incubator_bin,
+                profile_path: ReadVar::from_static(profile_path),
+                kernel,
+                initrd,
+                share_dir: ReadVar::from_static(test_content_dir),
+                nextest_archive_name: ReadVar::from_static(archive_name),
+                nextest_filter_expr: Some(nextest_filter_expr),
+                nextest_profile,
+                extra_env: Some(extra_env),
+                qemu_binary: Some(qemu_binary),
+                pre_run_deps: side_effects,
+                results: v,
+            });
+
+            ctx.emit_rust_step("report hosting VM results", |ctx| {
+                done.claim(ctx);
+                let results = results.claim(ctx);
+                move |rt| {
+                    let results = rt.read(results);
+                    if !results.all_tests_passed {
+                        anyhow::bail!("hosting VM tests failed");
+                    }
+                    Ok(())
+                }
+            });
+        } else if build_only {
             ctx.emit_side_effect_step(side_effects, [done]);
             if let Some((prep_steps, _)) = register_prep_steps {
                 prep_steps.claim_unused(ctx);

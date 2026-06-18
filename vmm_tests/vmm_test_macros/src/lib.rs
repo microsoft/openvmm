@@ -38,6 +38,7 @@ struct ResolvedConfig {
     unstable: bool,
     requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
+    requires_env: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +97,7 @@ struct ImageInfo {
 
 struct Args {
     configs: Vec<Config>,
+    requires_env: Vec<String>,
 }
 
 struct ArgsWithOverrides {
@@ -345,7 +347,10 @@ impl Parse for ArgsWithOverrides {
 impl ArgsWithOverrides {
     fn resolve(self) -> syn::Result<ResolvedArgs> {
         let ArgsWithOverrides {
-            args: Args { configs },
+            args: Args {
+                configs,
+                requires_env,
+            },
             vmm,
             unstable,
             with_vtl0_pipette,
@@ -373,6 +378,7 @@ impl ArgsWithOverrides {
                 unstable: config.unstable || unstable,
                 requires_vpci,
                 requires_host_vendor,
+                requires_env: requires_env.clone(),
             });
         }
 
@@ -383,16 +389,50 @@ impl ArgsWithOverrides {
     }
 }
 
+enum ArgItem {
+    Config(Config),
+    RequiresEnv(String),
+}
+
+impl Parse for ArgItem {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let fork = input.fork();
+        let ident: Ident = fork.parse()?;
+        if ident == "requires_env" {
+            let _: Ident = input.parse()?;
+            let content;
+            syn::parenthesized!(content in input);
+            let lit: syn::LitStr = content.parse()?;
+            Ok(ArgItem::RequiresEnv(lit.value()))
+        } else {
+            Ok(ArgItem::Config(input.parse()?))
+        }
+    }
+}
+
 impl Parse for Args {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Err(input.error("expected at least one firmware entry"));
         }
 
-        let configs: Vec<_> = input
-            .parse_terminated(Config::parse, Token![,])?
+        let items: Vec<_> = input
+            .parse_terminated(ArgItem::parse, Token![,])?
             .into_iter()
             .collect();
+
+        let mut configs = Vec::new();
+        let mut requires_env = Vec::new();
+        for item in items {
+            match item {
+                ArgItem::Config(c) => configs.push(c),
+                ArgItem::RequiresEnv(v) => requires_env.push(v),
+            }
+        }
+
+        if configs.is_empty() {
+            return Err(input.error("expected at least one firmware entry"));
+        }
 
         for config in &configs {
             #[expect(clippy::single_match)] // more patterns coming later
@@ -409,7 +449,10 @@ impl Parse for Args {
             }
         }
 
-        Ok(Args { configs })
+        Ok(Args {
+            configs,
+            requires_env,
+        })
     }
 }
 
@@ -780,6 +823,11 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 ///
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
+///
+/// Additionally, `requires_env("VAR_NAME")` can be included (comma-separated
+/// alongside the firmware entries) to mark the test as requiring a specific
+/// environment variable. When the variable is not set, the test is skipped.
+/// Multiple `requires_env` entries are supported.
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -894,6 +942,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             config.vmm,
             config.requires_vpci,
             config.requires_host_vendor,
+            &config.requires_env,
         );
 
         // Now move the values for the FirmwareAndArch and extra_deps
@@ -964,6 +1013,7 @@ fn build_requirements(
     resolved_vmm: Vmm,
     requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
+    requires_env: &[String],
 ) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
@@ -1015,6 +1065,12 @@ fn build_requirements(
         };
         requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::Vendor(#vendor_tokens)
+        ));
+    }
+
+    for env_var in requires_env {
+        requirement_expr = quote!(#requirement_expr.and(
+            ::petri::requirements::TestRequirement::EnvVar(#env_var.to_string())
         ));
     }
 

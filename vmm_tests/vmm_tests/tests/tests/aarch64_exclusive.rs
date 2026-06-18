@@ -3,12 +3,13 @@
 
 //! Integration tests for aarch64 guests.
 
+use anyhow::Context;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
-// TODO: re-enable when boot_dt test is re-enabled
-// use vmm_test_macros::openvmm_test;
+use vm_resource::IntoResource;
+use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
 /// Boot Linux and verify the PMU interrupt is available.
@@ -73,6 +74,101 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     assert!(
         !output.status.success(),
         "ACPI tables should not exist in DT-only mode"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot an aarch64 guest with no VMBus via linux direct boot,
+/// and assign a VFIO device from the incubator into the guest.
+///
+/// This test is intended to run inside a QEMU TCG incubator with KVM.
+/// The incubator profile sets up a virtio-blk device bound to vfio-pci,
+/// and exports its BDF via the `INCUBATOR_VFIO_BDF_TEST_DISK` env var.
+/// The test assigns that device into the L2 guest and verifies it appears
+/// as a block device, then reads from it to exercise DMA and interrupts.
+///
+/// Assigned to the `aarch64-tcg` nextest test group.
+#[openvmm_test(linux_direct_aarch64, requires_env("INCUBATOR_VFIO_BDF_TEST_DISK"))]
+async fn boot_no_vmbus_pcie_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    // Read the VFIO BDF from the environment. This is set by the incubator
+    // when it binds a device to vfio-pci before running the test.
+    // The requires_env prerequisite ensures this is set before the test runs.
+    let vfio_bdf = std::env::var("INCUBATOR_VFIO_BDF_TEST_DISK").unwrap();
+
+    tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device to guest");
+
+    // Open the VFIO cdev and iommufd for this device.
+    let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&vfio_bdf);
+    let vfio_dev_dir = sysfs_path.join("vfio-dev");
+    let cdev_name = std::fs::read_dir(&vfio_dev_dir)
+        .with_context(|| {
+            format!(
+                "failed to read {}: is {} bound to vfio-pci?",
+                vfio_dev_dir.display(),
+                vfio_bdf
+            )
+        })?
+        .next()
+        .context("no vfio-dev entry found")?
+        .context("failed to read vfio-dev entry")?;
+    let cdev = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(std::path::Path::new("/dev/vfio/devices").join(cdev_name.file_name()))
+        .context("failed to open VFIO cdev")?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
+                c.hypervisor.with_hv = false;
+                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                    port_name: "s0rc0rp1".into(),
+                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                        pci_id: vfio_bdf,
+                        cdev,
+                        iommufd,
+                        iommu_id: "iommu0".into(),
+                        bar_pt: [false; 6],
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    // Verify the assigned device appears in the guest as a block device.
+    let sh = agent.unix_shell();
+    let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
+    tracing::info!(block_devs = %block_devs, "guest block devices");
+    anyhow::ensure!(
+        block_devs.contains("vda"),
+        "expected vda block device from VFIO-assigned virtio-blk, found: {block_devs}"
+    );
+
+    // Read from the disk to exercise DMA and interrupts through the IOMMU.
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await?;
+    tracing::info!(dd_output = %dd_output, "dd completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read, got: {dd_output}"
     );
 
     agent.power_off().await?;

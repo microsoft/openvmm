@@ -4,6 +4,7 @@
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
+use crate::build_incubator::IncubatorOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openvmm::OpenvmmOutput;
@@ -79,6 +80,15 @@ macro_rules! vmm_tests_artifact_builder {
     };
 }
 
+/// Configuration for running tests inside an incubator (e.g., QEMU TCG).
+#[derive(Serialize, Deserialize)]
+pub struct IncubatorParams {
+    /// Pre-built incubator binary (runs on the CI host, not inside the VM).
+    pub incubator: ReadVar<IncubatorOutput>,
+    /// TOML profile content for the incubator backend configuration.
+    pub profile_content: String,
+}
+
 flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
@@ -101,6 +111,9 @@ flowey_request! {
         /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
+        /// If set, run tests inside an incubator instead of directly on the host.
+        pub incubator: Option<IncubatorParams>,
+
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
         /// If provided, also publish junit.xml test results as an artifact.
@@ -120,6 +133,10 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::run_in_incubator::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
@@ -137,6 +154,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
+            incubator,
             prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
@@ -269,19 +287,115 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
-        let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-            nextest_archive_file: nextest_vmm_tests_archive,
-            nextest_profile,
-            nextest_filter_expr,
-            nextest_working_dir: None,
-            nextest_config_file: None,
-            nextest_bin: None,
-            target: None,
-            extra_env,
-            pre_run_deps,
-            hugetlb_2mb_overcommit_pages,
-            results: v,
-        });
+        let results = if let Some(incubator_params) = incubator {
+            let IncubatorParams {
+                incubator: incubator_bin,
+                profile_content,
+            } = incubator_params;
+
+            let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
+
+            let kernel = ctx.reqv(|v| {
+                crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                    arch,
+                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                    v,
+                )
+            });
+            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+
+            let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
+            let qemu_binary = ctx.reqv(|v| {
+                crate::resolve_openvmm_qemu::Request::Get(
+                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                    host_arch,
+                    v,
+                )
+            });
+
+            // Write the profile content to a file and prepare the archive
+            // in the share directory.
+            let incubator_bin = incubator_bin.map(ctx, |o| o.bin);
+            let (profile_path, archive_name) = {
+                let profile_content = profile_content.clone();
+                let prep = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
+                    let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
+                    for dep in pre_run_deps {
+                        dep.claim(ctx);
+                    }
+                    move |rt| {
+                        let archive = rt.read(nextest_archive);
+                        let test_content_dir = std::env::current_dir()?.absolute()?;
+
+                        // Write profile
+                        let profile_path = test_content_dir.join(".incubator-profile.toml");
+                        std::fs::write(&profile_path, &profile_content)?;
+
+                        // Copy nextest archive into the share dir
+                        let archive_name = archive
+                            .archive_file
+                            .file_name()
+                            .context("no file name on archive")?
+                            .to_string_lossy()
+                            .to_string();
+                        let archive_dest = test_content_dir.join(&archive_name);
+                        if archive.archive_file != archive_dest {
+                            std::fs::copy(&archive.archive_file, &archive_dest)?;
+                        }
+
+                        // Ensure cargo-nextest is in the share dir
+                        let nextest_bin_name = "cargo-nextest";
+                        let host_nextest = test_content_dir.join(nextest_bin_name);
+                        if !host_nextest.exists() {
+                            if let Ok(which) = which::which(nextest_bin_name) {
+                                std::fs::copy(&which, &host_nextest)?;
+                            } else {
+                                anyhow::bail!(
+                                    "cargo-nextest not found in test content dir or on PATH"
+                                );
+                            }
+                        }
+
+                        Ok((profile_path, archive_name))
+                    }
+                });
+                (prep.map(ctx, |(p, _)| p), prep.map(ctx, |(_, a)| a))
+            };
+
+            let share_dir = ctx.emit_rust_stepv("get share dir", |_| {
+                |_| Ok(std::env::current_dir()?.absolute()?)
+            });
+
+            ctx.reqv(|v| crate::run_in_incubator::Request {
+                incubator_bin,
+                profile_path,
+                kernel,
+                initrd,
+                share_dir,
+                nextest_archive_name: archive_name,
+                nextest_filter_expr: nextest_filter_expr.clone(),
+                nextest_profile,
+                extra_env: Some(extra_env),
+                qemu_binary: Some(qemu_binary),
+                pre_run_deps: Vec::new(),
+                results: v,
+            })
+        } else {
+            ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
+                nextest_archive_file: nextest_vmm_tests_archive,
+                nextest_profile,
+                nextest_filter_expr,
+                nextest_working_dir: None,
+                nextest_config_file: None,
+                nextest_bin: None,
+                target: None,
+                extra_env,
+                pre_run_deps,
+                hugetlb_2mb_overcommit_pages,
+                results: v,
+            })
+        };
 
         // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
         // This ensures we clean up the background process.
