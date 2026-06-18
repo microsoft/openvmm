@@ -331,7 +331,13 @@ pub struct VmArg {
     )]
     #[cfg_attr(
         windows,
-        doc = "* NAME_OR_PATH - Either a Hyper-V VM name, or a path as in vsock:PATH>"
+        doc = "* hyperv:GUID - A Hyper-V VM ID (with or without braces)
+
+    "
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "* NAME_OR_GUID - Either a Hyper-V VM name or GUID, or a path as in vsock:PATH"
     )]
     #[cfg_attr(not(windows), doc = "* PATH - A path as in vsock:PATH")]
     #[clap(name = "VM")]
@@ -356,16 +362,21 @@ impl FromStr for VmId {
         } else {
             #[cfg(windows)]
             {
-                // Strip optional "hyperv:" prefix for all Hyper-V variants.
-                let s = s.strip_prefix("hyperv:").unwrap_or(s);
+                let (value, had_prefix) = match s.strip_prefix("hyperv:") {
+                    Some(rest) => (rest, true),
+                    None => (s, false),
+                };
 
                 // Try parsing as a GUID first (with or without braces).
-                if let Ok(guid) = s.parse::<guid::Guid>() {
+                if let Ok(guid) = value.parse::<guid::Guid>() {
                     return Ok(Self::HyperVId(guid));
                 }
 
-                if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
-                    return Ok(Self::HyperV(s.to_owned()));
+                // If the hyperv: prefix was explicitly provided, always treat as
+                // a Hyper-V name (preserving disambiguation semantics).
+                if had_prefix || !pal::windows::fs::is_unix_socket(value.as_ref()).unwrap_or(false)
+                {
+                    return Ok(Self::HyperV(value.to_owned()));
                 }
             }
             // Default to hybrid vsock since this is what OpenVMM supports for
@@ -671,13 +682,9 @@ pub fn main() -> anyhow::Result<()> {
                         ComPortAccessInfo::PortPipePath(pipe_path)
                     } else {
                         match &vm.id {
-                            VmId::HyperV(name) => {
-                                ComPortAccessInfo::NameAndPortNumber(name, 3)
-                            }
+                            VmId::HyperV(name) => ComPortAccessInfo::NameAndPortNumber(name, 3),
                             #[cfg(windows)]
-                            VmId::HyperVId(guid) => {
-                                ComPortAccessInfo::IdAndPortNumber(*guid, 3)
-                            }
+                            VmId::HyperVId(guid) => ComPortAccessInfo::IdAndPortNumber(*guid, 3),
                             _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
                         }
                     };

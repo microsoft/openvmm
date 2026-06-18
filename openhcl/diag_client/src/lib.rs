@@ -111,6 +111,23 @@ pub mod hyperv {
         Ok(socket.convert().into_inner())
     }
 
+    fn query_vm_com_port(script: &str) -> anyhow::Result<String> {
+        let output = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg(script)
+            .output()
+            .context("failed to query VM com port")?;
+
+        if !output.status.success() {
+            let _ = std::io::stderr().write_all(&output.stderr);
+            anyhow::bail!(
+                "failed to query VM com port: exit status {}",
+                output.status.code().unwrap()
+            );
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// Opens a serial port on a Hyper-V VM.
     ///
     /// If the VM is not running, it will periodically try to connect to the
@@ -124,43 +141,13 @@ pub mod hyperv {
         port: ComPortAccessInfo<'_>,
     ) -> anyhow::Result<File> {
         let path = match port {
-            ComPortAccessInfo::NameAndPortNumber(vm, num) => {
-                let output = Command::new("powershell.exe")
-                    .arg("-NoProfile")
-                    .arg(format!(
-                        r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#,
-                    ))
-                    .output()
-                    .context("failed to query VM com port")?;
-
-                if !output.status.success() {
-                    let _ = std::io::stderr().write_all(&output.stderr);
-                    anyhow::bail!(
-                        "failed to query VM com port: exit status {}",
-                        output.status.code().unwrap()
-                    );
-                }
-                &String::from_utf8(output.stdout)?
-            }
-            ComPortAccessInfo::IdAndPortNumber(id, num) => {
-                let output = Command::new("powershell.exe")
-                    .arg("-NoProfile")
-                    .arg(format!(
-                        r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#,
-                    ))
-                    .output()
-                    .context("failed to query VM com port")?;
-
-                if !output.status.success() {
-                    let _ = std::io::stderr().write_all(&output.stderr);
-                    anyhow::bail!(
-                        "failed to query VM com port: exit status {}",
-                        output.status.code().unwrap()
-                    );
-                }
-                &String::from_utf8(output.stdout)?
-            }
-            ComPortAccessInfo::PortPipePath(path) => path,
+            ComPortAccessInfo::NameAndPortNumber(vm, num) => query_vm_com_port(&format!(
+                r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#,
+            ))?,
+            ComPortAccessInfo::IdAndPortNumber(id, num) => query_vm_com_port(&format!(
+                r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#,
+            ))?,
+            ComPortAccessInfo::PortPipePath(path) => path.to_owned(),
         };
 
         let path = path.trim();
