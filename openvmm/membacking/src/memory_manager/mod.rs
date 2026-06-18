@@ -591,21 +591,7 @@ impl GuestMemoryBuilder {
                         .await
                         .expect("regions cannot overlap yet");
 
-                    if let Some(ref mappable) = backing.mappable {
-                        region
-                            .add_mapping(
-                                MemoryRange::new(0..sub_range.len()),
-                                Some(mappable.clone()),
-                                file_offset,
-                                true,
-                                backing.host_numa_node,
-                            )
-                            .await
-                            .map_err(|error| MemoryBuildError::RamMapping {
-                                range: *sub_range,
-                                error,
-                            })?;
-                    } else {
+                    if backing.mappable.is_none() {
                         va_mapper
                             .alloc_range(
                                 sub_range.start() as usize,
@@ -632,28 +618,29 @@ impl GuestMemoryBuilder {
                                 );
                             }
                         }
-
-                        // Register a backing-less mapping so private RAM still
-                        // participates in the region-driven DMA machinery: the
-                        // anonymous pages are already committed on the shared
-                        // eager VaMapper, so DMA targets can map them by host
-                        // VA even though there is no fd to mmap. Without this,
-                        // an assigned device DMAing to private RAM would take
-                        // IOMMU faults (silent DMA failure).
-                        region
-                            .add_mapping(
-                                MemoryRange::new(0..sub_range.len()),
-                                None,
-                                file_offset,
-                                true,
-                                backing.host_numa_node,
-                            )
-                            .await
-                            .map_err(|error| MemoryBuildError::RamMapping {
-                                range: *sub_range,
-                                error,
-                            })?;
                     }
+
+                    // Register the mapping with the region. File-backed RAM
+                    // passes its `Mappable` so the mapping manager can mmap it.
+                    // Private/anonymous RAM passes `None`: its pages are already
+                    // committed on the shared eager VaMapper above, so there is
+                    // nothing to mmap, but it still participates in the
+                    // region-driven DMA machinery (mapped by host VA). Without
+                    // this, an assigned device DMAing to private RAM would take
+                    // IOMMU faults (silent DMA failure).
+                    region
+                        .add_mapping(
+                            MemoryRange::new(0..sub_range.len()),
+                            backing.mappable.clone(),
+                            file_offset,
+                            true,
+                            backing.host_numa_node,
+                        )
+                        .await
+                        .map_err(|error| MemoryBuildError::RamMapping {
+                            range: *sub_range,
+                            error,
+                        })?;
 
                     region
                         .map(MapParams {
