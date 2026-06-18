@@ -8,6 +8,22 @@
 # cloud image through the mu_msvm UEFI firmware -- the same way the image boots
 # on Azure or Hyper-V -- so there is no kernel/initramfs extraction step.
 #
+# Topology: the root disk is attached as NVMe on an emulated PCIe root complex.
+# This is the most broadly compatible configuration, not a requirement of
+# Ubuntu itself -- the guest boots equally well from virtio-blk or VMBus SCSI
+# disks. NVMe is chosen here because:
+#   * UEFI cannot yet boot from virtio-blk, so virtio-blk is not an option for
+#     the boot disk.
+#   * VMBus is not available on all targets (notably KVM/aarch64 has no VMBus
+#     support yet), so a VMBus SCSI boot disk would not be portable.
+# NVMe over emulated PCIe avoids both limitations and works everywhere.
+#
+# The cloud-init seed disk is attached as virtio-blk (not a second NVMe disk)
+# to work around an NVMe namespace ID conflict between two raw-file NVMe disks
+# -- a separate bug. virtio-blk is fine here because only the boot disk needs
+# to be reachable by UEFI; cloud-init runs after the kernel is up, by which
+# point the virtio-blk driver is available.
+#
 # Usage:
 #   ./setup-ubuntu.sh [output-dir]
 #
@@ -184,9 +200,17 @@ To boot with OpenVMM (from the openvmm repo root):
     --hv
 
 Notes:
-  * The root disk is attached as NVMe on emulated PCIe (no VMBus SCSI).
-    The cloud-init seed disk is attached as virtio-blk on PCIe to keep the
-    boot path simple while preserving NVMe root-disk coverage.
+  * The root disk is attached as NVMe on an emulated PCIe root complex. This
+    is the most broadly compatible topology -- it is NOT something Ubuntu
+    requires (Ubuntu boots fine from virtio-blk or VMBus SCSI too). NVMe is
+    used because UEFI cannot yet boot from virtio-blk, and VMBus is not
+    available on all targets (e.g. KVM/aarch64 has no VMBus support yet), so
+    NVMe over PCIe is the one option that works everywhere.
+  * The cloud-init seed disk is attached as virtio-blk rather than as a second
+    NVMe disk to dodge an NVMe namespace ID conflict between two raw-file NVMe
+    disks (a separate bug). This is fine because only the boot disk needs to
+    be reachable by UEFI -- cloud-init runs after the kernel is up and can use
+    the virtio-blk driver.
   * Networking is provided by a virtio-net device on the PCIe root complex
     (no VMBus NIC), backed by the user-mode 'consomme' NAT stack.
   * EFI diagnostics are enabled (INFO level) so COM1 shows firmware device
