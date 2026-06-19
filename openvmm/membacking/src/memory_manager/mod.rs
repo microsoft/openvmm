@@ -67,7 +67,6 @@ struct RamBacking {
     /// Prefetch pages at build time.
     prefetch: bool,
     /// THP is enabled for this backing.
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
     /// Host NUMA node for this backing. `None` means OS default placement.
     host_numa_node: Option<u32>,
