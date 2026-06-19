@@ -181,7 +181,6 @@ pub struct ConsommeParams {
     pub skip_ipv6_checks: bool,
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
-    #[inspect(display)]
     pub allow_host_local_access: bool,
     /// Per-connection TCP receive ring buffer bounds (guest-to-host).
     pub tcp_rx_buffer: TcpBufferBounds,
