@@ -12,7 +12,10 @@ script**. Do not manually query the GitHub API or download artifacts by hand
 ## Step 1: Run the Script
 
 ```bash
-# Investigate a PR by number (ALWAYS use this first)
+# Investigate the current branch's PR (no argument needed)
+python3 repo_support/investigate_ci.py
+
+# Investigate a specific PR by number
 python3 repo_support/investigate_ci.py 2946
 
 # Or by run ID directly
