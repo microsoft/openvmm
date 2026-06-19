@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use socket2::SockRef;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -502,6 +503,19 @@ impl TcpTestHarness {
             .inner
     }
 
+    /// Mutably borrow the established connection's inner state, for tests that
+    /// poke internal fields directly.
+    fn connection_inner_mut(&mut self) -> &mut TcpConnectionInner {
+        let ft = self.four_tuple();
+        &mut self
+            .consomme
+            .tcp
+            .connections
+            .get_mut(&ft)
+            .expect("connection should exist")
+            .inner
+    }
+
     /// Poll consomme until `cond` holds for the established connection, leaving
     /// the future pending between polls so the async reactor can run and socket
     /// readiness can fire.
@@ -524,6 +538,114 @@ impl TcpTestHarness {
             }
         })
         .await;
+    }
+
+    /// Flood guest→host data (without reading the host socket) until the
+    /// advertised receive window closes to zero. Only sends segments that fit
+    /// the current window, so nothing is dropped. Returns bytes accepted.
+    async fn flood_guest_until_window_closed(&mut self) -> usize {
+        let guest_mac = self.guest_mac;
+        let gateway_mac = self.gateway_mac;
+        let guest_ip = self.guest_ip;
+        let dst_ip = self.dst_ip;
+        let guest_port = self.guest_port;
+        let dst_port = self.dst_port;
+        let server_ack = self.server_ack;
+        let ft = self.four_tuple();
+
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        // Deliberately do NOT read `host_stream`: the path backs up so the
+        // receive window fills.
+        let guest_seq = &mut self.guest_seq;
+        let mut buf = vec![0u8; 1514];
+        let payload = [0x5Au8; 1400];
+        let mut total = 0usize;
+        // Safety cap so a regression can't loop forever.
+        let mut budget = 64 << 20;
+        std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            let avail = consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner
+                .rx_window_avail();
+            if avail == 0 || budget == 0 {
+                return Poll::Ready(total);
+            }
+            let n = avail.min(payload.len()).min(budget);
+            let tcp = TcpRepr {
+                src_port: guest_port,
+                dst_port,
+                control: TcpControl::None,
+                seq_number: *guest_seq,
+                ack_number: Some(server_ack),
+                window_len: 64240,
+                window_scale: None,
+                max_seg_size: None,
+                sack_permitted: false,
+                sack_ranges: [None, None, None],
+                timestamp: None,
+                payload: &payload[..n],
+            };
+            let len = build_tcp_packet(&mut buf, guest_mac, gateway_mac, guest_ip, dst_ip, &tcp);
+            consomme
+                .access(client)
+                .send(&buf[..len], &ChecksumState::NONE)
+                .unwrap();
+            *guest_seq += n;
+            total += n;
+            budget -= n;
+            // Re-poll promptly to keep pushing; once the host socket buffers
+            // fill, consomme stops draining and `avail` reaches zero.
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Drain the host socket while polling consomme, waiting for a guest-bound
+    /// ACK that advertises a non-zero receive window. Returns the advertised
+    /// window length, or `None` if no such packet appeared within a few
+    /// seconds.
+    async fn drain_host_until_window_update(&mut self) -> Option<u16> {
+        let mut timer = pal_async::timer::PolledTimer::new(self.client.driver());
+        let received = self.client.received_packets.clone();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let poll = std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            // Drain the host socket so the receive window reopens. Registers a
+            // read-readiness waker on Pending so we are re-polled as more data
+            // arrives.
+            let mut rb = [0u8; 4096];
+            loop {
+                match Pin::new(&mut *host_stream).poll_read(cx, &mut rb) {
+                    Poll::Ready(Ok(0)) => break,
+                    Poll::Ready(Ok(_)) => {}
+                    Poll::Ready(Err(e)) => panic!("host read error: {e}"),
+                    Poll::Pending => break,
+                }
+            }
+            let found = received.lock().iter().rev().find_map(|p| {
+                let t = TcpTestHarness::is_tcp_packet(p)?;
+                (t.ack_number.is_some() && t.window_len > 0).then_some(t.window_len)
+            });
+            match found {
+                Some(w) => Poll::Ready(w),
+                None => Poll::Pending,
+            }
+        });
+        let timeout = timer.sleep(std::time::Duration::from_secs(5));
+        let poll = std::pin::pin!(poll);
+        let timeout = std::pin::pin!(timeout);
+        match futures::future::select(poll, timeout).await {
+            futures::future::Either::Left((w, _)) => Some(w),
+            futures::future::Either::Right(_) => None,
+        }
     }
 }
 
@@ -1226,20 +1348,15 @@ async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
         "SYN-ACK should include window_scale option when SYN had one"
     );
     let syn_ack_window_scale = syn_ack.window_scale.unwrap();
-    // The window_len in SYN-ACK is the unscaled value — it represents
-    // the actual receive window without any shift applied. Verify that
-    // the effective (scaled) window represents a valid receive buffer
-    // size (between 16KB min and 4MB max per the clamp in new_base).
-    // If the SYN-ACK window field were incorrectly pre-scaled, the
-    // effective value would be unreasonably large.
-    let effective_rx_window = (syn_ack.window_len as usize) << syn_ack_window_scale;
-    assert!(
-        (16384..=4 * 1024 * 1024).contains(&effective_rx_window),
-        "SYN-ACK effective window (unscaled={}, scale={}, effective={}) \
-         should represent a valid receive buffer size",
-        syn_ack.window_len,
-        syn_ack_window_scale,
-        effective_rx_window,
+    // RFC 7323 §2.2: the window field in a SYN/SYN-ACK is NOT scaled, even
+    // though the window_scale option is present. The guest reads window_len
+    // verbatim, so it must carry the real receive window (the 16 KiB initial
+    // cap), not a pre-shifted value. If it were pre-scaled (>> 7), the guest
+    // would see only 128 bytes and stall at connection start.
+    assert_eq!(
+        syn_ack.window_len as usize,
+        16 * 1024,
+        "SYN-ACK must advertise the unscaled receive window (scale={syn_ack_window_scale})",
     );
 
     // Now complete the handshake with an ACK that has a small window.
@@ -1706,5 +1823,118 @@ async fn test_tcp_tx_buffer_autotune_caps_at_max(driver: DefaultDriver) {
         cap,
         32 << 10,
         "tx ring must cap at the configured 32 KiB max"
+    );
+}
+
+/// Regression test: after the guest egress fills the receive window and it
+/// later reopens (host drains), consomme must send an unsolicited window-update
+/// ACK rather than waiting for the guest's zero-window probe.
+#[pal_async::async_test]
+async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Small, fixed receive window so it closes quickly and autotune can't grow
+    // it (which would mask the reopen path via its own `needs_ack`).
+    params.tcp_rx_buffer = crate::TcpBufferBounds {
+        initial: 16 << 10,
+        max: 16 << 10,
+    };
+    let mut h = TcpTestHarness::connect_with_params(driver, params).await;
+
+    // Shrink the host receive buffer so the egress path backs up after only a
+    // modest amount of data, keeping the flood bounded.
+    SockRef::from(h.host_stream.get())
+        .set_recv_buffer_size(8 << 10)
+        .unwrap();
+
+    // Flood until consomme's advertised receive window closes to zero.
+    let sent = h.flood_guest_until_window_closed().await;
+    assert_eq!(
+        h.connection_inner().rx_window_avail(),
+        0,
+        "receive window should have closed after flooding {sent} bytes"
+    );
+    assert!(
+        h.connection_inner().rx_window_last_adv < h.connection_inner().tx_mss,
+        "consomme should have advertised a (near) zero window to the guest"
+    );
+
+    // Discard the zero-window ACKs, then drain the host socket. Consomme must
+    // emit a window-update ACK on its own, without the guest probing.
+    h.clear_guest_packets();
+    let window_update = h.drain_host_until_window_update().await;
+    assert!(
+        window_update.is_some_and(|w| w > 0),
+        "consomme must proactively re-advertise a non-zero window after the \
+         host drains the backlog; got {window_update:?}"
+    );
+}
+
+/// Regression: with window scaling active, the recorded "last advertised"
+/// window must be the value the guest reconstructs after `>> rx_window_scale`
+/// truncation, not the raw bytes. Tracking raw bytes would disarm the reopen
+/// check while the guest still sees a sub-segment window and stalls (sender
+/// SWS). Uses the default scale 7, which the 16 KiB (scale 0) test cannot.
+#[pal_async::async_test]
+async fn test_tcp_record_advertised_window_truncates_with_scale(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let inner = h.connection_inner_mut();
+    let scale = inner.rx_window_scale;
+    assert!(scale > 0, "default config should negotiate window scaling");
+    // Empty buffer, so `rx_window_avail` tracks the cap. Use caps that are not
+    // scale-aligned to force truncation, including one just above a segment.
+    for cap in [(1usize << scale) + 1, 1460, 64 << 10, (4 << 20) - 1] {
+        inner.rx_window_cap = cap;
+        inner.record_advertised_window();
+        let reconstructed = (inner.rx_window_len() as usize) << scale;
+        assert_eq!(
+            inner.rx_window_last_adv, reconstructed,
+            "recorded window must equal the guest-reconstructed value (cap={cap})"
+        );
+        assert!(
+            inner.rx_window_last_adv <= inner.rx_window_avail(),
+            "recorded window must never exceed actual availability (cap={cap})"
+        );
+    }
+}
+
+/// Regression for the reopen gate under active window scaling: it must fire only
+/// once the guest can see a full segment (post-truncation), and must not keep
+/// re-arming when the window reopens to a scale-truncated sub-segment size.
+#[pal_async::async_test]
+async fn test_tcp_should_reopen_window_waits_for_full_segment(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let inner = h.connection_inner_mut();
+    let scale = inner.rx_window_scale;
+    assert!(scale > 0, "default config should negotiate window scaling");
+    let mss = inner.tx_mss;
+    let quantum = 1usize << scale;
+    assert!(mss % quantum != 0, "test assumes mss is not scale-aligned");
+
+    // Occupy part of the (empty) ring so we can set `avail` independently of the
+    // window cap, keeping the reopen threshold a full segment (cap/2 >= mss).
+    let base = inner.rx_buffer.capacity() / 2;
+    inner.rx_buffer.extend_by(base);
+    // Simulate a window that just closed to zero.
+    inner.rx_window_last_adv = 0;
+
+    // Reopened to exactly one segment, but truncation drops what the guest sees
+    // below a segment (e.g. 1460 -> 1408 at scale 7): the gate must NOT fire.
+    inner.rx_window_cap = base + mss;
+    assert!(
+        !inner.should_reopen_window(),
+        "reopen must not fire while the guest would see a sub-segment window"
+    );
+
+    // Reopened to the next scale multiple at or above a segment: fire exactly
+    // once, then disarm after recording (no per-poll re-arming).
+    inner.rx_window_cap = base + mss.next_multiple_of(quantum);
+    assert!(
+        inner.should_reopen_window(),
+        "reopen must fire once a full segment is advertisable"
+    );
+    inner.record_advertised_window();
+    assert!(
+        !inner.should_reopen_window(),
+        "reopen must disarm after advertising, not re-fire every poll"
     );
 }
