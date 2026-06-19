@@ -384,12 +384,20 @@ impl SimpleFlowNode for Node {
             let nextest_config_file =
                 openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
 
+            // Direct the incubator's output (petri per-test logs + serial log)
+            // at the pipeline's chosen test-output directory, exposed to the
+            // guest as a writable 9p share at `/output`. This is the same path
+            // that gets published below, so the incubator needs no special
+            // casing in the publish step.
+            let output_dir = test_log_path.clone();
+
             ctx.reqv(|v| crate::run_in_incubator::Request {
                 incubator_bin,
                 profile_path,
                 kernel,
                 initrd,
                 share_dir,
+                output_dir,
                 nextest_archive_name: archive_name,
                 nextest_config_file,
                 nextest_filter_expr: nextest_filter_expr.clone(),

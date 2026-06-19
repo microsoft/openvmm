@@ -113,11 +113,12 @@ pub struct VmmTestsRunCli {
     /// Run tests inside an emulated incubator using the given profile.
     ///
     /// The profile is a TOML file describing the emulated platform
-    /// (e.g., AArch64 with SMMUv3). When set, the build target is
-    /// automatically overridden to match the profile's architecture,
-    /// artifacts are cross-compiled, and tests run inside the incubator.
+    /// (e.g., AArch64 with SMMUv3). When set, `--target` is required and
+    /// must match the profile's architecture; artifacts are cross-compiled
+    /// for that target and tests run inside the incubator.
     ///
-    /// Example: `--incubator petri/incubator/profiles/aarch64-tcg-pcie.toml`
+    /// Example: `--incubator petri/incubator/profiles/aarch64-tcg-pcie.toml
+    /// --target linux-aarch64-musl`
     #[clap(long)]
     incubator: Option<PathBuf>,
 }
