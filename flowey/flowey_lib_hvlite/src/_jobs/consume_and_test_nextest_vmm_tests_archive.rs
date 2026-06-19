@@ -366,6 +366,9 @@ impl SimpleFlowNode for Node {
                     if guest_nextest_bin != host_nextest {
                         std::fs::copy(&guest_nextest_bin, &host_nextest)?;
                     }
+                    // Artifact download strips the executable bit; restore it
+                    // so the guest can execute it.
+                    host_nextest.make_executable()?;
 
                     Ok(archive_name)
                 }

@@ -117,6 +117,10 @@ impl SimpleFlowNode for Node {
                     profile_path.display()
                 );
 
+                // Artifact upload/download strips the executable bit, so
+                // restore it before launching the incubator binary.
+                incubator_bin.make_executable()?;
+
                 let mut cmd = std::process::Command::new(&incubator_bin);
                 cmd.arg("--profile")
                     .arg(&profile_path)
