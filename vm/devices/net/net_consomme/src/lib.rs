@@ -526,7 +526,7 @@ fn execute_unbind(
         IpProtocol::Tcp => consomme.unbind_tcp_port(family, cfg.guest_port),
         IpProtocol::Udp => consomme.unbind_udp_port(family, cfg.guest_port),
     };
-    result.map_err(|e| anyhow::anyhow!(e).context("failed to unbind port"))
+    result.context("failed to unbind port")
 }
 
 /// Handle a `ConsommeRequest` (shared by both in-proc and cross-proc paths).
