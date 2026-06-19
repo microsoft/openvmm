@@ -27,6 +27,7 @@ use crate::TestArtifacts;
 use crate::requirements::HostContext;
 use crate::requirements::TestCaseRequirements;
 use crate::requirements::can_run_test_with_context;
+use crate::tracing::clear_test_result_markers;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
@@ -147,6 +148,8 @@ impl Test {
         let artifacts = resolve(&name, self.artifact_requirements.clone())
             .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+        clear_test_result_markers(output_dir)
+            .context("failed to clear stale test result markers")?;
         let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
             .context("failed to initialize tracing")?;
         let mut post_test_hooks = Vec::new();

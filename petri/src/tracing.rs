@@ -25,6 +25,24 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+const PETRI_PASSED: &str = "petri.passed";
+const PETRI_FAILED_UNSTABLE: &str = "petri.failed_unstable";
+const PETRI_FAILED: &str = "petri.failed";
+const TEST_RESULT_MARKERS: &[&str] = &[PETRI_PASSED, PETRI_FAILED_UNSTABLE, PETRI_FAILED];
+
+/// Clears stale Petri test result markers from a test output directory.
+pub fn clear_test_result_markers(root_path: &Path) -> anyhow::Result<()> {
+    for &marker in TEST_RESULT_MARKERS {
+        let path = root_path.join(marker);
+        match fs_err::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
+}
+
 /// A source of [`PetriLogFile`] log files for test output.
 #[derive(Clone, Debug)]
 pub struct PetriLogSource(Arc<LogSourceInner>);
@@ -136,21 +154,21 @@ impl PetriLogSource {
         let result_path = match &r {
             Ok(()) => {
                 tracing::info!("test passed");
-                "petri.passed"
+                PETRI_PASSED
             }
             Err(err) if unstable => {
                 tracing::warn!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "unstable test failed"
                 );
-                "petri.failed_unstable"
+                PETRI_FAILED_UNSTABLE
             }
             Err(err) => {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "test failed"
                 );
-                "petri.failed"
+                PETRI_FAILED
             }
         };
         // Write a file to the output directory to indicate whether the test
@@ -456,5 +474,19 @@ mod tests {
         // Test unknown level (fallback)
         assert_eq!(kernel_level_to_tracing_level(8), Level::INFO);
         assert_eq!(kernel_level_to_tracing_level(255), Level::INFO);
+    }
+
+    #[test]
+    fn clear_test_result_markers_removes_all_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        for marker in TEST_RESULT_MARKERS {
+            fs_err::write(dir.path().join(marker), "test").unwrap();
+        }
+
+        clear_test_result_markers(dir.path()).unwrap();
+
+        for marker in TEST_RESULT_MARKERS {
+            assert!(!dir.path().join(marker).exists());
+        }
     }
 }
