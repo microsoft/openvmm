@@ -575,6 +575,7 @@ impl VmService {
             pcie_root_complexes: vec![],
             pcie_devices: vec![],
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices: vec![],
             numa: NumaTopology {
                 nodes: vec![NumaNode {

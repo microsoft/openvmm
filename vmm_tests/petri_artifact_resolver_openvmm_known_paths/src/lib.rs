@@ -127,10 +127,28 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             }
 
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
+            _ if id == tmks::TMK_VMM_LINUX_X64 => tmk_vmm_linux_path(MachineArch::X86_64),
+            _ if id == tmks::TMK_VMM_LINUX_AARCH64 =>
+                env_path_or(OPENVMM_CCA_TMK_VMM_ENV_VAR, || {
+                    tmk_vmm_linux_path(MachineArch::Aarch64)
+                }),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
             _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
-            _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
+            _ if id == tmks::SIMPLE_TMK_AARCH64 =>
+                env_path_or(OPENVMM_CCA_SIMPLE_TMK_ENV_VAR, || {
+                    simple_tmk_path(MachineArch::Aarch64)
+                }),
+
+            _ if id == cca::SHRINKWRAP => cca_shrinkwrap_path(),
+            _ if id == cca::VENV => cca_venv_path(),
+            _ if id == cca::ROOTFS => cca_package_path("rootfs.ext2", "CCA emulation rootfs"),
+            _ if id == cca::E2FSCK => cca_buildroot_host_sbin_path("e2fsck", "CCA buildroot host e2fsck"),
+            _ if id == cca::RESIZE2FS => cca_buildroot_host_sbin_path("resize2fs", "CCA buildroot host resize2fs"),
+            _ if id == cca::GUEST_DISK => cca_package_path("guest-disk.img", "CCA guest disk"),
+            _ if id == cca::PLANE0_LINUX_IMAGE => cca_plane0_linux_image_path(),
+            _ if id == cca::KVMTOOL_EFI => cca_package_path("KVMTOOL_EFI.fd", "CCA kvmtool EFI firmware"),
+            _ if id == cca::LKVM => cca_package_path("lkvm", "CCA lkvm"),
 
             _ if id == vmgstool::VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
             _ if id == vmgstool::VMGSTOOL_DEV_NATIVE => vmgstool_dev_native_executable_path(),
@@ -433,6 +451,110 @@ fn virtio_win_path() -> anyhow::Result<PathBuf> {
     )
 }
 
+const OPENVMM_CCA_TEST_ROOT_ENV_VAR: &str = "OPENVMM_CCA_TEST_ROOT";
+const OPENVMM_CCA_TMK_VMM_ENV_VAR: &str = "OPENVMM_CCA_TMK_VMM";
+const OPENVMM_CCA_SIMPLE_TMK_ENV_VAR: &str = "OPENVMM_CCA_SIMPLE_TMK";
+
+fn cca_missing_command(description: &'static str) -> MissingCommand<'static> {
+    MissingCommand::XFlowey {
+        description,
+        xflowey_args: &["cca-tests", "--install-emu"],
+    }
+}
+
+fn env_path_or(
+    name: &str,
+    fallback: impl FnOnce() -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(fallback)
+}
+
+fn cca_test_root() -> PathBuf {
+    std::env::var_os(OPENVMM_CCA_TEST_ROOT_ENV_VAR)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/cca-test"))
+}
+
+fn cca_home_dir() -> anyhow::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
+}
+
+fn cca_shrinkwrap_path() -> anyhow::Result<PathBuf> {
+    get_path(
+        cca_test_root().join("shrinkwrap"),
+        "shrinkwrap/shrinkwrap",
+        cca_missing_command("CCA shrinkwrap executable"),
+    )
+}
+
+fn cca_venv_path() -> anyhow::Result<PathBuf> {
+    get_path(
+        cca_test_root().join("shrinkwrap"),
+        "venv",
+        cca_missing_command("CCA shrinkwrap virtual environment"),
+    )
+}
+
+fn cca_plane0_linux_image_path() -> anyhow::Result<PathBuf> {
+    get_path(
+        cca_test_root().join("plane0-linux/arch/arm64/boot"),
+        "Image",
+        cca_missing_command("CCA Plane0 Linux image"),
+    )
+}
+
+fn cca_package_path(file_name: &'static str, description: &'static str) -> anyhow::Result<PathBuf> {
+    get_path(
+        cca_home_dir()?.join(".shrinkwrap/package/cca-3world"),
+        file_name,
+        cca_missing_command(description),
+    )
+}
+
+fn cca_buildroot_host_sbin_path(
+    file_name: &'static str,
+    description: &'static str,
+) -> anyhow::Result<PathBuf> {
+    get_path(
+        cca_home_dir()?.join(".shrinkwrap/build/build/cca-3world/buildroot/host/sbin"),
+        file_name,
+        cca_missing_command(description),
+    )
+}
+
+/// Path to the output location of the GNU/Linux tmk_vmm executable.
+fn tmk_vmm_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-linux-gnu",
+        MachineArch::Aarch64 => "aarch64-unknown-linux-gnu",
+    };
+
+    if let Some(path) = try_get_path(format!("target/{target}/debug"), "tmk_vmm")? {
+        return Ok(path);
+    }
+
+    if let Some(path) =
+        flowey_built_executable_path(format!("target/tmk_vmm/{target}/debug/deps"), "tmk_vmm")?
+    {
+        return Ok(path);
+    }
+
+    get_path(
+        format!("target/{target}/debug"),
+        "tmk_vmm",
+        MissingCommand::Build {
+            package: "tmk_vmm",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the musl/Linux tmk_vmm executable.
 fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
     let target = match arch {
         MachineArch::X86_64 => "x86_64-unknown-linux-musl",
@@ -458,6 +580,18 @@ fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         MachineArch::X86_64 => "x86_64-unknown-none",
         MachineArch::Aarch64 => "aarch64-minimal_rt-none",
     };
+
+    if let Some(path) = try_get_path(format!("target/{target}/debug"), "simple_tmk")? {
+        return Ok(path);
+    }
+
+    if let Some(path) = flowey_built_executable_path(
+        format!("target/simple_tmk/{target}/debug/deps"),
+        "simple_tmk",
+    )? {
+        return Ok(path);
+    }
+
     get_path(
         format!("target/{target}/debug"),
         "simple_tmk",
@@ -711,6 +845,74 @@ const VMM_TESTS_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
 /// Gets a path to the root of the repo.
 pub fn get_repo_root() -> anyhow::Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+fn try_get_path(
+    search_path: impl AsRef<Path>,
+    file_name: impl AsRef<Path>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let search_path = search_path.as_ref();
+    let file_name = file_name.as_ref();
+    if file_name.is_absolute() {
+        anyhow::bail!("{} should be a relative path", file_name.display());
+    }
+
+    if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
+        let full_path = Path::new(&env_dir).join(file_name);
+        if full_path.try_exists()? {
+            return Ok(Some(full_path));
+        }
+    }
+
+    let file_path = if search_path.is_absolute() {
+        search_path.to_owned()
+    } else {
+        get_repo_root()?.join(search_path)
+    };
+
+    let full_path = file_path.join(file_name);
+    Ok(full_path.try_exists()?.then_some(full_path))
+}
+
+fn flowey_built_executable_path(
+    search_path: impl AsRef<Path>,
+    binary_prefix: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let search_path = search_path.as_ref();
+    let dir = if search_path.is_absolute() {
+        search_path.to_owned()
+    } else {
+        get_repo_root()?.join(search_path)
+    };
+
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        if path.extension().is_some() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if file_name == binary_prefix || file_name.starts_with(&format!("{binary_prefix}-")) {
+            let modified = entry.metadata()?.modified().ok();
+            candidates.push((modified, path));
+        }
+    }
+
+    candidates.sort_by_key(|(modified, _)| *modified);
+    Ok(candidates.pop().map(|(_, path)| path))
 }
 
 /// Attempts to find the given file, first checking for it relative to the test

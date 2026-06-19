@@ -592,7 +592,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         })?;
 
         let merged_gz =
-            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+            initrd_cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
                 .context("failed to inject pipette into initrd")?;
 
         let mut tmp = tempfile::NamedTempFile::new()
@@ -1394,6 +1394,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets the per-period rate-limit override for UEFI diagnostics emission.
+    ///
+    /// - Not called: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    pub fn with_efi_diagnostics_rate_limit(mut self, limit: u32) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics rate limit is only supported for UEFI firmware.")
+            .efi_diagnostics_rate_limit = Some(limit);
+        self
+    }
+
     /// Sets whether UEFI should always attempt a default boot.
     pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
         self.config
@@ -1401,6 +1415,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .uefi_config_mut()
             .expect("Default boot always attempt is only supported for UEFI firmware.")
             .default_boot_always_attempt = enable;
+        self
+    }
+
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub fn with_uefi_force_dma_bounce(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("force DMA bounce is only supported for UEFI firmware.")
+            .force_dma_bounce = enable;
         self
     }
 
@@ -2256,8 +2280,13 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic
+    pub force_dma_bounce: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
+    /// Per-period rate-limit override for EFI diagnostics emission.
+    /// See [`PetriVmBuilder::with_efi_diagnostics_rate_limit()`] for more information.
+    pub efi_diagnostics_rate_limit: Option<u32>,
 }
 
 impl Default for UefiConfig {
@@ -2268,7 +2297,9 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            force_dma_bounce: false,
             efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
+            efi_diagnostics_rate_limit: None,
         }
     }
 }

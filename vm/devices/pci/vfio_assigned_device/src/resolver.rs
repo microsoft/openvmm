@@ -61,7 +61,11 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
         resource: VfioDeviceHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let VfioDeviceHandle { pci_id, group } = resource;
+        let VfioDeviceHandle {
+            pci_id,
+            group,
+            bar_pt,
+        } = resource;
 
         if input.software_iommu {
             anyhow::bail!(
@@ -93,6 +97,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.register_mmio,
             input.msi_target,
             memory_mapper,
+            bar_pt,
         )
         .await?;
 
@@ -148,6 +153,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             cdev,
             iommufd,
             iommu_id,
+            bar_pt,
         } = resource;
 
         tracing::info!(pci_id, iommu_id, "opening VFIO cdev device with iommufd");
@@ -175,6 +181,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             input.register_mmio,
             input.msi_target,
             memory_mapper,
+            bar_pt,
         )
         .await?;
 

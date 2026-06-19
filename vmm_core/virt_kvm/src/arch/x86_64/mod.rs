@@ -21,6 +21,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_emulator::pages::OverlayPage;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -801,6 +802,8 @@ impl virt::BindProcessor for KvmProcessorBinder {
             scontrol: HvSynicScontrol::new().with_enabled(true),
             siefp: 0.into(),
             simp: 0.into(),
+            simp_overlay: OverlayPage::default(),
+            siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
         };
 
@@ -847,6 +850,10 @@ pub struct KvmProcessor<'a> {
     siefp: HvSynicSimpSiefp,
     #[inspect(hex, with = "|&x| u64::from(x)")]
     simp: HvSynicSimpSiefp,
+    /// Overlay backing the synic message page (SIMP).
+    simp_overlay: OverlayPage,
+    /// Overlay backing the synic event flags page (SIEFP).
+    siefp_overlay: OverlayPage,
 }
 
 impl KvmProcessor<'_> {
@@ -915,6 +922,47 @@ impl KvmProcessor<'_> {
         self.partition.gm.write_at(simp + 4, &msg.as_bytes()[4..])?;
         self.partition.gm.write_plain(simp, &msg.header.typ)?;
         Ok(true)
+    }
+}
+
+/// Maps, moves, or unmaps a synic overlay page (SIMP or SIEFP) to match `reg`.
+///
+/// KVM (with `KVM_CAP_HYPERV_SYNIC2`) keeps the live page in guest RAM and does
+/// not zero it when the guest enables the overlay. But the overlay is logically
+/// separate from guest RAM: it is zeroed once and thereafter follows the
+/// overlay. Routing through [`OverlayPage`] preserves that, so a freshly enabled
+/// page is zeroed rather than exposing stale guest data that the in-kernel synic
+/// would treat as an occupied message slot and refuse to deliver into.
+fn sync_synic_overlay(overlay: &mut OverlayPage, reg: HvSynicSimpSiefp, gm: &GuestMemory) {
+    let mut prot = KvmNoVtlProtections(gm);
+    if let Err(err) = overlay.sync(reg.enabled(), reg.base_gpn(), &mut prot) {
+        tracelimit::warn_ratelimited!(
+            error = &err as &dyn std::error::Error,
+            gpn = reg.base_gpn(),
+            "failed to map synic overlay page"
+        );
+    }
+}
+
+/// A no-op [`VtlProtectAccess`] implementation for use without VTL protections,
+/// as is the case for KVM. Locking a page simply pins it in guest memory;
+/// unlocking is a no-op.
+struct KvmNoVtlProtections<'a>(&'a GuestMemory);
+
+impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        self.0
+            .lock_gpns(false, &[gpn])
+            .map_err(|_| HvError::OperationDenied)
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
+        Ok(())
     }
 }
 
@@ -1260,9 +1308,9 @@ impl hv1_hypercall::SignalEvent for KvmHypercallExit<'_> {
     }
 }
 
-impl Processor for KvmProcessor<'_> {
+impl<'p> Processor for KvmProcessor<'p> {
     type StateAccess<'a>
-        = KvmVpStateAccess<'a>
+        = KvmVpStateAccess<'a, 'p>
     where
         Self: 'a;
 
@@ -1270,7 +1318,7 @@ impl Processor for KvmProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <KvmVpStateAccess<'_> as AccessVpState>::Error> {
+    ) -> Result<(), <KvmVpStateAccess<'_, '_> as AccessVpState>::Error> {
         let mut control = 0;
         let mut db = [0; 4];
         let mut dr7 = 0;
@@ -1406,6 +1454,16 @@ impl Processor for KvmProcessor<'_> {
                         siefp,
                         simp,
                     } => {
+                        // Bring the overlay pages into agreement with the new
+                        // SIMP/SIEFP values the guest just programmed. The
+                        // overlays are owned by this processor; the save/restore
+                        // path reaches them through the bound processor.
+                        sync_synic_overlay(&mut self.simp_overlay, simp.into(), &self.partition.gm);
+                        sync_synic_overlay(
+                            &mut self.siefp_overlay,
+                            siefp.into(),
+                            &self.partition.gm,
+                        );
                         self.scontrol = control.into();
                         self.siefp = siefp.into();
                         self.simp = simp.into();
@@ -1476,14 +1534,13 @@ impl Processor for KvmProcessor<'_> {
     fn flush_async_requests(&mut self) {}
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        self.partition
-            .vp_state_access(self.vpindex)
-            .reset_all(&self.inner.vp_info)
+        let vp_info = self.inner.vp_info;
+        self.access_state(Vtl::Vtl0).reset_all(&vp_info)
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
-        self.partition.vp_state_access(self.vpindex)
+        KvmVpStateAccess::new(self)
     }
 }
 

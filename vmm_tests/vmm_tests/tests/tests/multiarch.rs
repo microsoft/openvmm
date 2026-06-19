@@ -537,14 +537,18 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     let vm = config
         .with_uefi_frontpage(true)
         .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .with_efi_diagnostics_rate_limit(0)
         .run_without_agent()
         .await?;
 
-    // Marker emitted by `firmware_uefi::service::diagnostics` for every
-    // UEFI log entry tagged with `DEBUG_INFO`.
-    //
-    // Presence of this marker in the kmsg output validates that.
-    const INFO_MARKER: &str = "debug_level=INFO";
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
+    // before it hands control to `firmware_uefi::service::diagnostics` to
+    // collect entries. It only appears in the trace stream when:
+    //   1. The diagnostics log level is INFO
+    //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
+    //      single burst, and this is one of the very last; with the default
+    //      rate limit it gets dropped.
+    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
 
     let mut kmsg = vm.kmsg().await?;
 
@@ -552,12 +556,52 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = msg.message.as_raw();
-        if raw.contains(INFO_MARKER) {
+        if raw.contains(MARKER) {
             return Ok(());
         }
     }
 
-    anyhow::bail!("Did not find any INFO-level UEFI diagnostics entry ({INFO_MARKER:?}) in kmsg");
+    anyhow::bail!("Did not find expected INFO-level UEFI diagnostics entry ({MARKER:?}) in kmsg");
+}
+
+/// Smoke test for the `force_dma_bounce` UEFI config flag.
+///
+/// Boots OpenHCL UEFI with an NVMe device attached, then verifies
+/// whether IoMmuDxe will force bounce buffering on all DMA operations.
+#[vmm_test_with(vpci(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))))]
+async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_boot_device_type(petri::BootDeviceType::Nvme)
+        .with_uefi_force_dma_bounce(true)
+        .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .with_efi_diagnostics_rate_limit(0)
+        .with_openhcl_command_line("log_buf_len=1M") // allows for more INFO logs to show
+        .run()
+        .await?;
+
+    const MARKER: &str = "Forcing DMA bounce";
+
+    let mut found = false;
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        if msg.message.as_raw().contains(MARKER) {
+            found = true;
+            break;
+        }
+    }
+    drop(kmsg);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    if !found {
+        anyhow::bail!("Did not find {MARKER:?} in kmsg");
+    }
+    Ok(())
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,

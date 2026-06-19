@@ -29,6 +29,7 @@ pub struct Config {
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
+    pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub numa: NumaTopology,
     pub processor_topology: ProcessorTopologyConfig,
@@ -136,6 +137,7 @@ pub enum LoadMode {
         default_boot_always_attempt: bool,
         bios_guid: Guid,
         enable_vmbus: bool,
+        force_dma_bounce: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -224,6 +226,9 @@ pub struct PcieRootComplexConfig {
     /// the ACPI SSDT so the guest OS sees correct NUMA locality for devices
     /// under this root complex.
     pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -248,6 +253,24 @@ pub struct PcieSwitchConfig {
     pub parent_port: String,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
+}
+
+/// Declares that the device directly behind a named PCIe port (a root port or
+/// a switch downstream port) is a generic initiator (GI) for the given NUMA
+/// node. Used to generate an SRAT Generic Initiator Affinity structure so the
+/// guest attaches the device's memory to that (typically CPU-less) proximity
+/// domain.
+///
+/// The port is resolved against the live topology by port name after switch
+/// downstream ports have been enumerated, so it can target devices that sit
+/// behind a switch.
+#[derive(Debug, MeshPayload)]
+pub struct PcieGenericInitiatorConfig {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -409,14 +432,20 @@ pub struct NumaNode {
 /// How VPs are assigned to a NUMA node.
 #[derive(Debug, MeshPayload)]
 pub enum VpAssignment {
-    /// Assign VPs to nodes by round-robining sockets: a VP with socket ID
-    /// `vp_index / vps_per_socket` belongs to node
-    /// `(vp_index / vps_per_socket) % num_nodes`. `vps_per_socket` comes
-    /// from `ProcessorTopologyConfig`; `num_nodes` is the length of
-    /// `NumaTopology.nodes`.
+    /// Assign VPs to nodes by round-robining sockets over the CPU-bearing
+    /// nodes only: a VP with socket ID `vp_index / vps_per_socket` belongs to
+    /// the `(vp_index / vps_per_socket) % num_cpu_nodes`-th `FromTopology`
+    /// node. `vps_per_socket` comes from `ProcessorTopologyConfig`;
+    /// `num_cpu_nodes` is the number of `FromTopology` nodes, so `Empty`
+    /// (CPU-less) nodes are skipped and do not affect the distribution.
     FromTopology,
     /// Explicit VP indices assigned to this node.
     Explicit(Vec<u32>),
+    /// A CPU-less node: no VPs are assigned to it. Unlike `Explicit`, this
+    /// may be combined with `FromTopology` nodes, so a memory- or
+    /// device-only node can be declared without forcing every other node to
+    /// spell out its VP set.
+    Empty,
 }
 
 /// An inter-node distance entry for the ACPI SLIT.

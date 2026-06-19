@@ -12,6 +12,7 @@ use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use pal_async::DefaultPool;
 use scsi_defs::Cdb10;
+use scsi_defs::Cdb16;
 use scsi_defs::CdbInquiry;
 use scsi_defs::ScsiOp;
 use std::pin::pin;
@@ -41,8 +42,11 @@ enum StorvspFuzzAction {
 #[derive(Arbitrary)]
 enum FuzzCdbType {
     ReadWrite,
+    ReadWrite16,
     ReportLuns,
     Inquiry,
+    ReadCapacity,
+    ModeSense,
 }
 
 #[derive(Arbitrary)]
@@ -146,10 +150,24 @@ async fn send_scsi_packet(
             cdb_buf[..10].copy_from_slice(cdb.as_bytes());
             (size_of::<Cdb10>(), op == ScsiOp::READ)
         }
+        FuzzCdbType::ReadWrite16 => {
+            let block: u64 = u.arbitrary()?;
+            let ops = [ScsiOp::READ16, ScsiOp::WRITE16];
+            let op = *u.choose(&ops)?;
+            let cdb = Cdb16 {
+                operation_code: op,
+                logical_block: block.into(),
+                transfer_blocks: ((byte_len / 512) as u32).into(),
+                ..FromZeros::new_zeroed()
+            };
+            cdb_buf[..16].copy_from_slice(cdb.as_bytes());
+            (size_of::<Cdb16>(), op == ScsiOp::READ16)
+        }
         FuzzCdbType::ReportLuns => {
-            // REPORT_LUNS is a 12-byte CDB. Only the opcode byte matters
-            // for storvsp dispatch, but set the length correctly.
+            // REPORT_LUNS is a 12-byte CDB.
             cdb_buf[0] = ScsiOp::REPORT_LUNS.0;
+            let rest = u.bytes(11)?;
+            cdb_buf[1..12].copy_from_slice(rest);
             (12, true)
         }
         FuzzCdbType::Inquiry => {
@@ -162,6 +180,16 @@ async fn send_scsi_packet(
             let bytes = cdb.as_bytes();
             cdb_buf[..bytes.len()].copy_from_slice(bytes);
             (bytes.len(), true)
+        }
+        FuzzCdbType::ReadCapacity => {
+            cdb_buf[0] = ScsiOp::READ_CAPACITY.0;
+            (10, true)
+        }
+        FuzzCdbType::ModeSense => {
+            cdb_buf[0] = ScsiOp::MODE_SENSE.0;
+            let rest = u.bytes(5)?;
+            cdb_buf[1..6].copy_from_slice(rest);
+            (6, true)
         }
     };
 

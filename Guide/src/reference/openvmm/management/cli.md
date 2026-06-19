@@ -105,7 +105,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `vps=<LIST>` - explicit VP indices for this node. Uses bracket syntax
     with comma-separated indices and dash ranges: `vps=[0,1]`,
     `vps=[0-3]`, `vps=[0,1,4-5]`. When omitted, VPs are assigned by
-    round-robin sockets across nodes.
+    round-robin sockets across nodes. An empty list, `vps=[]`, declares a
+    CPU-less node (e.g. a generic-initiator target); unlike a non-empty
+    list, it may be combined with nodes that omit `vps`.
 
   Examples:
 
@@ -249,6 +251,12 @@ complex name:
 - `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
   root complex.
 - `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `low_mmio_base=<ADDR>` and `high_mmio_base=<ADDR>`: pin the low/high
+  MMIO window to a fixed base address instead of letting the VM topology
+  allocate it dynamically. Used with `preserve_bars` for P2P DMA.
+- `preserve_bars`: treat non-zero BAR values found during PCI probing as
+  pinned addresses (GPA = HPA). Required for peer-to-peer DMA between
+  VFIO passthrough devices without ATS.
 - `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
   is `1G`.
 - `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
@@ -292,6 +300,33 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+
+### Generic initiators
+
+A generic initiator is a device that originates memory accesses but has no
+CPUs of its own — for example a GPU or accelerator with its own coherent
+memory. Declaring one emits an SRAT Generic Initiator Affinity structure that
+tells the guest which NUMA node the device belongs to, so the guest can
+account for access latency and online the device's memory on the right
+proximity domain.
+
+Use `--pcie-generic-initiator` to mark the device directly behind a PCIe port
+as a generic initiator for a NUMA node:
+
+```sh
+# Create a CPU-less, memory-less NUMA node and a root port, then declare the
+# device behind the root port as a generic initiator for that node.
+--numa size=2G --numa size=0,vps=[] \
+  --pcie-root-complex rc0 --pcie-root-port rc0:rp0 \
+  --pcie-generic-initiator port=rp0,node=1
+```
+
+- Syntax: `port=<port_name>,node=<node>`.
+- `port=<port_name>` may be a root port name or a switch downstream port name
+  (e.g. `switch0-downstream-1`); it is resolved against the live topology.
+- `node=<node>` is the NUMA node the device is a generic initiator for, and
+  should typically be a CPU-less and memory-less node created via `--numa`.
+
 
 ### Attaching devices to PCIe
 
@@ -355,6 +390,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+# Pin BAR0 to its physical address for P2P DMA:
+--vfio host=0000:01:00.0,port=rp0,bar0=pt
 ```
 
 ### SMMU (aarch64 only)

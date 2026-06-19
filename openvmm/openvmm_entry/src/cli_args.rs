@@ -173,13 +173,16 @@ Options:
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
   VP lists use bracket syntax with comma-separated indices and dash
-  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5].
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5]. An empty list, vps=[],
+  declares a CPU-less node (e.g. a generic-initiator target); unlike a
+  non-empty list, it may be combined with nodes that omit vps.
 
 Examples:
     --numa size=2G --numa size=2G
     --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
     --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
-    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]"#
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+    --numa size=2G --numa size=0,vps=[]"#
     )]
     pub numa: Option<Vec<NumaNodeCli>>,
 
@@ -278,7 +281,6 @@ Examples:
             "vmbus_max_version",
             "vmbus_com1_serial",
             "vmbus_com2_serial",
-            "disk",
             "vtl2",
             "get",
             "pcat",
@@ -619,6 +621,10 @@ options:
     /// enable memory protections in UEFI
     #[clap(long, requires("uefi"))]
     pub uefi_enable_memory_protections: bool,
+
+    /// force UEFI to bounce-buffer all DMA traffic
+    #[clap(long, requires("uefi"))]
+    pub uefi_force_dma_bounce: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -1036,9 +1042,13 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `low_mmio_base=<addr>`         pin low MMIO window base address (0x-prefixed hex)
+    `high_mmio_base=<addr>`        pin high MMIO window base address (0x-prefixed hex)
     `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
     `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
                                    default DEVICE_COHERENT (bit 0, value 0x1)
+    `preserve_bars`                keep pinned BARs at their assigned addresses
+    `node=<value>`                 NUMA node the root complex is associated with
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -1096,6 +1106,33 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Declare the device behind a PCIe port as an SRAT generic initiator
+    #[clap(long_help = r#"
+Declare that the device directly behind a PCIe port is a generic initiator
+(GI) for a NUMA node, generating an SRAT Generic Initiator Affinity structure.
+
+The port may be a root port or a switch downstream port, so this works for
+devices that sit behind a switch (e.g. a GPU placed under a switch shared
+with a NIC for peer-to-peer DMA). The port is resolved by name against the
+live topology after switch downstream ports are enumerated.
+
+Examples:
+    # The device behind switch downstream port sw1-downstream-0 is a generic
+    # initiator for NUMA node 1
+    --pcie-generic-initiator port=sw1-downstream-0,node=1
+
+    # Also works for a root port name
+    --pcie-generic-initiator port=rp0,node=2
+
+Syntax: port=<port_name>,node=<node>
+"#)]
+    #[clap(
+        long = "pcie-generic-initiator",
+        value_name = "port=<name>,node=<node>",
+        conflicts_with("pcat")
+    )]
+    pub pcie_generic_initiator: Vec<PcieGenericInitiatorCli>,
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
@@ -1393,6 +1430,15 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+/// Parses an address, which must be a `0x`-prefixed hexadecimal value.
+fn parse_address(s: &str) -> anyhow::Result<u64> {
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .with_context(|| format!("invalid address '{s}', expected a 0x-prefixed hex value"))?;
+    u64::from_str_radix(hex, 16).with_context(|| format!("invalid address '{s}'"))
 }
 
 fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
@@ -2911,6 +2957,9 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub low_mmio_base: Option<u64>,
+    pub high_mmio_base: Option<u64>,
+    pub preserve_bars: bool,
     pub hdm: u64,
     pub hdm_window_restrictions: CfmwsWindowRestrictions,
     pub vnode: Option<u32>,
@@ -2937,6 +2986,9 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut low_mmio_base = None;
+        let mut high_mmio_base = None;
+        let mut preserve_bars = false;
         let mut hdm = DEFAULT_PCIE_HDM_SIZE;
         let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
         let mut vnode = None;
@@ -2967,6 +3019,22 @@ impl FromStr for PcieRootComplexCli {
                     let high_mmio_str = s.next().context("expected high MMIO size")?;
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
+                }
+                "low_mmio_base" => {
+                    let base_str = s.next().context("expected low MMIO base address")?;
+                    low_mmio_base = Some(
+                        parse_address(base_str).context("failed to parse low MMIO base address")?,
+                    );
+                }
+                "high_mmio_base" => {
+                    let base_str = s.next().context("expected high MMIO base address")?;
+                    high_mmio_base = Some(
+                        parse_address(base_str)
+                            .context("failed to parse high MMIO base address")?,
+                    );
+                }
+                "preserve_bars" => {
+                    preserve_bars = true;
                 }
                 "hdm" => {
                     let hdm_str = s.next().context("expected HDM decoder size")?;
@@ -3000,6 +3068,9 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            low_mmio_base,
+            high_mmio_base,
+            preserve_bars,
             hdm,
             hdm_window_restrictions,
             vnode,
@@ -3161,6 +3232,57 @@ impl FromStr for GenericPcieSwitchCli {
     }
 }
 
+/// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieGenericInitiatorCli {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut port_name = None;
+        let mut node = None;
+
+        for opt in s.split(',') {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+            if kv.next().is_some() {
+                anyhow::bail!("option '{key}' expects a single value")
+            }
+
+            match key {
+                "port" => {
+                    let value = value.context("port option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("port option requires a value");
+                    }
+                    port_name = Some(value.to_string());
+                }
+                "node" => {
+                    let value = value.context("node option requires a value")?;
+                    node = Some(
+                        u32::from_str(value)
+                            .context("failed to parse generic initiator NUMA node")?,
+                    );
+                }
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: port_name.context("expected 'port=<name>'")?,
+            node: node.context("expected 'node=<node>'")?,
+        })
+    }
+}
+
 /// CLI configuration for a PCIe remote device.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PcieRemoteCli {
@@ -3233,7 +3355,7 @@ impl FromStr for PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -3244,6 +3366,9 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 #[cfg(target_os = "linux")]
@@ -3254,6 +3379,7 @@ impl FromStr for VfioDeviceCli {
         let mut host: Option<String> = None;
         let mut port: Option<String> = None;
         let mut iommu: Option<String> = None;
+        let mut bar_pt = [false; 6];
 
         for kv in s.split(',') {
             let (key, value) = kv
@@ -3281,6 +3407,13 @@ impl FromStr for VfioDeviceCli {
                     }
                     iommu = Some(value.to_string());
                 }
+                "bar0" | "bar1" | "bar2" | "bar3" | "bar4" | "bar5" => {
+                    if value != "pt" {
+                        anyhow::bail!("--vfio: '{key}' only accepts 'pt' as a value");
+                    }
+                    let idx: usize = key[3..].parse().unwrap();
+                    bar_pt[idx] = true;
+                }
                 _ => anyhow::bail!("unknown --vfio key: '{key}'"),
             }
         }
@@ -3297,6 +3430,7 @@ impl FromStr for VfioDeviceCli {
             port_name,
             pci_id,
             iommu,
+            bar_pt,
         })
     }
 }
@@ -4270,6 +4404,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4285,6 +4422,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4300,6 +4440,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4315,6 +4458,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4330,6 +4476,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4345,6 +4494,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4360,6 +4512,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4375,6 +4530,9 @@ mod tests {
                 hdm: 2 * ONE_GB,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4390,6 +4548,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
                 vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4424,6 +4585,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: Some(1),
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
     }
@@ -4504,6 +4668,35 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+    }
+
+    #[test]
+    fn test_pcie_generic_initiator_from_str() {
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+            }
+        );
+
+        // Order should not matter.
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("node=2,port=sw0-downstream-1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "sw0-downstream-1".to_string(),
+                node: 2,
+            }
+        );
+
+        // Error cases
+        assert!(PcieGenericInitiatorCli::from_str("").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
     #[test]

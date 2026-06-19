@@ -702,11 +702,11 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                     result |= next << 8;
                     value.set_value(result);
                 }
-                CommonHeaderResult::Handled
             } else {
-                tracelimit::warn_ratelimited!(offset, "unhandled config space read");
-                CommonHeaderResult::Failed(IoError::InvalidRegister)
+                // Unimplemented registers in a present function read as 0.
+                value.set_value(0);
             }
+            CommonHeaderResult::Handled
         } else {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         }
@@ -721,8 +721,9 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 self.capabilities[cap_index].write(cap_offset, val);
                 CommonHeaderResult::Handled
             } else {
-                tracelimit::warn_ratelimited!(offset, ?val, "unhandled config space write");
-                CommonHeaderResult::Failed(IoError::InvalidRegister)
+                // Writes to unimplemented registers in a present function are
+                // dropped.
+                CommonHeaderResult::Handled
             }
         } else {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
@@ -736,7 +737,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         value: &mut ByteEnabledDword,
     ) -> CommonHeaderResult {
         if (EXT_CAP_START..EXT_CAP_END).contains(&offset) {
-            if self.is_pcie_device() {
+            let read_value = if self.is_pcie_device() {
                 if let Some((cap_index, cap_offset, cap_base)) =
                     self.get_extended_capability_index_and_offset(offset)
                 {
@@ -754,19 +755,19 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                         assert!(result & 0xfff0_0000 == 0);
                         result |= u32::from(next) << 20;
                     }
-                    value.set_value(result);
-                    CommonHeaderResult::Handled
+                    result
                 } else {
-                    // An all-zero extended capability header (capability ID 0)
-                    // terminates the list. All-ones would be misread as a
-                    // capability with a next pointer of 0xfff.
-                    value.set_value(0);
-                    CommonHeaderResult::Handled
+                    // No more extended capabilities; the terminating header
+                    // reads as 0.
+                    0
                 }
             } else {
-                tracelimit::warn_ratelimited!(offset, "unhandled extended config space read");
-                CommonHeaderResult::Failed(IoError::InvalidRegister)
-            }
+                // A conventional (non-PCIe) function has no extended
+                // configuration space; the region reads as 0.
+                0
+            };
+            value.set_value(read_value);
+            CommonHeaderResult::Handled
         } else {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         }
@@ -785,15 +786,11 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 {
                     self.extended_capabilities[cap_index].write(cap_offset, val);
                 }
-                CommonHeaderResult::Handled
             } else {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    ?val,
-                    "unhandled extended config space write"
-                );
-                CommonHeaderResult::Failed(IoError::InvalidRegister)
+                // No extended configuration space on a conventional function;
+                // writes to the region are dropped.
             }
+            CommonHeaderResult::Handled
         } else {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         }
@@ -2513,29 +2510,33 @@ mod tests {
         );
         assert!(common_emu_pcie.is_pcie_device());
 
-        // Test reading extended capabilities - non-PCIe device should return error
-        let mut value = ByteEnabledDword::with_all_bytes_enabled(0);
+        // A non-PCIe device has no extended configuration space, but the
+        // function is present: in-range reads return 0 (no extended caps),
+        // not all-ones.
+        let mut value = ByteEnabledDword::with_all_bytes_enabled(0xdead_beef);
         assert!(matches!(
             common_emu_no_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
-            CommonHeaderResult::Failed(IoError::InvalidRegister)
+            CommonHeaderResult::Handled
         ));
+        assert_eq!(value.extract(), 0);
 
         // A PCIe device with no extended capabilities returns an all-zero
         // header, terminating the list.
-        let mut value = ByteEnabledDword::with_all_bytes_enabled(0);
+        let mut value = ByteEnabledDword::with_all_bytes_enabled(0xdead_beef);
         assert!(matches!(
             common_emu_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value.extract(), 0);
 
-        // Test writing extended capabilities - non-PCIe device should return error
+        // Writes to the (unimplemented) extended region on a non-PCIe device
+        // are dropped silently rather than faulting.
         assert!(matches!(
             common_emu_no_pcie.write_extended_capabilities(
                 EXT_CAP_START,
                 ByteEnabledDword::with_all_bytes_enabled(0x1234)
             ),
-            CommonHeaderResult::Failed(IoError::InvalidRegister)
+            CommonHeaderResult::Handled
         ));
 
         // Test writing extended capabilities - PCIe device should accept writes
@@ -2556,6 +2557,43 @@ mod tests {
         assert!(matches!(
             common_emu_pcie.read_extended_capabilities(EXT_CAP_END, &mut value),
             CommonHeaderResult::Failed(IoError::InvalidRegister)
+        ));
+    }
+
+    #[test]
+    fn test_unimplemented_capability_region_reads_zero() {
+        // Unimplemented registers in the standard capability region of a
+        // present function read as 0.
+        let mut common_emu = ConfigSpaceCommonHeaderEmulatorType0::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            // A single small capability at the start of the region; everything
+            // past it is unimplemented.
+            vec![Box::new(ReadOnlyCapability::new("foo", 0))],
+            vec![],
+            DeviceBars::new(),
+        );
+
+        // An offset well past the implemented capability reads as 0.
+        let mut value = ByteEnabledDword::with_all_bytes_enabled(0xdead_beef);
+        assert!(matches!(
+            common_emu.read_capabilities(0x90, &mut value),
+            CommonHeaderResult::Handled
+        ));
+        assert_eq!(value.extract(), 0);
+
+        // Writes to the unimplemented region are dropped silently.
+        assert!(matches!(
+            common_emu.write_capabilities(0x90, ByteEnabledDword::with_all_bytes_enabled(0x1234)),
+            CommonHeaderResult::Handled
         ));
     }
 

@@ -11,6 +11,7 @@ use crate::state::StateElement;
 use crate::state::state_trait;
 use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvInternalActivityRegister;
+use hvdef::HvMessage;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64InterruptStateRegister;
 use hvdef::HvX64PendingEventReg0;
@@ -1862,12 +1863,31 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicMessageQueues {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf)]
 #[mesh(package = "virt.x86")]
-#[inspect(skip)]
 pub struct SynicMessagePage {
     #[mesh(1)]
     pub data: [u8; 4096],
+}
+
+impl Inspect for SynicMessagePage {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        let mut occupied = 0u16;
+        for (sint, slot) in self
+            .data
+            .as_chunks::<HV_MESSAGE_SIZE>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            let msg: HvMessage = zerocopy::transmute!(*slot);
+            if msg.header.typ != hvdef::HvMessageType::HvMessageTypeNone {
+                occupied |= 1 << sint;
+            }
+        }
+        resp.binary("occupied_bitmap", occupied);
+    }
 }
 
 impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicMessagePage {

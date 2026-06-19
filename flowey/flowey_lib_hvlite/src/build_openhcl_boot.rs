@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenhclBootOutput {
+    #[serde(rename = "openhcl_boot")]
     pub bin: PathBuf,
+    #[serde(rename = "openhcl_boot.dbg")]
     pub dbg: PathBuf,
 }
 
@@ -90,9 +92,13 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        // TODO: Soon
+                        //("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
                 pre_build_deps: Vec::new(),
                 output: v,

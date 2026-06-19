@@ -33,6 +33,13 @@ mod windows;
 /// Standard DNS port number.
 const DNS_PORT: u16 = 53;
 
+/// Default per-connection TCP ring buffer bounds: start small and autotune up
+/// to a few MiB so idle/short connections stay cheap while bulk flows ramp.
+const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
+    initial: 16 * 1024,
+    max: 4 * 1024 * 1024,
+};
+
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -171,6 +178,36 @@ pub struct ConsommeParams {
     /// routable IPv6 address.
     #[inspect(display)]
     pub skip_ipv6_checks: bool,
+    /// Per-connection TCP receive ring buffer bounds (guest-to-host).
+    pub tcp_rx_buffer: TcpBufferBounds,
+    /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
+    pub tcp_tx_buffer: TcpBufferBounds,
+}
+
+/// Bounds for a per-connection TCP ring buffer.
+///
+/// The buffer is allocated at `initial` and may grow up to `max` as demand
+/// warrants. Both values are clamped to `[16 KiB, 4 MiB]` and rounded up to a
+/// power of two, then `initial` is clamped to be no greater than `max`. The
+/// advertised TCP window scale is derived from `max`, so `max` is fixed for
+/// the connection's lifetime.
+///
+/// Note that if the peer does not negotiate window scaling, the effective
+/// receive window (and thus the useful rx capacity) is capped at `u16::MAX`
+/// regardless of `max`.
+#[derive(Inspect, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpBufferBounds {
+    /// Starting capacity, allocated up front.
+    pub initial: usize,
+    /// Ceiling for autotuned growth.
+    pub max: usize,
+}
+
+impl TcpBufferBounds {
+    /// Use the same value for `initial` and `max`. Disables autotune growth.
+    pub const fn fixed(n: usize) -> Self {
+        Self { initial: n, max: n }
+    }
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -204,6 +241,8 @@ impl ConsommeParams {
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
+            tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+            tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
         })
     }
 
@@ -350,8 +389,16 @@ impl ConsommeState {
         // it with a unique virtual address so that the guest routes the reply
         // back through the virtual adapter and we can reverse-translate it on the
         // outgoing path.
+        //
+        // This is skipped for endpoints that are themselves dedicated to
+        // loopback traffic (their `client_ip` is a loopback address, as used by
+        // WSL's VirtioProxy localhost forwarding). The guest routes those
+        // replies back through this adapter based on the loopback source, so
+        // rewriting the source out of the loopback range would break the return
+        // path.
+        let is_loopback_adapter = params.client_ip.is_loopback();
         let src = match remote_addr {
-            SocketAddr::V4(v4) if params.is_local_address(remote_addr) => {
+            SocketAddr::V4(v4) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let subnet_base =
                     Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
                 let virtual_ip = local_addr_map.get_or_allocate_v4(
@@ -369,7 +416,7 @@ impl ConsommeState {
                     }
                 }
             }
-            SocketAddr::V6(v6) if params.is_local_address(remote_addr) => {
+            SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let virtual_ip = local_addr_map.get_or_allocate_v6(
                     *v6.ip(),
                     params.gateway_link_local_ipv6,
@@ -696,13 +743,15 @@ impl Consomme {
                 }
             };
         let timeout = params.udp_timeout;
+        let tcp_rx_buffer = params.tcp_rx_buffer;
+        let tcp_tx_buffer = params.tcp_tx_buffer;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
-            tcp: tcp::Tcp::new(),
+            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,

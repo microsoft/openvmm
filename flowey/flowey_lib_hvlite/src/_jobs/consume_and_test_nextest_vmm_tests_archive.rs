@@ -5,6 +5,7 @@
 
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
@@ -21,7 +22,7 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use vmm_test_images::KnownTestArtifacts;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct VmmTestsDepArtifacts {
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
     pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
@@ -29,7 +30,10 @@ pub struct VmmTestsDepArtifacts {
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
     pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
-    pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
+    pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_cvm: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_linux_direct: Option<ReadVar<OpenhclIgvmOutput>>,
     pub tmks: Option<ReadVar<TmksOutput>>,
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
@@ -38,6 +42,41 @@ pub struct VmmTestsDepArtifacts {
     pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
     pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
     pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
+}
+
+pub type ResolveVmmTestsDepArtifacts =
+    Box<dyn Fn(&mut flowey::pipeline::prelude::PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
+
+#[macro_export]
+macro_rules! vmm_tests_artifact_builder {
+    (
+        $name:ty,
+        (
+            $($artifact:ident => $output:ty),* $(,)?
+        )
+    ) => {
+        ::paste::paste! {
+            #[derive(Default, Clone)]
+            pub struct $name {
+                $(pub [<use_ $artifact>]: Option<::flowey::pipeline::prelude::UseTypedArtifact<$output>>,)*
+            }
+
+            impl $name {
+                pub fn finish(self) -> Result<::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::ResolveVmmTestsDepArtifacts, &'static str> {
+                    let $name {
+                        $([<use_ $artifact>],)*
+                    } = self;
+
+                    $(let [<use_ $artifact>] = [<use_ $artifact>].ok_or(stringify!($artifact))?;)*
+
+                    Ok(Box::new(move |ctx| ::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts {
+                        $($artifact: Some(ctx.use_typed_artifact(&[<use_ $artifact>])),)*
+                        .. Default::default()
+                    }))
+                }
+            }
+        }
+    };
 }
 
 flowey_request! {
@@ -76,8 +115,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
@@ -118,7 +155,10 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
             prep_steps: register_prep_steps,
-            artifact_dir_openhcl_igvm_files,
+            openhcl_standard,
+            openhcl_standard_dev,
+            openhcl_cvm,
+            openhcl_linux_direct,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
@@ -129,14 +169,15 @@ impl SimpleFlowNode for Node {
             test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
         } = dep_artifact_dirs;
 
-        let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
-            ctx.reqv(
-                |v| crate::artifact_openhcl_igvm_from_recipe::resolve::Request {
-                    artifact_dir,
-                    igvm_files: v,
-                },
-            )
-        });
+        let register_openhcl_igvm_files = [
+            openhcl_standard,
+            openhcl_standard_dev,
+            openhcl_cvm,
+            openhcl_linux_direct,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 

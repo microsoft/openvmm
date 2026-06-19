@@ -182,7 +182,7 @@ async fn boot_numa_complex_topology(
                         // Node 3: memory-only (1 GB), no VPs
                         NumaNode {
                             mem: Some(make_mem(SIZE_1_GB)),
-                            vps: VpAssignment::Explicit(vec![]),
+                            vps: VpAssignment::Empty,
                         },
                     ],
                     distances: vec![
@@ -347,6 +347,7 @@ async fn pcie_device_numa_affinity(
                     }],
                     iommu: None,
                     vnode: Some(1),
+                    preserve_bars: false,
                 });
 
                 // Attach an NVMe device to the root port.

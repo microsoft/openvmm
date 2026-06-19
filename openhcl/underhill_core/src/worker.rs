@@ -309,6 +309,8 @@ pub struct UnderhillEnvCfg {
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
     /// EFI diagnostics log level filter (overrides DPS value when set)
     pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    /// EFI diagnostics rate-limit override (overrides device defaults when set)
+    pub efi_diagnostics_rate_limit: Option<u32>,
     /// Strict guest state encryption policy
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
@@ -2572,6 +2574,7 @@ async fn new_underhill_vm(
                     _ => LogLevel::make_default(),
                 }
             },
+            diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
         };
 
         // Register the platform resolvers used by the resource-model UEFI
@@ -2636,6 +2639,7 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 slit_info: None,
+                generic_initiators: &[],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
@@ -3777,7 +3781,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
-        hv_sint_enabled: _,
+        force_dma_bounce_enabled: _,
         battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 

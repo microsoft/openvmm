@@ -377,24 +377,16 @@ fn exec_action(
 
 fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     // Generate mapping. Expected failures should only be caused
-    // by a size of 0 or overflow.
+    // by a size of 0 or overflow, both of which surface as
+    // `io::ErrorKind::InvalidInput`.
     let mut map_len = u.int_in_range(0..=MAX_MAP_SIZE)?;
     let mapping = match SparseMapping::new(map_len) {
         Ok(mapping) => mapping,
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::InvalidInput => match e.to_string().as_str() {
-                "length must be greater than 0" => {
-                    fuzz_eprintln!("Generated a mapping of length 0, which isn't allowed.");
-                    return Err(arbitrary::Error::IncorrectFormat);
-                }
-                "length and alignment combination causes overflow" => {
-                    fuzz_eprintln!("Generated a mapping with a length that causes overflow.");
-                    return Err(arbitrary::Error::IncorrectFormat);
-                }
-                _ => panic!("Unexpected error: {:?}", e),
-            },
-            _ => panic!("Unexpected error: {:?}", e),
-        },
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+            fuzz_eprintln!("SparseMapping::new rejected input: {:?}", e);
+            return Err(arbitrary::Error::IncorrectFormat);
+        }
+        Err(e) => panic!("Unexpected error from SparseMapping::new: {:?}", e),
     };
     map_len = mapping.len();
     fuzz_eprintln!("Generated mapping of length: {:x}", map_len);
@@ -413,20 +405,17 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     let mut no_failures = true;
     for block in &blocks {
         if let Err(e) = mapping.alloc(block.offset, block.len) {
-            match e.kind() {
-                std::io::ErrorKind::InvalidInput => {
-                    fuzz_eprintln!("Block had invalid offset and length: {:?}", block);
-                }
-                _ => {
-                    panic!(
-                        "Allocation failure led to unexpected error:\n\
-                        Block: {:?}\n\
-                        Layout: {:?}\n\
-                        Map length: {:x}\n\
-                        Error: {:?}",
-                        block, layout, map_len, e
-                    );
-                }
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                fuzz_eprintln!("Block had invalid offset and length: {:?}", block);
+            } else {
+                panic!(
+                    "Allocation failure led to unexpected error:\n\
+                    Block: {:?}\n\
+                    Layout: {:?}\n\
+                    Map length: {:x}\n\
+                    Error: {:?}",
+                    block, layout, map_len, e
+                );
             }
             no_failures = false;
         }
@@ -456,6 +445,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
 }
 
 fuzz_target!(|input: &[u8]| -> libfuzzer_sys::Corpus {
+    xtask_fuzz::init_tracing_if_repro();
     if do_fuzz(&mut Unstructured::new(input)).is_err() {
         libfuzzer_sys::Corpus::Reject
     } else {

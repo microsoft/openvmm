@@ -517,6 +517,12 @@ async fn vm_config_from_command_line(
         } else if pcie_port.is_some() {
             anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
         } else {
+            if opt.no_vmbus {
+                anyhow::bail!(
+                    "`--disk` without `on=` attaches to the default VMBus SCSI controller and \
+                     cannot be used with `--no-vmbus`; use `on=<name>` to attach to a named controller"
+                );
+            }
             storage_builder::DiskLocation::Scsi(None)
         };
 
@@ -862,11 +868,25 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            low_mmio: PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
+            low_mmio: if let Some(base) = rc_cli.low_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: low_mmio_size,
+                }
             },
-            high_mmio: PcieMmioRangeConfig::Dynamic {
-                size: high_mmio_size,
+            high_mmio: if let Some(base) = rc_cli.high_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: high_mmio_size,
+                }
             },
             cxl,
             ports,
@@ -883,6 +903,7 @@ async fn vm_config_from_command_line(
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
             vnode: rc_cli.vnode,
+            preserve_bars: rc_cli.preserve_bars,
         });
     }
 
@@ -903,7 +924,14 @@ async fn vm_config_from_command_line(
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
+    let pcie_generic_initiators = opt
+        .pcie_generic_initiator
+        .iter()
+        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
+            port_name: gi.port_name.clone(),
+            node: gi.node,
+        })
+        .collect();
     #[cfg(target_os = "linux")]
     let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
         use std::collections::HashMap;
@@ -974,6 +1002,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -1000,6 +1029,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -1155,6 +1185,7 @@ async fn vm_config_from_command_line(
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
+            None,
             nvram_storage,
             None,
         ));
@@ -1242,6 +1273,7 @@ async fn vm_config_from_command_line(
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
             enable_vmbus: !opt.no_vmbus,
+            force_dma_bounce: opt.uefi_force_dma_bounce,
         };
     } else {
         // Linux Direct
@@ -1420,7 +1452,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
-                    hv_sint_enabled: false,
+                    force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
                 }
                 .into_resource(),
             ),
@@ -1827,6 +1859,7 @@ async fn vm_config_from_command_line(
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
+        pcie_generic_initiators,
         vpci_devices,
         ide_disks: Vec::new(),
         numa: {
@@ -1846,6 +1879,7 @@ async fn vm_config_from_command_line(
                                 host_numa_node: n.host_numa_node,
                             }),
                             vps: match &n.vps {
+                                Some(vps) if vps.is_empty() => VpAssignment::Empty,
                                 Some(vps) => VpAssignment::Explicit(vps.clone()),
                                 None => VpAssignment::FromTopology,
                             },
