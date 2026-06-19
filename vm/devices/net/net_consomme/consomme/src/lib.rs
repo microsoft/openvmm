@@ -149,11 +149,9 @@ pub struct ConsommeParams {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<IpAddress>,
     /// Current IPv6 network mask (if any).
-    #[inspect(display)]
     pub prefix_len_ipv6: u8,
     /// If true, advertise an autonomous IPv6 prefix so guests create a
     /// routable IPv6 address with SLAAC.
-    #[inspect(display)]
     pub advertise_routable_ipv6: bool,
     /// Current IPv6 gateway MAC address (if any).
     #[inspect(display)]
@@ -177,11 +175,9 @@ pub struct ConsommeParams {
     #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
-    #[inspect(debug)]
     pub udp_timeout: Duration,
     /// If true, skip checks for host IPv6 support and assume the host has a
     /// routable IPv6 address.
-    #[inspect(display)]
     pub skip_ipv6_checks: bool,
     /// Per-connection TCP receive ring buffer bounds (guest-to-host).
     pub tcp_rx_buffer: TcpBufferBounds,
