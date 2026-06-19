@@ -113,6 +113,7 @@ pub use vnet_hdr::*;
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 impl TapEndpoint {
@@ -140,6 +141,10 @@ impl TapEndpoint {
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
+            rx_offload_support: net_backend::RxOffloadSupport {
+                lro4: false,
+                lro6: false,
+            },
         })
     }
 }
@@ -156,6 +161,10 @@ impl Endpoint for TapEndpoint {
         "tap"
     }
 
+    fn set_rx_offload_support(&mut self, support: net_backend::RxOffloadSupport) {
+        self.rx_offload_support = support;
+    }
+
     async fn get_queues(
         &mut self,
         mut config: Vec<QueueConfig>,
@@ -168,6 +177,7 @@ impl Endpoint for TapEndpoint {
         queues.push(Box::new(TapQueue::new(
             config.driver.as_ref(),
             self.tap.clone(),
+            self.rx_offload_support,
         )?));
         Ok(())
     }
@@ -199,6 +209,7 @@ struct TapQueue {
     tap: Option<tap::PolledTap>,
     inner: Inner,
     buffer: Box<[u8]>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 struct Inner {
@@ -221,7 +232,11 @@ impl Drop for TapQueue {
 }
 
 impl TapQueue {
-    fn new(driver: &dyn Driver, slot: Arc<Mutex<Option<tap::Tap>>>) -> anyhow::Result<Self> {
+    fn new(
+        driver: &dyn Driver,
+        slot: Arc<Mutex<Option<tap::Tap>>>,
+        rx_offload_support: net_backend::RxOffloadSupport,
+    ) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
         Ok(Self {
@@ -232,6 +247,7 @@ impl TapQueue {
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; 65535 + size_of::<VirtioNetHdr>()].into_boxed_slice(),
+            rx_offload_support,
         })
     }
 }
@@ -263,7 +279,19 @@ impl Queue for TapQueue {
                         continue;
                     }
                     let frame = &self.buffer[frame_start..read_len];
-                    let rx_meta = parse_vnet_hdr(&hdr, frame);
+                    let mut rx_meta = parse_vnet_hdr(&hdr, frame);
+
+                    // Only report GSO/LRO metadata if the frontend supports it.
+                    if rx_meta.gso_size > 0 {
+                        let lro_allowed = match rx_meta.l3_protocol {
+                            net_backend::L3Protocol::Ipv4 => self.rx_offload_support.lro4,
+                            net_backend::L3Protocol::Ipv6 => self.rx_offload_support.lro6,
+                            net_backend::L3Protocol::Unknown => false,
+                        };
+                        if !lro_allowed {
+                            rx_meta.gso_size = 0;
+                        }
+                    }
 
                     // With TUN_F_TSO4/6 the kernel may deliver GRO-coalesced
                     // frames larger than the guest RX buffer. Drop them

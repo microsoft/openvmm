@@ -90,6 +90,7 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 /// Configuration for a port to forward from the host to the guest.
@@ -116,6 +117,10 @@ impl ConsommeEndpoint {
                 recv: None,
                 port_forwards: Vec::new(),
             }))),
+            rx_offload_support: net_backend::RxOffloadSupport {
+                lro4: false,
+                lro6: false,
+            },
         }
     }
 
@@ -127,6 +132,10 @@ impl ConsommeEndpoint {
                 recv: None,
                 port_forwards: ports,
             }))),
+            rx_offload_support: net_backend::RxOffloadSupport {
+                lro4: false,
+                lro6: false,
+            },
         }
     }
 
@@ -140,6 +149,10 @@ impl ConsommeEndpoint {
                     recv: Some(recv),
                     port_forwards: Vec::new(),
                 }))),
+                rx_offload_support: net_backend::RxOffloadSupport {
+                    lro4: false,
+                    lro6: false,
+                },
             },
             ConsommeControl { send },
         )
@@ -274,6 +287,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         "consomme"
     }
 
+    fn set_rx_offload_support(&mut self, support: net_backend::RxOffloadSupport) {
+        self.rx_offload_support = support;
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,
@@ -294,6 +311,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             },
             stats: Default::default(),
             driver: config.driver,
+            rx_offload_support: self.rx_offload_support,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -359,6 +377,7 @@ pub struct ConsommeQueue {
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -408,6 +427,7 @@ impl ConsommeQueue {
                 stats: &mut self.stats,
                 driver: &self.driver,
                 pool,
+                rx_offload_support: self.rx_offload_support,
             }))
     }
 
@@ -430,6 +450,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        rx_offload_support: self.rx_offload_support,
                     }),
                     message,
                 ),
@@ -621,6 +642,7 @@ struct Client<'a> {
     stats: &'a mut Stats,
     driver: &'a dyn Driver,
     pool: &'a mut dyn BufferAccess,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 /// Minimal client for consomme operations that don't need BufferAccess
@@ -669,7 +691,17 @@ impl consomme::Client for Client<'_> {
             // l2_len and l3_len from the packet.
             let (l3_protocol, l2_len, l3_len, l4_len) = parse_rx_header_lengths(data, checksum);
 
-            let gso_size = checksum.tso.unwrap_or(0);
+
+            let lro_allowed = match l3_protocol {
+                L3Protocol::Ipv4 => self.rx_offload_support.lro4,
+                L3Protocol::Ipv6 => self.rx_offload_support.lro6,
+                L3Protocol::Unknown => false,
+            };
+            let gso_size = if lro_allowed {
+                checksum.tso.unwrap_or(0)
+            } else {
+                0
+            };
 
             self.pool.write_packet(
                 rx_id,

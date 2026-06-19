@@ -754,6 +754,14 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
+        let features = self.workers[0].state_mut().unwrap().negotiated_features;
+        c_state
+            .endpoint
+            .set_rx_offload_support(net_backend::RxOffloadSupport {
+                lro4: features.guest_csum() && features.guest_tso4(),
+                lro6: features.guest_csum() && features.guest_tso6(),
+            });
+
         let queue_config = (0..self.workers.len())
             .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),

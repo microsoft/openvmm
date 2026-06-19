@@ -107,6 +107,9 @@ pub trait Endpoint: Send + Sync + InspectMut {
         TxOffloadSupport::default()
     }
 
+    /// Sets the frontend's receive offload capabilities to the backend.
+    fn set_rx_offload_support(&mut self, _support: RxOffloadSupport) {}
+
     /// Specifies parameters related to supporting multiple queues.
     fn multiqueue_support(&self) -> MultiQueueSupport {
         MultiQueueSupport {
@@ -167,6 +170,18 @@ pub struct TxOffloadSupport {
     pub tso: bool,
     /// UDP segmentation offload (USO).
     pub uso: bool,
+}
+
+/// The set of supported receive offloads, advertised by the frontend.
+///
+/// Backends use this to decide whether they may deliver coalesced
+/// (LRO) packets via [`RxMetadata::gso_size`].
+#[derive(Debug, Copy, Clone, Default)]
+pub struct RxOffloadSupport {
+    /// The frontend supports receiving LRO packets over IPv4 TCP.
+    pub lro4: bool,
+    /// The frontend supports receiving LRO packets over IPv6 TCP.
+    pub lro6: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -653,6 +668,10 @@ impl DisconnectableEndpoint {
 impl Endpoint for DisconnectableEndpoint {
     fn endpoint_type(&self) -> &'static str {
         self.current().endpoint_type()
+    }
+
+    fn set_rx_offload_support(&mut self, support: RxOffloadSupport) {
+        self.current_mut().set_rx_offload_support(support);
     }
 
     async fn get_queues(
