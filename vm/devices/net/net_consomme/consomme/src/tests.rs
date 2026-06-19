@@ -418,11 +418,28 @@ fn infer_client_link_local_from_routable_does_not_overwrite_existing_address() {
     assert_eq!(params.client_ip_ipv6, Some(existing_address));
 }
 
+/// A minimal Client implementation for synchronous tests that do not create
+/// new connections and therefore never call `driver()`.
+struct NoDriverClient;
+
+impl Client for NoDriverClient {
+    fn driver(&self) -> &dyn Driver {
+        unreachable!("IPv6 address learning tests do not use the client driver")
+    }
+
+    fn recv(&mut self, _data: &[u8], _checksum: &ChecksumState) {}
+
+    fn rx_mtu(&mut self) -> usize {
+        MIN_MTU
+    }
+}
+
 fn learn_from_ipv6_traffic(params: &mut ConsommeParams, src_addr: Ipv6Address) {
     params.skip_ipv6_checks = true;
+    params.allow_host_local_access = true;
     let gateway_ip = params.gateway_link_local_ipv6;
     let mut consomme = Consomme::new(std::mem::replace(params, ConsommeParams::new().unwrap()));
-    let mut client = TestClient::new(DefaultDriver::new());
+    let mut client = NoDriverClient;
     let frame = EthernetRepr {
         src_addr: consomme.state.params.client_mac,
         dst_addr: consomme.state.params.gateway_mac_ipv6,

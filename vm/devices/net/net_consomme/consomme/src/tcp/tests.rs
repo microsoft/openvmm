@@ -154,7 +154,7 @@ impl TcpTestHarness {
         let mut listener = PolledSocket::new(&driver, std_listener).unwrap();
 
         let mut consomme = Consomme::new({
-            let mut params = ConsommeParams::new().unwrap();
+            let mut params = params;
             params.allow_host_local_access = true;
             params
         });
