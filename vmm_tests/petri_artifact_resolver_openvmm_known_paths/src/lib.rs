@@ -119,7 +119,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
 
-            _ if id == vmfw_dll::LATEST_STANDARD_VMFW_DLL_X64 => {
+            _ if id == vmfw_dll::LATEST_CVM_VMFW_DLL_X64 => {
                 vmfw_dll_path(MachineArch::X86_64)
             }
             _ if id == vmfw_dll::LATEST_STANDARD_VMFW_DLL_AARCH64 => {

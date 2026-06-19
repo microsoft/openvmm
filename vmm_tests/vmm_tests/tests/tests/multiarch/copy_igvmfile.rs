@@ -11,12 +11,15 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmfwDll;
 use petri_artifacts_common::tags::IsVmgsTool;
+#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::CUSTOM_RESOURCE_CODE;
-use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_STANDARD_VMFW_DLL_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64;
 use std::path::Path;
 use std::process::Command;
 use vmm_test_macros::vmm_test;
+use vmm_test_macros::vmm_test_with;
 
 /// End-to-end test for the `vmgstool copy-igvmfile` flow:
 ///
@@ -39,16 +42,18 @@ use vmm_test_macros::vmm_test;
 /// `NONCONFIDENTIAL`, `SNP`, etc. live in non-public DLL builds).
 ///
 /// This test is Hyper-V only because OpenVMM does not currently support
-/// loading the IGVM from the VMGS file.
+/// loading the IGVM from the VMGS file. It is also x64 + SNP only: Hyper-V
+/// only loads the firmware IGVM out of the VMGS for a confidential (CVM)
+/// guest, so the test runs as an isolated SNP VM wrapping the `X64Cvm`
+/// OpenHCL IGVM. On hosts without SNP the petri requirements framework
+/// skips it.
 #[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, LATEST_STANDARD_VMFW_DLL_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 )]
-async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend>(
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     config: PetriVmBuilder<T>,
-    (vmgstool, vmfw_dll): (
-        ResolvedArtifact<impl IsVmgsTool>,
-        ResolvedArtifact<LATEST_STANDARD_VMFW_DLL_X64>,
-    ),
+    (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
 ) -> Result<(), anyhow::Error> {
     let temp_dir = tempfile::tempdir()?;
     let vmgs_path = temp_dir.path().join("test.vmgs");
@@ -59,17 +64,17 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend>(
     // DLL must match the code under which the IGVM payload was embedded.
     // The artifact's `RESOURCE_CODE` constant is the source of truth; we
     // assert it matches `CUSTOM_RESOURCE_CODE` (and `ResourceCode::Custom`
-    // in `vmgstool`) at compile time so this test fails loudly if the
-    // artifact ever starts wrapping a differently-keyed DLL.
-    const _: () = assert!(
-        <LATEST_STANDARD_VMFW_DLL_X64 as IsVmfwDll>::RESOURCE_CODE == CUSTOM_RESOURCE_CODE,
+    // in `vmgstool`) so this test fails loudly if the artifact ever starts
+    // wrapping a differently-keyed DLL.
+    assert_eq!(
+        D::RESOURCE_CODE,
+        CUSTOM_RESOURCE_CODE,
+        "this test only supports DLLs keyed under the CUSTOM resource code",
     );
     let resource_code_arg = "CUSTOM";
 
-    // (1) Create the VMGS file.
-    let mut cmd = Command::new(vmgstool_path);
-    cmd.arg("create").arg("--filepath").arg(&vmgs_path);
-    run_host_cmd(cmd).await?;
+    // (1) Create the VMGS file, sized to hold the IGVM payload.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
 
     // (2) Copy the IGVM out of the DLL and into the VMGS file.
     let mut cmd = Command::new(vmgstool_path);
@@ -125,10 +130,7 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend>(
     run_host_cmd(cmd).await?;
 
     let dumped_bytes = std::fs::read(&dumped_igvm)?;
-    let expected_bytes = extract_vmfw_resource(
-        dll_path,
-        <LATEST_STANDARD_VMFW_DLL_X64 as IsVmfwDll>::RESOURCE_CODE,
-    )?;
+    let expected_bytes = extract_vmfw_resource(dll_path, D::RESOURCE_CODE)?;
     anyhow::ensure!(
         dumped_bytes == expected_bytes,
         "IGVM bytes round-tripped through the VMGS did not match the DLL: \
@@ -140,6 +142,267 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend>(
     vm.teardown().await?;
 
     Ok(())
+}
+
+/// Negative test: `vmgstool copy-igvmfile` overwrite semantics.
+///
+/// Writing the IGVM into file id 8 (`GUEST_FIRMWARE`) a second time must
+/// fail unless `--allow-overwrite` is passed, because the slot already
+/// holds a nonzero-length payload. With the flag the second write
+/// succeeds. This exercises the `allow_overwrite` plumbing in
+/// `vmgstool`'s `copy-igvmfile` path without booting a VM, so it uses a
+/// guest-less (`none`) config.
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
+))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
+    _config: PetriVmBuilder<T>,
+    (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
+) -> Result<(), anyhow::Error> {
+    assert_eq!(
+        D::RESOURCE_CODE,
+        CUSTOM_RESOURCE_CODE,
+        "this test only supports DLLs keyed under the CUSTOM resource code",
+    );
+
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+    let dll_path = vmfw_dll.get();
+
+    // Create the VMGS file, sized to hold the IGVM payload.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+
+    // First copy populates file id 8.
+    run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        "CUSTOM",
+        false,
+    ))
+    .await?;
+
+    // Second copy WITHOUT `--allow-overwrite` must fail: the slot is
+    // already populated with a nonzero-length payload.
+    let res = run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        "CUSTOM",
+        false,
+    ))
+    .await;
+    anyhow::ensure!(
+        res.is_err(),
+        "copy-igvmfile over an existing file id 8 unexpectedly succeeded without --allow-overwrite",
+    );
+
+    // Second copy WITH `--allow-overwrite` must succeed.
+    run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        "CUSTOM",
+        true,
+    ))
+    .await?;
+
+    Ok(())
+}
+
+/// Negative test: `vmgstool copy-igvmfile` rejects a non-PE data file.
+///
+/// Feeding `copy-igvmfile` a file that is not a valid PE/DLL must produce
+/// a clean error (`Error::IgvmFile`) and a nonzero exit code rather than
+/// panicking or writing garbage into the VMGS. Only the `vmgstool` binary
+/// is needed; the bogus input is synthesised on the fly, so no resource
+/// DLL artifact is required.
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
+))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
+    _config: PetriVmBuilder<T>,
+    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+) -> Result<(), anyhow::Error> {
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+
+    // Create the VMGS file, sized to hold the IGVM payload.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+
+    // Write a junk "DLL" that is clearly not a PE image.
+    let bogus_dll = temp_dir.path().join("not-a-dll.bin");
+    std::fs::write(&bogus_dll, b"this is definitely not a PE file")?;
+
+    // copy-igvmfile must fail cleanly on the non-PE input.
+    let res = run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        &bogus_dll,
+        "CUSTOM",
+        false,
+    ))
+    .await;
+    anyhow::ensure!(
+        res.is_err(),
+        "copy-igvmfile unexpectedly succeeded on a non-PE data file",
+    );
+
+    Ok(())
+}
+
+/// Negative test: `vmgstool copy-igvmfile` fails when the `--data-path`
+/// file does not exist.
+///
+/// This exercises a different failure branch than
+/// [`copy_igvmfile_corrupt_dll`]: a missing file fails at `File::open`
+/// (`Error::DataFile`) before any PE parsing happens, whereas a non-PE
+/// file fails later in the resource lookup (`Error::IgvmFile`). Both must
+/// produce a clean error and a nonzero exit code rather than panicking.
+/// Only the `vmgstool` binary is needed; the path is intentionally never
+/// created, so no resource DLL artifact is required.
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
+))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
+    _config: PetriVmBuilder<T>,
+    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+) -> Result<(), anyhow::Error> {
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+
+    // Create the VMGS file, sized to hold the IGVM payload.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+
+    // Point `--data-path` at a file that was never created.
+    let missing_dll = temp_dir.path().join("does-not-exist.dll");
+    anyhow::ensure!(
+        !missing_dll.exists(),
+        "test bug: the supposedly-missing data file actually exists",
+    );
+
+    // copy-igvmfile must fail cleanly when the data file is absent.
+    let res = run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        &missing_dll,
+        "CUSTOM",
+        false,
+    ))
+    .await;
+    anyhow::ensure!(
+        res.is_err(),
+        "copy-igvmfile unexpectedly succeeded on a nonexistent data file",
+    );
+
+    Ok(())
+}
+
+/// Negative test: `vmgstool copy-igvmfile` fails when the requested
+/// resource code is absent from the DLL, and leaves the VMGS untouched.
+///
+/// The in-tree resource DLL only carries an IGVM under the `CUSTOM`
+/// resource code. Requesting a production code such as `SNP` must fail
+/// (the resource lookup finds nothing). The resource is read before
+/// anything is written, so file id 8 must remain empty — which we verify
+/// by then writing it with a `CUSTOM` copy that does *not* pass
+/// `--allow-overwrite`.
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
+))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
+    _config: PetriVmBuilder<T>,
+    (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
+) -> Result<(), anyhow::Error> {
+    assert_eq!(
+        D::RESOURCE_CODE,
+        CUSTOM_RESOURCE_CODE,
+        "this test relies on the DLL only carrying the CUSTOM resource code",
+    );
+
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+    let dll_path = vmfw_dll.get();
+
+    // Create the VMGS file, sized to hold the IGVM payload.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+
+    // Request a resource code the DLL does not contain.
+    let res = run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        "SNP",
+        false,
+    ))
+    .await;
+    anyhow::ensure!(
+        res.is_err(),
+        "copy-igvmfile unexpectedly succeeded for a resource code absent from the DLL",
+    );
+
+    // File id 8 must still be empty after the failed attempt: a `CUSTOM`
+    // copy WITHOUT `--allow-overwrite` should therefore succeed, proving
+    // nothing was written above.
+    run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        "CUSTOM",
+        false,
+    ))
+    .await?;
+
+    Ok(())
+}
+
+/// VMGS capacity used by these tests. The default vmgstool capacity
+/// (~4 MiB) cannot hold a real OpenHCL IGVM (tens of MiB). vmgstool caps an
+/// IGVM at 256 MiB (`MAX_IGVM_SIZE`), so 384 MiB leaves headroom above that
+/// ceiling for VMGS metadata and the other file slots.
+const VMGS_FILE_SIZE: u64 = 384 * 1024 * 1024;
+
+/// Build a `vmgstool create` command that sizes the VMGS large enough to
+/// hold an IGVM payload (see [`VMGS_FILE_SIZE`]).
+fn create_vmgs_cmd(vmgstool_path: &Path, vmgs_path: &Path) -> Command {
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("create")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--file-size")
+        .arg(VMGS_FILE_SIZE.to_string());
+    cmd
+}
+
+/// Build a `vmgstool copy-igvmfile` command for the given VMGS file,
+/// resource DLL, and resource code, optionally passing `--allow-overwrite`.
+fn copy_igvmfile_cmd(
+    vmgstool_path: &Path,
+    vmgs_path: &Path,
+    dll_path: &Path,
+    resource_code: &str,
+    allow_overwrite: bool,
+) -> Command {
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("copy-igvmfile")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--data-path")
+        .arg(dll_path)
+        .arg("--resource-code")
+        .arg(resource_code);
+    if allow_overwrite {
+        cmd.arg("--allow-overwrite");
+    }
+    cmd
 }
 
 /// Extract the `VMFW` resource with the given numeric id from a

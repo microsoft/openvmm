@@ -225,9 +225,15 @@ impl SimpleFlowNode for Node {
             let openhcl_extras_dir = extras_dir.join("openhcl");
 
             let mut register_openhcl_igvm_files = Vec::new();
-            // Capture the standard IGVM so we can also build the
-            // `vmfirmwareigvm` test DLL from it below.
-            let mut standard_igvm_for_dll: Option<ReadVar<crate::run_igvmfilegen::IgvmOutput>> =
+            // Capture the IGVM used to build the `vmfirmwareigvm` test DLL
+            // below. x64 uses the CVM recipe (the load-IGVM-from-VMGS boot
+            // test must run as a confidential VM); aarch64 uses the standard
+            // recipe (it only runs non-booting copy-igvmfile tests).
+            let dll_igvm_recipe = match arch {
+                CommonArch::X86_64 => OpenhclIgvmRecipe::X64Cvm,
+                CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+            };
+            let mut igvm_for_dll: Option<ReadVar<crate::run_igvmfilegen::IgvmOutput>> =
                 None;
             for recipe in openhcl_recipies {
                 let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
@@ -272,12 +278,12 @@ impl SimpleFlowNode for Node {
                     |x| (recipe, x)
                 }));
 
-                // Save the per-arch standard IGVM payload for use in the
+                // Save the per-arch IGVM payload used to build the
                 // `vmfirmwareigvm` test DLL below.
-                if matches!(recipe, OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64)
-                    && standard_igvm_for_dll.is_none()
+                if std::mem::discriminant(&recipe) == std::mem::discriminant(&dll_igvm_recipe)
+                    && igvm_for_dll.is_none()
                 {
-                    standard_igvm_for_dll = Some(read_built_openhcl_igvm);
+                    igvm_for_dll = Some(read_built_openhcl_igvm);
                 }
 
                 if copy_extras {
@@ -316,16 +322,16 @@ impl SimpleFlowNode for Node {
                 Vec<(OpenhclIgvmRecipe, crate::run_igvmfilegen::IgvmOutput)>,
             > = ReadVar::transpose_vec(ctx, register_openhcl_igvm_files);
 
-            (register_openhcl_igvm_files, standard_igvm_for_dll)
+            (register_openhcl_igvm_files, igvm_for_dll)
         });
 
-        let (register_openhcl_igvm_files, standard_igvm_for_dll) = register_openhcl_igvm_files
+        let (register_openhcl_igvm_files, igvm_for_dll) = register_openhcl_igvm_files
             .map(|(files, dll)| (Some(files), dll))
             .unwrap_or((None, None));
 
         let register_vmfirmwareigvm_test_dll = if build.vmfirmwareigvm_test_dll {
-            let igvm = standard_igvm_for_dll.context(
-                "build.vmfirmwareigvm_test_dll requires build.openhcl, and the standard IGVM recipe",
+            let igvm = igvm_for_dll.context(
+                "build.vmfirmwareigvm_test_dll requires build.openhcl, and the IGVM recipe for the test DLL",
             )?;
             Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_test_dll::Request {
                 arch,
@@ -333,7 +339,7 @@ impl SimpleFlowNode for Node {
                 vmfirmwareigvm_test_dll: v,
             }))
         } else {
-            if let Some(igvm) = standard_igvm_for_dll {
+            if let Some(igvm) = igvm_for_dll {
                 igvm.claim_unused(ctx);
             }
             None

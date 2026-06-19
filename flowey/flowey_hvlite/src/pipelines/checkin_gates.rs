@@ -977,13 +977,16 @@ impl IntoPipeline for CheckinGatesCli {
                 _ => unreachable!(),
             }
 
-            // Build a `vmfirmwareigvm` resource DLL wrapping the standard
-            // OpenHCL IGVM for use by VMM tests that exercise the
-            // `vmgstool copy-igvmfile` flow. Only emit this for the
-            // non-mi-secure builds (one per arch).
+            // Build a `vmfirmwareigvm` resource DLL wrapping an OpenHCL IGVM
+            // for use by VMM tests that exercise the `vmgstool copy-igvmfile`
+            // flow. x64 wraps the CVM (`X64Cvm`) IGVM because the
+            // load-IGVM-from-VMGS boot test must run as a confidential VM;
+            // aarch64 (which has no CVM and only runs non-booting tests)
+            // wraps the standard IGVM. Only emit this for the non-mi-secure
+            // builds (one per arch).
             if !mi_secure {
-                let standard_recipe = match arch {
-                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+                let dll_recipe = match arch {
+                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64Cvm,
                     CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
                 };
                 let (pub_vmfw_dll, use_vmfw_dll) = pipeline
@@ -1009,7 +1012,7 @@ impl IntoPipeline for CheckinGatesCli {
                     .dep_on(|ctx| {
                         flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll::Params {
                             arch,
-                            recipe: standard_recipe,
+                            recipe: dll_recipe,
                             openhcl_igvm_artifact_dir: ctx.use_artifact(&use_openhcl_igvm),
                             vmfirmwareigvm_test_dll_artifact: ctx.publish_typed_artifact(pub_vmfw_dll),
                         }
