@@ -66,6 +66,7 @@
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
   - [Style Guide](./dev_guide/contrib/style_guide.md)
+  - [Crypto Backends](./dev_guide/contrib/crypto_backends.md)
 
 # Reference
 
@@ -129,6 +130,7 @@
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
+    - [NUMA Topology](./reference/architecture/openvmm/numa.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)

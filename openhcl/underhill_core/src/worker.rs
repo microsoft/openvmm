@@ -309,6 +309,8 @@ pub struct UnderhillEnvCfg {
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
     /// EFI diagnostics log level filter (overrides DPS value when set)
     pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    /// EFI diagnostics rate-limit override (overrides device defaults when set)
+    pub efi_diagnostics_rate_limit: Option<u32>,
     /// Strict guest state encryption policy
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
@@ -2572,6 +2574,7 @@ async fn new_underhill_vm(
                     _ => LogLevel::make_default(),
                 }
             },
+            diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
         };
 
         // Register the platform resolvers used by the resource-model UEFI
@@ -2635,6 +2638,8 @@ async fn new_underhill_vm(
                 mem_layout: &mem_layout,
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
+                slit_info: None,
+                generic_initiators: &[],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
@@ -2642,6 +2647,7 @@ async fn new_underhill_vm(
                     with_psp: dps.general.psp_enabled,
                     pm_base: DEFAULT_PM_PIO_BASE,
                     acpi_irq: DEFAULT_ACPI_IRQ,
+                    amd_iommu: None,
                 },
             };
 
@@ -3417,8 +3423,12 @@ async fn new_underhill_vm(
                     software_iommu: false,
                 },
                 vmbus.control(),
-                instance_id,
                 &chipset_builder,
+                vpci::bus::VpciBusConfig {
+                    instance_id,
+                    vtom,
+                    vnode: None,
+                },
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
@@ -3427,7 +3437,6 @@ async fn new_underhill_vm(
                     let device = Arc::new(device);
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
-                vtom,
             )
             .await?;
         }
@@ -3772,7 +3781,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
-        hv_sint_enabled: _,
+        force_dma_bounce_enabled: _,
         battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 
@@ -3859,7 +3868,10 @@ async fn halt_task(
     while let Ok(reason) = halt_notify_recv.recv().await {
         let halt_request = match reason {
             HaltReason::PowerOff => HaltRequest::PowerOff,
-            HaltReason::Reset => HaltRequest::Reset,
+            // The paravisor's own watchdog raises Reset, so Watchdog never reaches
+            // this arm today; it is folded into Reset to stay exhaustive. Honoring a
+            // configurable paravisor watchdog action would mean raising Watchdog here.
+            HaltReason::Reset | HaltReason::Watchdog => HaltRequest::Reset,
             HaltReason::Hibernate => HaltRequest::Hibernate,
             HaltReason::TripleFault { vp, registers } => {
                 tracing::info!(CVM_ALLOWED, vp, "triple fault");

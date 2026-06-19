@@ -51,10 +51,13 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
@@ -65,7 +68,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
-use pipette_client::PIPETTE_VSOCK_PORT;
+use pipette_client::PIPETTE_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
@@ -233,7 +236,7 @@ impl PetriVmConfigOpenVmm {
             pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: NvmeControllerHandle {
-                    subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
+                    subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
                     namespaces: vec![NamespaceDefinition {
@@ -343,15 +346,9 @@ impl PetriVmConfigOpenVmm {
                 hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
             ));
 
-            (shutdown_ic_send, kvp_ic_send)
+            (Some(shutdown_ic_send), Some(kvp_ic_send))
         } else {
-            // Minimal mode: no ICs. Create dummy senders so the fields
-            // are populated (calls to send_enlightened_shutdown will fail
-            // with a channel error, which is fine — minimal VMs shut down
-            // via reboot(2) directly).
-            let (shutdown_ic_send, _) = mesh::channel();
-            let (kvp_ic_send, _) = mesh::channel();
-            (shutdown_ic_send, kvp_ic_send)
+            (None, None)
         };
 
         // Make a vmbus or virtio vsock path for pipette connections
@@ -392,6 +389,7 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
+            let diagnostics_rate_limit = uefi_cfg.and_then(|c| c.efi_diagnostics_rate_limit);
             let nvram_storage = if vmgs.disk().is_some() {
                 VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
             } else {
@@ -405,6 +403,7 @@ impl PetriVmConfigOpenVmm {
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
+                diagnostics_rate_limit,
                 nvram_storage,
                 None,
             ));
@@ -415,7 +414,7 @@ impl PetriVmConfigOpenVmm {
             .build()
             .context("failed to build chipset configuration")?;
 
-        let memory = {
+        let numa = {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
@@ -426,23 +425,35 @@ impl PetriVmConfigOpenVmm {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
-            let mem_size = if let Some(ref sizes) = numa_mem_sizes {
-                sizes
-                    .iter()
-                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
-                    .context("numa memory sizes overflow")?
-            } else {
-                startup_bytes
-            };
-
-            openvmm_defs::config::MemoryConfig {
-                mem_size,
+            let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
+                mem_size: size,
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
                 hugepages: false,
                 hugepage_size: None,
-                numa_mem_sizes,
+                host_numa_node: None,
+            };
+
+            if let Some(sizes) = numa_mem_sizes {
+                NumaTopology {
+                    nodes: sizes
+                        .into_iter()
+                        .map(|size| NumaNode {
+                            mem: if size > 0 { Some(make_mem(size)) } else { None },
+                            vps: VpAssignment::FromTopology,
+                        })
+                        .collect(),
+                    distances: vec![],
+                }
+            } else {
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(make_mem(startup_bytes)),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
             }
         };
 
@@ -558,7 +569,7 @@ impl PetriVmConfigOpenVmm {
             firmware_event_send: Some(firmware_event_send),
 
             // CPU and RAM
-            memory,
+            numa,
             processor_topology,
 
             // Base chipset
@@ -602,6 +613,7 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -644,7 +656,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         // Make the pipette connection listener.
-        let path = format!("{vsock_path_string}_{PIPETTE_VSOCK_PORT}");
+        let path = format!("{vsock_path_string}_{PIPETTE_PORT}");
         let pipette_listener = PolledSocket::new(
             driver,
             UnixListener::bind(path).context("failed to bind to pipette listener")?,
@@ -653,7 +665,7 @@ impl PetriVmConfigOpenVmm {
         // Make the vtl2 pipette connection listener.
         let vtl2_pipette_listener = if let Some(vtl2_vmbus) = &config.vtl2_vmbus {
             let path = vtl2_vmbus.vsock_path.as_ref().unwrap();
-            let path = format!("{path}_{PIPETTE_VSOCK_PORT}");
+            let path = format!("{path}_{PIPETTE_PORT}");
             Some(PolledSocket::new(
                 driver,
                 UnixListener::bind(path).context("failed to bind to vtl2 pipette listener")?,
@@ -678,12 +690,15 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
+                tcp_pipette_port: None,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vsock_path: vsock_path,
                 properties,
+                #[cfg(windows)]
+                _switch_ports: Vec::new(),
             },
 
             openvmm_log_file: log_source.log_file("openvmm")?,
@@ -692,6 +707,8 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu: Vec::new(),
         })
     }
 }
@@ -868,7 +885,9 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            force_dma_bounce,
                             efi_diagnostics_log_level: _, // applied to top-level Config below
+                            efi_diagnostics_rate_limit: _, // applied to top-level Config below
                         },
                 },
             ) => {
@@ -888,6 +907,7 @@ impl PetriVmConfigSetupCore<'_> {
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
                     enable_vmbus: !self.no_vmbus,
+                    force_dma_bounce: *force_dma_bounce,
                 }
             }
             (
@@ -955,6 +975,23 @@ impl PetriVmConfigSetupCore<'_> {
                     {
                         append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
                     }
+                }
+
+                // Plumb the EFI diagnostics rate-limit override to the
+                // OpenHCL-side UEFI device via env var.
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            efi_diagnostics_rate_limit: Some(limit),
+                            ..
+                        },
+                    ..
+                } = self.firmware
+                {
+                    append_cmdline(
+                        &mut cmdline,
+                        format!("HCL_EFI_DIAGNOSTICS_RATE_LIMIT={limit}"),
+                    );
                 }
 
                 let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
@@ -1029,7 +1066,9 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                force_dma_bounce,
                 efi_diagnostics_log_level,
+                efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -1093,7 +1132,7 @@ impl PetriVmConfigSetupCore<'_> {
                     get_resources::ged::EfiDiagnosticsLogLevelType::Full
                 }
             },
-            hv_sint_enabled: false,
+            force_dma_bounce_enabled: *force_dma_bounce,
         };
 
         Ok((ged, guest_request_send))
@@ -1359,6 +1398,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                         requests: None,
                     }
                     .into_resource(),
+                    vnode: None,
                 });
             }
             VmbusStorageType::VirtioBlk => {
@@ -1390,6 +1430,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                             .into_resource(),
                         )
                         .into_resource(),
+                        vnode: None,
                     });
                 }
             }

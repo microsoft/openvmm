@@ -46,15 +46,7 @@ pub trait PciConfigAccess {
     ) -> impl Future<Output = ()>;
 }
 
-/// MMIO aperture available for allocation.
-#[derive(Debug, Clone, Copy)]
-pub struct MmioAperture {
-    /// Base address of the aperture (must be naturally aligned to the
-    /// aperture's purpose — typically 1 MB for bridge windows).
-    pub base: u64,
-    /// Length in bytes.
-    pub len: u64,
-}
+pub use memory_range::MemoryRange;
 
 /// Parameters for PCI resource assignment on a single host bridge.
 #[derive(Debug, Clone)]
@@ -64,9 +56,14 @@ pub struct AssignmentParams {
     /// Last bus number owned by this host bridge (inclusive).
     pub end_bus: u8,
     /// Low MMIO aperture (below 4 GB) available for BAR allocation.
-    pub low_mmio: Option<MmioAperture>,
+    /// Empty if no low MMIO is available.
+    pub low_mmio: MemoryRange,
     /// High MMIO aperture (above 4 GB) available for 64-bit BAR allocation.
-    pub high_mmio: Option<MmioAperture>,
+    /// Empty if no high MMIO is available.
+    pub high_mmio: MemoryRange,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses rather than clearing them. Used for P2P DMA where GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 /// Assign PCI resources (bus numbers and BAR addresses) for a host bridge.
@@ -78,75 +75,10 @@ pub async fn assign_pci_resources(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
-    assign_pci_resources_inner(cfg, params).await?;
+    let mut devices = enumerate::enumerate_and_probe(cfg, params).await?;
+    assign::assign_addresses(&mut devices, params)?;
+    assign::program_assignments(cfg, &devices).await;
     Ok(())
-}
-
-/// Inner implementation that returns the assignment result for internal use
-/// (e.g., tests).
-pub(crate) async fn assign_pci_resources_inner(
-    cfg: &mut impl PciConfigAccess,
-    params: &AssignmentParams,
-) -> Result<AssignmentResult, AssignmentError> {
-    let devices = enumerate::enumerate_and_probe(cfg, params).await?;
-    let assignments = assign::assign_addresses(&devices, params)?;
-    assign::program_assignments(cfg, &assignments).await;
-    Ok(assignments)
-}
-
-/// Result of a successful resource assignment.
-#[derive(Debug, Clone)]
-struct AssignmentResult {
-    /// All device and bridge assignments made.
-    entries: Vec<AssignmentEntry>,
-}
-
-/// A single device or bridge assignment.
-#[derive(Debug, Clone)]
-struct AssignmentEntry {
-    /// Bus number.
-    bus: u8,
-    /// Device number.
-    device: u8,
-    /// Function number.
-    function: u8,
-    /// BAR assignments (index → address). Only populated BARs are included.
-    bars: Vec<BarAssignment>,
-    /// For bridges: the secondary bus number assigned.
-    secondary_bus: Option<u8>,
-    /// For bridges: the subordinate bus number assigned.
-    subordinate_bus: Option<u8>,
-    /// For bridges: the non-prefetchable memory window base (32-bit only).
-    memory_base: Option<u64>,
-    /// For bridges: the non-prefetchable memory window limit (32-bit only).
-    memory_limit: Option<u64>,
-    /// For bridges: the prefetchable memory window base (64-bit capable).
-    prefetchable_base: Option<u64>,
-    /// For bridges: the prefetchable memory window limit (64-bit capable).
-    prefetchable_limit: Option<u64>,
-}
-
-impl AssignmentEntry {
-    fn devfn(&self) -> u8 {
-        devfn(self.device, self.function)
-    }
-
-    async fn write_cfg(&self, cfg: &mut impl PciConfigAccess, offset: u16, value: u32) {
-        cfg.write_u32(self.bus, self.devfn(), offset, value).await
-    }
-}
-
-/// A BAR address assignment.
-#[derive(Debug, Clone)]
-struct BarAssignment {
-    /// BAR index (0–5 for endpoints, 0–1 for bridges).
-    index: u8,
-    /// Assigned base address.
-    address: u64,
-    /// Size in bytes.
-    size: u64,
-    /// Whether the BAR register is 64-bit (occupies two config space DWORDs).
-    is_64bit: bool,
 }
 
 /// Errors during resource assignment.
@@ -179,13 +111,75 @@ pub enum AssignmentError {
         /// Next bus number already allocated (VF buses below this are taken).
         next_bus: u16,
     },
+    /// A pinned BAR address is not naturally aligned to the BAR size.
+    #[error(
+        "pinned BAR {bus:02x}:{device:02x}.{function} index {bar_index} at {address:#x} \
+         is not aligned to {required_alignment:#x}"
+    )]
+    PinnedBarMisaligned {
+        /// Bus number.
+        bus: u8,
+        /// Device number.
+        device: u8,
+        /// Function number.
+        function: u8,
+        /// BAR register index.
+        bar_index: u8,
+        /// The pinned address.
+        address: u64,
+        /// Required alignment (BAR size).
+        required_alignment: u64,
+    },
+    /// Two pinned BAR regions overlap.
+    #[error(
+        "pinned BAR regions overlap: {first_address:#x}..{first_end:#x} and \
+         {second_address:#x}..{second_end:#x}"
+    )]
+    PinnedBarOverlap {
+        /// Start of the first pinned region.
+        first_address: u64,
+        /// End of the first pinned region.
+        first_end: u64,
+        /// Start of the second pinned region.
+        second_address: u64,
+        /// End of the second pinned region.
+        second_end: u64,
+    },
+    /// A pinned BAR address falls outside the MMIO aperture.
+    #[error(
+        "pinned BAR {bus:02x}:{device:02x}.{function} index {bar_index} at \
+         {address:#x}+{size:#x} outside {aperture} aperture"
+    )]
+    PinnedBarOutOfAperture {
+        /// Bus number.
+        bus: u8,
+        /// Device number.
+        device: u8,
+        /// Function number.
+        function: u8,
+        /// BAR register index.
+        bar_index: u8,
+        /// The pinned address.
+        address: u64,
+        /// BAR size.
+        size: u64,
+        /// Which aperture was checked.
+        aperture: &'static str,
+    },
     /// Not enough MMIO space for all BAR allocations.
-    #[error("{aperture} MMIO exhaustion: need {required:#x} bytes, have {available:#x}")]
+    #[error(
+        "{aperture} MMIO exhaustion: need {required:#x} bytes (alignment \
+         {alignment:#x}), have {available:#x}"
+    )]
     MmioExhaustion {
         /// Total MMIO required across all devices.
         required: u64,
-        /// Total MMIO available.
+        /// Size of the MMIO aperture window.
         available: u64,
+        /// Natural alignment the pool base must satisfy. When this exceeds
+        /// the window size, aligning the base can consume the entire
+        /// aperture even though `available` is non-zero.
+        alignment: u64,
         /// Whether this was the low or high aperture.
         aperture: &'static str,
     },

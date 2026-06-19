@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct SidecarOutput {
+    #[serde(rename = "sidecar")]
     pub bin: PathBuf,
+    #[serde(rename = "sidecar.dbg")]
     pub dbg: PathBuf,
 }
 
@@ -81,9 +83,14 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        // Forbid cc-rs from compiling anything
+                        // TODO: Soon
+                        // ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
                 pre_build_deps: Vec::new(),
                 output: v,

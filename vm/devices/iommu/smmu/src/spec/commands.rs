@@ -248,26 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_cfgi_ste_sid() {
-        let cmd = CmdCfgiSte::new()
-            .with_opcode(CmdOpcode::CFGI_STE.0)
-            .with_sid(42);
-        assert_eq!(cmd.opcode(), CmdOpcode::CFGI_STE.0);
-        assert_eq!(cmd.sid(), 42);
-    }
-
-    #[test]
-    fn test_cmd_sync_fields() {
-        let cmd = CmdSync::new()
-            .with_opcode(CmdOpcode::CMD_SYNC.0)
-            .with_cs(SyncCs::SIG_IRQ.0)
-            .with_msi_data(0xDEAD_BEEF);
-        assert_eq!(cmd.opcode(), CmdOpcode::CMD_SYNC.0);
-        assert_eq!(cmd.cs(), SyncCs::SIG_IRQ.0);
-        assert_eq!(cmd.msi_data(), 0xDEAD_BEEF);
-    }
-
-    #[test]
     fn test_cmd_sync_msi_addr() {
         // MSI address = 0x1234_5678
         // Stored in qw1 bits [55:2] as (addr >> 2) << 2

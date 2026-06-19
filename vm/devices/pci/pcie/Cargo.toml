@@ -17,6 +17,7 @@ pal_async.workspace = true
 pal_event.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracelimit.workspace = true
 vmcore.workspace = true

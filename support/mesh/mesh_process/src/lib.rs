@@ -925,6 +925,10 @@ impl MeshInner {
                 .dup_fd(invitation.fd.as_fd(), IPC_FD)
                 .env(INVITATION_ENV_NAME, invitation_env);
 
+            for (key, value) in &config.env_vars {
+                command.env(key, value);
+            }
+
             if !config.skip_worker_arg {
                 command.arg(&name);
             }

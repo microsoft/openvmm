@@ -192,6 +192,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             secure_boot_enabled,
             default_boot_always_attempt,
             efi_diagnostics_log_level,
+            efi_diagnostics_rate_limit,
             ..
         }) = config.firmware.uefi_config()
         {
@@ -245,6 +246,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 append_cmdline(
                     &mut openhcl_command_line,
                     format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
+                );
+            }
+
+            // Plumb the EFI diagnostics rate-limit override via the OpenHCL
+            // command line.
+            if let Some(limit) = efi_diagnostics_rate_limit {
+                if !properties.is_openhcl {
+                    anyhow::bail!(
+                        "with_efi_diagnostics_rate_limit({}) is only supported for \
+                         OpenHCL-backed Hyper-V UEFI VMs in this code path",
+                        limit
+                    );
+                }
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    format!("HCL_EFI_DIAGNOSTICS_RATE_LIMIT={limit}"),
                 );
             }
 
@@ -506,9 +523,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to create polled client socket")?
                 .convert();
             socket
-                .connect(
-                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
-                )
+                .connect(&VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_PORT).into())
                 .await
                 .context("failed to connect")
                 .map(|()| socket)

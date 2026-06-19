@@ -48,25 +48,37 @@ pub struct UefiLoadSettings {
     /// but the high MMIO range will be empty. The firmware must support this
     /// mode.
     pub vmbus: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub force_dma_bounce: bool,
+}
+
+/// All inputs needed by [`load_uefi`].
+pub struct LoadUefiParams<'a> {
+    pub firmware: &'a std::fs::File,
+    pub gm: &'a GuestMemory,
+    pub processor_topology: &'a ProcessorTopology,
+    pub mem_layout: &'a MemoryLayout,
+    pub pcie_host_bridges: &'a [PcieHostBridge],
+    pub settings: UefiLoadSettings,
+    pub chipset_mmio: &'a ChipsetMmioRanges,
+    pub acpi_tables: &'a [&'a [u8]],
 }
 
 /// Loads the UEFI firmware.
-///
-/// If `firmware` is `None`, load the embedded firmware.
-pub fn load_uefi(
-    mut firmware: &std::fs::File,
-    gm: &GuestMemory,
-    processor_topology: &ProcessorTopology,
-    mem_layout: &MemoryLayout,
-    pcie_host_bridges: &[PcieHostBridge],
-    load_settings: UefiLoadSettings,
-    chipset_mmio: &ChipsetMmioRanges,
-    madt: &[u8],
-    srat: &[u8],
-    mcfg: Option<&[u8]>,
-    pptt: Option<&[u8]>,
-) -> Result<Vec<Register>, Error> {
+pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
+    let LoadUefiParams {
+        firmware,
+        gm,
+        processor_topology,
+        mem_layout,
+        pcie_host_bridges,
+        ref settings,
+        chipset_mmio,
+        acpi_tables,
+    } = *params;
+
     let mut loaded_image;
+    let mut firmware = firmware;
     let image = {
         loaded_image = Vec::new();
         firmware.rewind().map_err(Error::Firmware)?;
@@ -92,25 +104,25 @@ pub fn load_uefi(
 
     let flags = config::Flags::new()
         .with_hibernate_enabled(true)
-        .with_serial_controllers_enabled(load_settings.serial)
-        .with_vpci_boot_enabled(load_settings.vpci_boot)
-        .with_debugger_enabled(load_settings.debugging)
-        .with_virtual_battery_enabled(load_settings.battery)
-        .with_disable_frontpage(!load_settings.frontpage)
-        .with_tpm_enabled(load_settings.tpm)
-        .with_measure_additional_pcrs(load_settings.tpm)
-        .with_tpm_locality_regs_enabled(load_settings.tpm)
-        .with_watchdog_enabled(load_settings.guest_watchdog)
+        .with_serial_controllers_enabled(settings.serial)
+        .with_vpci_boot_enabled(settings.vpci_boot)
+        .with_debugger_enabled(settings.debugging)
+        .with_virtual_battery_enabled(settings.battery)
+        .with_disable_frontpage(!settings.frontpage)
+        .with_tpm_enabled(settings.tpm)
+        .with_measure_additional_pcrs(settings.tpm)
+        .with_tpm_locality_regs_enabled(settings.tpm)
+        .with_watchdog_enabled(settings.guest_watchdog)
         // OpenVMM pre-sets the MTRRs; tell the firmware
         .with_mtrrs_initialized_at_load(true)
         // TODO: plumb all 4 kinds of memory protection modes through
-        .with_memory_protection(if load_settings.memory_protections {
+        .with_memory_protection(if settings.memory_protections {
             config::MemoryProtection::Default
         } else {
             config::MemoryProtection::Disabled
         })
         .with_console(
-            match load_settings
+            match settings
                 .uefi_console_mode
                 .unwrap_or(UefiConsoleMode::Default)
             {
@@ -120,18 +132,18 @@ pub fn load_uefi(
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
         )
-        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt)
-        .with_vmbus_disabled(!load_settings.vmbus);
+        .with_default_boot_always_attempt(settings.default_boot_always_attempt)
+        .with_vmbus_disabled(!settings.vmbus)
+        .with_pci_resources_pre_assigned(true)
+        .with_force_dma_bounce_enabled(settings.force_dma_bounce);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {
         bios_size_pages: (IMAGE_SIZE / HV_PAGE_SIZE) as u32,
         flags: 0,
     })
-    .add_raw(config::BlobStructureType::Madt, madt)
-    .add_raw(config::BlobStructureType::Srat, srat)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(load_settings.bios_guid))
+    .add(&config::BiosGuid(settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
@@ -171,18 +183,14 @@ pub fn load_uefi(
         });
     }
 
-    if let Some(mcfg) = mcfg {
-        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
-    }
-
-    if let Some(pptt) = pptt {
-        cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    for table in acpi_tables {
+        cfg.add_raw(config::BlobStructureType::AcpiTable, table);
     }
 
     if !pcie_host_bridges.is_empty() {
         let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
             .map_err(Error::PcieAcpi)?;
-        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
+        cfg.add_raw(config::BlobStructureType::AcpiTable, &pcie_tables.ssdt);
         if let Some(cedt) = pcie_tables.cedt {
             cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }

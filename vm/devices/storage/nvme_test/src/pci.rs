@@ -4,6 +4,7 @@
 //! The NVMe (Fault Injection) PCI device implementation.
 
 use crate::BAR0_LEN;
+use crate::DEVICE_ID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
@@ -146,7 +147,7 @@ impl NvmeFaultController {
             .unwrap_or(VENDOR_ID);
         let device_id = hardware_config_fault
             .and_then(|f| f.device_id)
-            .unwrap_or(0x00a9);
+            .unwrap_or(DEVICE_ID);
 
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {

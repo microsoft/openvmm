@@ -13,12 +13,13 @@ use std::sync::Arc;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::PciDeviceHandleKind;
-use vmbus_server::Guid;
 use vmbus_server::VmbusServerControl;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmotherboard::ArcMutexChipsetDeviceBuilder;
 use vmotherboard::ChipsetBuilder;
+
+pub use vpci::bus::VpciBusConfig;
 
 /// Common context for resolving and building a PCI device. These parameters
 /// are shared across PCIe and VPCI device construction.
@@ -46,11 +47,11 @@ pub struct PciDeviceResolveContext<'a> {
 pub async fn build_vpci_device(
     ctx: PciDeviceResolveContext<'_>,
     vmbus: &VmbusServerControl,
-    instance_id: Guid,
     chipset_builder: &ChipsetBuilder<'_>,
+    bus_config: VpciBusConfig,
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
-    vtom: Option<u64>,
 ) -> anyhow::Result<()> {
+    let instance_id = bus_config.instance_id;
     let device_name = format!("{}:vpci-{instance_id}", ctx.resource.id());
     let driver_source = ctx.driver_source;
 
@@ -79,12 +80,11 @@ pub async fn build_vpci_device(
 
                 let bus = vpci::bus::VpciBus::new(
                     driver_source,
-                    instance_id,
+                    bus_config,
                     device,
                     &mut services.register_mmio(),
                     vmbus,
                     interrupt_mapper,
-                    vtom,
                 )
                 .await?;
 

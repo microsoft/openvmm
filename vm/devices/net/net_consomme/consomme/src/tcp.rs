@@ -12,6 +12,8 @@ use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::FourTuple;
 use crate::IpAddresses;
+use crate::IpVersion;
+use crate::PortForwardKey;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
@@ -65,8 +67,7 @@ pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
     #[inspect(iter_by_key)]
-    listeners: HashMap<u16, TcpListener>,
-    #[inspect(mut)]
+    listeners: HashMap<PortForwardKey, TcpListener>,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
 }
@@ -94,12 +95,28 @@ impl TcpAggregateStats {
     }
 }
 
-#[derive(InspectMut)]
+#[derive(Inspect)]
 struct ConnectionParams {
-    #[inspect(mut)]
-    rx_buffer_size: usize,
-    #[inspect(mut)]
-    tx_buffer_size: usize,
+    rx_buffer: NormalizedBufferBounds,
+    tx_buffer: NormalizedBufferBounds,
+}
+
+/// Normalized version of [`crate::TcpBufferBounds`] with both values clamped
+/// to `[16 KiB, 4 MiB]` and rounded up to a power of two, then `initial`
+/// further clamped to be no greater than `max`.
+#[derive(Inspect, Clone, Copy, Debug)]
+struct NormalizedBufferBounds {
+    initial: usize,
+    max: usize,
+}
+
+impl NormalizedBufferBounds {
+    fn from_bounds(b: crate::TcpBufferBounds) -> Self {
+        let clamp = |v: usize| v.clamp(16 << 10, 4 << 20).next_power_of_two();
+        let max = clamp(b.max);
+        let initial = clamp(b.initial).min(max);
+        Self { initial, max }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -117,13 +134,13 @@ pub enum TcpError {
 }
 
 impl Tcp {
-    pub fn new() -> Self {
+    pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             connection_params: ConnectionParams {
-                rx_buffer_size: 256 * 1024,
-                tx_buffer_size: 256 * 1024,
+                rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
+                tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
             },
             aggregate_stats: TcpAggregateStats::default(),
         }
@@ -167,6 +184,13 @@ struct TcpConnectionInner {
     #[inspect(hex)]
     rx_window_cap: usize,
     rx_window_scale: u8,
+    /// Autotune ceiling for `rx_window_cap`. Once `rx_window_cap` reaches this
+    /// value, no further grow is attempted. The backing ring is rounded up to a
+    /// power of two, so its allocated capacity can slightly exceed this value
+    /// (e.g. when window scaling is disabled and this is capped to `u16::MAX`,
+    /// the ring is 65536 while this is 65535).
+    #[inspect(hex)]
+    rx_buffer_max: usize,
     #[inspect(with = "inspect_seq")]
     rx_seq: TcpSeqNumber,
     #[inspect(flatten)]
@@ -177,6 +201,9 @@ struct TcpConnectionInner {
 
     #[inspect(with = "|x| x.len()")]
     tx_buffer: ring::Ring,
+    /// Autotune ceiling for the tx_buffer ring capacity.
+    #[inspect(hex)]
+    tx_buffer_max: usize,
     #[inspect(with = "inspect_seq")]
     tx_acked: TcpSeqNumber,
     #[inspect(with = "inspect_seq")]
@@ -260,6 +287,10 @@ struct TcpConnStats {
     tx_segment_size: Histogram<14>,
     /// Segment size distribution for packets received from guest.
     rx_segment_size: Histogram<14>,
+    /// Number of times the tx_buffer ring capacity was grown by autotune.
+    tx_buffer_grows: Counter,
+    /// Number of times the rx_buffer ring capacity was grown by autotune.
+    rx_buffer_grows: Counter,
 }
 
 fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
@@ -326,15 +357,21 @@ impl<T: Client> Access<'_, T> {
         self.inner
             .tcp
             .listeners
-            .retain(|port, listener| match listener.poll_listener(cx) {
+            .retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
                         // If this packet was originally from the guest, update the port to match
                         // the original guest port. This allows loopback to work as expected.
                         if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived) && other_ft.dst.port() == *port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
+                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived)
+                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()) == *key
+                                {
+                                    if let LoopbackPortInfo::ProxyForGuestPort {
+                                        sending_port,
+                                        guest_port,
+                                    } = connection.inner.loopback_port
+                                    {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
                                             break;
@@ -343,7 +380,7 @@ impl<T: Client> Access<'_, T> {
                                 }
                             }
                         }
-                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, *port) else {
+                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, key.guest_port) else {
                             return true;
                         };
 
@@ -541,9 +578,10 @@ impl<T: Client> Access<'_, T> {
                         // If this is directed to a local port owned by the guest, use the
                         // appropriate host port substitution.
                         let is_local_address = sender.state.params.is_local_address(&resolved_dst);
+                        let key =
+                            PortForwardKey::from_socket_addr(resolved_dst, resolved_dst.port());
                         let ft = if is_local_address
-                            && let Some(listener) =
-                                self.inner.tcp.listeners.get(&resolved_dst.port())
+                            && let Some(listener) = self.inner.tcp.listeners.get(&key)
                         {
                             FourTuple {
                                 src: sender.ft.src,
@@ -586,7 +624,9 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(guest_port) {
+        let host_addr = Self::socket_local_addr(&socket)?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        match self.inner.tcp.listeners.entry(key) {
             hash_map::Entry::Occupied(_) => {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
@@ -598,15 +638,28 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(port) {
+    /// Unbinds from the specified guest port and IP family.
+    pub fn unbind_tcp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        match self
+            .inner
+            .tcp
+            .listeners
+            .entry(PortForwardKey::new(family, port))
+        {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
             }
             hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
         }
+    }
+
+    fn socket_local_addr(socket: &Socket) -> Result<SocketAddr, BindError> {
+        socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))
     }
 }
 
@@ -711,27 +764,26 @@ impl TcpConnection {
             rx_tx_seq[4..8].try_into().expect("invalid length"),
         ));
 
-        let rx_buffer_size: usize = params.rx_buffer_size.clamp(16384, 4 << 20);
+        let rx_bounds = params.rx_buffer;
         let rx_window_scale =
-            (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
+            (usize::BITS - rx_bounds.max.leading_zeros()).saturating_sub(16) as u8;
 
-        let tx_buffer_size = params
-            .tx_buffer_size
-            .clamp(16384, 4 << 20)
-            .next_power_of_two();
+        let tx_bounds = params.tx_buffer;
 
         TcpConnectionInner {
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
             rx_buffer: ring::Ring::new(0),
-            rx_window_cap: rx_buffer_size,
+            rx_window_cap: rx_bounds.initial,
             rx_window_scale,
+            rx_buffer_max: rx_bounds.max,
             rx_seq,
             rx_assembler: assembler::Assembler::new(),
             needs_ack: false,
             is_shutdown: false,
             enable_window_scaling: false,
-            tx_buffer: ring::Ring::new(tx_buffer_size),
+            tx_buffer: ring::Ring::new(tx_bounds.initial),
+            tx_buffer_max: tx_bounds.max,
             tx_acked: tx_seq,
             tx_send: tx_seq,
             tx_window_len: 1,
@@ -882,6 +934,7 @@ impl TcpConnectionInner {
             // since without window scaling, the window field is only 16 bits.
             self.enable_window_scaling = false;
             self.rx_window_cap = self.rx_window_cap.min(u16::MAX as usize);
+            self.rx_buffer_max = self.rx_buffer_max.min(u16::MAX as usize);
             self.rx_window_scale = 0;
         }
 
@@ -1035,51 +1088,66 @@ impl TcpConnectionInner {
                     *opt_socket = None;
                 }
             } else {
-                while !self.tx_buffer.is_full() {
-                    let (a, b) = self.tx_buffer.unwritten_slices_mut();
-                    let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
-                        Poll::Ready(Ok(n)) => {
-                            if n == 0 {
-                                self.close();
-                                break;
+                // Drain the host socket into the tx ring until the socket has
+                // no more data (Pending) or the ring reaches its autotune
+                // ceiling. When the ring fills with data still pending, grow it
+                // (doubling, capped at tx_buffer_max) and keep reading so the
+                // freshly added capacity is used in this same poll rather than
+                // waiting for a later guest ACK to re-clock the connection.
+                'read: loop {
+                    while !self.tx_buffer.is_full() {
+                        let (a, b) = self.tx_buffer.unwritten_slices_mut();
+                        let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
+                        match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
+                            Poll::Ready(Ok(n)) => {
+                                if n == 0 {
+                                    self.close();
+                                    break 'read;
+                                }
+                                self.tx_buffer.extend_by(n);
                             }
-                            self.tx_buffer.extend_by(n);
-                        }
-                        Poll::Ready(Err(err)) => {
-                            match err.kind() {
-                                ErrorKind::ConnectionReset => tracing::trace!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket read error"
-                                ),
-                                _ => tracelimit::warn_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket read error"
-                                ),
+                            Poll::Ready(Err(err)) => {
+                                match err.kind() {
+                                    ErrorKind::ConnectionReset => tracing::trace!(
+                                        error = &err as &dyn std::error::Error,
+                                        src = %sender.ft.src,
+                                        dst = %sender.ft.dst,
+                                        "socket read error"
+                                    ),
+                                    _ => tracelimit::warn_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        src = %sender.ft.src,
+                                        dst = %sender.ft.dst,
+                                        "socket read error"
+                                    ),
+                                }
+                                sender.rst(self.tx_send, Some(self.rx_seq));
+                                self.stats.rsts_tx.increment();
+                                return false;
                             }
-                            sender.rst(self.tx_send, Some(self.rx_seq));
-                            self.stats.rsts_tx.increment();
-                            return false;
+                            Poll::Pending => break 'read,
                         }
-                        Poll::Pending => break,
                     }
+
+                    // The ring is full. If we can still grow, double it (capped
+                    // at tx_buffer_max) and keep reading into the new space. At
+                    // the ceiling we stop without re-arming: the cached socket
+                    // readiness stays set and the next guest ACK that drains the
+                    // ring re-clocks the read, which is safe on edge-triggered
+                    // epoll backends.
+                    if self.tx_buffer.capacity() >= self.tx_buffer_max {
+                        break;
+                    }
+                    let new_cap = (self.tx_buffer.capacity() * 2).min(self.tx_buffer_max);
+                    self.tx_buffer.resize(new_cap);
+                    self.stats.tx_buffer_grows.increment();
                 }
-                // When the buffer fills without hitting Pending, the socket's
-                // cached readiness remains set (successful reads don't clear
-                // it). No explicit waker re-arm is needed — the next poll cycle
-                // (triggered when the guest ACKs and drains the buffer) will
-                // naturally retry the read via the still-cached readiness.
-                // Clearing readiness synthetically would be unsafe on
-                // edge-triggered epoll backends.
             }
         }
 
         // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
+            let rx_high_water = self.rx_buffer.len();
             while !self.rx_buffer.is_empty() {
                 let view = self.rx_buffer.view(0..self.rx_buffer.len());
                 let (a, b) = view.as_slices();
@@ -1106,6 +1174,27 @@ impl TcpConnectionInner {
                     }
                     Poll::Pending => break,
                 }
+            }
+            // Autotune: if the host kept up (drained to empty) and the buffer
+            // was at least 75% full this cycle, the guest is rx-bound. Grow
+            // both the ring and the advertised window ceiling so the next ACK
+            // tells the guest it can send more. Gated on the assembler being
+            // empty because `Ring::resize` only preserves contiguous bytes
+            // in `[head, tail)` — any out-of-order data staged past `tail`
+            // via `write_at` would be lost.
+            if self.rx_buffer.is_empty()
+                && self.rx_assembler.is_empty()
+                && self.rx_window_cap < self.rx_buffer_max
+                && rx_high_water * 4 >= self.rx_window_cap * 3
+            {
+                let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
+                let new_ring_cap = new_cap.next_power_of_two();
+                if new_ring_cap > self.rx_buffer.capacity() {
+                    self.rx_buffer.resize(new_ring_cap);
+                }
+                self.rx_window_cap = new_cap;
+                self.needs_ack = true;
+                self.stats.rx_buffer_grows.increment();
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
                 if let Err(err) = socket.get().shutdown(Shutdown::Write) {

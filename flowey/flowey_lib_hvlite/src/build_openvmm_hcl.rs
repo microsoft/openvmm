@@ -56,9 +56,13 @@ impl MaxTraceLevel {
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmHclOutput {
+    #[serde(rename = "openvmm_hcl")]
     pub bin: PathBuf,
+    #[serde(rename = "openvmm_hcl.dbg")]
     pub dbg: Option<PathBuf>,
 }
+
+impl Artifact for OpenvmmHclOutput {}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpenvmmHclBuildParams {
@@ -136,6 +140,16 @@ impl FlowNode for Node {
                 .collect::<Vec<String>>();
 
             features.extend(max_trace_level.features());
+
+            // Forbid cc-rs from compiling anything for the openvmm_hcl build.
+            // Every C library it links comes prebuilt out of the openvmm-deps
+            // sdk sysroot, so a build script reaching for cc-rs is a bug.
+            // TODO: Soon
+            // let extra_env = Some(ReadVar::from_static(
+            //     [("CC_FORCE_DISABLE".to_string(), "1".to_string())]
+            //         .into_iter()
+            //         .collect(),
+            // ));
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),

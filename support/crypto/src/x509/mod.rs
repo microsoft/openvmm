@@ -3,29 +3,48 @@
 
 //! X.509 certificate operations.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
+
+#[cfg(any(rust, symcrypt, all(native, target_os = "macos"),))]
+mod builder;
 
 #[cfg(openssl)]
-mod ossl;
+pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
 #[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
+pub(crate) mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
+
+#[cfg(all(native, windows))]
+pub(crate) mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
 
 use thiserror::Error;
 
 /// An error for X.509 operations.
 #[cfg(not(rust))]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error")]
 pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error during {1}")]
 pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
@@ -95,6 +114,17 @@ impl X509Certificate {
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         self.0.subject_common_name()
     }
+
+    /// String representation of the certificate's issuer Distinguished Name.
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        self.0.issuer_dn()
+    }
+
+    /// Raw bytes of the certificate's serial number, as encoded in the
+    /// underlying certificate.
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        self.0.serial_number()
+    }
 }
 
 #[cfg(test)]
@@ -122,8 +152,7 @@ mod tests {
     fn self_signed_cert_verifies() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
-        let pubkey = cert.public_key().unwrap();
-        assert!(cert.verify(&pubkey).unwrap());
+        assert!(cert.verify(&key).unwrap());
         assert!(cert.issued(&cert).unwrap());
     }
 

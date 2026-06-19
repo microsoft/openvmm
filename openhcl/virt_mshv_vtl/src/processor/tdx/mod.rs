@@ -115,6 +115,7 @@ use x86defs::vmx::INTERRUPT_TYPE_NMI;
 use x86defs::vmx::IO_SIZE_8_BIT;
 use x86defs::vmx::IO_SIZE_16_BIT;
 use x86defs::vmx::IO_SIZE_32_BIT;
+use x86defs::vmx::Ia32FeatureControl;
 use x86defs::vmx::Interruptibility;
 use x86defs::vmx::InterruptionInformation;
 use x86defs::vmx::LdtrOrTrInstruction;
@@ -122,7 +123,6 @@ use x86defs::vmx::LdtrOrTrInstructionInfo;
 use x86defs::vmx::ProcessorControls;
 use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
-use x86defs::vmx::VMX_FEATURE_CONTROL_LOCKED;
 use x86defs::vmx::VmcsField;
 use x86defs::vmx::VmxApicPage;
 use x86defs::vmx::VmxEptExitQualification;
@@ -2807,7 +2807,9 @@ impl UhProcessor<'_, TdxBacked> {
             x86defs::X86X_MSR_MC_UPDATE_PATCH_LEVEL => Ok(0xFFFFFFFF),
             x86defs::X86X_MSR_XSS => Ok(self.backing.vtls[vtl].private_regs.msr_xss),
             x86defs::X86X_IA32_MSR_MISC_ENABLE => Ok(hv1_emulator::x86::MISC_ENABLE.into()),
-            x86defs::X86X_IA32_MSR_FEATURE_CONTROL => Ok(VMX_FEATURE_CONTROL_LOCKED),
+            x86defs::X86X_IA32_MSR_FEATURE_CONTROL => {
+                Ok(u64::from(Ia32FeatureControl::new().with_locked(true)))
+            }
             x86defs::X86X_MSR_CR_PAT => {
                 let pat = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT);
                 Ok(pat)

@@ -174,17 +174,28 @@ pub struct PetriVmConfigOpenVmm {
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
+
+    // Deferred IOMMU configuration: (rc_name, iommu_config) pairs resolved
+    // against pcie_root_complexes at VM start time.
+    pending_iommu: Vec<(String, openvmm_defs::config::PcieIommuConfig)>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
     log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
     firmware_event_recv: Receiver<FirmwareEvent>,
-    shutdown_ic_send: Sender<ShutdownRpc>,
-    kvp_ic_send: Sender<hyperv_ic_resources::kvp::KvpConnectRpc>,
+    shutdown_ic_send: Option<Sender<ShutdownRpc>>,
+    kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
+
+    /// When set, the host connects to pipette via TCP through consomme
+    /// port forwarding instead of accepting on the Unix socket listener.
+    /// Used for Windows no-vmbus guests where virtio-vsock is unavailable.
+    /// The receiver yields the OS-assigned host port once the consomme
+    /// resolver has bound the socket.
+    tcp_pipette_port: Option<mesh::OneshotReceiver<u16>>,
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
@@ -197,6 +208,60 @@ struct PetriVmResourcesOpenVmm {
 
     // properties needed at runtime
     properties: PetriVmProperties,
+
+    // vmswitch DirectIO switch port handles, held in the test (parent)
+    // process for the lifetime of the child VMM so the kernel port object
+    // survives until the VMM detaches.
+    #[cfg(windows)]
+    _switch_ports: Vec<vmswitch::kernel::SwitchPort>,
+}
+
+/// Discovers a usable Hyper-V virtual switch for `-net dio` tests.
+///
+/// Tries the well-known Default Switch GUID first (which is provisioned
+/// automatically when Hyper-V is installed). If that switch is not
+/// available (e.g. it was removed, or this host uses a different default
+/// switch SKU), falls back to enumerating all HCN networks and returning
+/// the first one reported.
+///
+/// Returns `None` when no switch can be opened — typically because
+/// Hyper-V is not installed, the user lacks privileges, or
+/// `computenetwork.dll` is missing.
+#[cfg(windows)]
+pub fn find_switch() -> Option<Guid> {
+    if vmswitch::hcn::Network::open(&vmswitch::hcn::DEFAULT_SWITCH).is_ok() {
+        return Some(vmswitch::hcn::DEFAULT_SWITCH);
+    }
+    let networks = match vmswitch::hcn::enumerate_networks() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(
+                error = &e as &dyn std::error::Error,
+                "failed to enumerate HCN networks"
+            );
+            return None;
+        }
+    };
+    networks.into_iter().find(|guid| {
+        if let Err(e) = vmswitch::hcn::Network::open(guid) {
+            tracing::debug!(
+                %guid,
+                error = &e as &dyn std::error::Error,
+                "skipping unopenable HCN network"
+            );
+            false
+        } else {
+            true
+        }
+    })
+}
+
+/// Discovers a usable Hyper-V virtual switch.
+///
+/// Always `None` on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn find_switch() -> Option<Guid> {
+    None
 }
 
 async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {

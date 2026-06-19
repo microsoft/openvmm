@@ -33,6 +33,13 @@ mod windows;
 /// Standard DNS port number.
 const DNS_PORT: u16 = 53;
 
+/// Default per-connection TCP ring buffer bounds: start small and autotune up
+/// to a few MiB so idle/short connections stay cheap while bulk flows ramp.
+const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
+    initial: 16 * 1024,
+    max: 4 * 1024 * 1024,
+};
+
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -44,9 +51,11 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv6Message;
 use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
+pub use smoltcp::wire::IpVersion;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
@@ -68,6 +77,32 @@ struct FourTuple {
 impl core::fmt::Display for FourTuple {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}-{}", self.src, self.dst)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct PortForwardKey {
+    family: IpVersion,
+    guest_port: u16,
+}
+
+impl PortForwardKey {
+    fn new(family: IpVersion, guest_port: u16) -> Self {
+        Self { family, guest_port }
+    }
+
+    fn from_socket_addr(addr: SocketAddr, guest_port: u16) -> Self {
+        let family = match addr {
+            SocketAddr::V4(_) => IpVersion::Ipv4,
+            SocketAddr::V6(_) => IpVersion::Ipv6,
+        };
+        Self::new(family, guest_port)
+    }
+}
+
+impl core::fmt::Display for PortForwardKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.family, self.guest_port)
     }
 }
 
@@ -114,8 +149,10 @@ pub struct ConsommeParams {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<IpAddress>,
     /// Current IPv6 network mask (if any).
-    #[inspect(display)]
     pub prefix_len_ipv6: u8,
+    /// If true, advertise an autonomous IPv6 prefix so guests create a
+    /// routable IPv6 address with SLAAC.
+    pub advertise_routable_ipv6: bool,
     /// Current IPv6 gateway MAC address (if any).
     #[inspect(display)]
     pub gateway_mac_ipv6: EthernetAddress,
@@ -138,16 +175,44 @@ pub struct ConsommeParams {
     #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
-    #[inspect(debug)]
     pub udp_timeout: Duration,
     /// If true, skip checks for host IPv6 support and assume the host has a
     /// routable IPv6 address.
-    #[inspect(display)]
     pub skip_ipv6_checks: bool,
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     #[inspect(display)]
     pub allow_host_local_access: bool,
+    /// Per-connection TCP receive ring buffer bounds (guest-to-host).
+    pub tcp_rx_buffer: TcpBufferBounds,
+    /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
+    pub tcp_tx_buffer: TcpBufferBounds,
+}
+
+/// Bounds for a per-connection TCP ring buffer.
+///
+/// The buffer is allocated at `initial` and may grow up to `max` as demand
+/// warrants. Both values are clamped to `[16 KiB, 4 MiB]` and rounded up to a
+/// power of two, then `initial` is clamped to be no greater than `max`. The
+/// advertised TCP window scale is derived from `max`, so `max` is fixed for
+/// the connection's lifetime.
+///
+/// Note that if the peer does not negotiate window scaling, the effective
+/// receive window (and thus the useful rx capacity) is capped at `u16::MAX`
+/// regardless of `max`.
+#[derive(Inspect, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpBufferBounds {
+    /// Starting capacity, allocated up front.
+    pub initial: usize,
+    /// Ceiling for autotuned growth.
+    pub max: usize,
+}
+
+impl TcpBufferBounds {
+    /// Use the same value for `initial` and `max`. Disables autotune growth.
+    pub const fn fixed(n: usize) -> Self {
+        Self { initial: n, max: n }
+    }
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -174,6 +239,7 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             prefix_len_ipv6: 64,
+            advertise_routable_ipv6: true,
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
@@ -182,6 +248,8 @@ impl ConsommeParams {
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
             allow_host_local_access: false,
+            tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+            tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
         })
     }
 
@@ -232,6 +300,38 @@ impl ConsommeParams {
         addr[15] = mac.0[5];
 
         Ipv6Address::from_octets(addr)
+    }
+
+    /// Infer the guest's link-local IPv6 address from a learned routable SLAAC address.
+    ///
+    /// If the routable address uses an EUI-64 address derived from the guest MAC, we can infer a
+    /// matching link-local address.
+    ///
+    /// If the routable address uses a different interface identifier (for example,
+    /// privacy or stable-secret addressing), this leaves the link-local address
+    /// unknown and waits to learn it from traffic or NDP instead.
+    pub(crate) fn infer_client_link_local_from_routable(
+        &mut self,
+        routable: Ipv6Address,
+        source: &'static str,
+    ) {
+        // Link local address is already known.
+        if self.client_ip_ipv6.is_some() {
+            return;
+        }
+
+        let link_local = Self::compute_link_local_address(self.client_mac);
+        if routable.octets()[8..] != link_local.octets()[8..] {
+            return;
+        }
+
+        tracing::debug!(
+            client_ipv6 = %link_local,
+            client_ipv6_routable = %routable,
+            source,
+            "inferred client link-local IPv6 address from routable SLAAC address"
+        );
+        self.client_ip_ipv6 = Some(link_local);
     }
 
     /// Returns the list of IPv6 nameservers suitable for advertisement to
@@ -328,8 +428,16 @@ impl ConsommeState {
         // it with a unique virtual address so that the guest routes the reply
         // back through the virtual adapter and we can reverse-translate it on the
         // outgoing path.
+        //
+        // This is skipped for endpoints that are themselves dedicated to
+        // loopback traffic (their `client_ip` is a loopback address, as used by
+        // WSL's VirtioProxy localhost forwarding). The guest routes those
+        // replies back through this adapter based on the loopback source, so
+        // rewriting the source out of the loopback range would break the return
+        // path.
+        let is_loopback_adapter = params.client_ip.is_loopback();
         let src = match remote_addr {
-            SocketAddr::V4(v4) if params.is_local_address(remote_addr) => {
+            SocketAddr::V4(v4) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let subnet_base =
                     Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
                 let virtual_ip = local_addr_map.get_or_allocate_v4(
@@ -347,7 +455,7 @@ impl ConsommeState {
                     }
                 }
             }
-            SocketAddr::V6(v6) if params.is_local_address(remote_addr) => {
+            SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
                 let virtual_ip = local_addr_map.get_or_allocate_v6(
                     *v6.ip(),
                     params.gateway_link_local_ipv6,
@@ -517,6 +625,9 @@ pub enum DropReason {
     /// The ethertype is unknown.
     #[error("unsupported ip protocol {0}")]
     UnsupportedIpProtocol(IpProtocol),
+    /// The ICMPv6 message type is unsupported.
+    #[error("unsupported icmpv6 message type {0}")]
+    UnsupportedIcmpv6(Icmpv6Message),
     /// The ARP type is unsupported.
     #[error("unsupported dhcp message type {0:?}")]
     UnsupportedDhcp(DhcpMessageType),
@@ -692,13 +803,15 @@ impl Consomme {
                 }
             };
         let timeout = params.udp_timeout;
+        let tcp_rx_buffer = params.tcp_rx_buffer;
+        let tcp_tx_buffer = params.tcp_tx_buffer;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
-            tcp: tcp::Tcp::new(),
+            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
@@ -908,6 +1021,18 @@ impl<T: Client> Access<'_, T> {
             dst_addr: ipv6.dst_addr(),
         };
 
+        // Learn the client's link-local IPv6 address from outgoing traffic.
+        // This covers clients that do not perform DAD before using the address.
+        if src_addr.is_unicast_link_local()
+            && self.inner.state.params.client_ip_ipv6 != Some(src_addr)
+        {
+            tracing::debug!(
+                client_ipv6 = %src_addr,
+                "learned client link-local IPv6 address from outgoing traffic"
+            );
+            self.inner.state.params.client_ip_ipv6 = Some(src_addr);
+        }
+
         // Learn the client's routable IPv6 address from outgoing traffic.
         // This is more reliable than relying solely on DAD Neighbor
         // Solicitations, which some clients skip on private virtual links.
@@ -921,6 +1046,10 @@ impl<T: Client> Access<'_, T> {
                 "learned client routable IPv6 address from outgoing traffic"
             );
             self.inner.state.params.client_ip_ipv6_routable = Some(src_addr);
+            self.inner
+                .state
+                .params
+                .infer_client_link_local_from_routable(src_addr, "outgoing traffic");
         }
 
         match next_header {
@@ -933,14 +1062,16 @@ impl<T: Client> Access<'_, T> {
                 let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
                 let msg_type = icmpv6_packet.msg_type();
 
-                if msg_type == smoltcp::wire::Icmpv6Message::NeighborSolicit
-                    || msg_type == smoltcp::wire::Icmpv6Message::NeighborAdvert
-                    || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit
-                    || msg_type == smoltcp::wire::Icmpv6Message::RouterAdvert
-                {
+                if msg_type.is_ndisc() {
                     self.handle_ndp(frame, inner, ipv6.src_addr())?;
                 } else {
-                    return Err(DropReason::UnsupportedIpProtocol(next_header));
+                    tracing::trace!(
+                        icmpv6_type = %msg_type,
+                        src_addr = %src_addr,
+                        dst_addr = %addresses.dst_addr,
+                        "unsupported ICMPv6 message"
+                    );
+                    return Err(DropReason::UnsupportedIcmpv6(msg_type));
                 }
             }
 
