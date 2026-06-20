@@ -2354,6 +2354,7 @@ impl InitializedVm {
                         },
                         guest_memory: gm,
                         bus_range: &pi.bus_range,
+                        msi_target: msi_conn.target().clone(),
                         #[cfg(guest_arch = "aarch64")]
                         smmu: smmu_states[pi.rc_idx].as_ref(),
                     });
@@ -2362,17 +2363,15 @@ impl InitializedVm {
                     vmm_core::device_builder::PciDeviceResolveContext {
                         driver_source,
                         resolver,
-                        guest_memory: &pcie_ctx.guest_memory,
+                        dma_target: &pcie_ctx.dma_target,
                         resource: dev_cfg.resource,
                         doorbell_registration: partition
                             .clone()
                             .into_doorbell_registration(Vtl::Vtl0),
                         shared_mem_mapper: Some(mapper),
-                        software_iommu: pcie_ctx.software_iommu,
                     },
                     chipset_builder,
                     port_name.clone(),
-                    msi_conn.target(),
                 )
                 .await?;
 
@@ -2571,13 +2570,15 @@ impl InitializedVm {
                         vmm_core::device_builder::PciDeviceResolveContext {
                             driver_source: &driver_source,
                             resolver: &resolver,
-                            guest_memory: &gm,
+                            dma_target: &pci_core::dma::DmaTarget::new(
+                                gm.clone(),
+                                pci_core::msi::MsiTarget::disconnected(),
+                            ),
                             resource: dev_cfg.resource,
                             doorbell_registration: partition
                                 .clone()
                                 .into_doorbell_registration(vtl),
                             shared_mem_mapper: Some(&mapper),
-                            software_iommu: false,
                         },
                         vmbus.control(),
                         &chipset_builder,
@@ -3555,6 +3556,7 @@ impl LoadedVm {
                                     },
                                     guest_memory: &self.inner.gm,
                                     bus_range: &bus_range,
+                                    msi_target: msi_conn.target().clone(),
                                     #[cfg(guest_arch = "aarch64")]
                                     smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
                                 },
@@ -3569,13 +3571,11 @@ impl LoadedVm {
                                         .resolve(
                                             resource,
                                             pci_resources::ResolvePciDeviceHandleParams {
-                                                msi_target: msi_conn.target(),
+                                                dma_target: &pcie_ctx.dma_target,
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
-                                                guest_memory: &pcie_ctx.guest_memory,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
-                                                software_iommu: pcie_ctx.software_iommu,
                                             },
                                         )
                                         .await

@@ -42,8 +42,15 @@ impl MsiRoute {
 
     /// Configures the MSI address and data for this route, using
     /// the route's default BDF as the requester ID.
+    ///
+    /// If the route's BDF carries an explicit bus override that falls
+    /// outside the assigned bus range, the route is left disabled and a
+    /// ratelimited warning is emitted.
     pub fn enable(&self, address: u64, data: u32) {
-        let resolved = resolve_default_bdf(&self.default_bdf);
+        let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
+            self.inner.disable();
+            return;
+        };
         self.inner.enable(address, data, Some(resolved))
     }
 
@@ -100,17 +107,43 @@ impl SignalMsi for DisconnectedMsiTarget {
 /// Default BDF source for MSI device identification.
 ///
 /// [`MsiTarget::signal_msi`] uses this to compose the requester ID
-/// from the port's secondary bus combined with the configured `devfn`.
+/// from the port's secondary bus (or explicit bus override) combined
+/// with the configured `devfn`.
 #[derive(Clone, Debug)]
 struct DefaultBdf {
     bus_range: AssignedBusRange,
     devfn: u8,
+    /// When set, overrides the bus portion of the RID instead of
+    /// using `bus_range.secondary`. Used by [`MsiTarget::with_rid`]
+    /// for VFs that span multiple bus numbers.
+    bus_override: Option<u8>,
 }
 
-/// Resolves a BDF from a [`DefaultBdf`] source.
-fn resolve_default_bdf(default: &DefaultBdf) -> u32 {
-    let (secondary, _) = default.bus_range.bus_range();
-    (secondary as u32) << 8 | default.devfn as u32
+/// Resolves a BDF from a [`DefaultBdf`] source, validating an explicit
+/// `bus_override` against the assigned bus range.
+///
+/// Returns `None` when the override bus falls outside the assigned range, in
+/// which case a ratelimited warning is emitted and the caller should drop the
+/// MSI / disable the route. The derived (non-override) bus is the range's
+/// secondary bus and is therefore always in range.
+fn resolve_default_bdf(default: &DefaultBdf) -> Option<u32> {
+    let bus = if let Some(bus) = default.bus_override {
+        if !default.bus_range.contains_bus(bus) {
+            let (secondary, subordinate) = default.bus_range.bus_range();
+            tracelimit::warn_ratelimited!(
+                bus,
+                secondary,
+                subordinate,
+                "dropping MSI: rid bus override outside assigned bus range"
+            );
+            return None;
+        }
+        bus
+    } else {
+        let (secondary, _) = default.bus_range.bus_range();
+        secondary
+    };
+    Some((bus as u32) << 8 | default.devfn as u32)
 }
 
 /// A connection between a device and an MSI target.
@@ -139,6 +172,7 @@ impl MsiTarget {
             default_bdf: DefaultBdf {
                 bus_range: AssignedBusRange::new(),
                 devfn: 0,
+                bus_override: None,
             },
         }
     }
@@ -183,7 +217,11 @@ impl MsiConnection {
                     signal_msi: Arc::new(DisconnectedMsiTarget),
                     irqfd: None,
                 })),
-                default_bdf: DefaultBdf { bus_range, devfn },
+                default_bdf: DefaultBdf {
+                    bus_range,
+                    devfn,
+                    bus_override: None,
+                },
             },
         }
     }
@@ -222,6 +260,7 @@ impl MsiTarget {
             default_bdf: DefaultBdf {
                 bus_range: self.default_bdf.bus_range.clone(),
                 devfn,
+                bus_override: None,
             },
         }
     }
@@ -234,14 +273,43 @@ impl MsiTarget {
     pub fn with_bus_range(&self, bus_range: AssignedBusRange, devfn: u8) -> MsiTarget {
         MsiTarget {
             inner: self.inner.clone(),
-            default_bdf: DefaultBdf { bus_range, devfn },
+            default_bdf: DefaultBdf {
+                bus_range,
+                devfn,
+                bus_override: None,
+            },
+        }
+    }
+
+    /// Returns a new `MsiTarget` sharing the same connection and bus
+    /// range but with the default RID set to the given value.
+    ///
+    /// The RID is a 16-bit value: `(bus << 8) | devfn`. Unlike
+    /// [`with_devfn`](Self::with_devfn), this sets an explicit bus
+    /// number rather than deriving it from the bus range's secondary
+    /// bus. Use this for SR-IOV VFs that may span multiple bus
+    /// numbers within the port's assigned range.
+    ///
+    /// The bus is validated against the assigned bus range when an MSI is
+    /// signaled (see [`signal_msi`](Self::signal_msi)), not here, because
+    /// the range may not be programmed yet when the target is derived.
+    pub fn with_rid(&self, rid: u16) -> MsiTarget {
+        MsiTarget {
+            inner: self.inner.clone(),
+            default_bdf: DefaultBdf {
+                bus_range: self.default_bdf.bus_range.clone(),
+                devfn: rid as u8,
+                bus_override: Some((rid >> 8) as u8),
+            },
         }
     }
 
     /// Signals an MSI interrupt to this target, using this target's
     /// default BDF as the requester ID.
     pub fn signal_msi(&self, address: u64, data: u32) {
-        let resolved = resolve_default_bdf(&self.default_bdf);
+        let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
+            return;
+        };
         let inner = self.inner.read();
         inner.signal_msi.signal_msi(Some(resolved), address, data);
     }
@@ -289,12 +357,6 @@ impl MsiTarget {
                 default_bdf: self.default_bdf.clone(),
             })
         })
-    }
-
-    /// Returns the default BDF that will be used by
-    /// [`signal_msi`](Self::signal_msi) and [`MsiRoute::enable`].
-    pub fn default_bdf(&self) -> u32 {
-        resolve_default_bdf(&self.default_bdf)
     }
 
     /// Returns whether this target supports direct MSI routes.
@@ -568,5 +630,62 @@ mod tests {
         // Validation uses the child range, not the parent
         derived.signal_msi_with_rid(16 << 8, 0x3000, 3);
         assert!(recorder.pop().is_none()); // bus 16 > subordinate 15
+    }
+
+    #[test]
+    fn with_rid_signal_msi_accepts_bus_in_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        // RID with bus=7 (within [5, 10]), devfn=0x0A
+        let rid: u16 = (7 << 8) | 0x0A;
+        let derived = msi_conn.target().with_rid(rid);
+        derived.signal_msi(0x1000, 7);
+
+        let (devid, addr, data) = recorder.pop().unwrap();
+        assert_eq!(devid, Some(rid as u32));
+        assert_eq!(addr, 0x1000);
+        assert_eq!(data, 7);
+    }
+
+    #[test]
+    fn with_rid_signal_msi_drops_bus_outside_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        // bus=11 > subordinate=10 → dropped
+        let derived_above = msi_conn.target().with_rid(11 << 8);
+        derived_above.signal_msi(0x1000, 1);
+        assert!(recorder.pop().is_none());
+
+        // bus=4 < secondary=5 → dropped
+        let derived_below = msi_conn.target().with_rid(4 << 8);
+        derived_below.signal_msi(0x2000, 2);
+        assert!(recorder.pop().is_none());
+    }
+
+    #[test]
+    fn with_rid_route_enable_disables_when_bus_outside_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let (irqfd, calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        msi_conn.connect_irqfd(irqfd);
+
+        // Derive a target whose override bus (11) is outside [5, 10], then
+        // enable a route from it: the route must be disabled, not enabled.
+        let derived = msi_conn.target().with_rid(11 << 8);
+        let route = derived.new_route().unwrap().unwrap();
+        route.enable(0xBEEF, 77);
+
+        let log = calls[0].lock();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0], RouteCall::Disable);
     }
 }

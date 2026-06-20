@@ -15,6 +15,7 @@ pub mod bus_range;
 pub mod capabilities;
 pub mod cfg_space_emu;
 pub mod chipset_device_ext;
+pub mod dma;
 pub mod msi;
 pub mod spec;
 

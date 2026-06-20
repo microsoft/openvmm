@@ -3416,11 +3416,13 @@ async fn new_underhill_vm(
                 vmm_core::device_builder::PciDeviceResolveContext {
                     driver_source: &driver_source,
                     resolver: &resolver,
-                    guest_memory: device_memory,
+                    dma_target: &pci_core::dma::DmaTarget::new(
+                        device_memory.clone(),
+                        pci_core::msi::MsiTarget::disconnected(),
+                    ),
                     resource,
                     doorbell_registration: None,
                     shared_mem_mapper: None,
-                    software_iommu: false,
                 },
                 vmbus.control(),
                 &chipset_builder,
