@@ -31,7 +31,7 @@ const PETRI_FAILED: &str = "petri.failed";
 const TEST_RESULT_MARKERS: &[&str] = &[PETRI_PASSED, PETRI_FAILED_UNSTABLE, PETRI_FAILED];
 
 /// Clears stale Petri test result markers from a test output directory.
-pub fn clear_test_result_markers(root_path: &Path) -> anyhow::Result<()> {
+pub(crate) fn clear_test_result_markers(root_path: &Path) -> anyhow::Result<()> {
     for &marker in TEST_RESULT_MARKERS {
         let path = root_path.join(marker);
         match fs_err::remove_file(&path) {
