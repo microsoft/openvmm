@@ -26,11 +26,6 @@ pub struct IncubatorConfig {
     pub initrd: PathBuf,
     /// Directory to share into the VM at `/share`.
     pub share_dir: PathBuf,
-    /// Host directory to share into the VM at `/output` as a writable 9p
-    /// mount. Petri's per-test logs (via `TEST_OUTPUT_PATH`) and the incubator
-    /// serial log are written here, so they land directly in the pipeline's
-    /// chosen test-output location.
-    pub output_dir: PathBuf,
     /// The command to run inside the VM: program followed by arguments.
     pub guest_command: Vec<String>,
     /// Timeout for the VM to boot and pipette to become ready. Once pipette
@@ -87,21 +82,15 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         &config.kernel,
         &patched_initrd_path,
         &config.share_dir,
-        &config.output_dir,
         host_port,
     )?;
 
     // QEMU runs in the background. Serial console goes to a pipe;
     // an async task copies output to a log file and signals when
     // pipette prints its readiness marker.
-    //
-    // The serial log is written host-side into `output_dir` (the same
-    // directory the guest writes its per-test logs into via the `/output` 9p
-    // share). This way a single directory captures everything, and on a
-    // boot/timeout failure — where no test ever runs — the serial log is still
-    // present as the only available diagnostic.
-    std::fs::create_dir_all(&config.output_dir).context("failed to create output dir")?;
-    let serial_log = config.output_dir.join("incubator-serial.log");
+    let output_dir = config.share_dir.join("test_results");
+    std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
+    let serial_log = output_dir.join("incubator-serial.log");
     tracing::info!(path = %serial_log.display(), "serial log");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
@@ -194,12 +183,10 @@ async fn run_via_pipette(
         .await
         .context("failed to connect to pipette")?;
 
-    // Host-side directory where pipette delivers any diagnostic files it sends
-    // back over the mesh channel. Use the shared output dir so they sit
-    // alongside the guest-written logs.
-    std::fs::create_dir_all(&config.output_dir).context("failed to create output dir")?;
+    let output_dir = config.share_dir.join("test_results");
+    std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
 
-    let client = pipette_client::PipetteClient::new(&driver, conn, &config.output_dir)
+    let client = pipette_client::PipetteClient::new(&driver, conn, &output_dir)
         .await
         .context("failed to connect to pipette")?;
 
@@ -221,10 +208,7 @@ async fn run_via_pipette(
     cmd.args(args);
     cmd.env("VMM_TESTS_CONTENT_DIR", "/share");
     cmd.env("HOME", "/root");
-    // Direct petri's per-test logs (petri.jsonl, serial logs, screenshots,
-    // junit, etc.) into the `/output` 9p share, which maps to the pipeline's
-    // chosen test-output directory on the host.
-    cmd.env("TEST_OUTPUT_PATH", "/output");
+    cmd.env("TEST_OUTPUT_PATH", "/share/test_results");
     cmd.current_dir("/share");
 
     // Pass VFIO device BDFs as environment variables

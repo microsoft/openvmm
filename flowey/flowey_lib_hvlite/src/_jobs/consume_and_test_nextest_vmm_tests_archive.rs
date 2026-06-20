@@ -241,7 +241,7 @@ impl SimpleFlowNode for Node {
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
-            test_content_dir,
+            test_content_dir: test_content_dir.clone(),
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_openvmm_vhost,
@@ -340,13 +340,14 @@ impl SimpleFlowNode for Node {
             let archive_name = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
                 let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
                 let guest_nextest_bin = guest_nextest_bin.claim(ctx);
+                let test_content_dir = test_content_dir.clone().claim(ctx);
                 for dep in pre_run_deps {
                     dep.claim(ctx);
                 }
                 move |rt| {
                     let archive = rt.read(nextest_archive);
                     let guest_nextest_bin = rt.read(guest_nextest_bin);
-                    let test_content_dir = std::env::current_dir()?.absolute()?;
+                    let test_content_dir = rt.read(test_content_dir);
 
                     // Copy nextest archive into the share dir
                     let archive_name = archive
@@ -374,9 +375,7 @@ impl SimpleFlowNode for Node {
                 }
             });
 
-            let share_dir = ctx.emit_rust_stepv("get share dir", |_| {
-                |_| Ok(std::env::current_dir()?.absolute()?)
-            });
+            let share_dir = test_content_dir;
 
             // The repo's nextest config is needed inside the incubator so that
             // junit output, slow-timeouts, and test-groups match host runs.
@@ -384,20 +383,12 @@ impl SimpleFlowNode for Node {
             let nextest_config_file =
                 openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
 
-            // Direct the incubator's output (petri per-test logs + serial log)
-            // at the pipeline's chosen test-output directory, exposed to the
-            // guest as a writable 9p share at `/output`. This is the same path
-            // that gets published below, so the incubator needs no special
-            // casing in the publish step.
-            let output_dir = test_log_path.clone();
-
             ctx.reqv(|v| crate::run_in_incubator::Request {
                 incubator_bin,
                 profile_path,
                 kernel,
                 initrd,
                 share_dir,
-                output_dir,
                 nextest_archive_name: archive_name,
                 nextest_config_file,
                 nextest_filter_expr: nextest_filter_expr.clone(),

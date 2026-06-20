@@ -4024,9 +4024,13 @@ jobs:
     displayName: 🌼🛫 Initialize job
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
+    displayName: creating new test content dir
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 1
       $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
@@ -4057,8 +4061,6 @@ jobs:
     displayName: install vmm tests deps (linux)
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: prepare incubator share directory
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
-    displayName: get share dir
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 0
@@ -4079,15 +4081,13 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 5
     displayName: print system info
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-    displayName: creating new test content dir
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 1
@@ -4142,7 +4142,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::run_in_incubator 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 20 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 0
@@ -4158,10 +4158,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'

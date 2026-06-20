@@ -22,10 +22,6 @@ struct Args {
     /// Directory to share with the guest.
     #[clap(long)]
     share: String,
-    /// Host directory to expose to the guest at `/output` for test logs.
-    /// Defaults to a `test_results` subdirectory of the share directory.
-    #[clap(long)]
-    output_dir: Option<std::path::PathBuf>,
     /// Override the QEMU binary path from the profile.
     #[clap(long)]
     qemu_binary: Option<std::path::PathBuf>,
@@ -66,17 +62,11 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(share = %args.share, "share");
     tracing::info!(command = ?args.command, "command");
 
-    let share_dir = std::path::PathBuf::from(args.share);
-    let output_dir = args
-        .output_dir
-        .unwrap_or_else(|| share_dir.join("test_results"));
-
     let output = incubator::run_in_incubator(incubator::IncubatorConfig {
         profile,
         kernel,
         initrd,
-        share_dir,
-        output_dir,
+        share_dir: args.share.into(),
         guest_command: args.command,
         timeout: std::time::Duration::from_secs(args.timeout),
         qemu_binary_override: args.qemu_binary,

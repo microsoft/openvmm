@@ -27,7 +27,6 @@ pub fn build_qemu_command(
     kernel: &Path,
     initrd: &Path,
     share_dir: &Path,
-    output_dir: &Path,
     host_pipette_port: u16,
 ) -> anyhow::Result<Command> {
     let mut cmd = Command::new(&config.binary);
@@ -50,17 +49,6 @@ pub fn build_qemu_command(
     ));
     cmd.arg("-device")
         .arg("virtio-9p-pci,fsdev=fsdev0,mount_tag=hostshare");
-
-    // 9p: a separate writable share for test output. Petri writes its per-test
-    // logs here (via `TEST_OUTPUT_PATH=/output`), so they land directly in the
-    // pipeline's chosen output directory rather than mixed into the read-only
-    // content share.
-    cmd.arg("-fsdev").arg(format!(
-        "local,id=fsdev1,path={},security_model=none",
-        output_dir.display()
-    ));
-    cmd.arg("-device")
-        .arg("virtio-9p-pci,fsdev=fsdev1,mount_tag=outputshare");
 
     // User-mode networking with port forwarding for pipette TCP
     cmd.arg("-netdev").arg(format!(
@@ -156,8 +144,6 @@ fn build_init_script() -> String {
         mkdir -p /dev/pts /share /root /tmp /etc\n\
         mount -t devpts devpts /dev/pts\n\
         mount -t 9p -o trans=virtio,version=9p2000.L hostshare /share\n\
-        mkdir -p /output\n\
-        mount -t 9p -o trans=virtio,version=9p2000.L outputshare /output\n\
         ip link set eth0 up\n\
         ip addr add 10.0.2.15/24 dev eth0\n\
         ip route add default via 10.0.2.2\n\

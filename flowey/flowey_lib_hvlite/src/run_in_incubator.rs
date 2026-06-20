@@ -25,11 +25,6 @@ flowey_request! {
         /// Directory to share into the VM at `/share`.
         /// Must contain the nextest archive and cargo-nextest binary.
         pub share_dir: ReadVar<PathBuf>,
-        /// Host directory exposed to the guest at `/output` as a writable 9p
-        /// share. Petri's per-test logs and the incubator serial log are
-        /// written here, so they land in the pipeline's chosen test-output
-        /// location.
-        pub output_dir: ReadVar<PathBuf>,
         /// Filename of the nextest archive (relative to share_dir).
         pub nextest_archive_name: ReadVar<String>,
         /// Path to the nextest config file (e.g. the repo's
@@ -66,7 +61,6 @@ impl SimpleFlowNode for Node {
             kernel,
             initrd,
             share_dir,
-            output_dir,
             nextest_archive_name,
             nextest_config_file,
             nextest_filter_expr,
@@ -83,7 +77,6 @@ impl SimpleFlowNode for Node {
             let kernel = kernel.claim(ctx);
             let initrd = initrd.claim(ctx);
             let share_dir = share_dir.claim(ctx);
-            let output_dir = output_dir.claim(ctx);
             let nextest_archive_name = nextest_archive_name.claim(ctx);
             let nextest_config_file = nextest_config_file.claim(ctx);
             let extra_env = extra_env.claim(ctx);
@@ -99,7 +92,6 @@ impl SimpleFlowNode for Node {
                 let kernel = rt.read(kernel);
                 let initrd = rt.read(initrd);
                 let share_dir = rt.read(share_dir);
-                let output_dir = rt.read(output_dir);
                 let archive_name = rt.read(nextest_archive_name);
                 let nextest_config_file = rt.read(nextest_config_file);
                 let extra_env = extra_env.map(|v| rt.read(v));
@@ -137,9 +129,7 @@ impl SimpleFlowNode for Node {
                     .arg("--initrd")
                     .arg(&initrd)
                     .arg("--share")
-                    .arg(&share_dir)
-                    .arg("--output-dir")
-                    .arg(&output_dir);
+                    .arg(&share_dir);
 
                 if let Some(ref qemu_binary) = qemu_binary {
                     cmd.arg("--qemu-binary").arg(qemu_binary);
