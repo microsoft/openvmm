@@ -319,7 +319,9 @@ impl SimpleFlowNode for Node {
                 if let Some(pipette_linux) = pipette_linux {
                     match rt.read(pipette_linux) {
                         crate::build_pipette::PipetteOutput::LinuxBin { bin, dbg: _ } => {
-                            fs_err::copy(bin, test_content_dir.join("pipette"))?;
+                            let dst = test_content_dir.join("pipette");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
                         }
                         _ => {
                             anyhow::bail!("did not find `pipette.exe` in RegisterPipetteLinuxMusl")

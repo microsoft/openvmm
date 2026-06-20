@@ -162,13 +162,19 @@ impl SimpleFlowNode for Node {
                 let status = cmd.status().context("failed to launch incubator")?;
 
                 let all_tests_passed = status.success();
-                let junit_xml = {
-                    let junit_path = share_dir.join("target/nextest/ci/junit.xml");
-                    if junit_path.exists() {
-                        Some(junit_path)
-                    } else {
-                        None
-                    }
+                let junit_xml = if let Some(junit_path) =
+                    flowey_lib_common::run_cargo_nextest_run::nextest_junit_path(
+                        &nextest_config_file,
+                        profile_str,
+                    )? {
+                    let junit_path = share_dir
+                        .join("target")
+                        .join("nextest")
+                        .join(profile_str)
+                        .join(junit_path);
+                    junit_path.exists().then_some(junit_path)
+                } else {
+                    None
                 };
 
                 rt.write(
