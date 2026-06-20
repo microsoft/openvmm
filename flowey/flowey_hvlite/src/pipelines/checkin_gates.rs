@@ -993,7 +993,7 @@ impl IntoPipeline for CheckinGatesCli {
                     flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                         target: CommonTriple::Common {
                             arch,
-                            platform: CommonPlatform::LinuxGnu,
+                            platform: CommonPlatform::LinuxMusl,
                         }.as_triple(),
                         profile: CommonProfile::from_release(release),
                         build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
@@ -1742,7 +1742,7 @@ impl IntoPipeline for CheckinGatesCli {
                     junit_test_label: test_label,
                     nextest_vmm_tests_archive: ctx
                         .use_typed_artifact(&use_vmm_tests_archive_linux_aarch64),
-                    target: target_lexicon::triple!("aarch64-unknown-linux-gnu"),
+                    target: target_lexicon::triple!("aarch64-unknown-linux-musl"),
                     nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
                     nextest_filter_expr: Some("group(aarch64-tcg)".to_string()),
                     dep_artifact_dirs,
@@ -1958,7 +1958,7 @@ pub mod vmm_tests_artifact_builders {
 
     /// Artifact builder for aarch64 Linux VMM tests running via QEMU TCG.
     ///
-    /// The test binaries are aarch64-linux-gnu (run inside QEMU), but the
+    /// The test binaries are aarch64-linux-musl (run inside QEMU), but the
     /// incubator binary is x86_64-linux-gnu (runs on the CI host).
     #[derive(Default, Clone)]
     pub struct VmmTestsArtifactsBuilderLinuxAarch64Tcg {
