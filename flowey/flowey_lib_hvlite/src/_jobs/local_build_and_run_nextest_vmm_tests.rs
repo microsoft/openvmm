@@ -887,19 +887,15 @@ impl SimpleFlowNode for Node {
                 )
             });
 
-            let archive_name = nextest_archive_file
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .to_string();
-
             let results = ctx.reqv(|v| crate::run_in_incubator::Request {
                 incubator_bin,
                 profile_path: ReadVar::from_static(profile_path),
                 kernel,
                 initrd,
-                share_dir: ReadVar::from_static(test_content_dir),
-                nextest_archive_name: ReadVar::from_static(archive_name),
+                workspace_dir: ReadVar::from_static(test_content_dir.clone()),
+                test_content_dir: ReadVar::from_static(test_content_dir),
+                nextest_archive: ReadVar::from_static(nextest_archive_file),
+                nextest_bin: ReadVar::from_static(nextest_bin),
                 nextest_config_file: ReadVar::from_static(nextest_config_file.clone()),
                 nextest_filter_expr: Some(nextest_filter_expr),
                 nextest_profile,

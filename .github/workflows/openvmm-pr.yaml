@@ -6313,7 +6313,6 @@ jobs:
         flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
         flowey e 29 flowey_core::pipeline::artifact::resolve 6
         flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey e 29 flowey_core::pipeline::artifact::resolve 4
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -6342,12 +6341,6 @@ jobs:
         flowey e 29 flowey_lib_common::cache 2
         flowey e 29 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: install vmm tests deps (linux)
-      run: flowey e 29 flowey_lib_hvlite::install_vmm_tests_deps 0
-      shell: bash
-    - name: prepare incubator share directory
-      run: flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 29 flowey_lib_common::git_checkout 0
@@ -6373,7 +6366,13 @@ jobs:
       run: |-
         flowey e 29 flowey_lib_common::system_info 0
         flowey e 29 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey e 29 flowey_core::pipeline::artifact::resolve 4
         flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      shell: bash
+    - name: install vmm tests deps (linux)
+      run: |-
+        flowey e 29 flowey_lib_hvlite::install_vmm_tests_deps 0
         flowey e 29 flowey_core::pipeline::artifact::resolve 1
         flowey e 29 flowey_core::pipeline::artifact::resolve 2
         flowey e 29 flowey_core::pipeline::artifact::resolve 0

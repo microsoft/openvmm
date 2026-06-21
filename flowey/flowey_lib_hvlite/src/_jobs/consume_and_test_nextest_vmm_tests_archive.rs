@@ -320,8 +320,7 @@ impl SimpleFlowNode for Node {
             });
 
             // Resolve the incubator binary and the selected profile from the
-            // incubator artifact (which bundles the profiles directory), and
-            // prepare the archive in the share directory.
+            // incubator artifact (which bundles the profiles directory).
             let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
             let profile_path = incubator.map(ctx, move |o| {
                 o.profiles.join(format!("{profile_name}.toml"))
@@ -337,65 +336,27 @@ impl SimpleFlowNode for Node {
                 )
             });
 
-            let archive_name = ctx.emit_rust_stepv("prepare incubator share directory", |ctx| {
-                let nextest_archive = nextest_vmm_tests_archive.claim(ctx);
-                let guest_nextest_bin = guest_nextest_bin.claim(ctx);
-                let test_content_dir = test_content_dir.clone().claim(ctx);
-                for dep in pre_run_deps {
-                    dep.claim(ctx);
-                }
-                move |rt| {
-                    let archive = rt.read(nextest_archive);
-                    let guest_nextest_bin = rt.read(guest_nextest_bin);
-                    let test_content_dir = rt.read(test_content_dir);
-
-                    // Copy nextest archive into the share dir
-                    let archive_name = archive
-                        .archive_file
-                        .file_name()
-                        .context("no file name on archive")?
-                        .to_string_lossy()
-                        .to_string();
-                    let archive_dest = test_content_dir.join(&archive_name);
-                    if archive.archive_file != archive_dest {
-                        std::fs::copy(&archive.archive_file, &archive_dest)?;
-                    }
-
-                    // Copy cargo-nextest into the share dir so the guest can
-                    // run it from `/share`.
-                    let host_nextest = test_content_dir.join("cargo-nextest");
-                    if guest_nextest_bin != host_nextest {
-                        std::fs::copy(&guest_nextest_bin, &host_nextest)?;
-                    }
-                    // Artifact download strips the executable bit; restore it
-                    // so the guest can execute it.
-                    host_nextest.make_executable()?;
-
-                    Ok(archive_name)
-                }
-            });
-
-            let share_dir = test_content_dir;
-
-            // The repo's nextest config is needed inside the incubator so that
-            // junit output, slow-timeouts, and test-groups match host runs.
             let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-            let nextest_config_file =
-                openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
+            let nextest_config_file = openvmm_repo_path
+                .clone()
+                .map(ctx, |p| p.join(".config").join("nextest.toml"));
+            let nextest_archive = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
 
             ctx.reqv(|v| crate::run_in_incubator::Request {
                 incubator_bin,
                 profile_path,
                 kernel,
                 initrd,
-                share_dir,
-                nextest_archive_name: archive_name,
+                workspace_dir: openvmm_repo_path,
+                test_content_dir,
+                nextest_archive,
+                nextest_bin: guest_nextest_bin,
                 nextest_config_file,
                 nextest_filter_expr: nextest_filter_expr.clone(),
                 nextest_profile,
                 extra_env: Some(extra_env),
                 qemu_binary: Some(qemu_binary),
-                pre_run_deps: Vec::new(),
+                pre_run_deps,
                 results: v,
             })
         } else {

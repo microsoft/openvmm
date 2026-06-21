@@ -4027,7 +4027,6 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
     displayName: creating new test content dir
   - bash: |-
       set -e
@@ -4057,10 +4056,6 @@ jobs:
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
-    displayName: install vmm tests deps (linux)
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: prepare incubator share directory
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 0
@@ -4081,13 +4076,19 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+    displayName: print system info
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 5
-    displayName: print system info
+    displayName: install vmm tests deps (linux)
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 1

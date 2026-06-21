@@ -11,6 +11,7 @@ use futures::AsyncReadExt;
 use pal_async::pipe::PolledPipe;
 use pal_async::process::PolledChild;
 use pal_async::task::Spawn;
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,8 +27,17 @@ pub struct IncubatorConfig {
     pub initrd: PathBuf,
     /// Directory to share into the VM at `/share`.
     pub share_dir: PathBuf,
+    /// Host directory where command output and logs should be written.
+    pub output_dir: PathBuf,
+    /// Path to the pipette binary inside the guest.
+    pub guest_pipette_path: String,
     /// The command to run inside the VM: program followed by arguments.
     pub guest_command: Vec<String>,
+    /// Environment variables to set for the guest command.
+    pub guest_env: BTreeMap<String, String>,
+    /// Working directory for the guest command. If unset, the command inherits
+    /// pipette's working directory.
+    pub guest_current_dir: Option<String>,
     /// Timeout for the VM to boot and pipette to become ready. Once pipette
     /// is connected, the guest command itself runs without a timeout.
     pub timeout: Duration,
@@ -58,7 +68,11 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
 
     // --- prepare the boot initrd (inject the init script) ---
 
-    let patched_initrd_path = qemu::prepare_initrd(&config.initrd, &config.share_dir)?;
+    let patched_initrd_path = qemu::prepare_initrd(
+        &config.initrd,
+        &config.share_dir,
+        &config.guest_pipette_path,
+    )?;
 
     // --- launch QEMU ---
 
@@ -88,7 +102,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
     // QEMU runs in the background. Serial console goes to a pipe;
     // an async task copies output to a log file and signals when
     // pipette prints its readiness marker.
-    let output_dir = config.share_dir.join("test_results");
+    let output_dir = config.output_dir.clone();
     std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
     let serial_log = output_dir.join("incubator-serial.log");
     tracing::info!(path = %serial_log.display(), "serial log");
@@ -183,7 +197,7 @@ async fn run_via_pipette(
         .await
         .context("failed to connect to pipette")?;
 
-    let output_dir = config.share_dir.join("test_results");
+    let output_dir = config.output_dir.clone();
     std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
 
     let client = pipette_client::PipetteClient::new(&driver, conn, &output_dir)
@@ -206,10 +220,13 @@ async fn run_via_pipette(
 
     let mut cmd = client.command(program);
     cmd.args(args);
-    cmd.env("VMM_TESTS_CONTENT_DIR", "/share");
-    cmd.env("HOME", "/root");
-    cmd.env("TEST_OUTPUT_PATH", "/share/test_results");
-    cmd.current_dir("/share");
+    for (key, value) in &config.guest_env {
+        cmd.env(key, value);
+    }
+
+    if let Some(current_dir) = &config.guest_current_dir {
+        cmd.current_dir(current_dir);
+    }
 
     // Pass VFIO device BDFs as environment variables
     for (key, value) in &vfio_env {

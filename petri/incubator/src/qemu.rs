@@ -132,10 +132,13 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
 /// Sets up the environment, mounts the virtio-9p share, brings up networking,
 /// and launches pipette in TCP mode. Pipette then waits for the host to
 /// connect and send commands.
-fn build_init_script() -> String {
+fn build_init_script(guest_pipette_path: &str) -> String {
+    let guest_pipette_path = shell_single_quote(guest_pipette_path);
+
     // QEMU user-mode networking defaults: guest is 10.0.2.15/24,
     // gateway 10.0.2.2, DNS forwarder at 10.0.2.3.
-    "\
+    format!(
+        "\
         #!/bin/sh\n\
         /bin/busybox --install /bin 2>/dev/null\n\
         mount -t devtmpfs none /dev\n\
@@ -148,11 +151,14 @@ fn build_init_script() -> String {
         ip addr add 10.0.2.15/24 dev eth0\n\
         ip route add default via 10.0.2.2\n\
         echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n\
-        export VMM_TESTS_CONTENT_DIR=/share\n\
         export HOME=/root\n\
         cd /share\n\
-        exec /share/pipette --transport tcp\n"
-        .to_string()
+        exec {guest_pipette_path} --transport tcp\n"
+    )
+}
+
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Prepare the boot initrd by injecting the init script into the base initrd.
@@ -160,13 +166,17 @@ fn build_init_script() -> String {
 /// Reads the gzip-compressed base initrd, injects the `rdinit` script (see
 /// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], writes the patched initrd
 /// into `share_dir`, and returns its path.
-pub fn prepare_initrd(base_initrd: &Path, share_dir: &Path) -> anyhow::Result<PathBuf> {
+pub fn prepare_initrd(
+    base_initrd: &Path,
+    share_dir: &Path,
+    guest_pipette_path: &str,
+) -> anyhow::Result<PathBuf> {
     let initrd_data = std::fs::read(base_initrd).context("failed to read initrd")?;
 
     let patched_initrd = initrd_cpio::inject_into_initrd(
         &initrd_data,
         INIT_SCRIPT_NAME,
-        build_init_script().as_bytes(),
+        build_init_script(guest_pipette_path).as_bytes(),
         0o100755, // regular file, rwxr-xr-x
     )
     .context("failed to inject init script into initrd")?;

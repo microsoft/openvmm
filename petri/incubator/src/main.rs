@@ -22,6 +22,18 @@ struct Args {
     /// Directory to share with the guest.
     #[clap(long)]
     share: String,
+    /// Host directory for logs and captured output.
+    #[clap(long)]
+    output_dir: Option<std::path::PathBuf>,
+    /// Guest path to the pipette binary.
+    #[clap(long, default_value = "/share/pipette")]
+    guest_pipette: String,
+    /// Environment variable to set for the guest command, as KEY=VALUE.
+    #[clap(long = "guest-env", value_name = "KEY=VALUE")]
+    guest_env: Vec<GuestEnv>,
+    /// Working directory for the guest command.
+    #[clap(long)]
+    guest_current_dir: Option<String>,
     /// Override the QEMU binary path from the profile.
     #[clap(long)]
     qemu_binary: Option<std::path::PathBuf>,
@@ -61,13 +73,24 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(initrd = %initrd.display(), "initrd");
     tracing::info!(share = %args.share, "share");
     tracing::info!(command = ?args.command, "command");
+    let guest_env = args
+        .guest_env
+        .into_iter()
+        .map(|env| (env.key, env.value))
+        .collect();
 
     let output = incubator::run_in_incubator(incubator::IncubatorConfig {
         profile,
         kernel,
         initrd,
-        share_dir: args.share.into(),
+        share_dir: args.share.clone().into(),
+        output_dir: args
+            .output_dir
+            .unwrap_or_else(|| std::path::Path::new(&args.share).join("test_results")),
+        guest_pipette_path: args.guest_pipette,
         guest_command: args.command,
+        guest_env,
+        guest_current_dir: args.guest_current_dir,
         timeout: std::time::Duration::from_secs(args.timeout),
         qemu_binary_override: args.qemu_binary,
     })?;
@@ -79,6 +102,29 @@ fn main() -> anyhow::Result<()> {
     );
 
     std::process::exit(output.exit_code.unwrap_or(1));
+}
+
+#[derive(Clone)]
+struct GuestEnv {
+    key: String,
+    value: String,
+}
+
+impl std::str::FromStr for GuestEnv {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (key, value) = s
+            .split_once('=')
+            .ok_or_else(|| "expected KEY=VALUE".to_string())?;
+        if key.is_empty() {
+            return Err("environment variable name must not be empty".to_string());
+        }
+        Ok(Self {
+            key: key.to_string(),
+            value: value.to_string(),
+        })
+    }
 }
 
 /// Resolve a kernel or initrd path from an environment variable.
