@@ -23,6 +23,7 @@ use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateResponse2;
+use memory_range::MemoryRange;
 use mesh::CancelReason;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -36,14 +37,21 @@ use net_backend_resources::consomme::ConsommeRequest;
 use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
+use net_backend_resources::mac_address::MacAddress;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
@@ -72,6 +80,9 @@ use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -429,6 +440,30 @@ impl VmService {
                         let r = self.modify_resource(&vm, request);
                         self.start_rpc(response, r);
                     }
+                    vmservice::Vm::AddPcieDevice(request, response) => {
+                        let worker_rpc = vm.worker_rpc.clone();
+                        self.start_rpc(
+                            response,
+                            Ok(async move {
+                                let vmservice::AddPcieDeviceRequest { port_name, device } = request;
+                                let resource =
+                                    build_pcie_device(device.context("missing device")?).await?;
+                                worker_rpc
+                                    .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+                                    .await
+                                    .map_err(anyhow::Error::from)
+                            }),
+                        );
+                    }
+                    vmservice::Vm::RemovePcieDevice(request, response) => {
+                        let recv = vm
+                            .worker_rpc
+                            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+                        self.start_rpc(
+                            response,
+                            Ok(async move { recv.await.map_err(anyhow::Error::from) }),
+                        );
+                    }
 
                     r @ vmservice::Vm::CapabilitiesVm(_, _)
                     | r @ vmservice::Vm::PropertiesVm(_, _) => {
@@ -503,7 +538,7 @@ impl VmService {
     }
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
-        let req_config = request.config.context("missing configuration")?;
+        let mut req_config = request.config.context("missing configuration")?;
 
         if self.vm.is_some() {
             bail!("VM already created");
@@ -558,34 +593,27 @@ impl VmService {
             .build()
             .context("failed to build vm configuration")?;
 
-        // Extract memory and processor counts for the VmController.
-        let config_mem_size = req_config
-            .memory_config
-            .as_ref()
-            .context("missing memory configuration")?
-            .memory_mb
-            .checked_mul(0x100000)
-            .context("invalid memory configuration")?;
-        let config_proc_count = req_config
-            .processor_config
-            .as_ref()
-            .map(|c| c.processor_count)
-            .unwrap_or(1);
-
-        let mut config = Config {
-            // TODO: devices, other stuff
-            load_mode,
-            ide_disks: vec![],
-            floppy_disks: vec![],
-            pcie_root_complexes: vec![],
-            pcie_devices: vec![],
-            pcie_switches: vec![],
-            pcie_generic_initiators: vec![],
-            vpci_devices: vec![],
-            numa: NumaTopology {
+        // Build the NUMA topology. A flat `MemoryConfig.memory_mb` and an
+        // explicit `NumaConfig` are mutually exclusive (mirrors the CLI
+        // `--memory` vs `--numa` conflict). `config_mem_size` is the total
+        // guest memory reported to the `VmController`.
+        let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
+            if req_config.memory_config.is_some() {
+                bail!("memory_config and numa_config are mutually exclusive");
+            }
+            build_numa_topology(numa_config)?
+        } else {
+            let mem_size = req_config
+                .memory_config
+                .as_ref()
+                .context("missing memory configuration")?
+                .memory_mb
+                .checked_mul(0x100000)
+                .context("invalid memory configuration")?;
+            let numa = NumaTopology {
                 nodes: vec![NumaNode {
                     mem: Some(MemoryConfig {
-                        mem_size: config_mem_size,
+                        mem_size,
                         prefetch_memory: false,
                         private_memory: false,
                         transparent_hugepages: false,
@@ -596,12 +624,49 @@ impl VmService {
                     vps: VpAssignment::FromTopology,
                 }],
                 distances: vec![],
-            },
+            };
+            (numa, mem_size)
+        };
+
+        let config_proc_count = req_config
+            .processor_config
+            .as_ref()
+            .map(|c| c.processor_count)
+            .unwrap_or(1);
+        let vps_per_socket = req_config
+            .processor_config
+            .as_ref()
+            .and_then(|c| c.vps_per_socket);
+        let enable_smt = req_config
+            .processor_config
+            .as_ref()
+            .and_then(|c| c.enable_smt);
+
+        // Build the PCIe topology (root complexes, switches, and the devices
+        // attached behind their ports).
+        let (pcie_root_complexes, pcie_switches, pcie_devices) =
+            if let Some(pcie) = req_config.pcie.take() {
+                build_pcie_topology(pcie).await?
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+
+        let mut config = Config {
+            // TODO: devices, other stuff
+            load_mode,
+            ide_disks: vec![],
+            floppy_disks: vec![],
+            pcie_root_complexes,
+            pcie_devices,
+            pcie_switches,
+            pcie_generic_initiators: vec![],
+            vpci_devices: vec![],
+            numa,
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
                 proc_count: config_proc_count,
-                vps_per_socket: None,
-                enable_smt: None,
+                vps_per_socket,
+                enable_smt,
                 arch: Default::default(),
             },
             hypervisor: HypervisorConfig {
@@ -1068,7 +1133,7 @@ fn parse_nic_config(
         instance_id: nic.nic_id.parse().context("invalid instance ID")?,
         mac_address: nic
             .mac_address
-            .parse::<net_backend_resources::mac_address::MacAddress>()
+            .parse::<MacAddress>()
             .context("invalid mac address")?,
         endpoint,
         max_queues: None,
@@ -1098,4 +1163,435 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
         }
         .into_resource(),
     })
+}
+
+/// Builds a [`NumaTopology`] from the proto `NumaConfig`, returning the
+/// topology and the total guest memory in bytes (summed across the nodes).
+fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopology, u64)> {
+    let mut total_mem = 0u64;
+    let mut nodes = Vec::new();
+    for node in numa.nodes {
+        let mem = if let Some(mem) = node.memory {
+            let mem_size = mem
+                .memory_mb
+                .checked_mul(0x100000)
+                .context("invalid node memory size")?;
+            total_mem = total_mem
+                .checked_add(mem_size)
+                .context("total memory overflow")?;
+            if mem.hugepage_size_bytes.is_some() && !mem.hugepages {
+                bail!("hugepage_size_bytes requires hugepages");
+            }
+            Some(MemoryConfig {
+                mem_size,
+                prefetch_memory: mem.prefetch,
+                private_memory: mem.private_memory,
+                transparent_hugepages: mem.transparent_hugepages,
+                hugepages: mem.hugepages,
+                hugepage_size: mem.hugepage_size_bytes,
+                host_numa_node: mem.host_numa_node,
+            })
+        } else {
+            None
+        };
+        // Absent => `FromTopology`; present-but-empty => `Empty` (CPU-less);
+        // present-and-non-empty => explicit VP indices.
+        let vps = match node.vps {
+            None => VpAssignment::FromTopology,
+            Some(vps) if vps.vp_index.is_empty() => VpAssignment::Empty,
+            Some(vps) => VpAssignment::Explicit(vps.vp_index),
+        };
+        nodes.push(NumaNode { mem, vps });
+    }
+
+    let distances = numa
+        .distances
+        .into_iter()
+        .map(|d| {
+            Ok(NumaDistance {
+                src: d.src,
+                dst: d.dst,
+                distance: d.distance.try_into().context("distance out of range")?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok((NumaTopology { nodes, distances }, total_mem))
+}
+
+/// Converts a proto MMIO window (a size plus an optional pinned base) into a
+/// [`PcieMmioRangeConfig`].
+fn pcie_mmio_range_config(size: u64, base: Option<u64>) -> anyhow::Result<PcieMmioRangeConfig> {
+    Ok(if let Some(base) = base {
+        let end = base
+            .checked_add(size)
+            .context("MMIO base + size overflows")?;
+        PcieMmioRangeConfig::Fixed(MemoryRange::try_new(base..end).context("invalid MMIO range")?)
+    } else {
+        PcieMmioRangeConfig::Dynamic { size }
+    })
+}
+
+/// Flattens the nested proto PCIe topology into the flat config representation:
+/// a list of root complexes (each carrying its root ports), a list of switches
+/// (each referencing its parent port), and a list of devices (each referencing
+/// the port it sits behind).
+async fn build_pcie_topology(
+    topology: vmservice::PcieTopologyConfig,
+) -> anyhow::Result<(
+    Vec<PcieRootComplexConfig>,
+    Vec<PcieSwitchConfig>,
+    Vec<PcieDeviceConfig>,
+)> {
+    let mut root_complexes = Vec::new();
+    let mut switches = Vec::new();
+    // Devices are built after the topology walk so that the (async) device
+    // construction does not need to recurse.
+    let mut pending_devices: Vec<(String, vmservice::PcieDeviceKind)> = Vec::new();
+
+    for (index, rc) in topology.root_complexes.into_iter().enumerate() {
+        let mut ports = Vec::new();
+        for root_port in rc.root_ports {
+            let port_name = root_port.name;
+            ports.push(PciePortConfig {
+                name: port_name.clone(),
+                devfn: root_port
+                    .devfn
+                    .map(|d| d.try_into().context("devfn out of range"))
+                    .transpose()?,
+                hotplug: root_port.hotplug,
+                acs_capabilities_supported: None,
+                cxl: false,
+            });
+            if let Some(attached) = root_port.attached {
+                walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
+            }
+        }
+
+        root_complexes.push(PcieRootComplexConfig {
+            index: index as u32,
+            name: rc.name,
+            segment: rc.segment.try_into().context("segment out of range")?,
+            start_bus: rc.start_bus.try_into().context("start_bus out of range")?,
+            end_bus: rc.end_bus.try_into().context("end_bus out of range")?,
+            low_mmio: pcie_mmio_range_config(rc.low_mmio, rc.low_mmio_base)?,
+            high_mmio: pcie_mmio_range_config(rc.high_mmio, rc.high_mmio_base)?,
+            ports,
+            cxl: None,
+            iommu: None,
+            vnode: rc.node,
+            preserve_bars: rc.preserve_bars,
+        });
+    }
+
+    let mut devices = Vec::new();
+    for (port_name, device) in pending_devices {
+        let resource = build_pcie_device(device).await?;
+        devices.push(PcieDeviceConfig {
+            port_name,
+            resource,
+        });
+    }
+
+    Ok((root_complexes, switches, devices))
+}
+
+/// Walks a single proto `PcieAttachment` (the thing behind one port): either an
+/// endpoint device (queued in `pending_devices`) or a nested switch (appended
+/// to `switches`, recursing into its downstream ports).
+fn walk_pcie_attachment(
+    port_name: String,
+    attachment: vmservice::PcieAttachment,
+    switches: &mut Vec<PcieSwitchConfig>,
+    pending_devices: &mut Vec<(String, vmservice::PcieDeviceKind)>,
+) -> anyhow::Result<()> {
+    match attachment.kind.context("missing attachment kind")? {
+        vmservice::pcie_attachment::Kind::Device(device) => {
+            pending_devices.push((port_name, device));
+        }
+        vmservice::pcie_attachment::Kind::Switch(switch) => {
+            let switch_name = switch.name;
+            let ports = switch
+                .downstream_ports
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    Ok(PciePortConfig {
+                        name: format!("{switch_name}-downstream-{i}"),
+                        devfn: p
+                            .devfn
+                            .map(|d| d.try_into().context("devfn out of range"))
+                            .transpose()?,
+                        hotplug: p.hotplug,
+                        acs_capabilities_supported: None,
+                        cxl: false,
+                    })
+                })
+                .collect::<anyhow::Result<_>>()?;
+            switches.push(PcieSwitchConfig {
+                name: switch_name.clone(),
+                parent_port: port_name,
+                ports,
+            });
+            for (i, downstream) in switch.downstream_ports.into_iter().enumerate() {
+                // The runtime names switch downstream ports
+                // `{switch_name}-downstream-{index}` (0-based); use that as the
+                // port name when wiring whatever is attached behind them. The
+                // proto's per-port `name` is informational for now.
+                let downstream_name = format!("{switch_name}-downstream-{i}");
+                if let Some(attached) = downstream.attached {
+                    walk_pcie_attachment(downstream_name, attached, switches, pending_devices)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Builds the resource for a single endpoint PCIe device function (a virtio
+/// function, an NVMe controller, or a VFIO-assigned host device).
+async fn build_pcie_device(
+    device: vmservice::PcieDeviceKind,
+) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+    use vmservice::pcie_device_kind::Kind;
+    Ok(match device.kind.context("missing PCIe device kind")? {
+        Kind::Virtio(virtio) => {
+            let resource = build_virtio_device(virtio).await?;
+            VirtioPciDeviceHandle(resource).into_resource()
+        }
+        Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
+        Kind::Vfio(vfio) => build_vfio_device(vfio)?,
+    })
+}
+
+/// Builds a VFIO-assigned host PCI device resource from the proto `VfioDevice`.
+///
+/// Uses the legacy VFIO group/container path: the device's IOMMU group is
+/// resolved from sysfs and the corresponding `/dev/vfio/<group_id>` file is
+/// opened. The device must already be bound to `vfio-pci` on the host.
+#[cfg(target_os = "linux")]
+fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+    let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&vfio.host_pci_address);
+    let iommu_group_link =
+        std::fs::read_link(sysfs_path.join("iommu_group")).with_context(|| {
+            format!(
+                "failed to read IOMMU group for {} (is it bound to vfio-pci?)",
+                vfio.host_pci_address
+            )
+        })?;
+    let group_id: u64 = iommu_group_link
+        .file_name()
+        .and_then(|s| s.to_str())
+        .context("invalid iommu_group symlink")?
+        .parse()
+        .context("failed to parse IOMMU group ID")?;
+    let group = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("/dev/vfio/{group_id}"))
+        .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
+    Ok(vfio_assigned_device_resources::VfioDeviceHandle {
+        pci_id: vfio.host_pci_address,
+        group,
+        bar_pt: [false; 6],
+    }
+    .into_resource())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_vfio_device(
+    _vfio: vmservice::VfioDevice,
+) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+    anyhow::bail!("VFIO device assignment is only supported on Linux")
+}
+
+/// Builds an NVMe controller resource from the proto `NvmeConfig`.
+async fn build_nvme_controller(
+    nvme: vmservice::NvmeConfig,
+) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+    let mut namespaces = Vec::new();
+    for ns in nvme.namespaces {
+        let read_only = ns.read_only;
+        let disk =
+            build_disk_backend(ns.backend.context("missing namespace backend")?, read_only).await?;
+        namespaces.push(nvme_resources::NamespaceDefinition {
+            nsid: ns.nsid,
+            read_only,
+            disk,
+        });
+    }
+    Ok(nvme_resources::NvmeControllerHandle {
+        subsystem_id: crate::storage_builder::deterministic_guid(&nvme.controller_id),
+        msix_count: 64,
+        max_io_queues: 64,
+        namespaces,
+        requests: None,
+    }
+    .into_resource())
+}
+
+/// Builds a transport-independent virtio device function from the proto
+/// `VirtioDevice`.
+async fn build_virtio_device(
+    device: vmservice::VirtioDevice,
+) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
+    use vmservice::virtio_device::Kind;
+    Ok(match device.kind.context("missing virtio device kind")? {
+        Kind::Blk(blk) => {
+            let read_only = blk.read_only;
+            let disk =
+                build_disk_backend(blk.backend.context("missing blk backend")?, read_only).await?;
+            virtio_resources::blk::VirtioBlkHandle { disk, read_only }.into_resource()
+        }
+        Kind::Net(net) => {
+            let endpoint = build_nic_backend(net.backend.context("missing net backend")?)?;
+            virtio_resources::net::VirtioNetHandle {
+                max_queues: net
+                    .max_queues
+                    .map(|q| q.try_into().context("max_queues out of range"))
+                    .transpose()?,
+                mac_address: net
+                    .mac_address
+                    .parse::<MacAddress>()
+                    .context("invalid mac address")?,
+                endpoint,
+            }
+            .into_resource()
+        }
+        Kind::Rng(_) => virtio_resources::rng::VirtioRngHandle.into_resource(),
+        Kind::Vsock(vsock) => {
+            let listener = UnixListener::bind(&vsock.socket_path).with_context(|| {
+                format!("failed to bind virtio-vsock socket: {}", vsock.socket_path)
+            })?;
+            virtio_resources::vsock::VirtioVsockHandle {
+                // The guest CID does not matter for the UDS relay; it just needs
+                // to be a non-reserved value.
+                guest_cid: 0x3,
+                base_path: vsock.socket_path,
+                listener,
+            }
+            .into_resource()
+        }
+        Kind::Console(console) => {
+            let backend =
+                build_serial_backend(console.backend.context("missing console backend")?)?;
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
+        }
+        Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
+    })
+}
+
+/// Builds a disk backend resource from the proto `DiskBackend`.
+async fn build_disk_backend(
+    backend: vmservice::DiskBackend,
+    read_only: bool,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    match backend.kind.context("missing disk backend kind")? {
+        vmservice::disk_backend::Kind::File(file) => open_disk_type(
+            file.path.as_ref(),
+            OpenDiskOptions {
+                read_only,
+                direct: file.direct,
+            },
+        )
+        .await
+        .with_context(|| format!("failed to open {}", file.path)),
+    }
+}
+
+/// Builds a host network endpoint resource from the proto `NicBackend`.
+fn build_nic_backend(
+    backend: vmservice::NicBackend,
+) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
+    use vmservice::nic_backend::Kind;
+    Ok(match backend.kind.context("missing network backend")? {
+        Kind::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
+            cidr: (!consomme.cidr.is_empty()).then_some(consomme.cidr),
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource(),
+        #[cfg(target_os = "linux")]
+        Kind::Tap(tap) => {
+            let fd = net_tap::tap::open_tap(tap.name.as_ref())
+                .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
+            net_backend_resources::tap::TapHandle { fd }.into_resource()
+        }
+        #[cfg(windows)]
+        Kind::Dio(dio) => net_backend_resources::dio::WindowsDirectIoHandle {
+            switch_port_id: net_backend_resources::dio::SwitchPortId {
+                switch: dio.switch_id.parse().context("invalid switch ID")?,
+                port: dio.port_id.parse().context("invalid port ID")?,
+            },
+        }
+        .into_resource(),
+        _ => anyhow::bail!("unsupported network backend"),
+    })
+}
+
+/// Builds a serial backend resource from the proto `SerialBackend`.
+fn build_serial_backend(
+    backend: vmservice::SerialBackend,
+) -> anyhow::Result<Resource<SerialBackendHandle>> {
+    match backend.kind.context("missing serial backend kind")? {
+        vmservice::serial_backend::Kind::Relay(relay) => {
+            let (serial_fn, action) = open_socket_backend(relay.connect);
+            serial_fn(relay.socket_path.as_ref()).with_context(|| {
+                format!("failed to {} serial socket: {}", action, relay.socket_path)
+            })
+        }
+    }
+}
+
+/// Builds a vhost-user-backed virtio device. Only supported on unix, where the
+/// backend is reached over a Unix domain socket.
+#[cfg(unix)]
+fn build_vhost_user_device(
+    vhost_user: vmservice::VhostUser,
+) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
+    use vmservice::vhost_user_device::Kind;
+
+    let stream = unix_socket::UnixStream::connect(&vhost_user.socket_path).with_context(|| {
+        format!(
+            "failed to connect to vhost-user socket: {}",
+            vhost_user.socket_path
+        )
+    })?;
+    let device = vhost_user.device.context("missing vhost-user device")?;
+    let to_u16 =
+        |v: u32| -> anyhow::Result<u16> { v.try_into().context("queue value out of range") };
+    Ok(
+        match device.kind.context("missing vhost-user device kind")? {
+            Kind::Blk(blk) => virtio_resources::vhost_user::VhostUserBlkHandle {
+                socket: stream.into(),
+                num_queues: blk.num_queues.map(to_u16).transpose()?,
+                queue_size: blk.queue_size.map(to_u16).transpose()?,
+            }
+            .into_resource(),
+            Kind::Fs(fs) => virtio_resources::vhost_user::VhostUserFsHandle {
+                socket: stream.into(),
+                tag: fs.tag,
+                num_queues: fs.num_queues.map(to_u16).transpose()?,
+                queue_size: fs.queue_size.map(to_u16).transpose()?,
+            }
+            .into_resource(),
+            Kind::Other(other) => virtio_resources::vhost_user::VhostUserGenericHandle {
+                socket: stream.into(),
+                device_id: to_u16(other.device_id)?,
+                queue_sizes: other
+                    .queue_sizes
+                    .into_iter()
+                    .map(to_u16)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            }
+            .into_resource(),
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn build_vhost_user_device(
+    _vhost_user: vmservice::VhostUser,
+) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
+    anyhow::bail!("vhost-user is only supported on unix hosts")
 }
