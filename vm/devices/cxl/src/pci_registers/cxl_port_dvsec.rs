@@ -186,7 +186,7 @@ impl CxlPortDvsecExtendedCapability {
             }
             CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE => {
                 let bits =
-                    value.merge(self.cxl_rcrb_base) & CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
+                    value.merge(self.cxl_rcrb_base.into_bits()) & CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
                 self.cxl_rcrb_base = CxlPortDvsecRcrbBase::from_bits(bits);
             }
             CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH => {
