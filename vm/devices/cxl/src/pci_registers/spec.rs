@@ -187,17 +187,29 @@ pub mod cxl_device_dvsec {
         ///
         /// This table starts at the first CXL-specific packed dword (`0x0C`).
         pub enum CxlDeviceDvsecRegisterOffset: u16 {
+            /// Packed CXL Control + CXL Status dword offset.
             DVSEC_CONTROL_STATUS = 0x0c,
+            /// Packed CXL Control2 + CXL Status2 dword offset.
             DVSEC_CONTROL2_STATUS2 = 0x10,
+            /// Packed CXL Lock + CXL Capability2 dword offset.
             DVSEC_LOCK_CAPABILITY2 = 0x14,
+            /// CXL Range1 Size High dword offset.
             DVSEC_RANGE1_SIZE_HIGH = 0x18,
+            /// CXL Range1 Size Low dword offset.
             DVSEC_RANGE1_SIZE_LOW = 0x1c,
+            /// CXL Range1 Base High dword offset.
             DVSEC_RANGE1_BASE_HIGH = 0x20,
+            /// CXL Range1 Base Low dword offset.
             DVSEC_RANGE1_BASE_LOW = 0x24,
+            /// CXL Range2 Size High dword offset.
             DVSEC_RANGE2_SIZE_HIGH = 0x28,
+            /// CXL Range2 Size Low dword offset.
             DVSEC_RANGE2_SIZE_LOW = 0x2c,
+            /// CXL Range2 Base High dword offset.
             DVSEC_RANGE2_BASE_HIGH = 0x30,
+            /// CXL Range2 Base Low dword offset.
             DVSEC_RANGE2_BASE_LOW = 0x34,
+            /// CXL Capability3 dword offset.
             DVSEC_CAPABILITY3 = 0x38,
         }
     }

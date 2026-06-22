@@ -1071,8 +1071,8 @@ impl ConfigSpaceType0Emulator {
             HeaderType00::CARDBUS_CIS_PTR => value.set(0),
             HeaderType00::SUBSYSTEM_ID => {
                 value.set_low_high(
-                    self.common.hardware_ids().type0_sub_system_id,
                     self.common.hardware_ids().type0_sub_vendor_id,
+                    self.common.hardware_ids().type0_sub_system_id,
                 );
             }
             HeaderType00::EXPANSION_ROM_BASE => value.set(0),
@@ -1104,10 +1104,7 @@ impl ConfigSpaceType0Emulator {
             return IoResult::Err(IoError::InvalidRegister);
         };
 
-        self.read(
-            addr,
-            ByteEnabledDwordRead::with_all_bytes_enabled(value),
-        )
+        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
     }
 
     /// Write to the config space.
@@ -1161,10 +1158,7 @@ impl ConfigSpaceType0Emulator {
             return IoResult::Err(IoError::InvalidRegister);
         };
 
-        self.write(
-            addr,
-            ByteEnabledDwordWrite::with_all_bytes_enabled(val),
-        )
+        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Finds a BAR + offset by address.
@@ -1469,10 +1463,7 @@ impl ConfigSpaceType1Emulator {
             return IoResult::Err(IoError::InvalidRegister);
         };
 
-        self.read(
-            addr,
-            ByteEnabledDwordRead::with_all_bytes_enabled(value),
-        )
+        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
     }
 
     /// Write to the config space.
@@ -1512,14 +1503,10 @@ impl ConfigSpaceType1Emulator {
                     & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_RANGE => {
-                let current_base =
-                    self.state.prefetch_base | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT;
-                let current_limit =
-                    self.state.prefetch_limit | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT;
-                self.state.prefetch_base =
-                    val.merge_low(current_base) & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
-                self.state.prefetch_limit =
-                    val.merge_high(current_limit) & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.prefetch_base = val.merge_low(self.state.prefetch_base)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.prefetch_limit = val.merge_high(self.state.prefetch_limit)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_BASE_UPPER => {
                 val.merge_into(&mut self.state.prefetch_base_upper);
@@ -1555,10 +1542,7 @@ impl ConfigSpaceType1Emulator {
             return IoResult::Err(IoError::InvalidRegister);
         };
 
-        self.write(
-            addr,
-            ByteEnabledDwordWrite::with_all_bytes_enabled(val),
-        )
+        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.
