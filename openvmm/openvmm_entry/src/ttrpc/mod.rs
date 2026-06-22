@@ -663,10 +663,10 @@ impl VmService {
                     &nic.backend,
                     Some(vmservice::nic_config::Backend::Consomme(_))
                 );
-                let recv = if is_consomme {
-                    if consomme_rpc.is_some() {
-                        anyhow::bail!("only one consomme NIC is supported");
-                    }
+                // Only wire the bind/unbind RPC channel to the first consomme
+                // NIC. Additional consomme NICs work but cannot be targeted by
+                // runtime bind/unbind commands.
+                let recv = if is_consomme && consomme_rpc.is_none() {
                     let (send, recv) = mesh::channel();
                     consomme_rpc = Some(send);
                     Some(recv)

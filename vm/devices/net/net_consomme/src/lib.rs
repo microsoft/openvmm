@@ -490,7 +490,8 @@ fn execute_bind(
     };
     let protocol: IpProtocol = cfg.protocol.clone().into();
     let ip_addr = cfg.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
-    let socket = create_bound_socket(&protocol, ip_addr, bind_port).context("failed to create and bind socket")?;
+    let socket = create_bound_socket(&protocol, ip_addr, bind_port)
+        .context("failed to create and bind socket")?;
     let dynamic_port = match dynamic_sender {
         Some(sender) => {
             let addr = socket_addr(&socket).context("failed to get bound address")?;

@@ -2015,9 +2015,6 @@ fn parse_endpoint(
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
         EndpointConfigCli::Consomme { cidr, host_fwd } => {
-            if resources.consomme_rpc.is_some() {
-                anyhow::bail!("only one consomme endpoint is supported");
-            }
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
@@ -2035,12 +2032,20 @@ fn parse_endpoint(
                     }
                 })
                 .collect();
-            let (send, recv) = mesh::channel();
-            resources.consomme_rpc = Some(send);
+            // Only wire the bind/unbind RPC channel to the first consomme
+            // endpoint. Additional consomme NICs work normally but cannot be
+            // targeted by runtime bind/unbind commands.
+            let recv = if resources.consomme_rpc.is_none() {
+                let (send, recv) = mesh::channel();
+                resources.consomme_rpc = Some(send);
+                Some(recv)
+            } else {
+                None
+            };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
                 ports,
-                recv: Some(recv),
+                recv,
             }
             .into_resource()
         }
