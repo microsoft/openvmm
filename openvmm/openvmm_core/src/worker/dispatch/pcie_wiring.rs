@@ -164,19 +164,13 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
     // availability.
     #[cfg(guest_arch = "aarch64")]
     if let Some(shared) = params.smmu {
-        let translating_gm = iommu_common::TranslatingMemory::new_guest_memory(
-            "smmu-translating",
+        let dma_target = iommu_common::new_dma_target(
+            "smmu",
             shared.translator(0),
             params.bus_range.clone(),
             params.guest_memory.clone(),
+            params.msi_target,
         );
-        let iommu = Arc::new(iommu_common::TranslatingDmaTarget::new(
-            "smmu-translating-vf",
-            shared.translator(0),
-            params.bus_range.clone(),
-            params.guest_memory.clone(),
-        ));
-        let dma_target = DmaTarget::with_iommu(translating_gm, params.msi_target, iommu);
         let smmu_msi = msi.signal_msi.map(|inner_msi| {
             Arc::new(smmu::SmmuSignalMsi::new(shared.clone(), 0, inner_msi))
                 as Arc<dyn pci_core::msi::SignalMsi>
@@ -197,20 +191,14 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
     // MSI interrupt remapping was already applied by wrap_msi().
     #[cfg(guest_arch = "x86_64")]
     if let Some(shared) = params.msi_platform.iommu {
-        let translating_gm = iommu_common::TranslatingMemory::new_guest_memory(
-            "amd-iommu-translating",
-            shared.translator(),
-            params.bus_range.clone(),
-            params.guest_memory.clone(),
-        );
-        let iommu = Arc::new(iommu_common::TranslatingDmaTarget::new(
-            "amd-iommu-translating-vf",
-            shared.translator(),
-            params.bus_range.clone(),
-            params.guest_memory.clone(),
-        ));
         return PcieDeviceWiring {
-            dma_target: DmaTarget::with_iommu(translating_gm, params.msi_target, iommu),
+            dma_target: iommu_common::new_dma_target(
+                "amd-iommu",
+                shared.translator(),
+                params.bus_range.clone(),
+                params.guest_memory.clone(),
+                params.msi_target,
+            ),
             msi,
         };
     }

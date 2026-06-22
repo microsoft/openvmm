@@ -350,6 +350,39 @@ impl<T: IommuTranslator + Clone> pci_core::dma::DmaTargetIommu for TranslatingDm
     }
 }
 
+/// Build a [`DmaTarget`](pci_core::dma::DmaTarget) backed by an IOMMU translator.
+///
+/// Wraps `guest_memory` with a function-0 translating [`GuestMemory`] (whose RID
+/// is derived dynamically from `bus_range` on each access) and a
+/// [`TranslatingDmaTarget`] factory for per-VF derivation, then bundles both
+/// with `msi_target`. IOMMU backends (SMMU, AMD-Vi, …) call this to plug their
+/// arch-specific translator into the [`DmaTarget`](pci_core::dma::DmaTarget)
+/// machinery without re-implementing the two-part construction.
+pub fn new_dma_target<T>(
+    label: &str,
+    translator: T,
+    bus_range: AssignedBusRange,
+    guest_memory: GuestMemory,
+    msi_target: pci_core::msi::MsiTarget,
+) -> pci_core::dma::DmaTarget
+where
+    T: IommuTranslator + Clone,
+{
+    let translating_gm = TranslatingMemory::new_guest_memory(
+        format!("{label}-translating"),
+        translator.clone(),
+        bus_range.clone(),
+        guest_memory.clone(),
+    );
+    let iommu = std::sync::Arc::new(TranslatingDmaTarget::new(
+        format!("{label}-translating-vf"),
+        translator,
+        bus_range,
+        guest_memory,
+    ));
+    pci_core::dma::DmaTarget::with_iommu(translating_gm, msi_target, iommu)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
