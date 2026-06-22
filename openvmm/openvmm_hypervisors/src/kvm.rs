@@ -7,7 +7,9 @@
 
 use anyhow::Context as _;
 use hypervisor_resources::HvEnlightenments;
+#[cfg(guest_arch = "x86_64")]
 use hypervisor_resources::HvHostAdjustments;
+#[cfg(guest_arch = "x86_64")]
 use hypervisor_resources::HvHostCaps;
 use hypervisor_resources::HvSpecOverrides;
 use hypervisor_resources::HypervisorKind;
