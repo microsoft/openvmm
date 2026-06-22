@@ -11,10 +11,8 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmfwDll;
 use petri_artifacts_common::tags::IsVmgsTool;
-#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::CUSTOM_RESOURCE_CODE;
-#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64;
 use std::path::Path;
 use std::process::Command;
@@ -50,7 +48,6 @@ use vmm_test_macros::vmm_test_with;
 #[vmm_test(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 )]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     config: PetriVmBuilder<T>,
     (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
@@ -155,7 +152,6 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
 #[vmm_test_with(noagent(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 ))]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
     _config: PetriVmBuilder<T>,
     (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
@@ -222,7 +218,6 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
 #[vmm_test_with(noagent(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
 ))]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
     _config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
@@ -268,7 +263,6 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
 #[vmm_test_with(noagent(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
 ))]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
     _config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
@@ -316,7 +310,6 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
 #[vmm_test_with(noagent(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 ))]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
     _config: PetriVmBuilder<T>,
     (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),

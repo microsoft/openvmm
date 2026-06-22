@@ -24,6 +24,7 @@ use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
 /// Tests for `vmgstool copy-igvmfile` and the load-IGVM-from-VMGS flow.
+#[cfg(windows)]
 mod copy_igvmfile;
 /// Tests for Hyper-V integration components.
 mod ic;
