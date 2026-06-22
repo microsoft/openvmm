@@ -3,7 +3,8 @@
 
 //! CXL Flex Bus Port PCIe DVSEC extended capability implementation.
 
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -115,32 +116,38 @@ impl CxlFlexBusPortDvsecExtendedCapability {
         usize::from(CXL_FLEX_BUS_PORT_DVSEC_LENGTH)
     }
 
-    fn read_dvsec_u32(&self, offset: u16) -> u32 {
+    fn read_dvsec(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         const DVSEC_HEADER1_OFFSET: u16 = DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0;
 
-        match offset {
-            DVSEC_HEADER1_OFFSET => Self::dvsec_header1().into_bits(),
+        match CxlFlexBusPortDvsecRegisterOffset(offset) {
+            _ if offset == DVSEC_HEADER1_OFFSET => value.set(Self::dvsec_header1().into_bits()),
             CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY => {
-                u32::from(Self::dvsec_header2().into_bits())
-                    | (u32::from(self.capability.into_bits()) << 16)
+                value.set_low_high(
+                    Self::dvsec_header2().into_bits(),
+                    self.capability.into_bits(),
+                );
             }
             CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS => {
-                u32::from(self.control.into_bits()) | (u32::from(self.status.into_bits()) << 16)
+                value.set_low_high(self.control.into_bits(), self.status.into_bits());
             }
             CxlFlexBusPortDvsecRegisterOffset::DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1 => {
-                self.received_modified_ts_data_phase1.into_bits()
+                value.set(self.received_modified_ts_data_phase1.into_bits());
             }
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2 => self.capability2.into_bits(),
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2 => self.control2.into_bits(),
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2 => self.status2.into_bits(),
-            _ => !0,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2 => {
+                value.set(self.capability2.into_bits())
+            }
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2 => {
+                value.set(self.control2.into_bits())
+            }
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2 => value.set(self.status2.into_bits()),
+            _ => value.set(!0),
         }
     }
 
-    fn write_dvsec(&mut self, offset: u16, value: ByteEnabledDword) {
-        match offset {
+    fn write_dvsec(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
+        match CxlFlexBusPortDvsecRegisterOffset(offset) {
             CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS => {
-                self.handle_control_status_write(offset, value)
+                self.handle_control_status_write(value)
             }
             CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2 => self.handle_control2_write(value),
             _ => {}
@@ -170,8 +177,8 @@ impl CxlFlexBusPortDvsecExtendedCapability {
         DvsecHeader2::new().with_dvsec_id(CXL_FLEX_BUS_PORT_DVSEC_ID)
     }
 
-    fn handle_control_status_write(&mut self, offset: u16, value: ByteEnabledDword) {
-        let requested = (value.merge(self.read_dvsec_u32(offset)) as u16)
+    fn handle_control_status_write(&mut self, value: ByteEnabledDwordWrite) {
+        let requested = value.merge_low(self.control.into_bits())
             & CXL_FLEX_BUS_PORT_DVSEC_CONTROL_WRITABLE_MASK;
         let mut next = CxlFlexBusPortDvsecControl::from_bits(requested);
 
@@ -205,15 +212,14 @@ impl CxlFlexBusPortDvsecExtendedCapability {
 
         self.control = next;
 
-        let clear_mask =
-            ((value.extract() >> 16) as u16) & CXL_FLEX_BUS_PORT_DVSEC_STATUS_RW1CS_MASK;
+        let clear_mask = value.extract_high() & CXL_FLEX_BUS_PORT_DVSEC_STATUS_RW1CS_MASK;
         if clear_mask != 0 {
             let next_bits = self.status.into_bits() & !clear_mask;
             self.status = CxlFlexBusPortDvsecStatus::from_bits(next_bits);
         }
     }
 
-    fn handle_control2_write(&mut self, value: ByteEnabledDword) {
+    fn handle_control2_write(&mut self, value: ByteEnabledDwordWrite) {
         let value = value.merge(self.control2.into_bits());
         let requested = value & CXL_FLEX_BUS_PORT_DVSEC_CONTROL2_WRITABLE_MASK;
         let mut next = CxlFlexBusPortDvsecControl2::from_bits(requested);
@@ -241,15 +247,18 @@ impl PciExtendedCapability for CxlFlexBusPortDvsecExtendedCapability {
         self.dvsec_len()
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        value.set_value(if offset == 0 {
-            u32::from(self.extended_capability_id()) | (u32::from(self.capability_version()) << 16)
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        if offset == 0 {
+            value.set_low_high(
+                self.extended_capability_id(),
+                self.capability_version().into(),
+            );
         } else {
-            self.read_dvsec_u32(offset)
-        });
+            self.read_dvsec(offset, value);
+        }
     }
 
-    fn write(&mut self, offset: u16, value: ByteEnabledDword) {
+    fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
         if offset != 0 {
             self.write_dvsec(offset, value);
         }
@@ -333,7 +342,7 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
-    use chipset_device::pci::ByteEnabledDword;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigByteEnable;
     use pci_core::capabilities::extended::PciExtendedCapability;
     use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -359,7 +368,7 @@ mod tests {
         assert_eq!(
             read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY.0
             ) & 0xffff,
             0x0007
         );
@@ -386,13 +395,13 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             u32::from(requested),
         );
 
         let control = CxlFlexBusPortDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
 
         assert!(!control.cache_enable());
@@ -410,7 +419,7 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             u32::from(
                 CxlFlexBusPortDvsecControl::new()
                     .with_mem_enable(true)
@@ -422,12 +431,12 @@ mod tests {
 
         let header2_cap = read_extended_cap_u32(
             &cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY.0,
         );
         let capability = CxlFlexBusPortDvsecCapability::from_bits((header2_cap >> 16) as u16);
         let control = CxlFlexBusPortDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
 
         assert!(capability.mem_capable());
@@ -447,14 +456,14 @@ mod tests {
         // clear bits 7 and 10
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             (1u32 << (16 + 7)) | (1u32 << (16 + 10)),
         );
 
         let next = CxlFlexBusPortDvsecStatus::from_bits(
             (read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             ) >> 16) as u16,
         );
         assert!(!next.even_half_failed());
@@ -469,14 +478,14 @@ mod tests {
         cap.set_status(status, 0, cap.status2);
 
         cap.write(
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
-            ByteEnabledDword::new(0xffff_ffff, PciConfigByteEnable::new(0b0011).unwrap()),
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
+            ByteEnabledDwordWrite::new(0xffff_ffff, PciConfigByteEnable::new(0b0011).unwrap()),
         );
 
         let next = CxlFlexBusPortDvsecStatus::from_bits(
             (read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             ) >> 16) as u16,
         );
         assert!(next.even_half_failed());
@@ -487,28 +496,28 @@ mod tests {
         let mut cap = CxlFlexBusPortDvsecExtendedCapability::new();
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0,
             CxlFlexBusPortDvsecControl2::new()
                 .with_nop_hint_enable(true)
                 .into_bits(),
         );
         let control2 = CxlFlexBusPortDvsecControl2::from_bits(read_extended_cap_u32(
             &cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0,
         ));
         assert!(!control2.nop_hint_enable());
 
         let mut cap = CxlFlexBusPortDvsecExtendedCapability::new().with_capability2(true, false);
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0,
             CxlFlexBusPortDvsecControl2::new()
                 .with_nop_hint_enable(true)
                 .into_bits(),
         );
         let control2 = CxlFlexBusPortDvsecControl2::from_bits(read_extended_cap_u32(
             &cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0,
         ));
         assert!(control2.nop_hint_enable());
     }
@@ -521,7 +530,7 @@ mod tests {
             .with_capability2(true, true);
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             u32::from(
                 CxlFlexBusPortDvsecControl::new()
                     .with_cache_enable(true)
@@ -542,7 +551,7 @@ mod tests {
         );
         write_extended_cap_u32(
             &mut cap,
-            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2,
+            CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0,
             CxlFlexBusPortDvsecControl2::new()
                 .with_nop_hint_enable(true)
                 .into_bits(),
@@ -555,53 +564,59 @@ mod tests {
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY.0
             ),
             read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY.0
             )
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0
             ),
             read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0
             )
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1.0
             ),
             read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1.0
             )
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2.0
             ),
-            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2)
+            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_CAPABILITY2.0)
         );
         assert_eq!(
-            read_extended_cap_u32(&restored, CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2),
-            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2)
+            read_extended_cap_u32(
+                &restored,
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0
+            ),
+            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_CONTROL2.0)
         );
         assert_eq!(
-            read_extended_cap_u32(&restored, CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2),
-            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2)
+            read_extended_cap_u32(
+                &restored,
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2.0
+            ),
+            read_extended_cap_u32(&cap, CxlFlexBusPortDvsecRegisterOffset::DVSEC_STATUS2.0)
         );
 
         let capability = CxlFlexBusPortDvsecCapability::from_bits(
             (read_extended_cap_u32(
                 &cap,
-                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY,
+                CxlFlexBusPortDvsecRegisterOffset::DVSEC_HEADER2_CAPABILITY.0,
             ) >> 16) as u16,
         );
         assert!(capability.cache_capable());

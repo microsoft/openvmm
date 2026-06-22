@@ -9,7 +9,8 @@ use crate::spec::caps::pci_express;
 use crate::spec::caps::pci_express::{
     LinkSpeed, LinkWidth, PciExpressCapabilityHeader, SupportedLinkSpeedsVector,
 };
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -63,69 +64,6 @@ impl PciExpressState {
             slot_status_2: pci_express::SlotStatus2::new(),
         }
     }
-
-    fn read_u32(&self, offset: u16, cap: &PciExpressCapability) -> u32 {
-        let label = cap.label();
-        match PciExpressCapabilityHeader(offset) {
-            PciExpressCapabilityHeader::PCIE_CAPS => {
-                // PCIe Capabilities Register (16 bits) + Next Pointer (8 bits) + Capability ID (8 bits)
-                (cap.pcie_capabilities.into_bits() as u32) << 16
-                    | CapabilityId::PCI_EXPRESS.0 as u32
-            }
-            PciExpressCapabilityHeader::DEVICE_CAPS => cap.device_capabilities.into_bits(),
-            PciExpressCapabilityHeader::DEVICE_CTL_STS => {
-                // Device Control (2 bytes) + Device Status (2 bytes)
-                let device_control = self.device_control.into_bits() as u32;
-                let device_status = self.device_status.into_bits() as u32;
-                device_control | (device_status << 16)
-            }
-            PciExpressCapabilityHeader::LINK_CAPS => cap.link_capabilities.into_bits(),
-            PciExpressCapabilityHeader::LINK_CTL_STS => {
-                // Link Control (2 bytes) + Link Status (2 bytes)
-                self.link_control.into_bits() as u32 | ((self.link_status.into_bits() as u32) << 16)
-            }
-            PciExpressCapabilityHeader::SLOT_CAPS => cap.slot_capabilities.into_bits(),
-            PciExpressCapabilityHeader::SLOT_CTL_STS => {
-                // Slot Control (2 bytes) + Slot Status (2 bytes)
-                self.slot_control.into_bits() as u32 | ((self.slot_status.into_bits() as u32) << 16)
-            }
-            PciExpressCapabilityHeader::ROOT_CTL_CAPS => {
-                // Root Control (2 bytes) + Root Capabilities (2 bytes)
-                self.root_control.into_bits() as u32
-                    | ((cap.root_capabilities.into_bits() as u32) << 16)
-            }
-            PciExpressCapabilityHeader::ROOT_STS => {
-                // Root Status (4 bytes)
-                self.root_status.into_bits()
-            }
-            PciExpressCapabilityHeader::DEVICE_CAPS_2 => cap.device_capabilities_2.into_bits(),
-            PciExpressCapabilityHeader::DEVICE_CTL_STS_2 => {
-                // Device Control 2 (2 bytes) + Device Status 2 (2 bytes)
-                self.device_control_2.into_bits() as u32
-                    | ((self.device_status_2.into_bits() as u32) << 16)
-            }
-            PciExpressCapabilityHeader::LINK_CAPS_2 => cap.link_capabilities_2.into_bits(),
-            PciExpressCapabilityHeader::LINK_CTL_STS_2 => {
-                // Link Control 2 (2 bytes) + Link Status 2 (2 bytes)
-                self.link_control_2.into_bits() as u32
-                    | ((self.link_status_2.into_bits() as u32) << 16)
-            }
-            PciExpressCapabilityHeader::SLOT_CAPS_2 => cap.slot_capabilities_2.into_bits(),
-            PciExpressCapabilityHeader::SLOT_CTL_STS_2 => {
-                // Slot Control 2 (2 bytes) + Slot Status 2 (2 bytes)
-                self.slot_control_2.into_bits() as u32
-                    | ((self.slot_status_2.into_bits() as u32) << 16)
-            }
-            _ => {
-                tracelimit::warn_ratelimited!(
-                    ?label,
-                    offset,
-                    "unhandled pci express capability read"
-                );
-                0
-            }
-        }
-    }
 }
 
 #[derive(Inspect)]
@@ -171,12 +109,11 @@ impl PciExpressCapability {
         }
     }
 
-    fn handle_device_control_status_write(&mut self, val: ByteEnabledDword) {
+    fn handle_device_control_status_write(&mut self, val: ByteEnabledDwordWrite) {
         // Device Control (2 bytes) + Device Status (2 bytes)
         let mut state = self.state.lock();
-        let new_control = pci_express::DeviceControl::from_bits(
-            val.merge(state.device_control.into_bits() as u32) as u16,
-        );
+        let new_control =
+            pci_express::DeviceControl::from_bits(val.merge_low(state.device_control.into_bits()));
 
         // Check if FLR was initiated
         let old_flr = state.device_control.initiate_function_level_reset();
@@ -195,7 +132,7 @@ impl PciExpressCapability {
         state.device_control = new_control.with_initiate_function_level_reset(false);
 
         // Handle Device Status - most bits are write-1-to-clear
-        let new_status = pci_express::DeviceStatus::from_bits((val.extract() >> 16) as u16);
+        let new_status = pci_express::DeviceStatus::from_bits(val.extract_high());
         let mut current_status = state.device_status;
 
         // Clear bits that were written as 1 (write-1-to-clear semantics)
@@ -215,13 +152,12 @@ impl PciExpressCapability {
         state.device_status = current_status;
     }
 
-    fn handle_slot_control_status_write(&mut self, val: ByteEnabledDword) {
+    fn handle_slot_control_status_write(&mut self, val: ByteEnabledDwordWrite) {
         // Slot Control (2 bytes) + Slot Status (2 bytes)
         let mut state = self.state.lock();
 
-        let new_slot_control = pci_express::SlotControl::from_bits(
-            val.merge(state.slot_control.into_bits() as u32) as u16,
-        );
+        let new_slot_control =
+            pci_express::SlotControl::from_bits(val.merge_low(state.slot_control.into_bits()));
 
         // Mask slot control bits based on slot capabilities
         // Only allow writes to bits that correspond to capabilities that are present
@@ -270,7 +206,7 @@ impl PciExpressCapability {
         state.slot_control = masked_control;
 
         // Slot Status upper 16 bits - handle RW1C and RO bits properly
-        let new_slot_status = pci_express::SlotStatus::from_bits((val.extract() >> 16) as u16);
+        let new_slot_status = pci_express::SlotStatus::from_bits(val.extract_high());
         let mut current_slot_status = state.slot_status;
 
         // RW1C bits: writing 1 clears the bit, writing 0 leaves it unchanged
@@ -300,13 +236,12 @@ impl PciExpressCapability {
         state.slot_status = current_slot_status;
     }
 
-    fn handle_link_control_status_write(&mut self, val: ByteEnabledDword) {
+    fn handle_link_control_status_write(&mut self, val: ByteEnabledDwordWrite) {
         // Link Control (2 bytes) + Link Status (2 bytes)
         let mut state = self.state.lock();
 
-        let new_link_control = pci_express::LinkControl::from_bits(
-            val.merge(state.link_control.into_bits() as u32) as u16,
-        );
+        let new_link_control =
+            pci_express::LinkControl::from_bits(val.merge_low(state.link_control.into_bits()));
 
         // Apply the new link control but ensure retrain_link always reads as 0
         let mut masked_control = new_link_control;
@@ -316,13 +251,12 @@ impl PciExpressCapability {
         // Link Status upper 16 bits - read-only, ignore any writes
     }
 
-    fn handle_link_control_2_write(&mut self, val: ByteEnabledDword) {
+    fn handle_link_control_2_write(&mut self, val: ByteEnabledDwordWrite) {
         // Link Control 2 (2 bytes) + Link Status 2 (2 bytes)
         let mut state = self.state.lock();
 
-        let new_link_control_2 = pci_express::LinkControl2::from_bits(
-            val.merge(state.link_control_2.into_bits() as u32) as u16,
-        );
+        let new_link_control_2 =
+            pci_express::LinkControl2::from_bits(val.merge_low(state.link_control_2.into_bits()));
 
         // Validate that target_link_speed doesn't exceed max_link_speed from Link Capabilities
         let max_speed = self.link_capabilities.max_link_speed();
@@ -508,12 +442,96 @@ impl PciCapability for PciExpressCapability {
         0x3C
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         let state = self.state.lock();
-        value.set_value(state.read_u32(offset, self));
+        let label = self.label();
+        match PciExpressCapabilityHeader(offset) {
+            PciExpressCapabilityHeader::PCIE_CAPS => {
+                // PCIe Capabilities Register (16 bits) + Next Pointer (8 bits) + Capability ID (8 bits)
+                value.set_low_high(
+                    CapabilityId::PCI_EXPRESS.0.into(),
+                    self.pcie_capabilities.into_bits(),
+                )
+            }
+            PciExpressCapabilityHeader::DEVICE_CAPS => {
+                value.set(self.device_capabilities.into_bits())
+            }
+            PciExpressCapabilityHeader::DEVICE_CTL_STS => {
+                // Device Control (2 bytes) + Device Status (2 bytes)
+                value.set_low_high(
+                    state.device_control.into_bits(),
+                    state.device_status.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::LINK_CAPS => value.set(self.link_capabilities.into_bits()),
+            PciExpressCapabilityHeader::LINK_CTL_STS => {
+                // Link Control (2 bytes) + Link Status (2 bytes)
+                value.set_low_high(
+                    state.link_control.into_bits(),
+                    state.link_status.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::SLOT_CAPS => value.set(self.slot_capabilities.into_bits()),
+            PciExpressCapabilityHeader::SLOT_CTL_STS => {
+                // Slot Control (2 bytes) + Slot Status (2 bytes)
+                value.set_low_high(
+                    state.slot_control.into_bits(),
+                    state.slot_status.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::ROOT_CTL_CAPS => {
+                // Root Control (2 bytes) + Root Capabilities (2 bytes)
+                value.set_low_high(
+                    state.root_control.into_bits(),
+                    self.root_capabilities.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::ROOT_STS => {
+                // Root Status (4 bytes)
+                value.set(state.root_status.into_bits());
+            }
+            PciExpressCapabilityHeader::DEVICE_CAPS_2 => {
+                value.set(self.device_capabilities_2.into_bits())
+            }
+            PciExpressCapabilityHeader::DEVICE_CTL_STS_2 => {
+                // Device Control 2 (2 bytes) + Device Status 2 (2 bytes)
+                value.set_low_high(
+                    state.device_control_2.into_bits(),
+                    state.device_status_2.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::LINK_CAPS_2 => {
+                value.set(self.link_capabilities_2.into_bits())
+            }
+            PciExpressCapabilityHeader::LINK_CTL_STS_2 => {
+                // Link Control 2 (2 bytes) + Link Status 2 (2 bytes)
+                value.set_low_high(
+                    state.link_control_2.into_bits(),
+                    state.link_status_2.into_bits(),
+                );
+            }
+            PciExpressCapabilityHeader::SLOT_CAPS_2 => {
+                value.set(self.slot_capabilities_2.into_bits())
+            }
+            PciExpressCapabilityHeader::SLOT_CTL_STS_2 => {
+                // Slot Control 2 (2 bytes) + Slot Status 2 (2 bytes)
+                value.set_low_high(
+                    state.slot_control_2.into_bits(),
+                    state.slot_status_2.into_bits(),
+                );
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(
+                    ?label,
+                    offset,
+                    "unhandled pci express capability read"
+                );
+                value.set(0);
+            }
+        }
     }
 
-    fn write(&mut self, offset: u16, val: ByteEnabledDword) {
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
         let label = self.label();
         match PciExpressCapabilityHeader(offset) {
             PciExpressCapabilityHeader::PCIE_CAPS => {
@@ -564,16 +582,17 @@ impl PciCapability for PciExpressCapability {
             PciExpressCapabilityHeader::ROOT_CTL_CAPS => {
                 // Root Control (2 bytes) + Root Capabilities (2 bytes)
                 let mut state = self.state.lock();
-                let val = val.merge(state.read_u32(offset, self));
-                state.root_control = pci_express::RootControl::from_bits(val as u16);
+                state.root_control = pci_express::RootControl::from_bits(
+                    val.merge_low(state.root_control.into_bits()),
+                );
                 // Root Capabilities upper 16 bits are read-only
             }
             PciExpressCapabilityHeader::ROOT_STS => {
                 // Root Status (4 bytes) - many bits are write-1-to-clear
                 let mut state = self.state.lock();
                 // For simplicity, we'll allow basic writes for now
-                let val = val.merge(state.read_u32(offset, self));
-                state.root_status = pci_express::RootStatus::from_bits(val);
+                let new = val.merge(state.root_status.into_bits());
+                state.root_status = pci_express::RootStatus::from_bits(new);
             }
             PciExpressCapabilityHeader::DEVICE_CAPS_2 => {
                 // Device Capabilities 2 register is read-only
@@ -587,10 +606,13 @@ impl PciCapability for PciExpressCapability {
             PciExpressCapabilityHeader::DEVICE_CTL_STS_2 => {
                 // Device Control 2 (2 bytes) + Device Status 2 (2 bytes)
                 let mut state = self.state.lock();
-                let val = val.merge(state.read_u32(offset, self));
-                state.device_control_2 = pci_express::DeviceControl2::from_bits(val as u16);
+                state.device_control_2 = pci_express::DeviceControl2::from_bits(
+                    val.merge_low(state.device_control_2.into_bits()),
+                );
                 // Device Status 2 upper 16 bits - mostly read-only or write-1-to-clear
-                state.device_status_2 = pci_express::DeviceStatus2::from_bits((val >> 16) as u16);
+                state.device_status_2 = pci_express::DeviceStatus2::from_bits(
+                    val.merge_high(state.device_status_2.into_bits()),
+                );
             }
             PciExpressCapabilityHeader::LINK_CAPS_2 => {
                 // Link Capabilities 2 register is read-only
@@ -616,10 +638,13 @@ impl PciCapability for PciExpressCapability {
             PciExpressCapabilityHeader::SLOT_CTL_STS_2 => {
                 // Slot Control 2 (2 bytes) + Slot Status 2 (2 bytes)
                 let mut state = self.state.lock();
-                let val = val.merge(state.read_u32(offset, self));
-                state.slot_control_2 = pci_express::SlotControl2::from_bits(val as u16);
+                state.slot_control_2 = pci_express::SlotControl2::from_bits(
+                    val.merge_low(state.slot_control_2.into_bits()),
+                );
                 // Slot Status 2 upper 16 bits - mostly read-only or write-1-to-clear
-                state.slot_status_2 = pci_express::SlotStatus2::from_bits((val >> 16) as u16);
+                state.slot_status_2 = pci_express::SlotStatus2::from_bits(
+                    val.merge_high(state.slot_status_2.into_bits()),
+                );
             }
             _ => {
                 tracelimit::warn_ratelimited!(
@@ -740,6 +765,7 @@ mod tests {
     use crate::spec::caps::pci_express::DevicePortType;
     use crate::test_helpers::read_cap_u32;
     use crate::test_helpers::write_cap_u32;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigByteEnable;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
@@ -921,7 +947,7 @@ mod tests {
         assert_eq!(status_before, 0x0003_0000);
         cap.write(
             0x08,
-            ByteEnabledDword::new(
+            ByteEnabledDwordWrite::new(
                 0x0000_0001,
                 PciConfigByteEnable::from_offset_len(0x08, 1).unwrap(),
             ),
@@ -933,7 +959,7 @@ mod tests {
 
         cap.write(
             0x08,
-            ByteEnabledDword::new(
+            ByteEnabledDwordWrite::new(
                 0x0001_0000,
                 PciConfigByteEnable::from_offset_len(0x08, 1).unwrap(),
             ),

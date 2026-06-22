@@ -7,7 +7,8 @@ pub use self::extended::PciExtendedCapability;
 pub use self::read_only::ReadOnlyCapability;
 
 use crate::spec::caps::CapabilityId;
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
@@ -30,11 +31,11 @@ pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
     /// Read a byte-enabled DWORD at the given capability-relative offset.
     /// The offset must be 32-bit aligned.
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword);
+    fn read(&self, offset: u16, value: ByteEnabledDwordRead<'_>);
 
     /// Write a byte-enabled DWORD to the given capability-relative offset.
     /// The offset must be 32-bit aligned.
-    fn write(&mut self, offset: u16, val: ByteEnabledDword);
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite);
 
     /// Reset the capability
     fn reset(&mut self);

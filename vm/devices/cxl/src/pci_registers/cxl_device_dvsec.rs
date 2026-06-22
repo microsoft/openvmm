@@ -3,7 +3,8 @@
 
 //! CXL PCIe DVSEC extended capability implementation.
 
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -225,82 +226,86 @@ impl CxlDeviceDevsecExtendedCapability {
         usize::from(CXL_DEVICE_DVSEC_LENGTH)
     }
 
-    fn read_dvsec_u32(&self, offset: u16) -> u32 {
+    fn read_dvsec(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         const DVSEC_HEADER1_OFFSET: u16 = DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0;
         const DVSEC_HEADER2_OFFSET: u16 = DvsecExtendedCapabilityHeader::DVSEC_HEADER2.0;
 
-        match offset {
-            DVSEC_HEADER1_OFFSET => Self::dvsec_header1().into_bits(),
-            DVSEC_HEADER2_OFFSET => {
-                u32::from(Self::dvsec_header2().into_bits())
-                    | (u32::from(self.capability.into_bits()) << 16)
+        match CxlDeviceDvsecRegisterOffset(offset) {
+            _ if offset == DVSEC_HEADER1_OFFSET => value.set(Self::dvsec_header1().into_bits()),
+            _ if offset == DVSEC_HEADER2_OFFSET => {
+                value.set_low_high(
+                    Self::dvsec_header2().into_bits(),
+                    self.capability.into_bits(),
+                );
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS => {
-                u32::from(self.control.into_bits()) | (u32::from(self.status.into_bits()) << 16)
+                value.set_low_high(self.control.into_bits(), self.status.into_bits());
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2 => {
-                u32::from(self.control2.into_bits()) | (u32::from(self.status2.into_bits()) << 16)
+                value.set_low_high(self.control2.into_bits(), self.status2.into_bits());
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2 => {
-                u32::from(self.lock.into_bits()) | (u32::from(self.capability2.into_bits()) << 16)
+                value.set_low_high(self.lock.into_bits(), self.capability2.into_bits());
             }
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH => self.range1_size_high,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW => self.range1_size_low,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH => self.range1_base_high,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW => self.range1_base_low.into_bits(),
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_HIGH => self.range2_size_high,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_LOW => self.range2_size_low,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_HIGH => self.range2_base_high,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_LOW => self.range2_base_low.into_bits(),
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH => {
+                value.set(self.range1_size_high)
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW => value.set(self.range1_size_low),
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH => {
+                value.set(self.range1_base_high)
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW => {
+                value.set(self.range1_base_low.into_bits())
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_HIGH => {
+                value.set(self.range2_size_high)
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_LOW => value.set(self.range2_size_low),
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_HIGH => {
+                value.set(self.range2_base_high)
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_LOW => {
+                value.set(self.range2_base_low.into_bits())
+            }
             CxlDeviceDvsecRegisterOffset::DVSEC_CAPABILITY3 => {
-                u32::from(self.capability3.into_bits())
+                value.set_low_high(self.capability3.into_bits(), 0)
             }
-            _ => !0,
+            _ => value.set(!0),
         }
     }
 
-    fn write_dvsec(&mut self, offset: u16, value: ByteEnabledDword) {
-        if offset == CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS {
-            self.handle_control_status_write(value);
-            return;
-        }
-
-        if offset == CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2 {
-            self.handle_control2_status2_write(value);
-            return;
-        }
-
-        if offset == CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2 {
-            let requested_lock = value.extract() & 0x1;
-            if requested_lock != 0 {
-                self.lock = self.lock.with_config_lock(true);
+    fn write_dvsec(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
+        match CxlDeviceDvsecRegisterOffset(offset) {
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS => {
+                self.handle_control_status_write(value)
             }
-            return;
-        }
-
-        if self.lock.config_lock() {
-            return;
-        }
-
-        match offset {
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2 => {
+                self.handle_control2_status2_write(value)
+            }
+            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2 => {
+                // N.B. Extract is correct here since we only take action when the bit transitions from 0 to 1.
+                let requested_lock = value.extract() & 0x1;
+                if requested_lock != 0 {
+                    self.lock = self.lock.with_config_lock(true);
+                }
+            }
+            _ if self.lock.config_lock() => {}
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH => {
-                self.range1_base_high = value.merge(self.range1_base_high);
+                value.merge_into(&mut self.range1_base_high);
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW => {
-                let preserved = self.range1_base_low.into_bits()
-                    & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
-                let value = value.merge(self.read_dvsec_u32(offset));
-                let writable = value & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let current = self.range1_base_low.into_bits();
+                let preserved = current & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let writable = value.merge(current) & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
                 self.range1_base_low = CxlDeviceDvsecRangeBaseLow::from_bits(preserved | writable);
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_HIGH => {
-                self.range2_base_high = value.merge(self.range2_base_high);
+                value.merge_into(&mut self.range2_base_high);
             }
             CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_BASE_LOW => {
-                let preserved = self.range2_base_low.into_bits()
-                    & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
-                let value = value.merge(self.read_dvsec_u32(offset));
-                let writable = value & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let current = self.range2_base_low.into_bits();
+                let preserved = current & !CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+                let writable = value.merge(current) & CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
                 self.range2_base_low = CxlDeviceDvsecRangeBaseLow::from_bits(preserved | writable);
             }
             _ => {}
@@ -368,10 +373,10 @@ impl CxlDeviceDevsecExtendedCapability {
             .with_hdm_count(hdm_count);
     }
 
-    fn handle_control_status_write(&mut self, value: ByteEnabledDword) {
+    fn handle_control_status_write(&mut self, value: ByteEnabledDwordWrite) {
         if !self.lock.config_lock() {
-            let requested = value.merge(self.control.into_bits() as u32) as u16
-                & CXL_DEVICE_DVSEC_CONTROL_WRITABLE_MASK;
+            let requested =
+                value.merge_low(self.control.into_bits()) & CXL_DEVICE_DVSEC_CONTROL_WRITABLE_MASK;
             let mut next = CxlDeviceDvsecControl::from_bits(requested);
 
             if !self.capability.cache_capable() {
@@ -392,17 +397,17 @@ impl CxlDeviceDevsecExtendedCapability {
             self.control = next;
         }
 
-        let clear_mask = (value.extract() >> 16) as u16 & CXL_DEVICE_DVSEC_STATUS_RW1C_MASK;
+        let clear_mask = value.extract_high() & CXL_DEVICE_DVSEC_STATUS_RW1C_MASK;
         if clear_mask != 0 {
             let next_bits = self.status.into_bits() & !clear_mask;
             self.status = CxlDeviceDvsecStatus::from_bits(next_bits);
         }
     }
 
-    fn handle_control2_status2_write(&mut self, value: ByteEnabledDword) {
+    fn handle_control2_status2_write(&mut self, value: ByteEnabledDwordWrite) {
         // Control2 is RW (not RWL), so config_lock must not gate writes here.
-        let requested = (value.merge(self.control2.into_bits() as u32) as u16)
-            & CXL_DEVICE_DVSEC_CONTROL2_WRITABLE_MASK;
+        let requested =
+            value.merge_low(self.control2.into_bits()) & CXL_DEVICE_DVSEC_CONTROL2_WRITABLE_MASK;
         let mut next = CxlDeviceDvsecControl2::from_bits(requested);
         let old_cwbi = self.control2.initiate_cache_writeback_and_invalidation();
         let new_cwbi = next.initiate_cache_writeback_and_invalidation();
@@ -441,7 +446,7 @@ impl CxlDeviceDevsecExtendedCapability {
             .with_initiate_cache_writeback_and_invalidation(false)
             .with_initiate_cxl_reset(false);
 
-        let mut clear_mask = ((value.extract() >> 16) as u16) & CXL_DEVICE_DVSEC_STATUS2_RW1C_MASK;
+        let mut clear_mask = value.extract_high() & CXL_DEVICE_DVSEC_STATUS2_RW1C_MASK;
         if !self
             .capability3
             .volatile_hdm_state_after_hot_reset_configurability()
@@ -472,15 +477,18 @@ impl PciExtendedCapability for CxlDeviceDevsecExtendedCapability {
         self.dvsec_len()
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        value.set_value(if offset == 0 {
-            u32::from(self.extended_capability_id()) | (u32::from(self.capability_version()) << 16)
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        if offset == 0 {
+            value.set_low_high(
+                self.extended_capability_id(),
+                self.capability_version().into(),
+            );
         } else {
-            self.read_dvsec_u32(offset)
-        });
+            self.read_dvsec(offset, value);
+        }
     }
 
-    fn write(&mut self, offset: u16, value: ByteEnabledDword) {
+    fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
         if offset != 0 {
             self.write_dvsec(offset, value);
         }
@@ -636,7 +644,7 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
-    use chipset_device::pci::ByteEnabledDword;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigByteEnable;
     use inspect::Inspect;
     use pci_core::capabilities::extended::PciExtendedCapability;
@@ -727,7 +735,7 @@ mod tests {
         let header2 = read_extended_cap_u32(&cap, DvsecExtendedCapabilityHeader::DVSEC_HEADER2.0);
         let capability = CxlDeviceDvsecCapability::from_bits((header2 >> 16) as u16);
         let lock_cap2 =
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2);
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0);
         let capability2 = CxlDeviceDvsecCapability2::from_bits((lock_cap2 >> 16) as u16);
 
         assert!(capability.cache_capable());
@@ -762,7 +770,7 @@ mod tests {
 
         let size_low = CxlDeviceDvsecRangeSizeLow::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW,
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW.0,
         ));
         assert!(size_low.memory_info_valid());
         assert!(size_low.memory_active());
@@ -797,7 +805,7 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             u32::from(
                 CxlDeviceDvsecControl::new()
                     .with_io_enable(true)
@@ -812,14 +820,14 @@ mod tests {
         let capability = CxlDeviceDvsecCapability::from_bits((header2 >> 16) as u16);
         let control = CxlDeviceDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
 
         assert!(capability.mem_capable());
         assert_eq!(capability.hdm_count(), 0x1);
         assert!(!control.mem_enable());
         assert_eq!(
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW.0),
             0x4000_0003
         );
     }
@@ -845,7 +853,7 @@ mod tests {
 
         assert!(capability.mem_capable());
         assert_eq!(
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0),
             0
         );
     }
@@ -904,7 +912,7 @@ mod tests {
         assert!(capability.mem_capable());
         assert_eq!(capability.hdm_count(), 0x2);
         assert_ne!(
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_LOW),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE2_SIZE_LOW.0),
             0
         );
     }
@@ -981,27 +989,27 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH,
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0,
             0xaaaa_5555,
         );
         assert_eq!(
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0),
             0xaaaa_5555
         );
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0,
             0x1,
         );
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH,
+            CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0,
             0x1234_5678,
         );
 
         assert_eq!(
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0),
             0xaaaa_5555
         );
     }
@@ -1012,18 +1020,18 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0,
             0x1,
         );
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << 0,
         );
 
         let control2 = CxlDeviceDvsecControl2::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
         ) as u16);
         assert!(control2.disable_caching());
     }
@@ -1042,12 +1050,12 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             value,
         );
         let control = CxlDeviceDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
 
         assert!(!control.cache_enable());
@@ -1061,19 +1069,19 @@ mod tests {
 
         let default_control = CxlDeviceDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
         assert!(default_control.io_enable());
 
         // Attempt to clear io_enable; implementation must keep it enabled.
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             0,
         );
         let control_after_write = CxlDeviceDvsecControl::from_bits(read_extended_cap_u32(
             &cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
         ) as u16);
         assert!(control_after_write.io_enable());
     }
@@ -1086,7 +1094,7 @@ mod tests {
             CxlDeviceDevsecExtendedCapability::new(Some(Arc::new(TestCxlResetHandler)), None);
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << 2,
         );
 
@@ -1102,7 +1110,7 @@ mod tests {
         cap.capability = cap.capability.with_cxl_reset_capable(false);
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << 2,
         );
 
@@ -1121,7 +1129,7 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << 1,
         );
 
@@ -1138,7 +1146,7 @@ mod tests {
         );
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << 1,
         );
 
@@ -1153,7 +1161,7 @@ mod tests {
         // Capability is false by default, so RW1C clear should be ignored.
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << (16 + 3),
         );
         assert!(cap.status2.volatile_hdm_preservation_error());
@@ -1164,7 +1172,7 @@ mod tests {
             .with_volatile_hdm_state_after_hot_reset_configurability(true);
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << (16 + 3),
         );
         assert!(!cap.status2.volatile_hdm_preservation_error());
@@ -1183,7 +1191,7 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
             1 << (16 + 3),
         );
 
@@ -1202,20 +1210,20 @@ mod tests {
         cap.status2 = CxlDeviceDvsecStatus2::new().with_volatile_hdm_preservation_error(true);
 
         cap.write(
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
-            ByteEnabledDword::new(0xffff_0000, PciConfigByteEnable::new(0b0011).unwrap()),
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
+            ByteEnabledDwordWrite::new(0xffff_0000, PciConfigByteEnable::new(0b0011).unwrap()),
         );
 
         assert!(cap.status.viral_status());
         assert!(cap.status2.volatile_hdm_preservation_error());
 
         cap.write(
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
-            ByteEnabledDword::new(0xffff_0000, PciConfigByteEnable::new(0b1100).unwrap()),
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
+            ByteEnabledDwordWrite::new(0xffff_0000, PciConfigByteEnable::new(0b1100).unwrap()),
         );
         cap.write(
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2,
-            ByteEnabledDword::new(0xffff_0000, PciConfigByteEnable::new(0b1100).unwrap()),
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0,
+            ByteEnabledDwordWrite::new(0xffff_0000, PciConfigByteEnable::new(0b1100).unwrap()),
         );
 
         assert!(!cap.status.viral_status());
@@ -1241,7 +1249,7 @@ mod tests {
 
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS,
+            CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0,
             u32::from(
                 CxlDeviceDvsecControl::new()
                     .with_cache_enable(true)
@@ -1252,7 +1260,7 @@ mod tests {
         );
         write_extended_cap_u32(
             &mut cap,
-            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2,
+            CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0,
             0x1,
         );
 
@@ -1267,55 +1275,55 @@ mod tests {
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS
+                CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL_STATUS.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2
+                CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CONTROL2_STATUS2.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2
+                CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_LOCK_CAPABILITY2.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH
+                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_HIGH.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW
+                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_SIZE_LOW.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH
+                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_HIGH.0)
         );
         assert_eq!(
             read_extended_cap_u32(
                 &restored,
-                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW
+                CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW.0
             ),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW)
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_RANGE1_BASE_LOW.0)
         );
         assert_eq!(
-            read_extended_cap_u32(&restored, CxlDeviceDvsecRegisterOffset::DVSEC_CAPABILITY3),
-            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CAPABILITY3)
+            read_extended_cap_u32(&restored, CxlDeviceDvsecRegisterOffset::DVSEC_CAPABILITY3.0),
+            read_extended_cap_u32(&cap, CxlDeviceDvsecRegisterOffset::DVSEC_CAPABILITY3.0)
         );
     }
 }

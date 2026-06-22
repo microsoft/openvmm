@@ -3,7 +3,8 @@
 
 //! CXL Register Locator PCIe DVSEC extended capability implementation.
 
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -75,35 +76,37 @@ impl CxlRegisterLocatorDvsecExtendedCapability {
         usize::from(self.encoded_length())
     }
 
-    fn read_dvsec_u32(&self, offset: u16) -> u32 {
-        if offset == DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0 {
-            return self.dvsec_header1().into_bits();
-        }
+    fn read_dvsec(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        match DvsecExtendedCapabilityHeader(offset) {
+            DvsecExtendedCapabilityHeader::DVSEC_HEADER1 => {
+                value.set(self.dvsec_header1().into_bits());
+            }
+            DvsecExtendedCapabilityHeader::DVSEC_HEADER2 => {
+                value.set_low_high(Self::dvsec_header2().into_bits(), 0);
+            }
+            _ if offset
+                < CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW =>
+            {
+                value.set(!0);
+            }
+            _ => {
+                let rel =
+                    offset - CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW;
+                let index =
+                    usize::from(rel / CxlRegisterLocatorDvsecRegisterOffset::REGISTER_BLOCK_STRIDE);
+                let offset_within =
+                    rel % CxlRegisterLocatorDvsecRegisterOffset::REGISTER_BLOCK_STRIDE;
 
-        if offset == CxlRegisterLocatorDvsecRegisterOffset::DVSEC_HEADER2 {
-            return u32::from(Self::dvsec_header2().into_bits());
-        }
-
-        if offset < CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW {
-            return !0;
-        }
-
-        let rel = offset - CxlRegisterLocatorDvsecRegisterOffset::FIRST_REGISTER_BLOCK_OFFSET_LOW;
-        let index = usize::from(rel / CxlRegisterLocatorDvsecRegisterOffset::REGISTER_BLOCK_STRIDE);
-        let within = rel % CxlRegisterLocatorDvsecRegisterOffset::REGISTER_BLOCK_STRIDE;
-
-        let Some(entry) = self.register_blocks.get(index) else {
-            return !0;
-        };
-
-        match within {
-            0x0 => entry.offset_low.into_bits(),
-            0x4 => entry.offset_high,
-            _ => !0,
+                match (self.register_blocks.get(index), offset_within) {
+                    (Some(entry), 0x0) => value.set(entry.offset_low.into_bits()),
+                    (Some(entry), 0x4) => value.set(entry.offset_high),
+                    _ => value.set(!0),
+                }
+            }
         }
     }
 
-    fn write_dvsec(&mut self, _offset: u16, _value: ByteEnabledDword) {
+    fn write_dvsec(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) {
         // Register Locator fields are HwInit/RO from software perspective.
     }
 
@@ -147,15 +150,18 @@ impl PciExtendedCapability for CxlRegisterLocatorDvsecExtendedCapability {
         self.dvsec_len()
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        value.set_value(if offset == 0 {
-            u32::from(self.extended_capability_id()) | (u32::from(self.capability_version()) << 16)
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        if offset == 0 {
+            value.set_low_high(
+                self.extended_capability_id(),
+                self.capability_version().into(),
+            );
         } else {
-            self.read_dvsec_u32(offset)
-        });
+            self.read_dvsec(offset, value)
+        }
     }
 
-    fn write(&mut self, offset: u16, value: ByteEnabledDword) {
+    fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
         if offset != 0 {
             self.write_dvsec(offset, value);
         }

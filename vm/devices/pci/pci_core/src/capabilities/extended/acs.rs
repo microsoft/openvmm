@@ -9,7 +9,8 @@ use crate::spec::caps::acs::AcsCapabilities;
 use crate::spec::caps::acs::AcsControl;
 use crate::spec::caps::acs::AcsExtendedCapabilityHeader;
 use crate::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 
 /// PCIe Access Control Services (ACS) extended capability emulator.
@@ -34,20 +35,6 @@ impl AcsExtendedCapability {
             control: AcsControl::new(),
         }
     }
-
-    fn read_u32(&self, offset: u16) -> u32 {
-        match AcsExtendedCapabilityHeader(offset) {
-            AcsExtendedCapabilityHeader::HEADER => {
-                u32::from(self.extended_capability_id())
-                    | (u32::from(self.capability_version()) << 16)
-            }
-            AcsExtendedCapabilityHeader::CAPS_CONTROL => {
-                self.capabilities.into_bits() as u32 | ((self.control.into_bits() as u32) << 16)
-            }
-            AcsExtendedCapabilityHeader::EGRESS_CONTROL_VECTOR => 0,
-            _ => !0,
-        }
-    }
 }
 
 impl PciExtendedCapability for AcsExtendedCapability {
@@ -67,39 +54,50 @@ impl PciExtendedCapability for AcsExtendedCapability {
         12
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        value.set_value(self.read_u32(offset));
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        match AcsExtendedCapabilityHeader(offset) {
+            AcsExtendedCapabilityHeader::HEADER => {
+                value.set_low_high(
+                    self.extended_capability_id(),
+                    self.capability_version().into(),
+                );
+            }
+            AcsExtendedCapabilityHeader::CAPS_CONTROL => {
+                value.set_low_high(self.capabilities.into_bits(), self.control.into_bits());
+            }
+            AcsExtendedCapabilityHeader::EGRESS_CONTROL_VECTOR => value.set(0),
+            _ => value.set(!0),
+        }
     }
 
-    fn write(&mut self, offset: u16, val: ByteEnabledDword) {
-        let val = val.merge(self.read_u32(offset));
-
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
         // Note that all ACS control only affect the emulated port, and do not reflect
         // any underlying hardware capabilities.
         match AcsExtendedCapabilityHeader(offset) {
             AcsExtendedCapabilityHeader::HEADER => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val,
+                    ?val,
                     "write to read-only ACS extended capability register"
                 );
             }
             AcsExtendedCapabilityHeader::CAPS_CONTROL => {
                 // Control bits are writable only if the matching capability bit is set.
-                self.control =
-                    AcsControl::from_bits(((val >> 16) as u16) & self.capabilities.into_bits());
+                self.control = AcsControl::from_bits(
+                    val.merge_high(self.control.into_bits()) & self.capabilities.into_bits(),
+                );
             }
             AcsExtendedCapabilityHeader::EGRESS_CONTROL_VECTOR => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val,
+                    ?val,
                     "ACS egress control vector writes are currently not supported; dropping write"
                 );
             }
             _ => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    value = val,
+                    ?val,
                     "unexpected ACS extended capability write"
                 );
             }

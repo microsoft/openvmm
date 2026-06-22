@@ -12,7 +12,20 @@ pub struct PciConfigByteEnable(u8);
 
 impl PciConfigByteEnable {
     /// All byte lanes enabled.
-    pub const FULL: Self = Self(0xf);
+    pub const FULL: Self = Self(0b1111);
+
+    /// Byte lane 0 enabled.
+    pub const BYTE0: Self = Self(0b0001);
+    /// Byte lane 1 enabled.
+    pub const BYTE1: Self = Self(0b0010);
+    /// Byte lane 2 enabled.
+    pub const BYTE2: Self = Self(0b0100);
+    /// Byte lane 3 enabled.
+    pub const BYTE3: Self = Self(0b1000);
+    /// Low word byte lanes enabled.
+    pub const LOW_WORD: Self = Self(0b0011);
+    /// High word byte lanes enabled.
+    pub const HIGH_WORD: Self = Self(0b1100);
 
     /// Create byte enables from raw lane bits.
     pub const fn new(bits: u8) -> Option<Self> {
@@ -62,20 +75,32 @@ impl PciConfigByteEnable {
     pub const fn extract(self, value: u32) -> u32 {
         value & self.mask()
     }
+
+    /// Restrict the underlying byte enable to only include the provided bytes, or None
+    /// when no bytes would be left enabled.
+    pub const fn restrict(self, byte_enable: PciConfigByteEnable) -> Option<Self> {
+        Self::new(self.0 & byte_enable.0)
+    }
+
+    /// Exclude the provided bytes from the underlying byte enable, returning None
+    /// when no bytes would be left enabled.
+    pub const fn exclude(self, byte_enable: PciConfigByteEnable) -> Option<Self> {
+        Self::new(self.0 & !byte_enable.0)
+    }
 }
 
-/// A DWORD value with byte enables for PCI configuration space access.
+/// A DWORD value with byte enables for PCI configuration space write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ByteEnabledDword {
+pub struct ByteEnabledDwordWrite {
     value: u32,
     byte_enable: PciConfigByteEnable,
 }
 
-impl ByteEnabledDword {
+impl ByteEnabledDwordWrite {
     /// Create a byte-enabled DWORD value.
     pub const fn new(value: u32, byte_enable: PciConfigByteEnable) -> Self {
         Self {
-            value: value & byte_enable.mask(),
+            value: byte_enable.merge(0, value),
             byte_enable,
         }
     }
@@ -85,9 +110,9 @@ impl ByteEnabledDword {
         Self::new(value, PciConfigByteEnable::FULL)
     }
 
-    /// Update the value of the DWORD, honoring byte enables.
-    pub fn set_value(&mut self, value: u32) {
-        self.value = self.byte_enable.merge(self.value, value)
+    /// Get the mask of valid bytes.
+    pub const fn valid_mask(self) -> u32 {
+        self.byte_enable.mask()
     }
 
     /// Merge enabled byte lanes from this value into `current_value`.
@@ -95,9 +120,113 @@ impl ByteEnabledDword {
         self.byte_enable.merge(current_value, self.value)
     }
 
+    /// Merge enabled byte lanes from this value into `current_value` (read-modify-write).
+    pub const fn merge_into(self, current_value: &mut u32) {
+        *current_value = self.merge(*current_value);
+    }
+
+    /// Merge enabled byte lanes from the low WORD of this value into `current_value`.
+    pub const fn merge_low(self, current_value: u16) -> u16 {
+        self.byte_enable.merge(current_value as u32, self.value) as u16
+    }
+
+    /// Merge enabled byte lanes from the high WORD of this value into `current_value`.
+    pub const fn merge_high(self, current_value: u16) -> u16 {
+        let shifted = (current_value as u32) << 16;
+        let merged = self.byte_enable.merge(shifted, self.value);
+        (merged >> 16) as u16
+    }
+
     /// Keep only enabled byte lanes from this value.
     pub const fn extract(self) -> u32 {
         self.byte_enable.extract(self.value)
+    }
+
+    /// Keep only enabled byte lanes from the low WORD this value.
+    pub const fn extract_low(self) -> u16 {
+        self.extract() as u16
+    }
+
+    /// Keep only enabled byte lanes from the high WORD this value.
+    pub const fn extract_high(self) -> u16 {
+        (self.extract() >> 16) as u16
+    }
+}
+
+/// A DWORD value with byte enables for PCI configuration space read.
+#[derive(Debug)]
+pub struct ByteEnabledDwordRead<'a> {
+    value: &'a mut u32,
+    byte_enable: PciConfigByteEnable,
+}
+
+impl<'a> ByteEnabledDwordRead<'a> {
+    /// Create a byte-enabled DWORD value.
+    pub const fn new(value: &'a mut u32, byte_enable: PciConfigByteEnable) -> Self {
+        Self { value, byte_enable }
+    }
+
+    /// Create a full-DWORD value with all byte lanes enabled.
+    pub const fn with_all_bytes_enabled(value: &'a mut u32) -> Self {
+        Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Update the value of the DWORD, honoring byte enables.
+    pub fn set(&mut self, value: u32) {
+        *self.value = self.byte_enable.merge(*self.value, value);
+    }
+
+    /// Update the value of the DWORD, honoring byte enables.
+    pub fn set_low_high(&mut self, low: u16, high: u16) {
+        *self.value = self
+            .byte_enable
+            .merge(*self.value, (high as u32) << 16 | (low as u32));
+    }
+
+    /// Update the value of the DWORD, honoring byte enables.
+    pub fn set_bytes(&mut self, byte0: u8, byte1: u8, byte2: u8, byte3: u8) {
+        *self.value = self.byte_enable.merge(
+            *self.value,
+            (byte3 as u32) << 24 | (byte2 as u32) << 16 | (byte1 as u32) << 8 | (byte0 as u32),
+        );
+    }
+
+    /// Keep only enabled byte lanes from this value.
+    pub const fn extract(&self) -> u32 {
+        self.byte_enable.extract(*self.value)
+    }
+
+    /// Keep only enabled byte lanes from the low WORD this value.
+    pub const fn extract_low(self) -> u16 {
+        self.extract() as u16
+    }
+
+    /// Keep only enabled byte lanes from the high WORD this value.
+    pub const fn extract_high(self) -> u16 {
+        (self.extract() >> 16) as u16
+    }
+
+    /// Reborrow the underlying value.
+    pub fn reborrow(&mut self) -> ByteEnabledDwordRead<'_> {
+        self.restrict(PciConfigByteEnable::FULL).unwrap()
+    }
+
+    /// Restrict the read to only the provided bytes.
+    pub fn restrict(
+        &mut self,
+        byte_enable: PciConfigByteEnable,
+    ) -> Option<ByteEnabledDwordRead<'_>> {
+        let byte_enable = self.byte_enable.restrict(byte_enable)?;
+        Some(ByteEnabledDwordRead::new(&mut *self.value, byte_enable))
+    }
+
+    /// Exclude the provided bytes from the read.
+    pub fn exclude(
+        &mut self,
+        byte_enable: PciConfigByteEnable,
+    ) -> Option<ByteEnabledDwordRead<'_>> {
+        let byte_enable = self.byte_enable.exclude(byte_enable)?;
+        Some(ByteEnabledDwordRead::new(&mut *self.value, byte_enable))
     }
 }
 
@@ -109,17 +238,20 @@ pub struct PciConfigAddress {
     /// Target packed device/function number (`device << 3 | function`).
     pub device_function: u8,
     /// Aligned DWORD register number in configuration space.
-    pub dword_number: u16,
+    dword_number: u16,
 }
 
 impl PciConfigAddress {
     /// Create a new PCI configuration-space request.
-    pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Self {
-        Self {
+    pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Option<Self> {
+        if dword_number >= 1024 {
+            return None;
+        }
+        Some(Self {
             bus,
             device_function,
             dword_number,
-        }
+        })
     }
 
     /// Target device number.

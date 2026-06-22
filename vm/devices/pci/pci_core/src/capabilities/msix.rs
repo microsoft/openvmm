@@ -9,7 +9,8 @@ use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msix::MsixCapabilityHeader;
 use crate::spec::caps::msix::MsixTableEntryIdx;
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_event::Event;
@@ -48,21 +49,6 @@ struct MsixCapability {
     pending_bits_location: MsiTableLocation,
 }
 
-impl MsixCapability {
-    fn read_u32(&self, offset: u16) -> u32 {
-        match MsixCapabilityHeader(offset) {
-            MsixCapabilityHeader::CONTROL_CAPS => {
-                CapabilityId::MSIX.0 as u32
-                    | ((self.count as u32 - 1) | if self.state.lock().enabled { 0x8000 } else { 0 })
-                        << 16
-            }
-            MsixCapabilityHeader::OFFSET_TABLE => self.config_table_location.read_u32(),
-            MsixCapabilityHeader::OFFSET_PBA => self.pending_bits_location.read_u32(),
-            _ => panic!("Unreachable read offset {}", offset),
-        }
-    }
-}
-
 impl PciCapability for MsixCapability {
     fn label(&self) -> &str {
         "msi-x"
@@ -76,33 +62,46 @@ impl PciCapability for MsixCapability {
         12
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        value.set_value(self.read_u32(offset));
-    }
-
-    fn write(&mut self, offset: u16, val: ByteEnabledDword) {
-        let val = val.merge(self.read_u32(offset));
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         match MsixCapabilityHeader(offset) {
             MsixCapabilityHeader::CONTROL_CAPS => {
-                let enabled = val & 0x80000000 != 0;
-                let mut state = self.state.lock();
-                let was_enabled = state.enabled;
-                state.enabled = enabled;
-                if was_enabled && !enabled {
-                    for entry in &mut state.vectors {
-                        if entry.is_enabled(true) {
-                            entry.msi.disable();
+                value.set_low_high(
+                    CapabilityId::MSIX.0.into(),
+                    (self.count - 1) | if self.state.lock().enabled { 0x8000 } else { 0 },
+                );
+            }
+            MsixCapabilityHeader::OFFSET_TABLE => value.set(self.config_table_location.read_u32()),
+            MsixCapabilityHeader::OFFSET_PBA => value.set(self.pending_bits_location.read_u32()),
+            _ => panic!("Unreachable read offset {}", offset),
+        }
+    }
+
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
+        match MsixCapabilityHeader(offset) {
+            MsixCapabilityHeader::CONTROL_CAPS => {
+                const MSIX_ENABLE_BIT_MASK: u32 = 0x8000_0000;
+                if val.valid_mask() & MSIX_ENABLE_BIT_MASK != 0 {
+                    let mut state = self.state.lock();
+                    let was_enabled = state.enabled;
+                    let new_enabled = (val.extract() & MSIX_ENABLE_BIT_MASK) != 0;
+
+                    state.enabled = new_enabled;
+                    if was_enabled && !new_enabled {
+                        for entry in &mut state.vectors {
+                            if entry.is_enabled(true) {
+                                entry.msi.disable();
+                            }
                         }
-                    }
-                } else if enabled && !was_enabled {
-                    for entry in &mut state.vectors {
-                        if entry.is_enabled(true) {
-                            entry.msi.enable(
-                                entry.state.address,
-                                entry.state.data,
-                                entry.state.is_pending,
-                            );
-                            entry.state.is_pending = false;
+                    } else if new_enabled && !was_enabled {
+                        for entry in &mut state.vectors {
+                            if entry.is_enabled(true) {
+                                entry.msi.enable(
+                                    entry.state.address,
+                                    entry.state.data,
+                                    entry.state.is_pending,
+                                );
+                                entry.state.is_pending = false;
+                            }
                         }
                     }
                 }

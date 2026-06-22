@@ -8,7 +8,8 @@ use crate::capabilities::msix::MsiInterrupt;
 use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msi::MsiCapabilityHeader;
-use chipset_device::pci::ByteEnabledDword;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -55,10 +56,10 @@ impl MsiCapabilityState {
         }
     }
 
-    fn control_register(&self, addr_64bit: bool, per_vector_masking: bool) -> u32 {
-        let mut control = 0u32;
-        control |= (self.multiple_message_capable as u32) << 1; // MMC field (bits 1-3)
-        control |= (self.multiple_message_enable as u32) << 4; // MME field (bits 4-6)
+    fn control_register(&self, addr_64bit: bool, per_vector_masking: bool) -> u16 {
+        let mut control = 0u16;
+        control |= (self.multiple_message_capable as u16) << 1; // MMC field (bits 1-3)
+        control |= (self.multiple_message_enable as u16) << 4; // MME field (bits 4-6)
         if addr_64bit {
             control |= 1 << 7; // 64-bit Address Capable (bit 7)
         }
@@ -71,23 +72,35 @@ impl MsiCapabilityState {
         control
     }
 
-    fn read_u32(&self, offset: u16, addr_64bit: bool, per_vector_masking: bool) -> u32 {
+    fn read(
+        &self,
+        offset: u16,
+        addr_64bit: bool,
+        per_vector_masking: bool,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) {
         match MsiCapabilityHeader(offset) {
             MsiCapabilityHeader::CONTROL_CAPS => {
-                let control_reg = self.control_register(addr_64bit, per_vector_masking);
-                CapabilityId::MSI.0 as u32 | (control_reg << 16)
+                value.set_low_high(
+                    CapabilityId::MSI.0.into(),
+                    self.control_register(addr_64bit, per_vector_masking),
+                );
             }
-            MsiCapabilityHeader::MSG_ADDR_LO => self.address as u32,
-            MsiCapabilityHeader::MSG_ADDR_HI if addr_64bit => (self.address >> 32) as u32,
-            MsiCapabilityHeader::MSG_DATA_32 if !addr_64bit => self.data as u32,
-            MsiCapabilityHeader::MSG_DATA_64 if addr_64bit => self.data as u32,
-            MsiCapabilityHeader::MASK_BITS if addr_64bit && per_vector_masking => self.mask_bits,
+            MsiCapabilityHeader::MSG_ADDR_LO => value.set(self.address as u32),
+            MsiCapabilityHeader::MSG_ADDR_HI if addr_64bit => {
+                value.set((self.address >> 32) as u32)
+            }
+            MsiCapabilityHeader::MSG_DATA_32 if !addr_64bit => value.set_low_high(self.data, 0),
+            MsiCapabilityHeader::MSG_DATA_64 if addr_64bit => value.set_low_high(self.data, 0),
+            MsiCapabilityHeader::MASK_BITS if addr_64bit && per_vector_masking => {
+                value.set(self.mask_bits)
+            }
             MsiCapabilityHeader::PENDING_BITS if addr_64bit && per_vector_masking => {
-                self.pending_bits
+                value.set(self.pending_bits);
             }
             _ => {
                 tracelimit::warn_ratelimited!("Unexpected MSI read offset {:#x}", offset);
-                0
+                value.set(0);
             }
         }
     }
@@ -154,18 +167,18 @@ impl PciCapability for MsiCapability {
         self.len_bytes()
     }
 
-    fn read(&self, offset: u16, value: &mut ByteEnabledDword) {
-        let state = self.state.lock();
-        value.set_value(state.read_u32(offset, self.addr_64bit, self.per_vector_masking));
+    fn read(&self, offset: u16, value: ByteEnabledDwordRead<'_>) {
+        self.state
+            .lock()
+            .read(offset, self.addr_64bit, self.per_vector_masking, value);
     }
 
-    fn write(&mut self, offset: u16, val: ByteEnabledDword) {
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
         let mut state = self.state.lock();
-        let val = val.merge(state.read_u32(offset, self.addr_64bit, self.per_vector_masking));
-
         match MsiCapabilityHeader(offset) {
             MsiCapabilityHeader::CONTROL_CAPS => {
-                let control_val = (val >> 16) & 0xFFFF;
+                let control_val = val
+                    .merge_high(state.control_register(self.addr_64bit, self.per_vector_masking));
                 let old_enabled = state.enabled;
                 let new_enabled = control_val & 1 != 0;
                 let mme = ((control_val >> 4) & 0x7) as u8;
@@ -188,7 +201,8 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_ADDR_LO => {
-                state.address = (state.address & 0xFFFFFFFF00000000) | (val as u64);
+                let new_low = val.merge(state.address as u32);
+                state.address = (state.address & 0xFFFFFFFF00000000) | (new_low as u64);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -200,7 +214,8 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_ADDR_HI if self.addr_64bit => {
-                state.address = (state.address & 0xFFFFFFFF) | ((val as u64) << 32);
+                let new_high = val.merge((state.address >> 32) as u32);
+                state.address = (state.address & 0xFFFFFFFF) | ((new_high as u64) << 32);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -212,7 +227,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_DATA_32 if !self.addr_64bit => {
-                state.data = val as u16;
+                state.data = val.merge_low(state.data);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -224,7 +239,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_DATA_64 if self.addr_64bit => {
-                state.data = val as u16;
+                state.data = val.merge_low(state.data);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -236,7 +251,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MASK_BITS if self.addr_64bit && self.per_vector_masking => {
-                state.mask_bits = val;
+                val.merge_into(&mut state.mask_bits);
             }
             MsiCapabilityHeader::PENDING_BITS if self.addr_64bit && self.per_vector_masking => {
                 // Pending bits are typically read-only, but some implementations may allow clearing
