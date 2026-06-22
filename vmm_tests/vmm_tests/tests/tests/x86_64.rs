@@ -278,7 +278,7 @@ async fn vpci_relay_tdisp_device(
 }
 
 /// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
-#[openvmm_test(unstable_linux_direct_x64)]
+#[openvmm_test(linux_direct_x64)]
 async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -323,9 +323,10 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     );
 
     // Verify we can write and read back data
+    // Force a flush so that the below direct reads will see the data.
     cmd!(
         sh,
-        "sh -c 'echo hello_virtio_blk | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+        "sh -c 'echo hello_virtio_blk | dd of=/dev/vda bs=512 count=1 conv=notrunc,fsync 2>/dev/null'"
     )
     .read()
     .await
