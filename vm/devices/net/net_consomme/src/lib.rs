@@ -6,6 +6,7 @@
 
 pub mod resolver;
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use consomme::ChecksumState;
 use consomme::Consomme;
@@ -490,11 +491,10 @@ fn execute_bind(
     let protocol: IpProtocol = cfg.protocol.clone().into();
     let ip_addr = cfg.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
     let socket = create_bound_socket(&protocol, ip_addr, bind_port)
-        .map_err(|e| anyhow::anyhow!(e).context("failed to create socket for port forward"))?;
+        .with_context(|| "failed to create socket for port forward")?;
     let dynamic_port = match dynamic_sender {
         Some(sender) => {
-            let addr = socket_addr(&socket)
-                .map_err(|e| anyhow::anyhow!(e).context("failed to get bound address"))?;
+            let addr = socket_addr(&socket).with_context(|| "failed to get bound address")?;
             Some((sender, addr.port()))
         }
         None => None,
@@ -503,7 +503,7 @@ fn execute_bind(
         IpProtocol::Tcp => consomme.bind_tcp_port(socket, cfg.guest_port),
         IpProtocol::Udp => consomme.bind_udp_port(socket, cfg.guest_port),
     };
-    result.map_err(|e| anyhow::anyhow!(e).context("failed to bind port"))?;
+    result.with_context(|| "failed to bind port")?;
     if let Some((sender, port)) = dynamic_port {
         sender.send(port);
     }
@@ -526,7 +526,7 @@ fn execute_unbind(
         IpProtocol::Tcp => consomme.unbind_tcp_port(family, cfg.guest_port),
         IpProtocol::Udp => consomme.unbind_udp_port(family, cfg.guest_port),
     };
-    result.context("failed to unbind port")
+    result.with_context(|| "failed to unbind port")
 }
 
 /// Handle a `ConsommeRequest` (shared by both in-proc and cross-proc paths).

@@ -660,7 +660,7 @@ impl VmService {
 
             for nic in devices_config.nic_config {
                 let is_consomme = matches!(
-                    nic.backend,
+                    &nic.backend,
                     Some(vmservice::nic_config::Backend::Consomme(_))
                 );
                 let recv = if is_consomme {
@@ -911,7 +911,7 @@ impl VmService {
             Resource::NicConfig(nic) => {
                 if request.r#type == vmservice::ModifyType::Add as i32 {
                     if matches!(
-                        nic.backend,
+                        &nic.backend,
                         Some(vmservice::nic_config::Backend::Consomme(_))
                     ) {
                         anyhow::bail!(
