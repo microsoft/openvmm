@@ -25,7 +25,7 @@ pub struct IncubatorConfig {
     pub kernel: PathBuf,
     /// Path to the base initrd (gzip-compressed CPIO).
     pub initrd: PathBuf,
-    /// Directory to share into the VM at `/share`.
+    /// Directory to share into the VM at [`crate::GUEST_SHARE_ROOT`].
     pub share_dir: PathBuf,
     /// Host directory where command output and logs should be written.
     pub output_dir: PathBuf,
@@ -56,7 +56,7 @@ pub struct IncubatorOutput {
 /// Run a command inside an incubator.
 ///
 /// Boots an emulated VM according to the profile, mounts `share_dir` at
-/// `/share` inside the guest, connects to pipette over TCP, executes the
+/// [`crate::GUEST_SHARE_ROOT`] inside the guest, connects to pipette over TCP, executes the
 /// command, and returns the exit code. Stdout/stderr are relayed to the
 /// host process in real time.
 pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutput> {
@@ -70,7 +70,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
 
     let patched_initrd_path = qemu::prepare_initrd(
         &config.initrd,
-        &config.share_dir,
+        &config.output_dir,
         &config.guest_pipette_path,
     )?;
 

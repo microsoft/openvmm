@@ -140,12 +140,11 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
-        ctx.import::<crate::run_in_incubator::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
-        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
+        ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
@@ -292,88 +291,97 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
-        let results = if let Some(incubator_params) = incubator {
-            let IncubatorParams {
-                incubator,
-                profile_name,
-            } = incubator_params;
+        let (extra_env, pre_run_deps, nextest_working_dir, nextest_config_file) =
+            if let Some(incubator_params) = incubator {
+                let IncubatorParams {
+                    incubator,
+                    profile_name,
+                } = incubator_params;
 
-            let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
+                let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
 
-            let kernel = ctx.reqv(|v| {
-                crate::resolve_openvmm_test_linux_kernel::Request::Get(
-                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
-                    arch,
-                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
-                    v,
+                let kernel = ctx.reqv(|v| {
+                    crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                        crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                        arch,
+                        crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                        v,
+                    )
+                });
+                let initrd =
+                    ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+
+                let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
+                let qemu_binary = ctx.reqv(|v| {
+                    crate::resolve_openvmm_qemu::Request::Get(
+                        crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                        host_arch,
+                        v,
+                    )
+                });
+
+                // Resolve the incubator binary and the selected profile from the
+                // incubator artifact (which bundles the profiles directory).
+                let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
+                let profile_path = incubator.map(ctx, move |o| {
+                    o.profiles.join(format!("{profile_name}.toml"))
+                });
+
+                let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+                let nextest_config_file = openvmm_repo_path
+                    .clone()
+                    .map(ctx, |p| p.join(".config").join("nextest.toml"));
+                let nextest_archive = nextest_vmm_tests_archive
+                    .clone()
+                    .map(ctx, |x| x.archive_file);
+
+                let target_runner_extra_env = extra_env.clone();
+                let (extra_env, target_runner) =
+                    crate::write_incubator_target_runner::add_incubator_target_runner(
+                        ctx,
+                        target.clone(),
+                        extra_env,
+                        |v| crate::write_incubator_target_runner::Request {
+                            incubator_bin,
+                            profile_path,
+                            kernel: Some(kernel),
+                            initrd: Some(initrd),
+                            workspace_dir: openvmm_repo_path.clone(),
+                            test_content_dir: test_content_dir.clone(),
+                            extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
+                            extra_env: Some(target_runner_extra_env),
+                            pipette_bin: None,
+                            copy_incubator_bin: false,
+                            qemu_binary: Some(qemu_binary),
+                            target_runner: v,
+                        },
+                    );
+
+                pre_run_deps.push(target_runner);
+
+                (
+                    extra_env,
+                    pre_run_deps,
+                    Some(openvmm_repo_path),
+                    Some(nextest_config_file),
                 )
-            });
-            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+            } else {
+                (extra_env, pre_run_deps, None, None)
+            };
 
-            let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
-            let qemu_binary = ctx.reqv(|v| {
-                crate::resolve_openvmm_qemu::Request::Get(
-                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
-                    host_arch,
-                    v,
-                )
-            });
-
-            // Resolve the incubator binary and the selected profile from the
-            // incubator artifact (which bundles the profiles directory).
-            let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
-            let profile_path = incubator.map(ctx, move |o| {
-                o.profiles.join(format!("{profile_name}.toml"))
-            });
-
-            // Download a standalone cargo-nextest for the guest target. The
-            // guest runs the same architecture as the test target, and the
-            // binary cannot be assumed to be on PATH in the consume job.
-            let guest_nextest_bin = ctx.reqv(|v| {
-                flowey_lib_common::download_cargo_nextest::Request::Get(
-                    ReadVar::from_static(target.clone()),
-                    v,
-                )
-            });
-
-            let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-            let nextest_config_file = openvmm_repo_path
-                .clone()
-                .map(ctx, |p| p.join(".config").join("nextest.toml"));
-            let nextest_archive = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
-
-            ctx.reqv(|v| crate::run_in_incubator::Request {
-                incubator_bin,
-                profile_path,
-                kernel,
-                initrd,
-                workspace_dir: openvmm_repo_path,
-                test_content_dir,
-                nextest_archive,
-                nextest_bin: guest_nextest_bin,
-                nextest_config_file,
-                nextest_filter_expr: nextest_filter_expr.clone(),
-                nextest_profile,
-                extra_env: Some(extra_env),
-                qemu_binary: Some(qemu_binary),
-                pre_run_deps,
-                results: v,
-            })
-        } else {
-            ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-                nextest_archive_file: nextest_vmm_tests_archive,
-                nextest_profile,
-                nextest_filter_expr,
-                nextest_working_dir: None,
-                nextest_config_file: None,
-                nextest_bin: None,
-                target: None,
-                extra_env,
-                pre_run_deps,
-                hugetlb_2mb_overcommit_pages,
-                results: v,
-            })
-        };
+        let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
+            nextest_archive_file: nextest_vmm_tests_archive,
+            nextest_profile,
+            nextest_filter_expr,
+            nextest_working_dir,
+            nextest_config_file,
+            nextest_bin: None,
+            target: None,
+            extra_env,
+            pre_run_deps,
+            hugetlb_2mb_overcommit_pages,
+            results: v,
+        });
 
         // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
         // This ensures we clean up the background process.

@@ -128,9 +128,9 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
-        ctx.import::<crate::run_in_incubator::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
+        ctx.import::<crate::write_incubator_target_runner::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -836,174 +836,186 @@ impl SimpleFlowNode for Node {
             }
         }));
 
-        if let Some(profile_path) = incubator_profile {
-            // Incubator mode: build everything, then launch the incubator
-            // with the test content dir as the share. The incubator binary
-            // runs nextest inside the emulated VM.
-            if let Some((prep_steps, _)) = register_prep_steps {
-                prep_steps.claim_unused(ctx);
-            }
-
-            let profile_path = profile_path
-                .absolute()
-                .context("failed to resolve incubator profile path")?;
-
-            let host_arch = match ctx.arch() {
-                FlowArch::X86_64 => CommonArch::X86_64,
-                FlowArch::Aarch64 => CommonArch::Aarch64,
-                other => anyhow::bail!("unsupported host architecture for incubator: {other:?}"),
-            };
-            let incubator_target = CommonTriple::Common {
-                arch: host_arch,
-                platform: CommonPlatform::LinuxGnu,
-            };
-            let incubator_bin = ctx.reqv(|v| crate::build_incubator::Request {
-                target: incubator_target,
-                profile: if release {
-                    CommonProfile::Release
-                } else {
-                    CommonProfile::Debug
-                },
-                incubator: v,
-            });
-
-            let incubator_bin = incubator_bin.map(ctx, |o| o.bin);
-
-            let kernel = ctx.reqv(|v| {
-                crate::resolve_openvmm_test_linux_kernel::Request::Get(
-                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
-                    arch,
-                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
-                    v,
-                )
-            });
-            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
-
-            let qemu_binary = ctx.reqv(|v| {
-                crate::resolve_openvmm_qemu::Request::Get(
-                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
-                    host_arch,
-                    v,
-                )
-            });
-
-            let results = ctx.reqv(|v| crate::run_in_incubator::Request {
-                incubator_bin,
-                profile_path: ReadVar::from_static(profile_path),
-                kernel,
-                initrd,
-                workspace_dir: ReadVar::from_static(test_content_dir.clone()),
-                test_content_dir: ReadVar::from_static(test_content_dir),
-                nextest_archive: ReadVar::from_static(nextest_archive_file),
-                nextest_bin: ReadVar::from_static(nextest_bin),
-                nextest_config_file: ReadVar::from_static(nextest_config_file.clone()),
-                nextest_filter_expr: Some(nextest_filter_expr),
-                nextest_profile,
-                extra_env: Some(extra_env),
-                qemu_binary: Some(qemu_binary),
-                pre_run_deps: side_effects,
-                results: v,
-            });
-
-            ctx.emit_rust_step("report hosting VM results", |ctx| {
-                done.claim(ctx);
-                let results = results.claim(ctx);
-                move |rt| {
-                    let results = rt.read(results);
-                    if !results.all_tests_passed {
-                        anyhow::bail!("hosting VM tests failed");
-                    }
-                    Ok(())
+        let (extra_env, side_effects, nextest_bin, nextest_target, stop_rpc_server) =
+            if let Some(profile_path) = incubator_profile {
+                // Incubator mode: host nextest drives the archive, and invokes
+                // the generated target runner for each guest test binary.
+                if let Some((prep_steps, _)) = register_prep_steps {
+                    prep_steps.claim_unused(ctx);
                 }
-            });
-        } else if build_only {
-            ctx.emit_side_effect_step(side_effects, [done]);
-            if let Some((prep_steps, _)) = register_prep_steps {
-                prep_steps.claim_unused(ctx);
-            }
-        } else {
-            side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
 
-            // Start the test_igvm_agent_rpc_server before running tests (Windows only).
-            if matches!(ctx.platform(), FlowPlatform::Windows) {
-                side_effects.push(ctx.reqv(|done| {
-                    crate::run_test_igvm_agent_rpc_server::Request {
-                        env: extra_env.clone(),
-                        done,
+                let profile_path = profile_path
+                    .absolute()
+                    .context("failed to resolve incubator profile path")?;
+
+                let host_arch = match ctx.arch() {
+                    FlowArch::X86_64 => CommonArch::X86_64,
+                    FlowArch::Aarch64 => CommonArch::Aarch64,
+                    other => {
+                        anyhow::bail!("unsupported host architecture for incubator: {other:?}")
                     }
-                }));
-            }
-
-            if let Some((prep_steps, _)) = register_prep_steps {
-                for variant in &prep_steps_variants {
-                    side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
-                        prep_steps: prep_steps.clone(),
-                        args: vec![variant.clone()],
-                        env: extra_env.clone(),
-                        done,
-                    }));
-                }
-            }
-
-            let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-                nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
-                    archive_file: nextest_archive_file,
-                }),
-                nextest_profile,
-                nextest_filter_expr: Some(nextest_filter_expr),
-                nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
-                nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
-                nextest_bin: Some(ReadVar::from_static(nextest_bin)),
-                target: Some(ReadVar::from_static(target_triple.clone())),
-                extra_env,
-                pre_run_deps: side_effects,
-                hugetlb_2mb_overcommit_pages: None,
-                results: v,
-            });
-
-            // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
-            let rpc_server_stopped = if matches!(ctx.platform(), FlowPlatform::Windows) {
-                let after_tests = results.map(ctx, |_| ());
-                Some(
-                    ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
-                        after_tests,
-                        done,
-                    }),
-                )
-            } else {
-                None
-            };
-
-            let junit_xml = results.map(ctx, |r| r.junit_xml);
-            let published_results =
-                ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                    junit_xml,
-                    test_label,
-                    attachments: BTreeMap::new(), // the logs are already there
-                    output_dir: Some(ReadVar::from_static(test_content_dir)),
-                    done: v,
+                };
+                let incubator_target = CommonTriple::Common {
+                    arch: host_arch,
+                    platform: CommonPlatform::LinuxGnu,
+                };
+                let incubator_bin = ctx.reqv(|v| crate::build_incubator::Request {
+                    target: incubator_target,
+                    profile: if release {
+                        CommonProfile::Release
+                    } else {
+                        CommonProfile::Debug
+                    },
+                    incubator: v,
                 });
 
-            ctx.emit_rust_step("report test results", |ctx| {
-                published_results.claim(ctx);
-                if let Some(rpc_server_stopped) = rpc_server_stopped {
-                    rpc_server_stopped.claim(ctx);
-                }
-                done.claim(ctx);
+                let incubator_bin = incubator_bin.map(ctx, |o| o.bin);
 
-                let results = results.clone().claim(ctx);
-                move |rt| {
-                    let results = rt.read(results);
-                    if results.all_tests_passed {
-                        log::info!("all tests passed!");
-                    } else {
-                        log::error!("encountered test failures.");
+                let kernel = ctx.reqv(|v| {
+                    crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                        crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                        arch,
+                        crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                        v,
+                    )
+                });
+                let initrd =
+                    ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+
+                let qemu_binary = ctx.reqv(|v| {
+                    crate::resolve_openvmm_qemu::Request::Get(
+                        crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                        host_arch,
+                        v,
+                    )
+                });
+
+                let target_runner_extra_env = extra_env.clone();
+                let (extra_env, target_runner) =
+                    crate::write_incubator_target_runner::add_incubator_target_runner(
+                        ctx,
+                        target_triple.clone(),
+                        extra_env,
+                        |v| crate::write_incubator_target_runner::Request {
+                            incubator_bin,
+                            profile_path: ReadVar::from_static(profile_path),
+                            kernel: Some(kernel),
+                            initrd: Some(initrd),
+                            workspace_dir: ReadVar::from_static(test_content_dir.clone()),
+                            test_content_dir: ReadVar::from_static(test_content_dir.clone()),
+                            extra_share_paths: vec![
+                                ReadVar::from_static(nextest_archive_file.clone()),
+                                ReadVar::from_static(nextest_config_file.clone()),
+                            ],
+                            extra_env: Some(target_runner_extra_env),
+                            pipette_bin: None,
+                            copy_incubator_bin: false,
+                            qemu_binary: Some(qemu_binary),
+                            target_runner: v,
+                        },
+                    );
+
+                side_effects.push(target_runner);
+
+                (extra_env, side_effects, None, None, false)
+            } else if build_only {
+                ctx.emit_side_effect_step(side_effects, [done]);
+                if let Some((prep_steps, _)) = register_prep_steps {
+                    prep_steps.claim_unused(ctx);
+                }
+                return Ok(());
+            } else {
+                side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
+
+                // Start the test_igvm_agent_rpc_server before running tests (Windows only).
+                let stop_rpc_server = if matches!(ctx.platform(), FlowPlatform::Windows) {
+                    side_effects.push(ctx.reqv(|done| {
+                        crate::run_test_igvm_agent_rpc_server::Request {
+                            env: extra_env.clone(),
+                            done,
+                        }
+                    }));
+                    true
+                } else {
+                    false
+                };
+
+                if let Some((prep_steps, _)) = register_prep_steps {
+                    for variant in &prep_steps_variants {
+                        side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                            prep_steps: prep_steps.clone(),
+                            args: vec![variant.clone()],
+                            env: extra_env.clone(),
+                            done,
+                        }));
                     }
-
-                    Ok(())
                 }
-            });
-        }
+
+                (
+                    extra_env,
+                    side_effects,
+                    Some(ReadVar::from_static(nextest_bin)),
+                    Some(ReadVar::from_static(target_triple.clone())),
+                    stop_rpc_server,
+                )
+            };
+
+        let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
+            nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
+                archive_file: nextest_archive_file,
+            }),
+            nextest_profile,
+            nextest_filter_expr: Some(nextest_filter_expr),
+            nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
+            nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
+            nextest_bin,
+            target: nextest_target,
+            extra_env,
+            pre_run_deps: side_effects,
+            hugetlb_2mb_overcommit_pages: None,
+            results: v,
+        });
+
+        let rpc_server_stopped = if stop_rpc_server {
+            let after_tests = results.map(ctx, |_| ());
+            Some(
+                ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
+                    after_tests,
+                    done,
+                }),
+            )
+        } else {
+            None
+        };
+
+        let junit_xml = results.map(ctx, |r| r.junit_xml);
+        let published_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+            junit_xml,
+            test_label,
+            attachments: BTreeMap::new(), // the logs are already there
+            output_dir: Some(ReadVar::from_static(test_content_dir)),
+            done: v,
+        });
+
+        ctx.emit_rust_step("report test results", |ctx| {
+            published_results.claim(ctx);
+            if let Some(rpc_server_stopped) = rpc_server_stopped {
+                rpc_server_stopped.claim(ctx);
+            }
+            done.claim(ctx);
+
+            let results = results.clone().claim(ctx);
+            move |rt| {
+                let results = rt.read(results);
+                if results.all_tests_passed {
+                    log::info!("all tests passed!");
+                } else {
+                    log::error!("encountered test failures.");
+                }
+
+                Ok(())
+            }
+        });
 
         Ok(())
     }

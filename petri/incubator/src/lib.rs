@@ -25,10 +25,16 @@
 
 #![forbid(unsafe_code)]
 
+mod path_mapping;
 mod profile;
 mod qemu;
 mod run;
 
+/// Guest path where the host share is mounted.
+pub const GUEST_SHARE_ROOT: &str = "/share";
+
+pub use path_mapping::HostPathMapper;
+pub use path_mapping::guest_env_from_incubator_env;
 pub use profile::Arch;
 pub use profile::IncubatorProfile;
 pub use run::IncubatorConfig;

@@ -10,10 +10,12 @@
 //! 3. Runs the tests
 
 use anyhow::Context as _;
+use flowey::node::prelude::FloweyPathExt;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
@@ -129,6 +131,7 @@ struct CargoNextestListRequest<'a> {
     filter: &'a str,
     release: bool,
     include_ignored: bool,
+    target_runner_env: Option<&'a BTreeMap<String, String>>,
 }
 
 struct RustSuite {
@@ -186,6 +189,7 @@ impl IntoPipeline for VmmTestsRunCli {
             anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
         }
 
+        let target_cli = target;
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
         let target_architecture = target.common_arch()?;
@@ -197,6 +201,31 @@ impl IntoPipeline for VmmTestsRunCli {
         validate_output_dir(dir.as_deref(), target_os)?;
         let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
         std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
+
+        let target_runner = if let Some(incubator_profile) = incubator.as_deref() {
+            Some(bootstrap_incubator_target_runner(
+                IncubatorTargetRunnerBootstrap {
+                    repo_root: &repo_root,
+                    test_content_dir: &test_content_dir,
+                    target: target_cli.expect("incubator requires an explicit target"),
+                    incubator_profile,
+                    release,
+                    install_missing_deps,
+                    verbose,
+                },
+            )?)
+        } else {
+            None
+        };
+        let target_runner_env = target_runner.as_ref().map(|target_runner| {
+            let mut env = BTreeMap::new();
+            flowey_lib_hvlite::write_incubator_target_runner::add_incubator_target_runner_env(
+                &mut env,
+                &target.as_triple(),
+                target_runner,
+            );
+            env
+        });
 
         // Run artifact discovery inline at pipeline construction time since
         // flowey doesn't support conditional requests yet
@@ -216,10 +245,8 @@ impl IntoPipeline for VmmTestsRunCli {
             // run on any system so that we build all necessary dependencies. By default
             // petri marks incompatible tests as ignored.
             //
-            // When using an incubator, the host's context is irrelevant — the VM's
-            // context determines which tests can run. Include ignored tests so they
-            // are discovered for artifact resolution and re-evaluated inside the VM.
-            include_ignored: build_only || incubator.is_some(),
+            include_ignored: build_only,
+            target_runner_env: target_runner_env.as_ref(),
         })?;
 
         if suites.is_empty() {
@@ -229,7 +256,11 @@ impl IntoPipeline for VmmTestsRunCli {
         // Query for the required artifacts
         let mut artifacts = Vec::new();
         for suite in suites.values() {
-            artifacts.append(&mut query_test_binary_artifacts(suite)?);
+            artifacts.append(&mut query_test_binary_artifacts(
+                suite,
+                target_runner.as_deref(),
+                target_runner_env.as_ref(),
+            )?);
         }
 
         // Resolve to build selections
@@ -276,10 +307,14 @@ impl IntoPipeline for VmmTestsRunCli {
 
                 if !hyperv_testcases.is_empty() {
                     hyperv_tests += hyperv_testcases.len();
-                    hyperv_artifacts.append(&mut query_test_binary_artifacts(&RustSuite {
-                        binary_path: suite.binary_path.clone(),
-                        testcases: hyperv_testcases,
-                    })?);
+                    hyperv_artifacts.append(&mut query_test_binary_artifacts(
+                        &RustSuite {
+                            binary_path: suite.binary_path.clone(),
+                            testcases: hyperv_testcases,
+                        },
+                        target_runner.as_deref(),
+                        target_runner_env.as_ref(),
+                    )?);
                 }
             }
 
@@ -392,6 +427,125 @@ impl IntoPipeline for VmmTestsRunCli {
     }
 }
 
+struct IncubatorTargetRunnerBootstrap<'a> {
+    repo_root: &'a Path,
+    test_content_dir: &'a Path,
+    target: VmmTestTargetCli,
+    incubator_profile: &'a Path,
+    release: bool,
+    install_missing_deps: bool,
+    verbose: bool,
+}
+
+fn bootstrap_incubator_target_runner(
+    req: IncubatorTargetRunnerBootstrap<'_>,
+) -> anyhow::Result<PathBuf> {
+    let IncubatorTargetRunnerBootstrap {
+        repo_root,
+        test_content_dir,
+        target,
+        incubator_profile,
+        release,
+        install_missing_deps,
+        verbose,
+    } = req;
+
+    let target_runner = test_content_dir.join("incubator-target-runner.sh");
+    log::info!(
+        "Preparing incubator target runner for discovery: {}",
+        target_runner.display()
+    );
+
+    let pipeline = incubator_target_runner_bootstrap_pipeline(IncubatorTargetRunnerBootstrap {
+        repo_root,
+        test_content_dir,
+        target,
+        incubator_profile,
+        release,
+        install_missing_deps,
+        verbose,
+    })?;
+    flowey_cli::run_local_pipeline(
+        pipeline,
+        false,
+        repo_root.join("flowey-out"),
+        repo_root.join("flowey-persist"),
+    )
+    .context("failed to run incubator target-runner bootstrap")?;
+
+    anyhow::ensure!(
+        target_runner.exists(),
+        "incubator target-runner bootstrap did not create {}",
+        target_runner.display()
+    );
+
+    Ok(target_runner)
+}
+
+fn incubator_target_runner_bootstrap_pipeline(
+    req: IncubatorTargetRunnerBootstrap<'_>,
+) -> anyhow::Result<Pipeline> {
+    let IncubatorTargetRunnerBootstrap {
+        repo_root,
+        test_content_dir,
+        target,
+        incubator_profile,
+        release,
+        install_missing_deps,
+        verbose,
+    } = req;
+
+    let target = resolve_target(Some(target), PipelineBackendHint::Local)?;
+    let test_content_dir = test_content_dir.absolute()?;
+    let profile_path = incubator_profile.absolute()?;
+    let repo_root = repo_root.absolute()?;
+    std::fs::create_dir_all(&test_content_dir)
+        .context("failed to create incubator target-runner output directory")?;
+
+    let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
+        ReadVar::from_static(repo_root.clone()),
+    );
+
+    let mut pipeline = Pipeline::new();
+    let mut job = pipeline
+        .new_job(
+            FlowPlatform::host(PipelineBackendHint::Local),
+            FlowArch::host(PipelineBackendHint::Local),
+            "prepare incubator target runner for vmm tests",
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+        .dep_on(
+            |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                hvlite_repo_source: openvmm_repo,
+            },
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+            local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                interactive: true,
+                auto_install: install_missing_deps,
+                ignore_rust_version: true,
+            }),
+            verbose: ReadVar::from_static(verbose),
+            locked: false,
+            deny_warnings: false,
+            no_incremental: false,
+        });
+
+    job = job.side_effect(
+        |done| flowey_lib_hvlite::prepare_incubator_target_runner::Request {
+            target,
+            profile: CommonProfile::from_release(release),
+            profile_path: ReadVar::from_static(profile_path),
+            workspace_dir: ReadVar::from_static(repo_root),
+            test_content_dir: ReadVar::from_static(test_content_dir),
+            done,
+        },
+    );
+
+    job.finish();
+    Ok(pipeline)
+}
+
 /// Get test binaries and associated matching tests for a given nextest filter.
 // TODO: this function should really be a flowey node without automatic
 // dependency installation, but that would require conditional requests.
@@ -404,6 +558,7 @@ fn run_cargo_nextest_list<'a>(
         filter,
         release,
         include_ignored,
+        target_runner_env,
     } = req;
 
     // Check that cargo-nextest is available
@@ -423,6 +578,9 @@ fn run_cargo_nextest_list<'a>(
     // get the binary path
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::inherit());
+    if let Some(target_runner_env) = target_runner_env {
+        cmd.envs(target_runner_env);
+    }
     cmd.current_dir(repo_root).args([
         "nextest",
         "list",
@@ -501,22 +659,39 @@ fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSui
 /// Runs the test binary with `--list-required-artifacts --tests-from-stdin`
 /// and returns all the required and optional artifacts for all test defined
 /// in the RustSuite.
-fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>> {
+fn query_test_binary_artifacts(
+    suite: &RustSuite,
+    target_runner: Option<&Path>,
+    target_runner_env: Option<&BTreeMap<String, String>>,
+) -> anyhow::Result<Vec<String>> {
     log::info!("Using test binary: {}", suite.binary_path.display());
     log::info!("Querying artifacts for {} tests", suite.testcases.len());
-    let stdin_data = suite
-        .testcases
-        .iter()
-        .map(|n| format!("{n}\n"))
-        .collect::<String>();
-    let mut child = Command::new(&suite.binary_path)
-        .args(["--list-required-artifacts", "--tests-from-stdin"])
-        .stdin(Stdio::piped())
+
+    let mut command = if let Some(target_runner) = target_runner {
+        let mut command = Command::new(target_runner);
+        command.arg(&suite.binary_path);
+        command
+    } else {
+        Command::new(&suite.binary_path)
+    };
+
+    command.arg("--list-required-artifacts");
+    command.arg("--tests-from-stdin").stdin(Stdio::piped());
+    if let Some(target_runner_env) = target_runner_env {
+        command.envs(target_runner_env);
+    }
+
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn test binary")?;
 
+    let stdin_data = suite
+        .testcases
+        .iter()
+        .map(|n| format!("{n}\n"))
+        .collect::<String>();
     child
         .stdin
         .take()

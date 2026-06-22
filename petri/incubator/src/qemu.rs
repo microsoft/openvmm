@@ -3,6 +3,7 @@
 
 //! QEMU process management.
 
+use crate::GUEST_SHARE_ROOT;
 use crate::profile::DeviceConfig;
 use crate::profile::QemuTcgConfig;
 use anyhow::Context;
@@ -134,6 +135,7 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
 /// connect and send commands.
 fn build_init_script(guest_pipette_path: &str) -> String {
     let guest_pipette_path = shell_single_quote(guest_pipette_path);
+    let guest_share_root = shell_single_quote(GUEST_SHARE_ROOT);
 
     // QEMU user-mode networking defaults: guest is 10.0.2.15/24,
     // gateway 10.0.2.2, DNS forwarder at 10.0.2.3.
@@ -144,15 +146,15 @@ fn build_init_script(guest_pipette_path: &str) -> String {
         mount -t devtmpfs none /dev\n\
         mount -t proc none /proc\n\
         mount -t sysfs none /sys\n\
-        mkdir -p /dev/pts /share /root /tmp /etc\n\
+        mkdir -p /dev/pts {guest_share_root} /root /tmp /etc\n\
         mount -t devpts devpts /dev/pts\n\
-        mount -t 9p -o trans=virtio,version=9p2000.L hostshare /share\n\
+        mount -t 9p -o trans=virtio,version=9p2000.L hostshare {guest_share_root}\n\
         ip link set eth0 up\n\
         ip addr add 10.0.2.15/24 dev eth0\n\
         ip route add default via 10.0.2.2\n\
         echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n\
         export HOME=/root\n\
-        cd /share\n\
+        cd {guest_share_root}\n\
         exec {guest_pipette_path} --transport tcp\n"
     )
 }
@@ -165,10 +167,10 @@ fn shell_single_quote(s: &str) -> String {
 ///
 /// Reads the gzip-compressed base initrd, injects the `rdinit` script (see
 /// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], writes the patched initrd
-/// into `share_dir`, and returns its path.
+/// into `output_dir`, and returns its path.
 pub fn prepare_initrd(
     base_initrd: &Path,
-    share_dir: &Path,
+    output_dir: &Path,
     guest_pipette_path: &str,
 ) -> anyhow::Result<PathBuf> {
     let initrd_data = std::fs::read(base_initrd).context("failed to read initrd")?;
@@ -181,7 +183,8 @@ pub fn prepare_initrd(
     )
     .context("failed to inject init script into initrd")?;
 
-    let patched_initrd_path = share_dir.join(".incubator-initrd.gz");
+    std::fs::create_dir_all(output_dir).context("failed to create incubator output dir")?;
+    let patched_initrd_path = output_dir.join(".incubator-initrd.gz");
     std::fs::write(&patched_initrd_path, &patched_initrd)
         .context("failed to write patched initrd")?;
 

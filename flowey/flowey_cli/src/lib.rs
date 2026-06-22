@@ -5,7 +5,9 @@
 #![forbid(unsafe_code)]
 
 use flowey_core::pipeline::IntoPipeline;
+use flowey_core::pipeline::Pipeline;
 use std::path::Path;
+use std::path::PathBuf;
 
 mod cli;
 mod flow_resolver;
@@ -23,6 +25,30 @@ pub fn flowey_main<ProjectPipelines: clap::Subcommand + IntoPipeline>(
     } else {
         std::process::exit(0)
     }
+}
+
+/// Run a local Flowey pipeline directly, without going back through the CLI.
+pub fn run_local_pipeline(
+    pipeline: Pipeline,
+    windows_as_wsl: bool,
+    out_dir: PathBuf,
+    persist_dir: PathBuf,
+) -> anyhow::Result<()> {
+    let original_dir = std::env::current_dir()?;
+    fs_err::create_dir_all(&out_dir)?;
+    let out_dir = std::path::absolute(out_dir)?;
+    fs_err::create_dir_all(&persist_dir)?;
+    let persist_dir = std::path::absolute(persist_dir)?;
+
+    let resolved_pipeline = pipeline_resolver::generic::resolve_pipeline(pipeline)?;
+    let result = pipeline_resolver::direct_run::direct_run(
+        resolved_pipeline,
+        windows_as_wsl,
+        out_dir,
+        persist_dir,
+    );
+    std::env::set_current_dir(original_dir)?;
+    result
 }
 
 /// Check if we're running inside WSL (Windows Subsystem for Linux).

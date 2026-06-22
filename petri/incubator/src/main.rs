@@ -5,7 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
 use clap::Parser;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// Standalone CLI for testing the incubator launcher.
 #[derive(Parser)]
@@ -15,28 +18,31 @@ struct Args {
     profile: String,
     /// Path to the kernel image (auto-detected if omitted).
     #[clap(long)]
-    kernel: Option<std::path::PathBuf>,
+    kernel: Option<PathBuf>,
     /// Path to the initrd (auto-detected if omitted).
     #[clap(long)]
-    initrd: Option<std::path::PathBuf>,
+    initrd: Option<PathBuf>,
     /// Directory to share with the guest.
     #[clap(long)]
     share: String,
     /// Host directory for logs and captured output.
     #[clap(long)]
-    output_dir: Option<std::path::PathBuf>,
+    output_dir: Option<PathBuf>,
     /// Guest path to the pipette binary.
-    #[clap(long, default_value = "/share/pipette")]
-    guest_pipette: String,
+    #[clap(long)]
+    guest_pipette: Option<String>,
     /// Environment variable to set for the guest command, as KEY=VALUE.
     #[clap(long = "guest-env", value_name = "KEY=VALUE")]
     guest_env: Vec<GuestEnv>,
+    /// Map the command path from the host share to the guest share.
+    #[clap(long)]
+    map_command_path: bool,
     /// Working directory for the guest command.
     #[clap(long)]
     guest_current_dir: Option<String>,
     /// Override the QEMU binary path from the profile.
     #[clap(long)]
-    qemu_binary: Option<std::path::PathBuf>,
+    qemu_binary: Option<PathBuf>,
     /// Timeout in seconds.
     #[clap(long, default_value_t = 1800)]
     timeout: u64,
@@ -48,6 +54,7 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_target(false)
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -55,6 +62,11 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+    let share_dir = PathBuf::from(&args.share);
+    let path_mapper = incubator::HostPathMapper::new(&share_dir, incubator::GUEST_SHARE_ROOT)?;
+    let guest_pipette = args
+        .guest_pipette
+        .unwrap_or_else(|| format!("{}/pipette", incubator::GUEST_SHARE_ROOT));
 
     let profile = incubator::IncubatorProfile::from_file(std::path::Path::new(&args.profile))?;
 
@@ -71,24 +83,32 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(profile = %args.profile, "profile");
     tracing::info!(kernel = %kernel.display(), "kernel");
     tracing::info!(initrd = %initrd.display(), "initrd");
-    tracing::info!(share = %args.share, "share");
-    tracing::info!(command = ?args.command, "command");
-    let guest_env = args
-        .guest_env
-        .into_iter()
-        .map(|env| (env.key, env.value))
-        .collect();
+    let mut command = args.command;
+    if args.map_command_path {
+        let host_command = command.first().context("empty guest command")?.clone();
+        command[0] = path_mapper.map_path(&host_command).with_context(|| {
+            format!("failed to map command path '{host_command}' into the guest share")
+        })?;
+    }
+
+    tracing::info!(share = %share_dir.display(), "share");
+    tracing::info!(command = ?command, "command");
+
+    let mut guest_env = guest_env_from_incubator_env(&path_mapper)?;
+    for env in args.guest_env {
+        guest_env.insert(env.key, env.value);
+    }
 
     let output = incubator::run_in_incubator(incubator::IncubatorConfig {
         profile,
         kernel,
         initrd,
-        share_dir: args.share.clone().into(),
+        share_dir: share_dir.clone(),
         output_dir: args
             .output_dir
-            .unwrap_or_else(|| std::path::Path::new(&args.share).join("test_results")),
-        guest_pipette_path: args.guest_pipette,
-        guest_command: args.command,
+            .unwrap_or_else(|| share_dir.join("test_results")),
+        guest_pipette_path: guest_pipette,
+        guest_command: command,
         guest_env,
         guest_current_dir: args.guest_current_dir,
         timeout: std::time::Duration::from_secs(args.timeout),
@@ -102,6 +122,22 @@ fn main() -> anyhow::Result<()> {
     );
 
     std::process::exit(output.exit_code.unwrap_or(1));
+}
+
+fn guest_env_from_incubator_env(
+    path_mapper: &incubator::HostPathMapper,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let policy = match std::env::var("INCUBATOR_ENV") {
+        Ok(policy) => policy,
+        Err(std::env::VarError::NotPresent) => return Ok(BTreeMap::new()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("INCUBATOR_ENV is not valid UTF-8")
+        }
+    };
+
+    let host_env = std::env::vars().collect();
+    incubator::guest_env_from_incubator_env(&policy, &host_env, path_mapper)
+        .context("failed to apply INCUBATOR_ENV")
 }
 
 #[derive(Clone)]
@@ -136,14 +172,11 @@ impl std::str::FromStr for GuestEnv {
 /// `cargo run` picks up the sample kernel/initrd packaged alongside
 /// openvmm-deps. If neither is set, fail with a hint to pass the path
 /// explicitly.
-fn kernel_or_initrd_from_env(
-    arch: incubator::Arch,
-    base_name: &str,
-) -> anyhow::Result<std::path::PathBuf> {
+fn kernel_or_initrd_from_env(arch: incubator::Arch, base_name: &str) -> anyhow::Result<PathBuf> {
     let prefixed = format!("{}_{base_name}", arch.env_prefix());
     let value = non_empty_env(base_name).or_else(|| non_empty_env(&prefixed));
     match value {
-        Some(value) => Ok(std::path::PathBuf::from(value)),
+        Some(value) => Ok(PathBuf::from(value)),
         None => anyhow::bail!(
             "neither {base_name} nor {prefixed} is set (normally provided by \
              .cargo/config.toml); pass --kernel/--initrd explicitly or run via \
