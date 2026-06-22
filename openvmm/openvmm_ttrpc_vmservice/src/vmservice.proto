@@ -198,6 +198,8 @@ message VirtioNet {
     optional uint32 max_queues = 1;
     // Host network backend.
     NicBackend backend = 2;
+    // MAC address for the adapter (e.g. "12-34-56-78-9A-BC").
+    string mac_address = 3;
 }
 
 // A host network backend, shared across NIC device types (virtio-net, MANA,
