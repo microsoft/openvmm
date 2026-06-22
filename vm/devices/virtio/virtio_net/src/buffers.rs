@@ -194,6 +194,7 @@ impl BufferAccess for VirtioWorkPool {
         // so it must also have negotiated GUEST_CSUM; otherwise a guest that
         // doesn't understand NEEDS_CSUM could mishandle the frame.
         let gso_allowed = self.guest_csum
+            && matches!(metadata.l4_protocol, net_backend::L4Protocol::Tcp)
             && match metadata.l3_protocol {
                 L3Protocol::Ipv4 => self.guest_tso4,
                 L3Protocol::Ipv6 => self.guest_tso6,

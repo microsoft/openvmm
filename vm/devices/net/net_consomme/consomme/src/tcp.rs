@@ -675,9 +675,9 @@ impl<T: Client> Sender<'_, T> {
     ///
     /// When `tso_mss` is `Some(mss)`, the payload is larger than a single
     /// segment and the packet is delivered with [`ChecksumState::tso`] set so
-    /// that the downstream virtio-net device can present it to the guest as an
-    /// LRO/GSO packet. In this mode the TCP checksum is left as a
-    /// pseudo-header partial checksum (the guest completes it per-segment).
+    /// that the frontend device can present it to the guest as an
+    /// LRO/GSO packet. In this mode the TCP checksum field is left incomplete
+    /// (checksum computation is disabled), and the guest computes per-segment checksums.
     fn send_packet(
         &mut self,
         tcp: &TcpRepr<'_>,

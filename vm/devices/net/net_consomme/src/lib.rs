@@ -691,7 +691,6 @@ impl consomme::Client for Client<'_> {
             // l2_len and l3_len from the packet.
             let (l3_protocol, l2_len, l3_len, l4_len) = parse_rx_header_lengths(data, checksum);
 
-
             let lro_allowed = match l3_protocol {
                 L3Protocol::Ipv4 => self.rx_offload_support.lro4,
                 L3Protocol::Ipv6 => self.rx_offload_support.lro6,
