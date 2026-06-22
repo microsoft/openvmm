@@ -116,6 +116,8 @@ message PcieDeviceKind {
         VirtioDevice virtio = 1;
         // An NVMe controller.
         NvmeConfig   nvme   = 2;
+        // A host PCI device assigned to the guest via VFIO.
+        VfioDevice   vfio   = 3;
     }
 }
 
@@ -297,6 +299,13 @@ message NvmeNamespace {
     DiskBackend backend = 2;
     // Expose the namespace read-only to the guest.
     bool read_only = 3;
+}
+
+// Host PCI device assigned to the guest via Linux VFIO. Linux only. The device
+// must be bound to vfio-pci on the host before VM start.
+message VfioDevice {
+    // Host PCI address (BDF), e.g. "0000:01:00.0".
+    string host_pci_address = 1;
 }
 
 //
