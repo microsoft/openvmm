@@ -4,6 +4,7 @@
 //! Print information about the current system to the log
 
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 new_simple_flow_node!(struct Node);
 
@@ -37,7 +38,7 @@ fn bytes_to_gibibytes(bytes: u64) -> f64 {
     bytes as f64 / (1024 * 1024 * 1024) as f64
 }
 
-fn print_system_info(_rt: &mut RustRuntimeServices<'_>) {
+fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
     use sysinfo::{Disks, Networks, System};
     let sys = System::new_all();
 
@@ -47,7 +48,20 @@ fn print_system_info(_rt: &mut RustRuntimeServices<'_>) {
         bytes_to_gibibytes(sys.total_memory())
     );
 
-    log::info!("CPUs: {}", sys.cpus().len());
+    let cpu_list = sys
+        .cpus()
+        .iter()
+        .map(|cpu| (cpu.brand(), cpu.frequency()))
+        .collect::<Vec<_>>();
+
+    let mut cpus = BTreeMap::new();
+    for cpu in cpu_list {
+        *cpus.entry(cpu).or_insert(0usize) += 1;
+    }
+
+    for ((brand, frequency), count) in cpus {
+        log::info!("CPU: {brand} @ {frequency} MHz (X{count})");
+    }
 
     let os_info = [
         System::name(),
@@ -82,4 +96,24 @@ fn print_system_info(_rt: &mut RustRuntimeServices<'_>) {
             .join(" ");
         log::info!("Network: {interface_name} {ip_addresses}");
     }
+
+    let is_uefi = match rt.platform() {
+        FlowPlatform::Windows => std::process::Command::new("bcdedit")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8(o.stdout).ok())
+            .flatten()
+            .map(|o| o.to_lowercase().contains(".efi")),
+        FlowPlatform::Linux(_) => Path::new("/sys/firmware/efi").try_exists().ok(),
+        _ => None,
+    };
+
+    log::info!(
+        "Firmware: {}",
+        match is_uefi {
+            Some(true) => "UEFI",
+            Some(false) => "PCAT",
+            None => "Unknown",
+        }
+    );
 }
