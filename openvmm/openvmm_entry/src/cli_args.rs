@@ -874,10 +874,11 @@ flags:
     ///                          pass the host features through. Available
     ///                          models: kvm64, Conroe, Penryn,
     ///                          Nehalem, Westmere, SandyBridge, IvyBridge,
-    ///                          Haswell, Broadwell, Skylake-Client/Server,
-    ///                          Cascadelake-Server, Icelake-Server,
-    ///                          SapphireRapids, Opteron_G1-5, EPYC,
-    ///                          EPYC-Rome/Milan/Genoa, and more.
+    ///                          Haswell, Broadwell, Skylake-Client,
+    ///                          Skylake-Server, Cascadelake-Server,
+    ///                          Icelake-Server, SapphireRapids, Opteron_G1
+    ///                          through Opteron_G5, EPYC, EPYC-Rome,
+    ///                          EPYC-Milan, EPYC-Genoa, and more.
     ///
     /// Examples:
     ///   --hypervisor whp
