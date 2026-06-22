@@ -214,15 +214,7 @@ message NicBackend {
         TapBackend      tap      = 2;
         // Built-in user-mode (consomme) network backend.
         ConsommeBackend consomme = 3;
-        // Windows kernel-mode vmswitch backend.
-        VmnicBackend    vmnic    = 4;
     }
-}
-
-// Windows kernel-mode vmswitch network backend.
-message VmnicBackend {
-    // Switch ID GUID, or "default".
-    string switch_id = 1;
 }
 
 // A virtio device backed by an external vhost-user backend process.
