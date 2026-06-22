@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn config_request_decodes_bdf() {
-        let address = PciConfigAddress::new(0x12, 0x1d, 0x40);
+        let address = PciConfigAddress::new(0x12, 0x1d, 0x40).unwrap();
 
         assert_eq!(address.bus, 0x12);
         assert_eq!(address.device_function, 0x1d);
