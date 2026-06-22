@@ -284,9 +284,9 @@ impl Queue for TapQueue {
                     // Only report GSO/LRO metadata if the frontend supports it.
                     if rx_meta.gso_size > 0 {
                         let lro_allowed = match rx_meta.l3_protocol {
-                            net_backend::L3Protocol::Ipv4 => self.rx_offload_support.lro4,
-                            net_backend::L3Protocol::Ipv6 => self.rx_offload_support.lro6,
-                            net_backend::L3Protocol::Unknown => false,
+                            L3Protocol::Ipv4 => self.rx_offload_support.lro4,
+                            L3Protocol::Ipv6 => self.rx_offload_support.lro6,
+                            L3Protocol::Unknown => false,
                         };
                         if !lro_allowed {
                             rx_meta.gso_size = 0;
