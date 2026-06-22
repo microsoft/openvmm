@@ -71,7 +71,12 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     let resource_code_arg = "CUSTOM";
 
     // (1) Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+    run_host_cmd(create_vmgs_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        Some(VMGS_FILE_SIZE),
+    ))
+    .await?;
 
     // (2) Copy the IGVM out of the DLL and into the VMGS file.
     let mut cmd = Command::new(vmgstool_path);
@@ -168,7 +173,12 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
     let dll_path = vmfw_dll.get();
 
     // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+    run_host_cmd(create_vmgs_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        Some(VMGS_FILE_SIZE),
+    ))
+    .await?;
 
     // First copy populates file id 8.
     run_host_cmd(copy_igvmfile_cmd(
@@ -191,7 +201,7 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
     ))
     .await;
     anyhow::ensure!(
-        res.is_err(),
+        matches!(res, Err(petri::CommandError::Command(..))),
         "copy-igvmfile over an existing file id 8 unexpectedly succeeded without --allow-overwrite",
     );
 
@@ -226,8 +236,9 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
 
-    // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+    // Create a default-sized VMGS file; copy-igvmfile fails before
+    // writing anything, so it never needs IGVM-sized capacity.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path, None)).await?;
 
     // Write a junk "DLL" that is clearly not a PE image.
     let bogus_dll = temp_dir.path().join("not-a-dll.bin");
@@ -243,7 +254,7 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
     ))
     .await;
     anyhow::ensure!(
-        res.is_err(),
+        matches!(res, Err(petri::CommandError::Command(..))),
         "copy-igvmfile unexpectedly succeeded on a non-PE data file",
     );
 
@@ -271,8 +282,9 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
 
-    // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+    // Create a default-sized VMGS file; copy-igvmfile fails before
+    // writing anything, so it never needs IGVM-sized capacity.
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path, None)).await?;
 
     // Point `--data-path` at a file that was never created.
     let missing_dll = temp_dir.path().join("does-not-exist.dll");
@@ -291,7 +303,7 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
     ))
     .await;
     anyhow::ensure!(
-        res.is_err(),
+        matches!(res, Err(petri::CommandError::Command(..))),
         "copy-igvmfile unexpectedly succeeded on a nonexistent data file",
     );
 
@@ -326,7 +338,12 @@ async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
     let dll_path = vmfw_dll.get();
 
     // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path)).await?;
+    run_host_cmd(create_vmgs_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        Some(VMGS_FILE_SIZE),
+    ))
+    .await?;
 
     // Request a resource code the DLL does not contain.
     let res = run_host_cmd(copy_igvmfile_cmd(
@@ -338,7 +355,7 @@ async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
     ))
     .await;
     anyhow::ensure!(
-        res.is_err(),
+        matches!(res, Err(petri::CommandError::Command(..))),
         "copy-igvmfile unexpectedly succeeded for a resource code absent from the DLL",
     );
 
@@ -363,15 +380,16 @@ async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
 /// ceiling for VMGS metadata and the other file slots.
 const VMGS_FILE_SIZE: u64 = 384 * 1024 * 1024;
 
-/// Build a `vmgstool create` command that sizes the VMGS large enough to
-/// hold an IGVM payload (see [`VMGS_FILE_SIZE`]).
-fn create_vmgs_cmd(vmgstool_path: &Path, vmgs_path: &Path) -> Command {
+/// Build a `vmgstool create` command for the given VMGS file. Pass
+/// `Some(size)` to size the VMGS large enough to hold an IGVM payload (see
+/// [`VMGS_FILE_SIZE`]); pass `None` to use vmgstool's small default
+/// capacity, which is enough for negative tests that fail before writing.
+fn create_vmgs_cmd(vmgstool_path: &Path, vmgs_path: &Path, file_size: Option<u64>) -> Command {
     let mut cmd = Command::new(vmgstool_path);
-    cmd.arg("create")
-        .arg("--filepath")
-        .arg(vmgs_path)
-        .arg("--file-size")
-        .arg(VMGS_FILE_SIZE.to_string());
+    cmd.arg("create").arg("--filepath").arg(vmgs_path);
+    if let Some(file_size) = file_size {
+        cmd.arg("--file-size").arg(file_size.to_string());
+    }
     cmd
 }
 
