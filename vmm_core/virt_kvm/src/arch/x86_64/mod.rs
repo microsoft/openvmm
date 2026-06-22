@@ -814,19 +814,23 @@ impl virt::BindProcessor for KvmProcessorBinder {
             // ioctl. The VP index MSR is set only when that enlightenment is
             // advertised; SCONTROL is set with the synic, because KVM
             // incorrectly initializes it to 0 and it must read as 1 on each
-            // processor.
-            let mut msrs = Vec::new();
+            // processor. At most two MSRs, so use a stack buffer rather than
+            // heap-allocating a Vec on every VP bind.
+            let mut msrs = [(0u32, 0u64); 2];
+            let mut count = 0;
             if hv.vp_index {
-                msrs.push((
+                msrs[count] = (
                     hvdef::HV_X64_MSR_VP_INDEX,
                     vp_info.base.vp_index.index().into(),
-                ));
+                );
+                count += 1;
             }
             if hv.synic {
-                msrs.push((hvdef::HV_X64_MSR_SCONTROL, 1));
+                msrs[count] = (hvdef::HV_X64_MSR_SCONTROL, 1);
+                count += 1;
             }
-            if !msrs.is_empty() {
-                kvm.set_msrs(&msrs)?;
+            if count > 0 {
+                kvm.set_msrs(&msrs[..count])?;
             }
         }
 
