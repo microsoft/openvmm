@@ -1884,7 +1884,7 @@ async fn test_tcp_record_advertised_window_truncates_with_scale(driver: DefaultD
     // scale-aligned to force truncation, including one just above a segment.
     for cap in [(1usize << scale) + 1, 1460, 64 << 10, (4 << 20) - 1] {
         inner.rx_window_cap = cap;
-        inner.record_advertised_window();
+        inner.record_advertised_window(inner.rx_window_len());
         let reconstructed = (inner.rx_window_len() as usize) << scale;
         assert_eq!(
             inner.rx_window_last_adv, reconstructed,
@@ -1932,7 +1932,7 @@ async fn test_tcp_should_reopen_window_waits_for_full_segment(driver: DefaultDri
         inner.should_reopen_window(),
         "reopen must fire once a full segment is advertisable"
     );
-    inner.record_advertised_window();
+    inner.record_advertised_window(inner.rx_window_len());
     assert!(
         !inner.should_reopen_window(),
         "reopen must disarm after advertising, not re-fire every poll"
