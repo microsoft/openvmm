@@ -8776,7 +8776,6 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
- "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",

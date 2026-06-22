@@ -6,6 +6,7 @@
 use anyhow::Context as _;
 use chipset_device_resources::ErasedChipsetDevice;
 use guestmem::DoorbellRegistration;
+use guestmem::GuestMemory;
 use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use pci_core::msi::SignalMsi;
@@ -28,8 +29,6 @@ pub struct PciDeviceResolveContext<'a> {
     pub driver_source: &'a VmTaskDriverSource,
     /// The resource resolver.
     pub resolver: &'a ResourceResolver,
-    /// DMA and MSI target for the device.
-    pub dma_target: &'a DmaTarget,
     /// The device resource to resolve.
     pub resource: Resource<PciDeviceHandleKind>,
     /// An object with which to register doorbell regions.
@@ -40,11 +39,17 @@ pub struct PciDeviceResolveContext<'a> {
 
 /// Resolves a PCI device resource, builds the corresponding device, and builds
 /// a VPCI bus to host it.
+///
+/// VPCI devices deliver interrupts through the vmbus [`VpciInterruptMapper`]
+/// rather than a PCIe [`MsiTarget`](pci_core::msi::MsiTarget), so this builds a
+/// fresh [`DmaTarget`] pairing `guest_memory` with a locally-owned
+/// [`MsiConnection`] that is connected to the virtual device's MSI controller.
 pub async fn build_vpci_device(
     ctx: PciDeviceResolveContext<'_>,
     vmbus: &VmbusServerControl,
     chipset_builder: &ChipsetBuilder<'_>,
     bus_config: VpciBusConfig,
+    guest_memory: GuestMemory,
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
 ) -> anyhow::Result<()> {
     let instance_id = bus_config.instance_id;
@@ -57,10 +62,7 @@ pub async fn build_vpci_device(
 
     let msi_conn = MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
 
-    let dma_target = DmaTarget::new(
-        ctx.dma_target.guest_memory().clone(),
-        msi_conn.target().clone(),
-    );
+    let dma_target = DmaTarget::new(guest_memory, msi_conn.target().clone());
     let device = resolve_and_add_pci_device(device_builder, ctx, &dma_target).await?;
 
     {
@@ -102,13 +104,13 @@ pub async fn build_pcie_device(
     ctx: PciDeviceResolveContext<'_>,
     chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
+    dma_target: &DmaTarget,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, ctx.resource.id());
     let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
 
-    let dma_target = ctx.dma_target;
     resolve_and_add_pci_device(device_builder, ctx, dma_target).await?;
 
     Ok(())

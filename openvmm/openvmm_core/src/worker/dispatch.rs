@@ -2363,7 +2363,6 @@ impl InitializedVm {
                     vmm_core::device_builder::PciDeviceResolveContext {
                         driver_source,
                         resolver,
-                        dma_target: &pcie_ctx.dma_target,
                         resource: dev_cfg.resource,
                         doorbell_registration: partition
                             .clone()
@@ -2372,6 +2371,7 @@ impl InitializedVm {
                     },
                     chipset_builder,
                     port_name.clone(),
+                    &pcie_ctx.dma_target,
                 )
                 .await?;
 
@@ -2570,10 +2570,6 @@ impl InitializedVm {
                         vmm_core::device_builder::PciDeviceResolveContext {
                             driver_source: &driver_source,
                             resolver: &resolver,
-                            dma_target: &pci_core::dma::DmaTarget::new(
-                                gm.clone(),
-                                pci_core::msi::MsiTarget::disconnected(),
-                            ),
                             resource: dev_cfg.resource,
                             doorbell_registration: partition
                                 .clone()
@@ -2591,6 +2587,7 @@ impl InitializedVm {
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
+                        gm.clone(),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
