@@ -27,8 +27,8 @@ use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -372,8 +372,9 @@ impl PetriVmConfigOpenVmm {
                 let end_bus = start_bus + bus_count_per_rc - 1;
 
                 let ports = (0..root_ports_per_root_complex)
-                    .map(|i| PcieRootPortConfig {
+                    .map(|i| PciePortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
+                        devfn: None,
                         hotplug: true,
                         acs_capabilities_supported: Some(0),
                         cxl: false,
@@ -414,10 +415,16 @@ impl PetriVmConfigOpenVmm {
     ) -> Self {
         self.config.pcie_switches.push(PcieSwitchConfig {
             name: switch_name.to_string(),
-            num_downstream_ports: port_count,
             parent_port: port_name.to_string(),
-            hotplug,
-            acs_capabilities_supported: Some(0),
+            ports: (0..port_count)
+                .map(|i| PciePortConfig {
+                    name: format!("{switch_name}-downstream-{i}"),
+                    devfn: None,
+                    hotplug,
+                    acs_capabilities_supported: Some(0),
+                    cxl: false,
+                })
+                .collect(),
         });
         self
     }

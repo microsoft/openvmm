@@ -14,9 +14,9 @@ use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
 use pci_core::msi::MsiTarget;
+use pcie::GenericPciePortDefinition;
 use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
-use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use pcie::switch::GenericPcieSwitchDefinition;
 use pcie::test_helpers::TestPcieMmioRegistration;
@@ -120,9 +120,10 @@ impl FuzzRootComplex {
         let hotplug = matches!(topology, Topology::Hotplug { .. });
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let port_defs: Vec<GenericPcieRootPortDefinition> = (0..NUM_PORTS)
-            .map(|i| GenericPcieRootPortDefinition {
+        let port_defs: Vec<GenericPciePortDefinition> = (0..NUM_PORTS)
+            .map(|i| GenericPciePortDefinition {
                 name: format!("rp{}", i).into(),
+                devfn: None,
                 hotplug,
                 settings: PciePortSettings::default(),
             })

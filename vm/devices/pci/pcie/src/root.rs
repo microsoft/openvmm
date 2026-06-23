@@ -5,13 +5,13 @@
 
 use crate::BDF_BUS_SHIFT;
 use crate::BDF_DEVICE_FUNCTION_MASK;
-use crate::BDF_DEVICE_SHIFT;
 use crate::MAX_FUNCTIONS_PER_BUS;
 use crate::PAGE_OFFSET_MASK;
 use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::port::GenericPciePortDefinition;
 use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
 use chipset_device::ChipsetDevice;
@@ -40,10 +40,19 @@ use zerocopy::IntoBytes;
 
 /// Error returned when a root complex configuration is invalid.
 #[derive(Debug, Error)]
-#[error("requested {port_count} root ports, but only {max} are supported")]
-pub struct InvalidRootComplexError {
-    port_count: usize,
-    max: usize,
+pub enum InvalidRootComplexError {
+    /// Too many root ports were requested for the available device/function
+    /// slots.
+    #[error("requested {port_count} root ports, but only {max} are supported")]
+    TooManyPorts {
+        /// Number of root ports requested.
+        port_count: usize,
+        /// Maximum number of root ports supported.
+        max: usize,
+    },
+    /// A root port's devfn could not be assigned.
+    #[error(transparent)]
+    Devfn(#[from] crate::PortDevfnError),
 }
 
 /// A generic PCI Express root complex emulator.
@@ -100,16 +109,6 @@ pub struct DownstreamPortInfo {
     pub bus_range: AssignedBusRange,
 }
 
-/// A description of a generic PCIe root port.
-pub struct GenericPcieRootPortDefinition {
-    /// The name of the root port.
-    pub name: Arc<str>,
-    /// Whether hotplug is enabled for this root port.
-    pub hotplug: bool,
-    /// Express-level port settings (ACS, etc.).
-    pub settings: PciePortSettings,
-}
-
 /// A flat description of a PCIe switch without hierarchy.
 pub struct GenericSwitchDefinition {
     /// The name of the switch.
@@ -161,7 +160,7 @@ pub struct GenericPcieRootComplexBuilder<'a> {
     register_mmio: &'a mut dyn RegisterMmioIntercept,
     bus_range: RangeInclusive<u8>,
     ecam_range: MemoryRange,
-    root_ports: Option<(Vec<GenericPcieRootPortDefinition>, &'a MsiTarget)>,
+    root_ports: Option<(Vec<GenericPciePortDefinition>, &'a MsiTarget)>,
     first_port_device_number: u8,
     chbcr_range: Option<MemoryRange>,
 }
@@ -174,7 +173,7 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
     /// the platform's interrupt controller.
     pub fn root_ports(
         mut self,
-        ports: Vec<GenericPcieRootPortDefinition>,
+        ports: Vec<GenericPciePortDefinition>,
         msi_target: &'a MsiTarget,
     ) -> Self {
         self.root_ports = Some((ports, msi_target));
@@ -241,42 +240,45 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
         let mut devices: Vec<(u8, BusDevice)> = Vec::new();
 
         if let Some((ports, msi_target)) = root_ports {
-            // Pack root ports into consecutive devfn values, 8 functions
-            // per device slot, mirroring the switch downstream-port pattern.
             let port_count = ports.len();
             let max = 32usize.saturating_sub(first_port_device_number as usize) * 8;
             if port_count > max {
-                return Err(InvalidRootComplexError { port_count, max });
+                return Err(InvalidRootComplexError::TooManyPorts { port_count, max });
             }
 
-            let multi_function = port_count > 1;
+            // Assign each root port a devfn (honoring explicit requests and
+            // filling the rest from `first_port_device_number`), shared with
+            // the switch downstream-port assignment.
+            let placements = crate::assign_port_devfns(&ports, first_port_device_number)?;
 
-            for (i, definition) in ports.into_iter().enumerate() {
-                let device = (i / 8) + first_port_device_number as usize;
-                let function = i % 8;
-                let devfn = ((device as u8) << BDF_DEVICE_SHIFT) | function as u8;
+            for (i, (definition, placement)) in ports.into_iter().zip(placements).enumerate() {
                 let hotplug_slot_number = if definition.hotplug {
                     Some(i as u32 + 1)
                 } else {
                     None
                 };
-                let port_msi_target = msi_target.with_devfn(devfn);
+                let port_msi_target = msi_target.with_devfn(placement.devfn);
                 let root_port = RootPort::new(
                     register_mmio,
                     definition.name.clone(),
-                    multi_function,
+                    placement.multi_function,
                     hotplug_slot_number,
                     &port_msi_target,
                     definition.settings,
                 );
                 devices.push((
-                    devfn,
+                    placement.devfn,
                     BusDevice::RootPort {
                         name: definition.name,
                         port: Box::new(root_port),
                     },
                 ));
             }
+
+            // `devices` is searched with `binary_search_by_key` on devfn, so it
+            // must be kept sorted. Explicit devfns may be assigned out of
+            // order, so sort here.
+            devices.sort_by_key(|(devfn, _)| *devfn);
         }
 
         Ok(GenericPcieRootComplex {
@@ -1052,8 +1054,9 @@ mod tests {
         port_count: u16,
     ) -> GenericPcieRootComplex {
         let port_defs = (0..port_count)
-            .map(|i| GenericPcieRootPortDefinition {
+            .map(|i| GenericPciePortDefinition {
                 name: format!("test-port-{}", i).into(),
+                devfn: None,
                 hotplug: false,
                 settings: PciePortSettings::default(),
             })
@@ -1077,8 +1080,9 @@ mod tests {
         chbcr_start: u64,
     ) -> GenericPcieRootComplex {
         let port_defs = (0..port_count)
-            .map(|i| GenericPcieRootPortDefinition {
+            .map(|i| GenericPciePortDefinition {
                 name: format!("test-port-{}", i).into(),
+                devfn: None,
                 hotplug: false,
                 settings: PciePortSettings::default(),
             })
@@ -1741,8 +1745,9 @@ mod tests {
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
         let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
-        let port_defs = vec![GenericPcieRootPortDefinition {
+        let port_defs = vec![GenericPciePortDefinition {
             name: "port-0".into(),
+            devfn: None,
             hotplug: false,
             settings: PciePortSettings::default(),
         }];
@@ -1885,11 +1890,53 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_function_bit_is_per_device() {
+        // Two ports placed at explicit devfns on *distinct* devices (each the
+        // sole function of its device) must NOT advertise the multi-function
+        // bit, even though there is more than one port.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(0, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let port_defs = vec![
+            GenericPciePortDefinition {
+                name: "a".into(),
+                devfn: Some(8), // device 1, function 0
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            },
+            GenericPciePortDefinition {
+                name: "b".into(),
+                devfn: Some(16), // device 2, function 0
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            },
+        ];
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .root_ports(port_defs, msi_conn.target())
+            .build()
+            .unwrap();
+
+        for devfn in [8u64, 16] {
+            let mut header: u32 = 0;
+            rc.mmio_read(devfn * 4096 + 0x0C, header.as_mut_bytes())
+                .unwrap();
+            assert_eq!(
+                header & (1 << 23),
+                0,
+                "devfn {devfn}: sole function of its device must not set the multi-function bit"
+            );
+        }
+    }
+
+    #[test]
     fn test_too_many_ports_returns_error() {
         // 257 ports starting at device 0 requires device 32, which is out of range.
-        let port_defs: Vec<GenericPcieRootPortDefinition> = (0..257)
-            .map(|i| GenericPcieRootPortDefinition {
+        let port_defs: Vec<GenericPciePortDefinition> = (0..257)
+            .map(|i| GenericPciePortDefinition {
                 name: format!("port-{}", i).into(),
+                devfn: None,
                 hotplug: false,
                 settings: PciePortSettings::default(),
             })
@@ -1906,5 +1953,105 @@ mod tests {
             result.is_err(),
             "257 ports should exceed the 256-port limit"
         );
+    }
+
+    /// Builds a root complex from explicit per-port devfn requests, returning
+    /// the assigned devfns in port-name order.
+    fn build_with_devfns(
+        ports: Vec<(&str, Option<u8>)>,
+        first_port_device_number: u8,
+    ) -> Result<Vec<(String, u8)>, InvalidRootComplexError> {
+        let port_defs: Vec<GenericPciePortDefinition> = ports
+            .into_iter()
+            .map(|(name, devfn)| GenericPciePortDefinition {
+                name: name.into(),
+                devfn,
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            })
+            .collect();
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(0, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .root_ports(port_defs, msi_conn.target())
+            .first_port_device_number(first_port_device_number)
+            .build()?;
+        Ok(rc
+            .downstream_ports()
+            .into_iter()
+            .map(|p| (p.name.to_string(), p.devfn))
+            .collect())
+    }
+
+    #[test]
+    fn test_devfn_auto_allocation() {
+        // All-None ports pack onto consecutive devfns starting at 0.
+        let ports = build_with_devfns(vec![("a", None), ("b", None), ("c", None)], 0).unwrap();
+        assert_eq!(
+            ports,
+            vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]
+        );
+    }
+
+    #[test]
+    fn test_devfn_auto_allocation_respects_first_device() {
+        // None ports start at the first-port device number (device 1 → devfn 8).
+        let ports = build_with_devfns(vec![("a", None), ("b", None)], 1).unwrap();
+        assert_eq!(ports, vec![("a".into(), 8), ("b".into(), 9)]);
+    }
+
+    #[test]
+    fn test_devfn_explicit_and_auto_mix() {
+        // Explicit devfn is honored; subsequent None ports skip used devfns.
+        let ports =
+            build_with_devfns(vec![("a", Some(0)), ("b", None), ("c", Some(16))], 0).unwrap();
+        // Sorted by devfn: a@0, b@1, c@16.
+        assert_eq!(
+            ports,
+            vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 16)]
+        );
+    }
+
+    #[test]
+    fn test_devfn_none_then_explicit_zero_conflicts() {
+        // [None, Some(0)]: the None port takes devfn 0, so the explicit
+        // request for 0 collides and fails (allocation is in order).
+        let err = build_with_devfns(vec![("a", None), ("b", Some(0))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::DevfnInUse { devfn: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_explicit_duplicate_conflicts() {
+        let err = build_with_devfns(vec![("a", Some(5)), ("b", Some(5))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::DevfnInUse { devfn: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_nonzero_function_without_function_zero_fails() {
+        // device 5, function 1 (devfn 0x29) with no function 0 is undiscoverable.
+        let err = build_with_devfns(vec![("a", Some((5 << 3) | 1))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::MissingFunctionZero {
+                device: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_function_zero_present_allows_higher_functions() {
+        // device 5 functions 0 and 1 present: discoverable, so this is allowed.
+        let ports =
+            build_with_devfns(vec![("a", Some(5 << 3)), ("b", Some((5 << 3) | 1))], 0).unwrap();
+        assert_eq!(ports, vec![("a".into(), 40), ("b".into(), 41)]);
     }
 }

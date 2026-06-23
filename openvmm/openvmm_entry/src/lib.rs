@@ -79,8 +79,8 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
@@ -211,10 +211,16 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .iter()
         .map(|switch_cli| PcieSwitchConfig {
             name: switch_cli.name.clone(),
-            num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
-            hotplug: switch_cli.hotplug,
-            acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+            ports: (0..switch_cli.num_downstream_ports)
+                .map(|i| PciePortConfig {
+                    name: format!("{}-downstream-{}", switch_cli.name, i),
+                    devfn: None,
+                    hotplug: switch_cli.hotplug,
+                    acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+                    cxl: false,
+                })
+                .collect(),
         })
         .collect()
 }
@@ -831,12 +837,13 @@ async fn vm_config_from_command_line(
 
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports: Vec<PcieRootPortConfig> = opt
+        let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
-            .map(|port_cli| PcieRootPortConfig {
+            .map(|port_cli| PciePortConfig {
                 name: port_cli.name.clone(),
+                devfn: port_cli.devfn,
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
                 cxl: port_cli.cxl,

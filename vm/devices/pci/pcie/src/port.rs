@@ -69,6 +69,25 @@ pub struct PciePortSettings {
     pub cxl_flex_bus_port_capability: Option<CxlFlexBusPortDvsecCapability>,
 }
 
+/// A description of a generic PCIe port (a root-complex root port or a switch
+/// downstream port).
+pub struct GenericPciePortDefinition {
+    /// The name of the port.
+    pub name: Arc<str>,
+    /// The device/function (`device << 3 | function`) to place this port at.
+    ///
+    /// When `None`, the port is assigned the lowest available devfn at or
+    /// above the builder's first-port device number. Ports are assigned in
+    /// order; an explicit devfn that collides with an already-assigned port
+    /// is an error. Only honored for root-complex root ports; switch
+    /// downstream ports are always packed sequentially.
+    pub devfn: Option<u8>,
+    /// Whether hotplug is enabled for this port.
+    pub hotplug: bool,
+    /// Express-level port settings (ACS, etc.).
+    pub settings: PciePortSettings,
+}
+
 /// Generic PCIe port BAR definition.
 #[derive(Clone)]
 pub struct PortBarDefinition {

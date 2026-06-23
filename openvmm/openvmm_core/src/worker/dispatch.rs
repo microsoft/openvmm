@@ -65,8 +65,8 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
@@ -89,9 +89,9 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pcie::GenericPciePortDefinition;
 use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
-use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
@@ -857,7 +857,7 @@ fn convert_vtl2_config(
 ///
 /// When CXL is enabled, emit a default Flex Bus capability advertising both
 /// cache and memory support.
-fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
+fn build_root_port_settings(rp_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
         acs_capabilities_supported: rp_cfg
             .acs_capabilities_supported
@@ -871,11 +871,12 @@ fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
 }
 
 /// Converts a manifest root-port entry into the runtime root-port definition.
-fn build_root_port_definition(rp_cfg: &PcieRootPortConfig) -> GenericPcieRootPortDefinition {
+fn build_root_port_definition(rp_cfg: &PciePortConfig) -> GenericPciePortDefinition {
     let settings = build_root_port_settings(rp_cfg);
 
-    GenericPcieRootPortDefinition {
+    GenericPciePortDefinition {
         name: rp_cfg.name.as_str().into(),
+        devfn: rp_cfg.devfn,
         hotplug: rp_cfg.hotplug,
         settings,
     }
@@ -2143,18 +2144,16 @@ impl InitializedVm {
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
                 .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                .add(|_services| {
+                .try_add(|_services| {
+                    let downstream_ports = switch
+                        .ports
+                        .iter()
+                        .map(build_root_port_definition)
+                        .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
-                        downstream_port_count: switch.num_downstream_ports,
-                        hotplug: switch.hotplug,
+                        downstream_ports,
                         msi_target,
-                        dsp_settings: PciePortSettings {
-                            acs_capabilities_supported: switch
-                                .acs_capabilities_supported
-                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
-                            cxl_flex_bus_port_capability: None,
-                        },
                     };
                     GenericPcieSwitch::new(definition)
                 })?;

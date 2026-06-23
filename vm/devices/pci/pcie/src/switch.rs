@@ -11,6 +11,7 @@
 //! PCIe capabilities indicating their port type.
 
 use crate::DOWNSTREAM_SWITCH_PORT_DEVICE_ID;
+use crate::PortDevfnError;
 use crate::UPSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PcieDownstreamPort;
@@ -145,16 +146,31 @@ impl DownstreamSwitchPort {
 pub struct GenericPcieSwitchDefinition {
     /// The name of the switch.
     pub name: Arc<str>,
-    /// The number of downstream ports to create.
+    /// The downstream ports to create.
+    ///
+    /// Each port is assigned a devfn the same way root-complex root ports are:
+    /// an explicit [`devfn`](crate::GenericPciePortDefinition::devfn) is honored,
+    /// and the rest are packed sequentially from device 0. CXL is not supported
+    /// on switch downstream ports.
     /// TODO: implement physical slot number, link and slot stuff
-    pub downstream_port_count: u8,
-    /// Whether hotplug is enabled for this switch's downstream ports.
-    pub hotplug: bool,
+    pub downstream_ports: Vec<crate::GenericPciePortDefinition>,
     /// MSI target from the parent connection. The switch re-derives
     /// per-port targets using the upstream port's bus range.
     pub msi_target: MsiTarget,
-    /// Express-level settings for downstream switch ports.
-    pub dsp_settings: PciePortSettings,
+}
+
+/// Error returned when a switch configuration is invalid.
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidSwitchError {
+    /// CXL was requested on a switch downstream port, which is not supported.
+    #[error("downstream port '{name}': CXL is not supported on switch ports")]
+    CxlUnsupported {
+        /// Name of the offending downstream port.
+        name: Arc<str>,
+    },
+    /// A downstream port's devfn could not be assigned.
+    #[error(transparent)]
+    Devfn(#[from] PortDevfnError),
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -171,18 +187,30 @@ pub struct GenericPcieSwitch {
     name: Arc<str>,
     /// The upstream switch port that connects to the parent.
     upstream_port: UpstreamSwitchPort,
-    /// Downstream switch ports indexed by devfn.
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|(_, v)| v)")]
-    downstream_ports: Vec<(Arc<str>, DownstreamSwitchPort)>,
+    /// Downstream switch ports, sorted by devfn.
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|(k, _, v)| (k, v)))")]
+    downstream_ports: Vec<(u8, Arc<str>, DownstreamSwitchPort)>,
 }
 
 impl GenericPcieSwitch {
     /// Constructs a new [`GenericPcieSwitch`] emulator.
-    pub fn new(definition: GenericPcieSwitchDefinition) -> Self {
+    pub fn new(definition: GenericPcieSwitchDefinition) -> Result<Self, InvalidSwitchError> {
         let upstream_port = UpstreamSwitchPort::new();
 
-        // If there are multiple downstream ports, they need the multi-function flag set
-        let multi_function = definition.downstream_port_count > 1;
+        // CXL is not supported on switch downstream ports (there is no CHBCR /
+        // component-register infrastructure behind a switch).
+        for port_def in &definition.downstream_ports {
+            if port_def.settings.cxl_flex_bus_port_capability.is_some() {
+                return Err(InvalidSwitchError::CxlUnsupported {
+                    name: port_def.name.clone(),
+                });
+            }
+        }
+
+        // Assign each downstream port a devfn, shared with the root-complex
+        // root-port assignment. Honors explicit devfns and packs the rest from
+        // device 0.
+        let placements = crate::assign_port_devfns(&definition.downstream_ports, 0)?;
 
         // Derive per-port MSI targets from the parent's target, using
         // the upstream port's bus range. When the guest programs the
@@ -192,33 +220,40 @@ impl GenericPcieSwitch {
             .msi_target
             .with_bus_range(upstream_port.cfg_space().bus_range(), 0);
 
-        let downstream_ports: Vec<(Arc<str>, DownstreamSwitchPort)> = (0..definition
-            .downstream_port_count)
-            .map(|i| {
-                let port_name: Arc<str> = format!("{}-downstream-{}", definition.name, i).into();
+        let mut downstream_ports: Vec<(u8, Arc<str>, DownstreamSwitchPort)> = definition
+            .downstream_ports
+            .into_iter()
+            .zip(placements)
+            .enumerate()
+            .map(|(i, (port_def, placement))| {
+                let port_name = port_def.name;
                 // Use the port index as the slot number for hotpluggable ports
-                let hotplug_slot_number = if definition.hotplug {
+                let hotplug_slot_number = if port_def.hotplug {
                     Some((i as u32) + 1)
                 } else {
                     None
                 };
-                let port_msi_target = switch_msi_target.with_devfn(i);
+                let port_msi_target = switch_msi_target.with_devfn(placement.devfn);
                 let port = DownstreamSwitchPort::new(
                     port_name.clone(),
-                    Some(multi_function),
+                    Some(placement.multi_function),
                     hotplug_slot_number,
                     &port_msi_target,
-                    definition.dsp_settings.clone(),
+                    port_def.settings,
                 );
-                (port_name, port)
+                (placement.devfn, port_name, port)
             })
             .collect();
 
-        Self {
+        // `downstream_ports` is searched by devfn, so keep it sorted; explicit
+        // devfns may be assigned out of order.
+        downstream_ports.sort_by_key(|(devfn, _, _)| *devfn);
+
+        Ok(Self {
             name: definition.name,
             upstream_port,
             downstream_ports,
-        }
+        })
     }
 
     /// Get the name of this switch.
@@ -235,9 +270,8 @@ impl GenericPcieSwitch {
     pub fn downstream_ports(&self) -> Vec<crate::root::DownstreamPortInfo> {
         self.downstream_ports
             .iter()
-            .enumerate()
-            .map(|(i, (name, dsp))| crate::root::DownstreamPortInfo {
-                devfn: i as u8,
+            .map(|(devfn, name, dsp)| crate::root::DownstreamPortInfo {
+                devfn: *devfn,
                 name: name.clone(),
                 bus_range: dsp.port.bus_range(),
             })
@@ -313,7 +347,10 @@ impl GenericPcieSwitch {
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        let (_, downstream_port) = self.downstream_ports.get_mut(function as usize)?;
+        let (_, _, downstream_port) = self
+            .downstream_ports
+            .iter_mut()
+            .find(|(devfn, _, _)| *devfn == function)?;
         Some(downstream_port.port.cfg_space.read_u32(cfg_offset, value))
     }
 
@@ -324,7 +361,10 @@ impl GenericPcieSwitch {
         cfg_offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        let (_, downstream_port) = self.downstream_ports.get_mut(function as usize)?;
+        let (_, _, downstream_port) = self
+            .downstream_ports
+            .iter_mut()
+            .find(|(devfn, _, _)| *devfn == function)?;
         Some(downstream_port.port.cfg_space.write_u32(cfg_offset, value))
     }
 
@@ -336,7 +376,7 @@ impl GenericPcieSwitch {
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        for (_, downstream_port) in self.downstream_ports.iter_mut() {
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
             let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
 
             // Skip downstream ports with invalid/uninitialized bus configuration
@@ -365,7 +405,7 @@ impl GenericPcieSwitch {
         cfg_offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        for (_, downstream_port) in self.downstream_ports.iter_mut() {
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
             let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
 
             // Skip downstream ports with invalid/uninitialized bus configuration
@@ -393,9 +433,10 @@ impl GenericPcieSwitch {
         name: &str,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> anyhow::Result<()> {
-        let (port_name, downstream_port) = self
+        let (_, port_name, downstream_port) = self
             .downstream_ports
-            .get_mut(port_devfn as usize)
+            .iter_mut()
+            .find(|(devfn, _, _)| *devfn == port_devfn)
             .ok_or_else(|| anyhow::anyhow!("port devfn {} not found", port_devfn))?;
         downstream_port
             .port
@@ -418,7 +459,7 @@ impl ChangeDeviceState for GenericPcieSwitch {
         self.upstream_port.cfg_space.reset();
 
         // Reset all downstream port configuration spaces
-        for (_, downstream_port) in self.downstream_ports.iter_mut() {
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
             downstream_port.port.cfg_space.reset();
         }
     }
@@ -559,9 +600,9 @@ mod save_restore {
 
             // Save all downstream ports (already sorted by devfn in the Vec).
             let mut downstream_ports = Vec::with_capacity(self.downstream_ports.len());
-            for (i, (_, downstream_port)) in self.downstream_ports.iter_mut().enumerate() {
+            for (devfn, _, downstream_port) in self.downstream_ports.iter_mut() {
                 downstream_ports.push(state::DownstreamPortSavedState {
-                    devfn: i as u8,
+                    devfn: *devfn,
                     cfg_space: downstream_port.port.cfg_space.save()?,
                     cxl_component_registers: downstream_port
                         .port
@@ -605,8 +646,10 @@ mod save_restore {
                     )));
                 }
 
-                if let Some((_, downstream_port)) =
-                    self.downstream_ports.get_mut(port_state.devfn as usize)
+                if let Some((_, _, downstream_port)) = self
+                    .downstream_ports
+                    .iter_mut()
+                    .find(|(devfn, _, _)| *devfn == port_state.devfn)
                 {
                     downstream_port
                         .port
@@ -633,6 +676,35 @@ mod tests {
     use super::*;
     use pci_core::bus_range::AssignedBusRange;
     use pci_core::msi::MsiConnection;
+
+    /// Builds a switch definition with `downstream_port_count` uniform
+    /// downstream ports named `{name}-downstream-{i}`, mirroring the naming
+    /// convention used by the rest of the topology.
+    fn switch_def(
+        name: &str,
+        downstream_port_count: u8,
+        hotplug: bool,
+        dsp_settings: PciePortSettings,
+        msi_target: MsiTarget,
+    ) -> GenericPcieSwitchDefinition {
+        GenericPcieSwitchDefinition {
+            name: name.into(),
+            downstream_ports: (0..downstream_port_count)
+                .map(|i| crate::GenericPciePortDefinition {
+                    name: format!("{name}-downstream-{i}").into(),
+                    devfn: None,
+                    hotplug,
+                    settings: dsp_settings.clone(),
+                })
+                .collect(),
+            msi_target,
+        }
+    }
+
+    /// Builds a switch from a definition, unwrapping the (test-only) result.
+    fn build(definition: GenericPcieSwitchDefinition) -> GenericPcieSwitch {
+        GenericPcieSwitch::new(definition).unwrap()
+    }
 
     #[test]
     fn test_upstream_switch_port_creation() {
@@ -769,14 +841,13 @@ mod tests {
 
     #[test]
     fn test_switch_creation() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let switch = GenericPcieSwitch::new(definition);
+        let switch = build(switch_def(
+            "test-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         assert_eq!(switch.name().as_ref(), "test-switch");
         assert_eq!(switch.downstream_ports().len(), 3);
@@ -801,14 +872,13 @@ mod tests {
         use crate::test_helpers::TestPcieEndpoint;
         use chipset_device::io::IoError;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         let downstream_device = TestPcieEndpoint::new(
             |offset, value| match offset {
@@ -849,14 +919,13 @@ mod tests {
         use crate::test_helpers::TestPcieEndpoint;
         use chipset_device::io::IoResult;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Verify that Switch implements routing functionality by testing add_pcie_device method
         // This tests that the switch can accept device connections (routing capability)
@@ -884,14 +953,13 @@ mod tests {
         use chipset_device::ChipsetDevice;
         use chipset_device::pci::PciConfigSpace;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 4,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            4,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Test that it supports PCI but not other interfaces
         assert!(switch.supports_pci().is_some());
@@ -915,41 +983,38 @@ mod tests {
 
     #[test]
     fn test_switch_default() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "default-switch".into(),
-            downstream_port_count: 4,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let switch = GenericPcieSwitch::new(definition);
+        let switch = build(switch_def(
+            "default-switch",
+            4,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
         assert_eq!(switch.name().as_ref(), "default-switch");
         assert_eq!(switch.downstream_ports().len(), 4);
     }
 
     #[test]
     fn test_switch_large_downstream_port_count() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 16,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let switch = GenericPcieSwitch::new(definition);
+        let switch = build(switch_def(
+            "test-switch",
+            16,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
         assert_eq!(switch.downstream_ports().len(), 16);
     }
 
     #[test]
     fn test_switch_downstream_port_direct_access() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Simulate the switch's internal bus being assigned as bus 1
         let secondary_bus = 1u8;
@@ -987,14 +1052,13 @@ mod tests {
 
     #[test]
     fn test_switch_invalid_bus_range_handling() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
@@ -1014,14 +1078,13 @@ mod tests {
 
     #[test]
     fn test_switch_downstream_port_invalid_bus_range_skipping() {
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Configure the upstream port with a valid bus range
         let secondary_bus = 1u8;
@@ -1055,19 +1118,18 @@ mod tests {
     #[test]
     fn test_switch_multi_function_bit() {
         // Test that switches with multiple downstream ports set the multi-function bit
-        let multi_port_definition = GenericPcieSwitchDefinition {
-            name: "multi-port-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let multi_port_switch = GenericPcieSwitch::new(multi_port_definition);
+        let multi_port_switch = build(switch_def(
+            "multi-port-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Verify each downstream port has the multi-function bit set
         for p in multi_port_switch.downstream_ports() {
             let port_num = p.devfn;
-            if let Some((_, downstream_port)) =
+            if let Some((_, _, downstream_port)) =
                 multi_port_switch.downstream_ports.get(port_num as usize)
             {
                 let mut header_type_value: u32 = 0;
@@ -1098,19 +1160,18 @@ mod tests {
         }
 
         // Test that switches with single downstream port do NOT set the multi-function bit
-        let single_port_definition = GenericPcieSwitchDefinition {
-            name: "single-port-switch".into(),
-            downstream_port_count: 1,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let single_port_switch = GenericPcieSwitch::new(single_port_definition);
+        let single_port_switch = build(switch_def(
+            "single-port-switch",
+            1,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Verify the single downstream port does NOT have the multi-function bit set
         for p in single_port_switch.downstream_ports() {
             let port_num = p.devfn;
-            if let Some((_, downstream_port)) =
+            if let Some((_, _, downstream_port)) =
                 single_port_switch.downstream_ports.get(port_num as usize)
             {
                 let mut header_type_value: u32 = 0;
@@ -1144,25 +1205,23 @@ mod tests {
     #[test]
     fn test_hotplug_support() {
         // Test hotplug disabled
-        let definition_no_hotplug = GenericPcieSwitchDefinition {
-            name: "test-switch-no-hotplug".into(),
-            downstream_port_count: 1,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let switch_no_hotplug = GenericPcieSwitch::new(definition_no_hotplug);
+        let switch_no_hotplug = build(switch_def(
+            "test-switch-no-hotplug",
+            1,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
         assert_eq!(switch_no_hotplug.name().as_ref(), "test-switch-no-hotplug");
 
         // Test hotplug enabled
-        let definition_with_hotplug = GenericPcieSwitchDefinition {
-            name: "test-switch-with-hotplug".into(),
-            downstream_port_count: 1,
-            hotplug: true,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let switch_with_hotplug = GenericPcieSwitch::new(definition_with_hotplug);
+        let switch_with_hotplug = build(switch_def(
+            "test-switch-with-hotplug",
+            1,
+            true,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
         assert_eq!(
             switch_with_hotplug.name().as_ref(),
             "test-switch-with-hotplug"
@@ -1174,28 +1233,26 @@ mod tests {
         use vmcore::save_restore::SaveRestore;
 
         // Create a switch with 3 downstream ports
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Save the state
         let saved_state = switch.save().expect("save should succeed");
         assert_eq!(saved_state.downstream_ports.len(), 3);
 
         // Create a new switch with only 2 downstream ports
-        let definition2 = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch2 = GenericPcieSwitch::new(definition2);
+        let mut switch2 = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Restore should fail because port 2 doesn't exist in the new switch
         let result = switch2.restore(saved_state);
@@ -1206,14 +1263,13 @@ mod tests {
     fn test_save_restore_basic() {
         use vmcore::save_restore::SaveRestore;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Save the initial state
         let saved_state = switch.save().expect("save should succeed");
@@ -1222,14 +1278,13 @@ mod tests {
         assert_eq!(saved_state.downstream_ports.len(), 2);
 
         // Restore the state to a new switch
-        let definition2 = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch2 = GenericPcieSwitch::new(definition2);
+        let mut switch2 = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
         switch2
             .restore(saved_state)
             .expect("restore should succeed");
@@ -1239,14 +1294,13 @@ mod tests {
     fn test_save_restore_with_bus_configuration() {
         use vmcore::save_restore::SaveRestore;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Configure bus numbers on the upstream port
         let secondary_bus = 5u8;
@@ -1269,14 +1323,13 @@ mod tests {
         let saved_state = switch.save().expect("save should succeed");
 
         // Create a new switch and restore the state
-        let definition2 = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 3,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch2 = GenericPcieSwitch::new(definition2);
+        let mut switch2 = build(switch_def(
+            "test-switch",
+            3,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Verify the new switch has default bus range before restore
         let default_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
@@ -1297,18 +1350,17 @@ mod tests {
     fn test_save_restore_downstream_port_state() {
         use vmcore::save_restore::SaveRestore;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Configure bus numbers on one of the downstream ports
         // First, we need to get access to the downstream port and configure it
-        if let Some((_, downstream_port)) = switch.downstream_ports.get_mut(0) {
+        if let Some((_, _, downstream_port)) = switch.downstream_ports.get_mut(0) {
             let secondary_bus = 10u8;
             let subordinate_bus = 20u8;
             let primary_bus = 5u8;
@@ -1323,7 +1375,7 @@ mod tests {
         }
 
         // Verify the downstream port bus range is set
-        if let Some((_, downstream_port)) = switch.downstream_ports.first() {
+        if let Some((_, _, downstream_port)) = switch.downstream_ports.first() {
             let bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(*bus_range.start(), 10);
             assert_eq!(*bus_range.end(), 20);
@@ -1333,17 +1385,16 @@ mod tests {
         let saved_state = switch.save().expect("save should succeed");
 
         // Create a new switch and restore the state
-        let definition2 = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch2 = GenericPcieSwitch::new(definition2);
+        let mut switch2 = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Verify the new switch has default bus range on downstream port before restore
-        if let Some((_, downstream_port)) = switch2.downstream_ports.first() {
+        if let Some((_, _, downstream_port)) = switch2.downstream_ports.first() {
             let default_bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(default_bus_range, 0..=0);
         }
@@ -1354,7 +1405,7 @@ mod tests {
             .expect("restore should succeed");
 
         // Verify the downstream port bus range is restored
-        if let Some((_, downstream_port)) = switch2.downstream_ports.first() {
+        if let Some((_, _, downstream_port)) = switch2.downstream_ports.first() {
             let restored_bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(*restored_bus_range.start(), 10);
             assert_eq!(*restored_bus_range.end(), 20);
@@ -1365,14 +1416,13 @@ mod tests {
     fn test_save_restore_preserves_upstream_and_downstream_cfg_space() {
         use vmcore::save_restore::SaveRestore;
 
-        let definition = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch = GenericPcieSwitch::new(definition);
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         // Upstream primary/secondary/subordinate bus numbers.
         switch
@@ -1382,7 +1432,7 @@ mod tests {
             .unwrap();
 
         // Downstream port 1 bus range.
-        if let Some((_, downstream_port)) = switch.downstream_ports.get_mut(1) {
+        if let Some((_, _, downstream_port)) = switch.downstream_ports.get_mut(1) {
             downstream_port
                 .port
                 .cfg_space
@@ -1392,14 +1442,13 @@ mod tests {
 
         let saved_state = switch.save().expect("save should succeed");
 
-        let definition2 = GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        };
-        let mut switch2 = GenericPcieSwitch::new(definition2);
+        let mut switch2 = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         switch2
             .restore(saved_state)
@@ -1409,7 +1458,7 @@ mod tests {
         assert_eq!(*upstream_bus_range.start(), 0x12);
         assert_eq!(*upstream_bus_range.end(), 0x14);
 
-        if let Some((_, downstream_port)) = switch2.downstream_ports.get(1) {
+        if let Some((_, _, downstream_port)) = switch2.downstream_ports.get(1) {
             let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(*downstream_bus_range.start(), 0x1f);
             assert_eq!(*downstream_bus_range.end(), 0x20);
@@ -1501,13 +1550,13 @@ mod tests {
             .unwrap();
 
         // Create and attach a switch behind the port
-        let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
-            name: "test-switch".into(),
-            downstream_port_count: 2,
-            hotplug: false,
-            dsp_settings: PciePortSettings::default(),
-            msi_target: MsiTarget::disconnected(),
-        });
+        let switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
 
         port.link = Some(("switch".into(), Box::new(SwitchAdapter(switch))));
 
@@ -1539,16 +1588,16 @@ mod tests {
     fn test_switch_acs_only_applies_to_dsp() {
         use pci_core::spec::caps::ExtendedCapabilityId;
 
-        let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
-            name: "acs-switch".into(),
-            downstream_port_count: 1,
-            hotplug: false,
-            dsp_settings: PciePortSettings {
+        let switch = build(switch_def(
+            "acs-switch",
+            1,
+            false,
+            PciePortSettings {
                 acs_capabilities_supported: 0x0001,
                 ..Default::default()
             },
-            msi_target: MsiTarget::disconnected(),
-        });
+            MsiTarget::disconnected(),
+        ));
 
         // Upstream switch ports do not expose ACS in this model.
         let mut upstream_header = 0u32;
@@ -1560,7 +1609,7 @@ mod tests {
         assert_eq!(upstream_header, 0);
 
         let mut switch = switch;
-        let (_, downstream_port) = switch
+        let (_, _, downstream_port) = switch
             .downstream_ports
             .iter_mut()
             .next()
@@ -1582,5 +1631,88 @@ mod tests {
             .read_u32(0x104, &mut caps_control)
             .unwrap();
         assert_eq!(caps_control as u16, 0x0001);
+    }
+
+    #[test]
+    fn test_switch_explicit_devfn() {
+        // A downstream port with an explicit devfn is placed there; the
+        // remaining ports fill the lowest free devfns from 0.
+        let definition = GenericPcieSwitchDefinition {
+            name: "sw".into(),
+            downstream_ports: vec![
+                crate::GenericPciePortDefinition {
+                    name: "a".into(),
+                    devfn: Some(16), // device 2, function 0
+                    hotplug: false,
+                    settings: PciePortSettings::default(),
+                },
+                crate::GenericPciePortDefinition {
+                    name: "b".into(),
+                    devfn: None,
+                    hotplug: false,
+                    settings: PciePortSettings::default(),
+                },
+            ],
+            msi_target: MsiTarget::disconnected(),
+        };
+        let switch = GenericPcieSwitch::new(definition).unwrap();
+        let mut ports: Vec<_> = switch
+            .downstream_ports()
+            .into_iter()
+            .map(|p| (p.name.to_string(), p.devfn))
+            .collect();
+        ports.sort_by_key(|(_, devfn)| *devfn);
+        assert_eq!(ports, vec![("b".into(), 0), ("a".into(), 16)]);
+    }
+
+    #[test]
+    fn test_switch_cxl_rejected() {
+        // CXL is not supported on switch downstream ports.
+        let definition = GenericPcieSwitchDefinition {
+            name: "sw".into(),
+            downstream_ports: vec![crate::GenericPciePortDefinition {
+                name: "a".into(),
+                devfn: None,
+                hotplug: false,
+                settings: PciePortSettings {
+                    cxl_flex_bus_port_capability: Some(Default::default()),
+                    ..Default::default()
+                },
+            }],
+            msi_target: MsiTarget::disconnected(),
+        };
+        assert!(matches!(
+            GenericPcieSwitch::new(definition),
+            Err(InvalidSwitchError::CxlUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn test_switch_duplicate_devfn_rejected() {
+        let definition = GenericPcieSwitchDefinition {
+            name: "sw".into(),
+            downstream_ports: vec![
+                crate::GenericPciePortDefinition {
+                    name: "a".into(),
+                    devfn: Some(0),
+                    hotplug: false,
+                    settings: PciePortSettings::default(),
+                },
+                crate::GenericPciePortDefinition {
+                    name: "b".into(),
+                    devfn: Some(0),
+                    hotplug: false,
+                    settings: PciePortSettings::default(),
+                },
+            ],
+            msi_target: MsiTarget::disconnected(),
+        };
+        assert!(matches!(
+            GenericPcieSwitch::new(definition),
+            Err(InvalidSwitchError::Devfn(PortDevfnError::DevfnInUse {
+                devfn: 0,
+                ..
+            }))
+        ));
     }
 }
