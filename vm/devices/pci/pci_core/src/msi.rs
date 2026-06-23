@@ -29,7 +29,7 @@ pub trait SignalMsi: Send + Sync {
 /// where the physical device signals the event on interrupt.
 pub struct MsiRoute {
     inner: Box<dyn IrqFdRoute>,
-    default_bdf: DefaultBdf,
+    default_rid: DefaultRid,
 }
 
 impl MsiRoute {
@@ -46,9 +46,9 @@ impl MsiRoute {
     /// If the resolved bus falls outside the assigned bus range, the route is
     /// left disabled and a ratelimited warning is emitted.
     pub fn enable(&self, address: u64, data: u32) {
-        // `resolve_default_bdf` emits the ratelimited warning when the
+        // `resolve_default_rid` emits the ratelimited warning when the
         // resolved bus is out of range; just leave the route disabled here.
-        let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
+        let Some(resolved) = resolve_default_rid(&self.default_rid) else {
             self.inner.disable();
             return;
         };
@@ -68,8 +68,8 @@ impl MsiRoute {
     /// is left disabled and a ratelimited warning is emitted.
     pub fn enable_with_rid(&self, rid: u16, address: u64, data: u32) {
         let bus = (rid >> 8) as u8;
-        if !self.default_bdf.bus_range.contains_bus(bus) {
-            let (secondary, subordinate) = self.default_bdf.bus_range.bus_range();
+        if !self.default_rid.bus_range.contains_bus(bus) {
+            let (secondary, subordinate) = self.default_rid.bus_range.bus_range();
             tracelimit::warn_ratelimited!(
                 rid,
                 secondary,
@@ -113,12 +113,12 @@ impl SignalMsi for DisconnectedMsiTarget {
 /// just its devfn; for SR-IOV VFs it may carry into the bus byte to address
 /// functions on higher buses within the assigned range.
 #[derive(Clone, Debug)]
-struct DefaultBdf {
+struct DefaultRid {
     bus_range: AssignedBusRange,
     rid_offset: u16,
 }
 
-/// Resolves a requester ID from a [`DefaultBdf`] source, composing it as
+/// Resolves a requester ID from a [`DefaultRid`] source, composing it as
 /// `(secondary_bus << 8) + rid_offset` against the live bus range.
 ///
 /// Returns `None` when the resulting bus falls outside the assigned range
@@ -126,7 +126,7 @@ struct DefaultBdf {
 /// warning is emitted and the caller should drop the MSI / disable the route.
 /// The offset is non-negative, so the bus is always at least the secondary
 /// bus; only the upper bound can be exceeded.
-fn resolve_default_bdf(default: &DefaultBdf) -> Option<u32> {
+fn resolve_default_rid(default: &DefaultRid) -> Option<u32> {
     let (secondary, subordinate) = default.bus_range.bus_range();
     let rid = ((secondary as u32) << 8) + default.rid_offset as u32;
     if rid >> 8 > subordinate as u32 {
@@ -159,7 +159,7 @@ pub struct MsiConnection {
 #[derive(Clone)]
 pub struct MsiTarget {
     inner: Arc<RwLock<MsiTargetInner>>,
-    default_bdf: DefaultBdf,
+    default_rid: DefaultRid,
 }
 
 impl MsiTarget {
@@ -172,7 +172,7 @@ impl MsiTarget {
                 signal_msi: Arc::new(DisconnectedMsiTarget),
                 irqfd: None,
             })),
-            default_bdf: DefaultBdf {
+            default_rid: DefaultRid {
                 bus_range: AssignedBusRange::new(),
                 rid_offset: 0,
             },
@@ -183,7 +183,7 @@ impl MsiTarget {
 impl std::fmt::Debug for MsiTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MsiTarget")
-            .field("default_bdf", &self.default_bdf)
+            .field("default_rid", &self.default_rid)
             .finish()
     }
 }
@@ -241,7 +241,7 @@ impl MsiConnection {
     pub fn msi_target(&self, bus_range: AssignedBusRange, devfn: u8) -> MsiTarget {
         MsiTarget {
             inner: self.inner.clone(),
-            default_bdf: DefaultBdf {
+            default_rid: DefaultRid {
                 bus_range,
                 rid_offset: devfn as u16,
             },
@@ -282,7 +282,7 @@ impl MsiTarget {
     pub fn with_bus_range(&self, bus_range: AssignedBusRange, devfn: u8) -> MsiTarget {
         MsiTarget {
             inner: self.inner.clone(),
-            default_bdf: DefaultBdf {
+            default_rid: DefaultRid {
                 bus_range,
                 rid_offset: devfn as u16,
             },
@@ -301,7 +301,7 @@ impl MsiTarget {
     /// The resulting bus is validated against the assigned bus range when an
     /// MSI is signaled (see [`signal_msi`](Self::signal_msi)), not here.
     pub fn with_rid(&self, rid: u16) -> MsiTarget {
-        let (secondary, _) = self.default_bdf.bus_range.bus_range();
+        let (secondary, _) = self.default_rid.bus_range.bus_range();
         self.with_rid_offset(rid.wrapping_sub((secondary as u16) << 8))
     }
 
@@ -316,8 +316,8 @@ impl MsiTarget {
     pub fn with_rid_offset(&self, rid_offset: u16) -> MsiTarget {
         MsiTarget {
             inner: self.inner.clone(),
-            default_bdf: DefaultBdf {
-                bus_range: self.default_bdf.bus_range.clone(),
+            default_rid: DefaultRid {
+                bus_range: self.default_rid.bus_range.clone(),
                 rid_offset,
             },
         }
@@ -326,7 +326,7 @@ impl MsiTarget {
     /// Signals an MSI interrupt to this target, using this target's
     /// default BDF as the requester ID.
     pub fn signal_msi(&self, address: u64, data: u32) {
-        let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
+        let Some(resolved) = resolve_default_rid(&self.default_rid) else {
             return;
         };
         let inner = self.inner.read();
@@ -346,8 +346,8 @@ impl MsiTarget {
     /// dropped and a ratelimited warning is emitted.
     pub fn signal_msi_with_rid(&self, rid: u16, address: u64, data: u32) {
         let bus = (rid >> 8) as u8;
-        if !self.default_bdf.bus_range.contains_bus(bus) {
-            let (secondary, subordinate) = self.default_bdf.bus_range.bus_range();
+        if !self.default_rid.bus_range.contains_bus(bus) {
+            let (secondary, subordinate) = self.default_rid.bus_range.bus_range();
             tracelimit::warn_ratelimited!(
                 rid,
                 secondary,
@@ -373,7 +373,7 @@ impl MsiTarget {
         inner.irqfd.as_ref().map(|fd| {
             Ok(MsiRoute {
                 inner: fd.new_irqfd_route()?,
-                default_bdf: self.default_bdf.clone(),
+                default_rid: self.default_rid.clone(),
             })
         })
     }
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn signal_msi_resolves_default_bdf() {
+    fn signal_msi_resolves_default_rid() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
         let msi_conn = MsiConnection::new();
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn route_enable_resolves_default_bdf() {
+    fn route_enable_resolves_default_rid() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(3, 8);
         let (irqfd, calls) = mock_irqfd(1);
