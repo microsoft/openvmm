@@ -303,9 +303,15 @@ impl SimpleFlowNode for Node {
                     igvm_vbs_json,
                 }) = openhcl_igvm.endorsements()
                 {
-                    fs_err::copy(igvm_tdx_json, output_dir.join("openhcl-tdx.json"))?;
-                    fs_err::copy(igvm_snp_json, output_dir.join("openhcl-snp.json"))?;
-                    fs_err::copy(igvm_vbs_json, output_dir.join("openhcl-vbs.json"))?;
+                    if let Some(igvm_tdx_json) = igvm_tdx_json {
+                        fs_err::copy(igvm_tdx_json, output_dir.join("openhcl-tdx.json"))?;
+                    }
+                    if let Some(igvm_snp_json) = igvm_snp_json {
+                        fs_err::copy(igvm_snp_json, output_dir.join("openhcl-snp.json"))?;
+                    }
+                    if let Some(igvm_vbs_json) = igvm_vbs_json {
+                        fs_err::copy(igvm_vbs_json, output_dir.join("openhcl-vbs.json"))?;
+                    }
                 }
                 for e in fs_err::read_dir(output_dir)? {
                     let e = e?;
