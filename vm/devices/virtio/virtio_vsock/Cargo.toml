@@ -1,0 +1,43 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "virtio_vsock"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guestmem.workspace = true
+hybrid_vsock.workspace = true
+inspect.workspace = true
+pal_async.workspace = true
+task_control.workspace = true
+unix_socket.workspace = true
+virtio.workspace = true
+virtio_resources.workspace = true
+vm_resource.workspace = true
+vmcore.workspace = true
+
+anyhow.workspace = true
+bitfield-struct.workspace = true
+futures.workspace = true
+mesh.workspace = true
+open_enum.workspace = true
+parking_lot.workspace = true
+smallvec.workspace = true
+tracing.workspace = true
+tracelimit.workspace = true
+unicycle.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+getrandom.workspace = true
+guid.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

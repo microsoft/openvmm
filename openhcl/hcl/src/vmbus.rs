@@ -9,8 +9,6 @@ use std::fs::File;
 use std::os::unix::prelude::*;
 
 mod ioctl {
-    #![allow(non_camel_case_types)]
-
     use nix::ioctl_write_ptr;
     use std::os::unix::prelude::*;
 

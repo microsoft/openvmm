@@ -69,6 +69,10 @@ pub struct PrTrigger {
     pub branches_ignore: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub types: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,6 +86,10 @@ pub struct CiTrigger {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags_ignore: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

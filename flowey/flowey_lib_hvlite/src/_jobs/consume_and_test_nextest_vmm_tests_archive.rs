@@ -5,7 +5,9 @@
 
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openvmm::OpenvmmOutput;
+use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_prep_steps::PrepStepsOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
@@ -14,26 +16,67 @@ use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
+use crate::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use vmm_test_images::KnownTestArtifacts;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct VmmTestsDepArtifacts {
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
+    pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
     pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
-    pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
+    pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_cvm: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub openhcl_linux_direct: Option<ReadVar<OpenhclIgvmOutput>>,
     pub tmks: Option<ReadVar<TmksOutput>>,
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
     pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
+    pub vmgstool_dev: Option<ReadVar<VmgstoolOutput>>,
     pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
     pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
     pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
+}
+
+pub type ResolveVmmTestsDepArtifacts =
+    Box<dyn Fn(&mut flowey::pipeline::prelude::PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
+
+#[macro_export]
+macro_rules! vmm_tests_artifact_builder {
+    (
+        $name:ty,
+        (
+            $($artifact:ident => $output:ty),* $(,)?
+        )
+    ) => {
+        ::paste::paste! {
+            #[derive(Default, Clone)]
+            pub struct $name {
+                $(pub [<use_ $artifact>]: Option<::flowey::pipeline::prelude::UseTypedArtifact<$output>>,)*
+            }
+
+            impl $name {
+                pub fn finish(self) -> Result<::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::ResolveVmmTestsDepArtifacts, &'static str> {
+                    let $name {
+                        $([<use_ $artifact>],)*
+                    } = self;
+
+                    $(let [<use_ $artifact>] = [<use_ $artifact>].ok_or(stringify!($artifact))?;)*
+
+                    Ok(Box::new(move |ctx| ::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts {
+                        $($artifact: Some(ctx.use_typed_artifact(&[<use_ $artifact>])),)*
+                        .. Default::default()
+                    }))
+                }
+            }
+        }
+    };
 }
 
 flowey_request! {
@@ -52,8 +95,11 @@ flowey_request! {
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
         /// Test artifacts to download
         pub test_artifacts: Vec<KnownTestArtifacts>,
-        /// Whether the prep steps should be run before the tests
-        pub needs_prep_run: bool,
+        /// Which prep_steps variants to run before tests (e.g. "standard", "no-vmbus").
+        /// Empty means no prep steps are needed.
+        pub prep_steps_variants: Vec<String>,
+        /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
+        pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -69,8 +115,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
@@ -93,7 +137,8 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
-            needs_prep_run,
+            prep_steps_variants,
+            hugetlb_2mb_overcommit_pages,
             artifact_dir,
             done,
         } = request;
@@ -105,55 +150,56 @@ impl SimpleFlowNode for Node {
 
         let VmmTestsDepArtifacts {
             openvmm: register_openvmm,
+            openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
             prep_steps: register_prep_steps,
-            artifact_dir_openhcl_igvm_files,
+            openhcl_standard,
+            openhcl_standard_dev,
+            openhcl_cvm,
+            openhcl_linux_direct,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
             vmgstool: register_vmgstool,
+            vmgstool_dev: register_vmgstool_dev,
             tpm_guest_tests_windows: register_tpm_guest_tests_windows,
             tpm_guest_tests_linux: register_tpm_guest_tests_linux,
             test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
         } = dep_artifact_dirs;
 
-        let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
-            ctx.reqv(
-                |v| crate::artifact_openhcl_igvm_from_recipe::resolve::Request {
-                    artifact_dir,
-                    igvm_files: v,
-                },
-            )
-        });
+        let register_openhcl_igvm_files = [
+            openhcl_standard,
+            openhcl_standard_dev,
+            openhcl_cvm,
+            openhcl_linux_direct,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        ctx.req(crate::install_vmm_tests_deps::Request::Select(
-            match target.operating_system {
-                target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                    hyperv: true,
-                    whp: true,
-                    hardware_isolation: false,
-                },
+        ctx.config(crate::install_vmm_tests_deps::Config {
+            selections: Some(match target.operating_system {
+                target_lexicon::OperatingSystem::Windows => {
+                    VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
+                        hyperv: true,
+                        whp: true,
+                        hardware_isolation: false,
+                    })
+                }
                 target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                 os => anyhow::bail!("unsupported target operating system: {os}"),
-            },
-        ));
+            }),
+            auto_install: None,
+        });
 
-        let arch = match target.architecture {
-            target_lexicon::Architecture::X86_64 => {
-                crate::run_cargo_build::common::CommonArch::X86_64
-            }
-            target_lexicon::Architecture::Aarch64(_) => {
-                crate::run_cargo_build::common::CommonArch::Aarch64
-            }
-            a => anyhow::bail!("unsupported target architecture: {a}"),
-        };
+        let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
         let release_igvm_files = if !matches!(ctx.backend(), FlowBackend::Ado) {
             Some(ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
@@ -175,6 +221,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target: target.clone(),
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
@@ -182,6 +229,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
@@ -191,6 +239,8 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: false,
+            disable_remote_artifacts: true,
+            reuse_prepped_vhds: false,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).
@@ -205,12 +255,16 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        if needs_prep_run {
-            pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
-                prep_steps: register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given"),
-                env: extra_env.clone(),
-                done,
-            }));
+        if !prep_steps_variants.is_empty() {
+            let prep_steps = register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given");
+            for variant in &prep_steps_variants {
+                pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                    prep_steps: prep_steps.clone(),
+                    args: vec![variant.clone()],
+                    env: extra_env.clone(),
+                    done,
+                }));
+            }
         } else if let Some(register_prep_steps) = register_prep_steps {
             register_prep_steps.claim_unused(ctx);
         }
@@ -225,6 +279,7 @@ impl SimpleFlowNode for Node {
             target: None,
             extra_env,
             pre_run_deps,
+            hugetlb_2mb_overcommit_pages,
             results: v,
         });
 

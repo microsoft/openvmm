@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 pub mod resolve {
+    use crate::common::CommonArch;
     use crate::download_release_igvm_files_from_gh;
-    use crate::run_cargo_build::common::CommonArch;
     use flowey::node::prelude::new_simple_flow_node;
     use flowey::node::prelude::*;
 

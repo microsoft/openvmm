@@ -13,6 +13,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::MsiTarget;
+use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -66,26 +68,32 @@ impl GenericPciBusDevice for SwitchAdapter {
         Some(self.0.pci_cfg_write(offset, value))
     }
 
-    fn pci_cfg_read_forward(
+    fn pci_cfg_read_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        self.0
-            .pci_cfg_read_forward(bus, device_function, offset, value)
+        Some(
+            self.0
+                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
     }
 
-    fn pci_cfg_write_forward(
+    fn pci_cfg_write_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        self.0
-            .pci_cfg_write_forward(bus, device_function, offset, value)
+        Some(
+            self.0
+                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
     }
 }
 
@@ -116,15 +124,16 @@ impl FuzzRootComplex {
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("rp{}", i).into(),
                 hotplug,
+                settings: PciePortSettings::default(),
             })
             .collect();
-        let rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            START_BUS,
-            END_BUS,
-            ecam_range,
-            port_defs,
-        );
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let rc =
+            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
+                .root_ports(port_defs, msi_conn.target())
+                .build()
+                .unwrap();
         Self { rc }
     }
 
@@ -272,6 +281,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
                 name: "sw0".into(),
                 downstream_port_count: 2,
                 hotplug: false,
+                msi_target: MsiTarget::disconnected(),
+                dsp_settings: PciePortSettings::default(),
             });
             rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?;

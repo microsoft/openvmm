@@ -4,6 +4,7 @@
 //! x86-specific state.
 
 pub mod apic_software_device;
+pub mod topology;
 pub mod vm;
 pub mod vp;
 
@@ -90,6 +91,8 @@ pub struct X86PartitionCapabilities {
     /// EFER.NXE is forced on. This is set for TDX 1.5 partitions, which require
     /// this.
     pub nxe_forced_on: bool,
+    /// Nested virtualization is enabled for this partition.
+    pub nested_virt: bool,
 }
 
 #[derive(Error, Debug)]
@@ -131,6 +134,7 @@ impl X86PartitionCapabilities {
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
             nxe_forced_on: false,
+            nested_virt: false,
         };
 
         let max_function = {

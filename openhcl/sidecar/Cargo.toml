@@ -14,7 +14,7 @@ test = false
 # Disable build scripts that do not pass in the CI environment.
 ci = []
 
-[dependencies]
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 minimal_rt.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
@@ -23,6 +23,7 @@ x86defs.workspace = true
 
 arrayvec.workspace = true
 zerocopy.workspace = true
+
 [build-dependencies]
 minimal_rt_build.workspace = true
 

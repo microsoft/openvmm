@@ -342,12 +342,6 @@ impl FlowNode for Node {
                         with_env.insert("RUST_BACKTRACE".into(), "1".into());
                     }
 
-                    // if running in CI, no need to waste time with incremental
-                    // build artifacts
-                    if !matches!(rt.backend(), FlowBackend::Local) {
-                        with_env.insert("CARGO_INCREMENTAL".into(), "0".into());
-                    }
-
                     // also update WSLENV in cases where we're running windows tests via WSL2
                     if !portable && crate::_util::running_in_wsl(rt) {
                         let old_wslenv = std::env::var("WSLENV");
@@ -405,6 +399,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     no_default_features: bool,
     mut extra_env: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
+    let no_incremental = cargo_flags.no_incremental;
     let locked = cargo_flags.locked.then_some("--locked");
     let verbose = cargo_flags.verbose.then_some("--verbose");
     let cargo_profile = match &cargo_profile {
@@ -451,6 +446,10 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     args.extend(features.to_cargo_arg_strings());
 
     let mut env = BTreeMap::new();
+
+    if no_incremental {
+        env.insert("CARGO_INCREMENTAL".into(), "0".into());
+    }
 
     env.append(&mut extra_env);
 

@@ -32,44 +32,76 @@ Flowey provides two node implementation patterns with a fundamental difference i
 
 ### The Non-Local Configuration Pattern
 
-The key advantage of FlowNode is its ability to accept configuration from different parts of the node graph without forcing intermediate nodes to be aware of that configuration. This is the "non-local" aspect:
+The key advantage of `FlowNode` is its ability to accept configuration from different parts of the node graph without forcing intermediate nodes to be aware of that configuration. This is the "non-local" aspect.
 
-Consider an "install Rust toolchain" node with an enum Request:
+For nodes that accept **config values** — versions, feature flags, local paths — use `FlowNodeWithConfig` with a typed config struct. Config is declared with the `flowey_config!` macro, set via `ctx.config(...)` by any caller, and automatically merged across all callers before being delivered to `emit()` separately from action requests.
+
+Consider an "install Rust toolchain" node:
 
 ```rust,ignore
-enum Request {
-    SetVersion { version: String },
-    GetToolchain { toolchain_path: WriteVar<PathBuf> },
+flowey_config! {
+    pub struct Config {
+        pub version: Option<String>,
+        pub auto_install: Option<bool>,
+    }
+}
+
+flowey_request! {
+    pub enum Request {
+        GetToolchain(WriteVar<PathBuf>),
+    }
+}
+
+new_flow_node_with_config!(struct Node);
+
+impl FlowNodeWithConfig for Node {
+    type Request = Request;
+    type Config = Config;
+
+    fn imports(ctx: &mut ImportCtx<'_>) { /* ... */ }
+
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let version = config.version
+            .expect("version must be set by cfg_versions");
+        // ... use version to install, then fulfill GetToolchain requests
+        Ok(())
+    }
 }
 ```
 
-**Without this pattern** (struct-only requests), you'd need to thread the Rust version through every intermediate node in the call graph:
+Callers set config and submit requests independently:
 
-```txt
-Root Node (knows version: "1.75")
-  → Node A (must pass through version)
-    → Node B (must pass through version)  
-      → Node C (must pass through version)
-        → Install Rust Node (finally uses version)
+```rust,ignore
+// A top-level job configuration node sets the version once:
+ctx.config(install_rust::Config {
+    version: Some("1.75".into()),
+    ..Default::default()
+});
+
+// Any node that needs the Rust toolchain just requests it:
+let toolchain = ctx.reqv(|v| install_rust::Request::GetToolchain(v));
 ```
 
-**With FlowNode's enum Request**, the root node can send `Request::SetVersion` once, while intermediate nodes that don't care about the version can simply send `Request::GetToolchain`:
-
 ```txt
-Root Node → InstallRust::SetVersion("1.75")
+Root Node → config(version: "1.75")
   → Node A
     → Node B
-      → Node C → InstallRust::GetToolchain()
+      → Node C → req(GetToolchain)
 ```
 
-The Install Rust FlowNode receives both requests together, validates that exactly one `SetVersion` was provided, and fulfills all the `GetToolchain` requests with that configured version. The intermediate nodes (A, B, C) never needed to know about or pass through version information.
+Flowey merges all config partials automatically. If two callers set the same field, the values must agree or the build fails. The intermediate nodes (A, B, C) never need to know about or pass through the version.
 
 This pattern:
 
 - **Eliminates plumbing complexity** in large pipelines
 - **Allows global configuration** to be set once at the top level
 - **Keeps unrelated nodes decoupled** from configuration they don't need
-- **Enables validation** that required configuration was provided (exactly one `SetVersion`)
+- **Validates consistency** — conflicting config values are caught at build time
+- **Separates concerns** — config (what version?) is distinct from requests (give me the toolchain path)
 
 **Additional Benefits of FlowNode:**
 
@@ -83,8 +115,10 @@ For detailed comparisons and examples, see the [`FlowNode`](https://openvmm.dev/
 Nodes are automatically registered using macros that handle most of the boilerplate:
 
 - [`new_flow_node!(struct Node)`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) - registers a FlowNode
+- [`new_flow_node_with_config!(struct Node)`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node_with_config.html) - registers a FlowNodeWithConfig (a FlowNode that also accepts typed config)
 - [`new_simple_flow_node!(struct Node)`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html) - registers a SimpleFlowNode
 - [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) - defines the Request type and implements [`IntoRequest`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.IntoRequest.html)
+- [`flowey_config!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_config.html) - defines a Config struct with automatic merge support and implements [`IntoConfig`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.IntoConfig.html)
 
 ## The imports() Method
 
@@ -149,18 +183,26 @@ implementation (runtime logic):
 
 ## Common Patterns
 
+### Node Config vs Request
+
+When designing a `FlowNode`, separate **config** (values that must be consistent across all callers) from **requests** (actions the node performs):
+
+- **Config** (`flowey_config!`): version strings, feature flags, local override paths, auto-install toggles. Use `FlowNodeWithConfig` and `ctx.config(...)`. Config fields are `Option<T>` or `BTreeMap<K, V>` — flowey merges them automatically and errors on conflicts.
+- **Requests** (`flowey_request!`): actions that produce outputs, e.g. `GetBinary(WriteVar<PathBuf>)`. Multiple callers can each submit requests, and the node fulfills all of them.
+
+```admonish tip
+If a value needs `same_across_all_reqs` validation, it should probably be a config field instead. The `flowey_config!` macro provides this validation automatically during merge.
+```
+
 ### Request Aggregation and Validation
 
-When a FlowNode receives multiple requests, it often needs to ensure certain values are consistent across all requests while collecting others. The `same_across_all_reqs` helper function simplifies this pattern by validating that a value is identical across all requests.
+When a FlowNode receives multiple requests, it may need to aggregate or validate them. Common techniques:
 
-**Key concepts:**
-
-- Iterate through all requests and separate them by type
-- Use `same_across_all_reqs` to validate values that must be consistent
-- Collect values that can have multiple instances (like output variables)
+- Iterate through all requests and separate them by variant
+- Collect output variables that can have multiple instances
 - Validate that required values were provided
 
-For a complete example, see the [`same_across_all_reqs` documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/user_facing/fn.same_across_all_reqs.html).
+For values that must be consistent across all callers (versions, flags), prefer using `flowey_config!` with `FlowNodeWithConfig` instead of manual validation — see [The Non-Local Configuration Pattern](#the-non-local-configuration-pattern) above.
 
 ### Conditional Execution Based on Backend/Platform
 

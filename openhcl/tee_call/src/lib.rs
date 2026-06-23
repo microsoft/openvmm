@@ -53,6 +53,8 @@ pub enum TeeType {
     Snp,
     /// Intel TDX
     Tdx,
+    /// ARM CCA
+    Cca,
     /// Virtualization-based Security (VBS)
     Vbs,
 }

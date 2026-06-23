@@ -616,8 +616,8 @@ impl ScsiCommandQueue {
                     .controller
                     .disks
                     .read()
-                    .iter()
-                    .flat_map(|(path, _)| {
+                    .keys()
+                    .flat_map(|path| {
                         // Use the original path ID and not the forced one to
                         // match Hyper-V storvsp behavior.
                         if request.path_id == path.path && request.target_id == path.target {

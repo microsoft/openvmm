@@ -169,7 +169,10 @@ impl WHvError {
     pub const WHV_E_UNKNOWN_CAPABILITY: Self =
         Self(NonZeroI32::new(api::WHV_E_UNKNOWN_CAPABILITY).unwrap());
 
-    const WHV_E_INSUFFICIENT_BUFFER: Self =
+    pub const WHV_E_UNKNOWN_PROPERTY: Self =
+        Self(NonZeroI32::new(api::WHV_E_UNKNOWN_PROPERTY).unwrap());
+
+    pub const WHV_E_INSUFFICIENT_BUFFER: Self =
         Self(NonZeroI32::new(api::WHV_E_INSUFFICIENT_BUFFER).unwrap());
 
     const ERROR_BAD_PATHNAME: Self = Self(NonZeroI32::new(ERROR_BAD_PATHNAME as i32).unwrap());
@@ -219,6 +222,7 @@ pub enum PartitionProperty<'a> {
     #[cfg(target_arch = "x86_64")]
     ExceptionExitBitmap(u64),
     SeparateSecurityDomain(bool),
+    NestedVirtualization(bool),
     #[cfg(target_arch = "x86_64")]
     X64MsrExitBitmap(abi::WHV_X64_MSR_EXIT_BITMAP),
     PrimaryNumaNode(u16),
@@ -382,6 +386,10 @@ impl Partition {
             PartitionProperty::SeparateSecurityDomain(val) => {
                 abi_bool = (*val).into();
                 set(partition_prop::SeparateSecurityDomain, &abi_bool)
+            }
+            PartitionProperty::NestedVirtualization(val) => {
+                abi_bool = (*val).into();
+                set(partition_prop::NestedVirtualization, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::X64MsrExitBitmap(val) => set(partition_prop::X64MsrExitBitmap, val),
@@ -1495,29 +1503,32 @@ impl<'a> Processor<'a> {
         }
     }
 
-    pub fn get_apic(&self) -> Result<Vec<u8>> {
-        let mut r = Vec::with_capacity(4096);
+    pub fn get_apic(&self) -> Result<[u8; 1024]> {
+        // Only the first 1024 bytes are used but the API requires a full page,
+        // for some unknown reason.
+        let mut r = [[0u8; 1024]; 4];
         unsafe {
             let mut n = 0;
             check_hresult(api::WHvGetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                r.as_mut_ptr(),
-                r.capacity() as u32,
+                r.as_mut_ptr().cast(),
+                size_of_val(&r) as u32,
                 &mut n,
             ))?;
-            r.set_len(n as usize);
+            assert_eq!(n, size_of_val(&r) as u32);
         }
-        Ok(r)
+        Ok(r[0])
     }
 
-    pub fn set_apic(&self, data: &[u8]) -> Result<()> {
+    pub fn set_apic(&self, data: &[u8; 1024]) -> Result<()> {
+        let r = [*data, [0u8; 1024], [0u8; 1024], [0u8; 1024]];
         unsafe {
             check_hresult(api::WHvSetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                data.as_ptr(),
-                data.len() as u32,
+                r.as_ptr().cast(),
+                size_of_val(&r) as u32,
             ))
         }
     }
@@ -1874,11 +1885,11 @@ pub fn extract_helper<T: RegisterName>(_: T, value: &abi::WHV_REGISTER_VALUE) ->
 #[macro_export]
 macro_rules! set_registers {
     ($vp:expr, [$(($name:expr, $value:expr)),+ $(,)? ] $(,)? ) => {
+        #[expect(clippy::allow_attributes)]
+        #[allow(unused_parens)]
         {
             let names = [$($crate::RegisterName::as_abi(&($name))),+];
-            #[allow(unused_parens)]
             let values = [$($crate::inject_helper(($name), &($value))),+];
-            #[allow(unused_parens)]
             ($vp).set_registers(&names, &values)
         }
     }
@@ -1892,6 +1903,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
+                #[expect(clippy::allow_attributes)]
                 #[allow(unused_assignments)]
                 ($({
                     let n = $name;

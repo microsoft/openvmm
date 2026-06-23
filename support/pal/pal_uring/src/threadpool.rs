@@ -279,6 +279,27 @@ impl Worker {
                             }
                         }
 
+                        // About to block in io_uring_enter. Mark this thread
+                        // as quiesced for the global RCU domain so that any
+                        // concurrent `synchronize_blocking()` writer (e.g.
+                        // `guestmem::rcu()` page-protection updates in
+                        // OpenHCL's `underhill_mem`) can complete without
+                        // issuing a process-wide `membarrier()` on our
+                        // behalf. Without this, every worker that has ever
+                        // polled a future containing a `guestmem` critical
+                        // section stays registered as a non-quiesced RCU
+                        // reader for the lifetime of the thread, forcing
+                        // each writer to broadcast `membarrier(PRIVATE_
+                        // EXPEDITED)` to every CPU. On large isolated VMs
+                        // (e.g. 64-VP) that broadcast can stall long
+                        // enough to trigger kernel `rcu_preempt self-
+                        // detected stall` warnings in
+                        // `smp_call_function_many_cond`. Re-entering a
+                        // critical section after this issues a local
+                        // memory barrier via `ThreadData::enter_slow`, so
+                        // correctness is preserved.
+                        minircu::global().quiesce();
+
                         state.worker.io_ring.submit_and_wait();
                     }
                 }

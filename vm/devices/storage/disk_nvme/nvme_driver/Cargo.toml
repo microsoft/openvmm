@@ -25,6 +25,7 @@ safeatomic.workspace = true
 slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
 

@@ -6,40 +6,46 @@
 
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the git_checkout_openvmm_repo node.
+    pub struct Config {
+        /// Specify which repo-id will be passed to the `git_checkout`
+        /// node.
+        pub repo_id: Option<ConfigVar<String>>,
+    }
+}
+
 flowey_request! {
     pub enum_struct Request {
         /// Get a path to the OpenVMM repo
         GetRepoDir(pub WriteVar<PathBuf>),
-        /// (config) specify which repo-id will be passed to the `git_checkout`
-        /// node. Can be used to dynamically change the OpenVMM repo source dir
-        /// based on a runtime parameter (e.g: a pipeline parameter).
-        SetRepoId(pub ReadVar<String>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::git_checkout::Node>();
+        ctx.import::<flowey_lib_common::system_info::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut repo_id = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let repo_id = config.repo_id.context("missing config: repo_id")?.0;
         let mut reqs = Vec::new();
 
         for req in requests {
             match req {
                 Request::GetRepoDir(req::GetRepoDir(v)) => reqs.push(v),
-                Request::SetRepoId(req::SetRepoId(v)) => {
-                    same_across_all_reqs_backing_var("SetRepoId", &mut repo_id, v)?
-                }
             }
         }
-
-        let repo_id = repo_id.context("missing SetRepoId request")?;
 
         if reqs.is_empty() {
             return Ok(());
@@ -51,7 +57,13 @@ impl FlowNode for Node {
             persist_credentials: false,
         });
 
+        // request system info here so that it is placed early in the pipeline
+        // in case something fails.
+        // TODO: add the ability to specify that some nodes should come early in flowey
+        let printed_system_info = ctx.reqv(|v| flowey_lib_common::system_info::Request { done: v });
+
         ctx.emit_minor_rust_step("resolve OpenVMM repo requests", move |ctx| {
+            printed_system_info.claim(ctx);
             let path = path.claim(ctx);
             let vars = reqs.claim(ctx);
             move |rt| {

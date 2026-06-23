@@ -6,6 +6,8 @@
 
 mod file;
 mod inode;
+#[cfg(test)]
+mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
@@ -58,6 +60,13 @@ impl Fuse for VirtioFs {
         // beneficial since readdirplus needs to query every file and is therefore more expensive.
         if info.capable() & FUSE_READDIRPLUS_AUTO != 0 {
             info.want |= FUSE_READDIRPLUS_AUTO;
+        }
+
+        // Allow shared mmap on files opened with FOPEN_DIRECT_IO. This is
+        // relevant for virtiofs where direct-I/O is used to avoid page-cache
+        // coherency issues with the host, but applications still need mmap.
+        if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
+            info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
     }
 

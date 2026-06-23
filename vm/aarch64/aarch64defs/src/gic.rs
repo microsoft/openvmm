@@ -8,6 +8,20 @@ use core::ops::Range;
 use open_enum::open_enum;
 
 open_enum! {
+    /// Registers in an ARM GIC v2m MSI frame (ARM IHI 0048B).
+    pub enum GicV2mRegister: u16 {
+        /// MSI type register — contains SPI count and base.
+        TYPER       = 0x0008,
+        /// Write the GIC interrupt ID here to assert a non-secure SPI.
+        SETSPI_NS   = 0x0040,
+        /// Implementation identification register.
+        IIDR        = 0x0FCC,
+        /// Peripheral ID 2 register.
+        PIDR2       = 0x0FE8,
+    }
+}
+
+open_enum! {
     pub enum GicdRegister: u16 {
         CTLR = 0x0000,
         TYPER = 0x0004,

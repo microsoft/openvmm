@@ -3,9 +3,6 @@
 
 //! Virtio console spec constants and configuration types.
 
-/// Virtio console device ID.
-pub const VIRTIO_DEVICE_ID_CONSOLE: u16 = 3;
-
 /// Feature bit: console size (cols, rows) is available in config space.
 pub const VIRTIO_CONSOLE_F_SIZE: u64 = 0;
 

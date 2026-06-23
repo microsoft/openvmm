@@ -20,12 +20,20 @@ impl ThreadpoolBackend {
 
 impl BuildVmTaskDriver for ThreadpoolBackend {
     type Driver = ThreadpoolDriver;
+    type CurrentDriver = ThreadpoolDriver;
 
     fn build(&self, name: String, target_vp: Option<u32>, run_on_target: bool) -> Self::Driver {
         let _ = name;
         ThreadpoolDriver {
             spawn_target: Target::new(&self.0, if run_on_target { target_vp } else { None }),
             io_target: Target::new(&self.0, target_vp),
+        }
+    }
+
+    fn build_current(&self) -> Self::Driver {
+        ThreadpoolDriver {
+            spawn_target: Target::new(&self.0, None),
+            io_target: Target::new(&self.0, None),
         }
     }
 }

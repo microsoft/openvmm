@@ -10,14 +10,16 @@ rust-version.workspace = true
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
 # Enable profiler tracing (heap profiling) support
-mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
+mem-profile-tracing = [
+    "dep:mem_profile_tracing",
+    "diag_server/mem-profile-tracing",
+]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["underhill_attestation/openssl-vendored"]
+# Disable secure AVIC support for SNP
+disable_secure_avic = ["virt_mshv_vtl/disable_secure_avic"]
 
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
@@ -27,7 +29,6 @@ vpci = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
-    "encryption",
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }
@@ -43,11 +44,11 @@ vmm_core_defs.workspace = true
 state_unit.workspace = true
 vm_loader.workspace = true
 vnc_worker_defs.workspace = true
-chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
 chipset_device_worker_defs.workspace = true
+chipset_resources.workspace = true
 closeable_mutex.workspace = true
 profiler_worker = { workspace = true, optional = true }
 chipset_legacy.workspace = true
@@ -56,15 +57,14 @@ disk_backend_resources.workspace = true
 disk_blockdevice.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
-firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
+firmware_uefi_resources.workspace = true
 gdma_defs.workspace = true
 hyperv_ic_guest.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
@@ -75,7 +75,6 @@ kmsg_defs.workspace = true
 kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
-mcr_resources.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 net_packet_capture.workspace = true
@@ -95,7 +94,6 @@ tpm_protocol.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
-uefi_nvram_storage.workspace = true
 uidevices_resources.workspace = true
 underhill_attestation.workspace = true
 underhill_confidentiality = { workspace = true, features = ["std"] }
@@ -124,7 +122,6 @@ watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
 
-aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 hvdef.workspace = true
 igvm.workspace = true
@@ -136,8 +133,8 @@ vm_topology.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
-vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
-vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs = { workspace = true, features = ["encryption", "save_restore"] }
+vmgs_broker = { workspace = true, features = ["encryption"] }
 vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
@@ -184,7 +181,10 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+aarch64defs.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
 
 [dev-dependencies]

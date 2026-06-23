@@ -8,15 +8,22 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+
+#[derive(Serialize, Deserialize)]
+pub struct OpenvmmHclBaselineOutput {
+    #[serde(rename = "openhcl")]
+    pub bin: PathBuf,
+}
+
+impl Artifact for OpenvmmHclBaselineOutput {}
 
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
-        pub artifact_dir: ReadVar<PathBuf>,
-        pub done: WriteVar<SideEffect>,
+        pub baseline: WriteVar<OpenvmmHclBaselineOutput>,
     }
 }
 
@@ -31,11 +38,7 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request {
-            target,
-            done,
-            artifact_dir,
-        } = request;
+        let Request { target, baseline } = request;
 
         let recipe = match target.common_arch().unwrap() {
             CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
@@ -54,11 +57,8 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_output: v,
         });
 
-        ctx.req(artifact_openvmm_hcl_sizecheck::publish::Request {
-            openvmm_openhcl: baseline_hcl_build,
-            artifact_dir,
-            done,
-        });
+        baseline_hcl_build
+            .write_into_with(ctx, baseline, |b| OpenvmmHclBaselineOutput { bin: b.bin });
 
         Ok(())
     }

@@ -65,7 +65,7 @@ impl MapVpciInterrupt for GicSoftwareDevice {
 }
 
 impl SignalMsi for GicSoftwareDevice {
-    fn signal_msi(&self, _rid: u32, _address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, data: u32) {
         if SPI_RANGE.contains(&data) {
             self.irqcon.set_spi_irq(data, true);
         }

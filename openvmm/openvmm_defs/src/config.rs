@@ -10,7 +10,6 @@ use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
-use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -18,7 +17,9 @@ use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {
@@ -28,8 +29,9 @@ pub struct Config {
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
+    pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
-    pub memory: MemoryConfig,
+    pub numa: NumaTopology,
     pub processor_topology: ProcessorTopologyConfig,
     pub hypervisor: HypervisorConfig,
     pub chipset: BaseChipsetManifest,
@@ -52,43 +54,18 @@ pub struct Config {
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
-    pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
+    pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    pub isa_dma_controller: Option<Resource<vm_resource::kind::IsaDmaControllerHandleKind>>,
+    pub chipset_capabilities: VmChipsetCapabilities,
+    /// Memory layout sizing for the layout engine. Determines chipset MMIO
+    /// range sizes; addresses are allocated dynamically by the resolver.
+    pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
-
-// ARM64 needs a larger low gap.
-const DEFAULT_LOW_MMAP_GAP_SIZE_X86: u64 = 1024 * 1024 * 128;
-const DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64: u64 = 1024 * 1024 * 512;
-
-/// Default mmio gaps for an x86 partition.
-pub const DEFAULT_MMIO_GAPS_X86: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for x86 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_X86_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
-
-/// Default mmio gaps for an aarch64 partition.
-pub const DEFAULT_MMIO_GAPS_AARCH64: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for aarch64 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
 // The KVM in-kernel vGICv3 requires the distributor and redistributor bases be 64KiB aligned.
@@ -98,6 +75,45 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
+/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
+/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
+/// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
+pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
+/// below the v2m frame address, and not overlap other devices.
+/// The region extends from this base to base + GIC_ITS_SIZE (128 KiB).
+pub const DEFAULT_GIC_ITS_BASE: u64 = 0xEFFC_0000;
+/// Size of the ITS MMIO region (control frame + translation frame, 2×64 KiB).
+pub const GIC_ITS_SIZE: u64 = 0x2_0000;
+
+/// Default virtual timer PPI (GIC INTID). PPI 4 = INTID 16 + 4 = 20.
+/// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
+pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
+
+/// Default total number of GIC interrupts (SGIs + PPIs + SPIs).
+/// Must satisfy KVM constraints: 64 <= n <= 1023, multiple of 32.
+/// 992 = 31 × 32 is the largest valid value.
+pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
+
+/// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
+pub const DEFAULT_VMBUS_PPI: u32 = 18;
+
+/// How firmware tables are presented to the guest in Linux direct boot.
+///
+/// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
+/// this selects between a full device tree or an ACPI boot path.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDirectBootMode {
+    /// Full device tree with all devices described in DT nodes (aarch64 only).
+    DeviceTree,
+    /// ACPI tables for device discovery. On aarch64, this also synthesizes
+    /// an EFI system table so the kernel enters its ACPI code path. On x86,
+    /// ACPI tables are always provided via the zero page.
+    Acpi,
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -106,6 +122,7 @@ pub enum LoadMode {
         cmdline: String,
         enable_serial: bool,
         custom_dsdt: Option<Vec<u8>>,
+        boot_mode: LinuxDirectBootMode,
     },
     Uefi {
         firmware: File,
@@ -119,6 +136,8 @@ pub enum LoadMode {
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
         bios_guid: Guid,
+        enable_vmbus: bool,
+        force_dma_bounce: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -167,6 +186,28 @@ pub enum Vtl2BaseAddressType {
     Vtl2Allocate { size: Option<u64> },
 }
 
+/// Specifies a PCIe MMIO BAR window, either by size (the resolver allocates) or
+/// by a fixed location. Fixed locations exist for assigned-device, IOMMU, and
+/// physical-topology compatibility.
+#[derive(Debug, MeshPayload)]
+pub enum PcieMmioRangeConfig {
+    /// Dynamically allocate a range of the given size.
+    Dynamic {
+        /// Size of the range in bytes.
+        size: u64,
+    },
+    /// Use the specified fixed memory range.
+    Fixed(MemoryRange),
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct RootComplexCxlConfig {
+    /// HDM window size in bytes for this CXL root complex.
+    pub hdm_size: u64,
+    /// CFMWS HDM window restrictions bitmask.
+    pub hdm_window_restrictions: u16,
+}
+
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
     pub index: u32,
@@ -174,16 +215,35 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub ecam_range: MemoryRange,
-    pub low_mmio: MemoryRange,
-    pub high_mmio: MemoryRange,
+    pub low_mmio: PcieMmioRangeConfig,
+    pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
+    /// Optional CXL configuration for root-complex CXL mode.
+    pub cxl: Option<RootComplexCxlConfig>,
+    /// Optional IOMMU for this root complex.
+    pub iommu: Option<PcieIommuConfig>,
+    /// NUMA node affinity for this root complex. Used to generate `_PXM` in
+    /// the ACPI SSDT so the guest OS sees correct NUMA locality for devices
+    /// under this root complex.
+    pub vnode: Option<u32>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
+    /// Root-port name used for topology wiring and lookup.
     pub name: String,
+    /// Enables PCIe hotplug capabilities for this root port.
     pub hotplug: bool,
+    /// Optional ACS capability bitmask to expose on this root port.
+    pub acs_capabilities_supported: Option<u16>,
+    /// Marks this root port as CXL-capable.
+    ///
+    /// Runtime port construction derives required BAR/subregion layout from
+    /// this flag (currently CXL component registers for BAR0).
+    pub cxl: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -192,6 +252,25 @@ pub struct PcieSwitchConfig {
     pub num_downstream_ports: u8,
     pub parent_port: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
+}
+
+/// Declares that the device directly behind a named PCIe port (a root port or
+/// a switch downstream port) is a generic initiator (GI) for the given NUMA
+/// node. Used to generate an SRAT Generic Initiator Affinity structure so the
+/// guest attaches the device's memory to that (typically CPU-less) proximity
+/// domain.
+///
+/// The port is resolved against the live topology by port name after switch
+/// downstream ports have been enumerated, so it can target devices that sit
+/// behind a switch.
+#[derive(Debug, MeshPayload)]
+pub struct PcieGenericInitiatorConfig {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -207,6 +286,8 @@ pub struct VpciDeviceConfig {
     /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
+    /// NUMA node affinity for this VPCI device.
+    pub vnode: Option<u32>,
 }
 
 #[derive(Debug, Protobuf)]
@@ -245,16 +326,65 @@ pub enum PmuGsivConfig {
     Platform,
     /// Use the specified GSIV value for the PMU.
     Gsiv(u32),
+    /// Disable the PMU.
+    Disabled,
+}
+
+/// MSI controller selection for aarch64 PCIe interrupt delivery.
+#[derive(Debug, Protobuf, Default, Clone)]
+pub enum GicMsiConfig {
+    /// Automatically select the best available MSI controller:
+    /// ITS when the hypervisor supports it, otherwise GICv2m.
+    #[default]
+    Auto,
+    /// Force GICv3 ITS for MSI delivery via LPIs.
+    Its,
+    /// Force GICv2m for MSI delivery via SPIs.
+    V2m {
+        /// Number of SPIs to reserve for PCIe MSIs. Defaults to a
+        /// platform-specific value when `None`.
+        spi_count: Option<u32>,
+    },
+}
+
+/// IOMMU configuration for a single PCIe root complex.
+#[derive(Debug, MeshPayload, Clone)]
+pub enum PcieIommuConfig {
+    /// AMD IOMMU (AMD-Vi) for x86_64 guests.
+    AmdVi,
+    /// Arm SMMUv3 for aarch64 guests.
+    Smmu,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
+    pub gic_msi: GicMsiConfig,
 }
 
+/// GIC configuration for the virtual machine.
+///
+/// The variant selects the GIC version. `None` inner config means use
+/// defaults for that version's addresses.
 #[derive(Debug, Protobuf, Clone)]
-pub struct GicConfig {
+pub enum GicConfig {
+    /// GICv2 with optional address overrides.
+    V2(Option<GicV2Config>),
+    /// GICv3 with optional address overrides.
+    V3(Option<GicV3Config>),
+}
+
+/// GICv2-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV2Config {
+    pub gic_distributor_base: u64,
+    pub cpu_interface_base: u64,
+}
+
+/// GICv3-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV3Config {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
 }
@@ -265,15 +395,68 @@ pub enum ArchTopologyConfig {
     Aarch64(Aarch64TopologyConfig),
 }
 
-#[derive(Debug, MeshPayload)]
+/// Per-node memory allocation configuration.
+#[derive(Debug, Clone, Copy, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub prefetch_memory: bool,
     pub private_memory: bool,
     pub transparent_hugepages: bool,
-    pub mmio_gaps: Vec<MemoryRange>,
-    pub pci_ecam_gaps: Vec<MemoryRange>,
-    pub pci_mmio_gaps: Vec<MemoryRange>,
+    pub hugepages: bool,
+    pub hugepage_size: Option<u64>,
+    /// Host physical NUMA node to bind this allocation to (Linux:
+    /// `mbind(MPOL_BIND)`). `None` means OS default placement.
+    pub host_numa_node: Option<u32>,
+}
+
+/// Virtual NUMA topology for the VM.
+#[derive(Debug, MeshPayload)]
+pub struct NumaTopology {
+    /// NUMA nodes. The vnode ID is the index into this vector.
+    pub nodes: Vec<NumaNode>,
+    /// Inter-node distances for the SLIT. If empty, defaults are used
+    /// (10 for self, 20 for cross-node).
+    pub distances: Vec<NumaDistance>,
+}
+
+/// A single virtual NUMA node.
+#[derive(Debug, MeshPayload)]
+pub struct NumaNode {
+    /// Memory allocation for this node. `None` means a CPU-only or
+    /// device-only node.
+    pub mem: Option<MemoryConfig>,
+    /// VP assignment for this node.
+    pub vps: VpAssignment,
+}
+
+/// How VPs are assigned to a NUMA node.
+#[derive(Debug, MeshPayload)]
+pub enum VpAssignment {
+    /// Assign VPs to nodes by round-robining sockets over the CPU-bearing
+    /// nodes only: a VP with socket ID `vp_index / vps_per_socket` belongs to
+    /// the `(vp_index / vps_per_socket) % num_cpu_nodes`-th `FromTopology`
+    /// node. `vps_per_socket` comes from `ProcessorTopologyConfig`;
+    /// `num_cpu_nodes` is the number of `FromTopology` nodes, so `Empty`
+    /// (CPU-less) nodes are skipped and do not affect the distribution.
+    FromTopology,
+    /// Explicit VP indices assigned to this node.
+    Explicit(Vec<u32>),
+    /// A CPU-less node: no VPs are assigned to it. Unlike `Explicit`, this
+    /// may be combined with `FromTopology` nodes, so a memory- or
+    /// device-only node can be declared without forcing every other node to
+    /// spell out its VP set.
+    Empty,
+}
+
+/// An inter-node distance entry for the ACPI SLIT.
+#[derive(Debug, MeshPayload)]
+pub struct NumaDistance {
+    /// Source node index.
+    pub src: u32,
+    /// Destination node index.
+    pub dst: u32,
+    /// Distance value (10 = local, 20 = default cross-node, 255 = unreachable).
+    pub distance: u8,
 }
 
 #[derive(Debug, MeshPayload, Default)]
@@ -289,29 +472,8 @@ pub struct VmbusConfig {
 #[derive(Debug, MeshPayload, Default)]
 pub struct HypervisorConfig {
     pub with_hv: bool,
-    pub user_mode_hv_enlightenments: bool,
-    pub user_mode_apic: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
-}
-
-#[derive(Debug, Copy, Clone, MeshPayload)]
-pub enum Hypervisor {
-    Kvm,
-    MsHv,
-    Whp,
-    Hvf,
-}
-
-impl fmt::Display for Hypervisor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(match self {
-            Self::Kvm => "kvm",
-            Self::MsHv => "mshv",
-            Self::Whp => "whp",
-            Self::Hvf => "hvf",
-        })
-    }
 }
 
 #[derive(Debug, MeshPayload)]

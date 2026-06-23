@@ -3,14 +3,16 @@
 
 //! Build `sidecar` binaries
 
+use crate::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
-use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct SidecarOutput {
+    #[serde(rename = "sidecar")]
     pub bin: PathBuf,
+    #[serde(rename = "sidecar.dbg")]
     pub dbg: PathBuf,
 }
 
@@ -40,7 +42,6 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
-        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -73,21 +74,6 @@ impl FlowNode for Node {
                 SidecarBuildProfile::Release => BuildProfile::BootRelease,
             };
 
-            let mut pre_build_deps = Vec::new();
-
-            // TODO: install build tools for other platforms
-            if matches!(
-                ctx.platform(),
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
-            ) {
-                pre_build_deps.push(ctx.reqv(|v| {
-                    flowey_lib_common::install_dist_pkg::Request::Install {
-                        package_names: vec!["build-essential".into()],
-                        done: v,
-                    }
-                }));
-            }
-
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "sidecar".into(),
                 out_name: "sidecar".into(),
@@ -97,11 +83,15 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        // Forbid cc-rs from compiling anything
+                        ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
-                pre_build_deps,
+                pre_build_deps: Vec::new(),
                 output: v,
             });
 

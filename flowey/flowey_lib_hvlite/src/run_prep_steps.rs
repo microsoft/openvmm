@@ -11,6 +11,8 @@ flowey_request! {
     pub struct Request {
         /// Path to prep_steps bin to use
         pub prep_steps: ReadVar<PrepStepsOutput>,
+        /// Arguments to pass to prep_steps (e.g. "standard" or "no-vmbus")
+        pub args: Vec<String>,
         /// Environment variables to set when running prep_steps
         pub env: ReadVar<BTreeMap<String, String>>,
         /// Completion indicator
@@ -28,6 +30,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             prep_steps,
+            args,
             env,
             done,
         } = request;
@@ -73,11 +76,41 @@ impl SimpleFlowNode for Node {
                         .output()?;
                 }
 
-                let binary_path = match prep_steps {
+                let binary_path = match &prep_steps {
                     PrepStepsOutput::WindowsBin { exe, .. } => exe,
-                    PrepStepsOutput::LinuxBin { bin, .. } => bin,
+                    PrepStepsOutput::LinuxBin { bin, .. } => {
+                        bin.make_executable()?;
+                        bin
+                    }
                 };
-                flowey::shell_cmd!(rt, "{binary_path}").envs(env).run()?;
+
+                // When running a Windows exe from WSL2, environment variables don't
+                // automatically propagate. We need to set WSLENV to tell WSL which
+                // env vars to share with Windows processes.
+                let is_windows_exe_via_wsl = flowey_lib_common::_util::running_in_wsl(rt)
+                    && matches!(prep_steps, PrepStepsOutput::WindowsBin { .. });
+
+                let mut env = env;
+                if is_windows_exe_via_wsl {
+                    // Inherit the existing WSLENV value if any and append any
+                    // new vars to add. No /p flag needed since paths are
+                    // already converted to Windows format.
+                    let old_wslenv = std::env::var("WSLENV");
+                    let new_wslenv = env.keys().cloned().collect::<Vec<_>>().join(":");
+                    env.insert(
+                        "WSLENV".into(),
+                        format!(
+                            "{}{}",
+                            old_wslenv.map(|s| s + ":").unwrap_or_default(),
+                            new_wslenv
+                        ),
+                    );
+                }
+
+                flowey::shell_cmd!(rt, "{binary_path}")
+                    .args(&args)
+                    .envs(env)
+                    .run()?;
 
                 Ok(())
             }

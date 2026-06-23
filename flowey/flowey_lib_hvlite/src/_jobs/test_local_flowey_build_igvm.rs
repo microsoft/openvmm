@@ -4,7 +4,6 @@
 //! Encapsulates the logic of invoking `cargo xflowey build-igvm x64 --install-missing-deps`
 use flowey::node::prelude::*;
 
-use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 
 flowey_request! {
@@ -29,6 +28,7 @@ impl SimpleFlowNode for Node {
 
         let hvlite_repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let rust_install = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
+        let rust_toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
         let gh_token = (ctx.backend() == FlowBackend::Github)
             .then(|| ctx.get_gh_context_var().global().token());
 
@@ -36,16 +36,18 @@ impl SimpleFlowNode for Node {
             "test cargo xflowey build-igvm x64 --install-missing-deps",
             |ctx| {
                 rust_install.claim(ctx);
+                let rust_toolchain = rust_toolchain.claim(ctx);
                 let hvlite_repo = hvlite_repo.claim(ctx);
                 let gh_token = gh_token.claim(ctx);
                 move |rt| {
                     let hvlite_repo = rt.read(hvlite_repo);
                     let gh_token = rt.read(gh_token);
-                    let base_recipe = non_production_build_igvm_tool_out_name(&base_recipe);
+                    let rust_toolchain = rt.read(rust_toolchain);
+                    let base_recipe = base_recipe.non_production_tag();
                     rt.sh.change_dir(hvlite_repo);
                     let mut cmd = flowey::shell_cmd!(
                         rt,
-                        "cargo xflowey build-igvm {base_recipe} --install-missing-deps"
+                        "rustup run {rust_toolchain...} cargo xflowey build-igvm {base_recipe} --install-missing-deps"
                     )
                     .env("I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI", "true");
                     if let Some(gh_token) = gh_token {

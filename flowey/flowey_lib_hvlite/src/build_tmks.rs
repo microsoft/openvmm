@@ -3,8 +3,8 @@
 
 //! Build TMK binaries
 
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 

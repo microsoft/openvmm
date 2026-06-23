@@ -4,6 +4,7 @@
 //! The NVMe PCI device implementation.
 
 use crate::BAR0_LEN;
+use crate::DEVICE_ID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
@@ -31,6 +32,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -128,7 +130,7 @@ impl NvmeController {
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                device_id: DEVICE_ID,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
@@ -136,7 +138,14 @@ impl NvmeController {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(msix_cap)],
+            vec![
+                Box::new(msix_cap),
+                Box::new(PciExpressCapability::new(
+                    pci_core::spec::caps::pci_express::DevicePortType::Endpoint,
+                    None,
+                )),
+            ],
+            Vec::new(),
             bars,
         );
 

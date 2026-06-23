@@ -72,26 +72,17 @@ pub struct StartParams {
 
 /// Transport-side state machine tracking in-flight device operations.
 ///
-/// In the old (synchronous) design, the guest's DRIVER_OK write called
-/// `enable()` inline and set DRIVER_OK before the MMIO/PCI write returned,
-/// so there was no window between "enable started" and "DRIVER_OK visible".
+/// When the guest writes DRIVER_OK, the transport sends an Enable RPC to
+/// the device task and transitions to `Enabling`.  The guest's MMIO/PCI
+/// write is deferred (via [`chipset_device::io::IoResult::Defer`]) so the
+/// writing VCPU blocks until the enable completes.  Concurrent transport
+/// register accesses from other VCPUs are stalled and replayed once the
+/// operation finishes.  Device-config register accesses are not stalled —
+/// they are forwarded to the device task via the channel and serialized
+/// with Enable/Disable naturally.
 ///
-/// Now that enable is an async RPC to the device task, there is a window
-/// where the enable is in flight but DRIVER_OK has not been set yet. If
-/// the guest writes STATUS=0 during this window, we cannot start an async
-/// disable (the transport is already busy with the enable). Instead we
-/// record `pending_reset` and leave STATUS unchanged — the guest sees the
-/// pre-DRIVER_OK init bits (ACKNOWLEDGE|DRIVER|FEATURES_OK) and polls.
-///
-/// Per virtio spec v1.2 §2.1: "The driver MUST wait for a read of
-/// device_status to return 0 before reinitializing the device." The spec
-/// explicitly allows the device to complete reset asynchronously — STATUS
-/// does not need to read back as 0 immediately after a STATUS=0 write.
-///
-/// When the enable completes, `poll()` sees `pending_reset`, sends Disable
-/// to the device task, and transitions to Disabling. When Disable completes,
-/// the transport clears STATUS to 0, and the guest's polling loop observes
-/// the reset.
+/// Similarly, when the guest writes STATUS=0 with queues active, a Disable
+/// RPC is sent and the write is deferred until teardown is complete.
 #[derive(Inspect)]
 #[inspect(tag = "state")]
 pub enum TransportState {
@@ -99,10 +90,6 @@ pub enum TransportState {
     Enabling {
         #[inspect(skip)]
         rpc: PendingRpc<bool>,
-        /// Guest wrote STATUS=0 while the enable was in flight.
-        /// When the enable completes, send Disable instead of setting
-        /// DRIVER_OK.
-        pending_reset: bool,
     },
     Disabling {
         #[inspect(skip)]
@@ -118,25 +105,6 @@ pub enum TransportStateResult {
 }
 
 impl TransportState {
-    /// Try to record a guest reset. Returns true if the transport is
-    /// busy (enable or disable in flight) and the reset will be handled
-    /// when the in-flight operation completes. Returns false if the
-    /// transport is idle and the caller should handle the reset directly.
-    pub fn try_pending_reset(&mut self) -> bool {
-        match self {
-            TransportState::Enabling { pending_reset, .. } => {
-                *pending_reset = true;
-                true
-            }
-            TransportState::Disabling { .. } => {
-                // Already tearing down — the reset will complete
-                // when the disable finishes.
-                true
-            }
-            TransportState::Ready => false,
-        }
-    }
-
     pub fn is_busy(&self) -> bool {
         !matches!(self, TransportState::Ready)
     }
@@ -152,10 +120,7 @@ impl TransportState {
     ) {
         assert!(!self.is_busy());
         let rpc = sender.call(DeviceCommand::Enable, EnableParams { queues, features });
-        *self = TransportState::Enabling {
-            rpc,
-            pending_reset: false,
-        };
+        *self = TransportState::Enabling { rpc };
     }
 
     /// Send Disable to the device task and transition to `Disabling`.
@@ -167,31 +132,15 @@ impl TransportState {
         *self = TransportState::Disabling { rpc };
     }
 
-    pub fn poll(
-        &mut self,
-        cx: &mut Context<'_>,
-        sender: &mesh::Sender<DeviceCommand>,
-    ) -> Poll<TransportStateResult> {
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<TransportStateResult> {
         match self {
             TransportState::Ready => Poll::Pending,
-            TransportState::Enabling { rpc, pending_reset } => {
+            TransportState::Enabling { rpc } => {
                 let result = std::task::ready!(Pin::new(rpc).poll(cx));
-                let pending_reset = *pending_reset;
-                if pending_reset {
-                    // Guest wrote STATUS=0 while enable was in flight.
-                    // Send Disable to stop any running queues, then
-                    // transition to Disabling so the next poll
-                    // completes the reset.
-                    *self = TransportState::Ready;
-                    self.start_disable(sender);
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                } else {
-                    *self = TransportState::Ready;
-                    Poll::Ready(TransportStateResult::EnableComplete(
-                        result.unwrap_or(false),
-                    ))
-                }
+                *self = TransportState::Ready;
+                Poll::Ready(TransportStateResult::EnableComplete(
+                    result.unwrap_or(false),
+                ))
             }
             TransportState::Disabling { rpc } => {
                 let _ = std::task::ready!(Pin::new(rpc).poll(cx));
@@ -203,24 +152,12 @@ impl TransportState {
 
     /// Wait for any in-flight enable or disable to complete, returning
     /// the result so the caller can apply the same side-effects as
-    /// `poll_device`.  If an enable had a pending guest reset, this
-    /// chains the disable automatically (mirroring `poll`).
-    pub async fn drain(
-        &mut self,
-        sender: &mesh::Sender<DeviceCommand>,
-    ) -> Option<TransportStateResult> {
+    /// `poll_device`.
+    pub async fn drain(&mut self) -> Option<TransportStateResult> {
         match std::mem::replace(self, TransportState::Ready) {
-            TransportState::Enabling { rpc, pending_reset } => {
+            TransportState::Enabling { rpc } => {
                 let result = rpc.await.unwrap_or(false);
-                if pending_reset {
-                    // Guest wrote STATUS=0 while enable was in flight.
-                    // Chain the disable, just like poll() does.
-                    let rpc = sender.call(DeviceCommand::Disable, ());
-                    let _ = rpc.await;
-                    Some(TransportStateResult::DisableComplete)
-                } else {
-                    Some(TransportStateResult::EnableComplete(result))
-                }
+                Some(TransportStateResult::EnableComplete(result))
             }
             TransportState::Disabling { rpc } => {
                 let _ = rpc.await;

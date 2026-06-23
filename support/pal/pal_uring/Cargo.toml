@@ -13,6 +13,7 @@ ci = []
 [target.'cfg(target_os = "linux")'.dependencies]
 inspect.workspace = true
 loan_cell.workspace = true
+minircu.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 

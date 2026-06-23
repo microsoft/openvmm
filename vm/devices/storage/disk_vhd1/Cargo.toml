@@ -12,15 +12,15 @@ disk_backend.workspace = true
 disk_backend_resources.workspace = true
 scsi_buffers.workspace = true
 vhd1_defs.workspace = true
-guestmem.workspace = true
 vm_resource.workspace = true
 
 guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
-pal_async.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
+guestmem.workspace = true
+pal_async.workspace = true
 tempfile.workspace = true
 
 

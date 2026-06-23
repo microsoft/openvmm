@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Build-script helper that emits `BUILD_GIT_SHA` and `BUILD_GIT_BRANCH`
 //! cargo environment variables by invoking the `git` CLI.
 

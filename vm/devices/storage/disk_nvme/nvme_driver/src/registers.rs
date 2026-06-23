@@ -71,12 +71,14 @@ pub(crate) struct Bar0<T: Inspect>(#[inspect(flatten)] pub T);
 
 macro_rules! reg32 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
+        #[expect(clippy::allow_attributes)]
         #[allow(dead_code)]
         pub fn $get(&self) -> $ty {
             let r = <$ty>::from(self.0.read_u32(spec::Register::$reg.0 as usize));
             tracing::trace!(r = ?r, reg = stringify!($reg), "Read register");
             r
         }
+        #[expect(clippy::allow_attributes)]
         #[allow(dead_code)]
         pub fn $set(&self, v: $ty) {
             tracing::trace!(v = ?v, reg = stringify!($reg), "Writing register");
@@ -87,12 +89,14 @@ macro_rules! reg32 {
 
 macro_rules! reg64 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
+        #[expect(clippy::allow_attributes)]
         #[allow(dead_code)]
         pub fn $get(&self) -> $ty {
             let r = <$ty>::from(self.0.read_u64(spec::Register::$reg.0 as usize));
             tracing::trace!(r = ?r, reg = stringify!($reg), "Read register");
             r
         }
+        #[expect(clippy::allow_attributes)]
         #[allow(dead_code)]
         pub fn $set(&self, v: $ty) {
             tracing::trace!(v = ?v, reg = stringify!($reg), "Writing register");

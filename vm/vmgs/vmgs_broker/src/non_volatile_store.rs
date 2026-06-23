@@ -32,7 +32,7 @@ impl VmgsNonVolatileStore {
         file_id: vmgs_format::FileId,
         encrypted: bool,
     ) -> Result<Self, EncryptionNotSupported> {
-        if encrypted && !cfg!(with_encryption) {
+        if encrypted && !cfg!(feature = "encryption") {
             return Err(EncryptionNotSupported);
         }
         Ok(Self {
@@ -46,7 +46,7 @@ impl VmgsNonVolatileStore {
 #[async_trait]
 impl NonVolatileStore for VmgsNonVolatileStore {
     async fn persist(&mut self, data: Vec<u8>) -> Result<(), NonVolatileStoreError> {
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         if self.encrypted {
             self.vmgs
                 .write_file_encrypted(self.file_id, data)

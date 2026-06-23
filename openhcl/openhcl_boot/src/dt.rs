@@ -17,6 +17,7 @@ use core::fmt;
 use core::ops::Range;
 use fdt::builder::Builder;
 use fdt::builder::StringId;
+use host_fdt_parser::ComInfo;
 use host_fdt_parser::GicInfo;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::VmbusInfo;
@@ -43,7 +44,9 @@ mod aarch64 {
     // Architecturally, PPIs occupy INTID's in the [16..32) range. In DeviceTree,
     // the type of the interrupt is specified first (PPI) and then the _relative_ INTID:
     // for PPI INTID `27` `[GIC_PPI, 27-16, flags]` goes into the DT description.
-    pub const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
+    /// VMBus PPI offset for the DT `interrupts` property.
+    /// Canonical INTID is DEFAULT_VMBUS_PPI (18) in openvmm_defs.
+    pub const VMBUS_PPI_OFFSET: u32 = 2;
     pub const TIMER_INTID: u32 = 4; // Note: the hardware INTID will be 16 + 4
 
     /// The Hyper-V default PMU_GSIV value.
@@ -52,7 +55,7 @@ mod aarch64 {
 
     pub const GIC_PHANDLE: u32 = 1;
     pub const GIC_PPI: u32 = 1;
-    pub const IRQ_TYPE_EDGE_FALLING: u32 = 2;
+    pub const IRQ_TYPE_EDGE_RISING: u32 = 1;
     pub const IRQ_TYPE_LEVEL_LOW: u32 = 8;
     pub const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
 }
@@ -146,7 +149,7 @@ fn write_vmbus<'a, T>(
                 // above specifies.
                 &[
                     aarch64::GIC_PPI,
-                    aarch64::VMBUS_INTID,
+                    aarch64::VMBUS_PPI_OFFSET,
                     interrupt_cell_value.expect("must be set on aarch64"),
                 ],
             )?;
@@ -221,6 +224,7 @@ pub fn write_dt(
     let p_interrupt_parent = builder.add_string("interrupt-parent")?;
     let p_interrupts = builder.add_string("interrupts")?;
     let p_enable_method = builder.add_string("enable-method")?;
+    let p_current_speed = builder.add_string("current-speed")?;
 
     let num_cpus = partition_info.cpus.len();
 
@@ -435,6 +439,25 @@ pub fn write_dt(
                 ],
             )?;
         root_builder = pmu.end_node()?;
+
+        // ARM64 PL011 Serial device for COM3 OpenHCL logs
+        if let ComInfo::Pl011 {
+            base,
+            intid,
+            current_speed,
+        } = partition_info.com3_serial
+        {
+            let name = format_fixed!(32, "serial@{:x}", base);
+            let serial = root_builder
+                .start_node(&name)?
+                .add_str(p_compatible, "arm,sbsa-uart")?
+                .add_u32_array(p_reg, &[0, base, 0, 0x1000])?
+                .add_u32(p_interrupt_parent, aarch64::GIC_PHANDLE)?
+                .add_u32_array(p_interrupts, &[0, intid, 4])?
+                .add_u32(p_current_speed, current_speed)?
+                .add_str(p_status, "okay")?;
+            root_builder = serial.end_node()?;
+        }
     }
 
     // Linux requires vmbus to be under a simple-bus node.
@@ -456,7 +479,7 @@ pub fn write_dt(
         p_interrupt_parent,
         p_interrupts,
         interrupt_cell_value: if cfg!(target_arch = "aarch64") {
-            Some(aarch64::IRQ_TYPE_EDGE_FALLING)
+            Some(aarch64::IRQ_TYPE_EDGE_RISING)
         } else {
             None
         },
@@ -514,6 +537,7 @@ pub fn write_dt(
         IsolationType::Vbs => "vbs",
         IsolationType::Snp => "snp",
         IsolationType::Tdx => "tdx",
+        IsolationType::Cca => "cca",
     };
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
 

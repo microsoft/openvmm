@@ -4,6 +4,8 @@
 //! Utilities for encoding procedural operations into ACPI
 //! Machine Language (AML).
 
+use super::helpers::encode_package_len;
+
 /// An AML operation.
 pub trait OperationObject {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>);
@@ -44,6 +46,89 @@ impl OperationObject for OrOp {
         byte_stream.extend_from_slice(&self.operand1);
         byte_stream.extend_from_slice(&self.operand2);
         byte_stream.extend_from_slice(&self.target_name);
+    }
+}
+
+/// An AML If conditional operation.
+pub struct IfOp {
+    /// Pre-serialized predicate expression.
+    pub predicate: Vec<u8>,
+    /// Pre-serialized body operations.
+    pub body: Vec<u8>,
+}
+
+impl OperationObject for IfOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0xa0); // IfOp
+        let inner_len = self.predicate.len() + self.body.len();
+        byte_stream.extend_from_slice(&encode_package_len(inner_len));
+        byte_stream.extend_from_slice(&self.predicate);
+        byte_stream.extend_from_slice(&self.body);
+    }
+}
+
+/// An AML Else operation (must follow an IfOp).
+pub struct ElseOp {
+    /// Pre-serialized body operations.
+    pub body: Vec<u8>,
+}
+
+impl OperationObject for ElseOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0xa1); // ElseOp
+        byte_stream.extend_from_slice(&encode_package_len(self.body.len()));
+        byte_stream.extend_from_slice(&self.body);
+    }
+}
+
+/// An AML Store operation (Store source to destination).
+pub struct StoreOp {
+    /// Pre-serialized source operand.
+    pub source: Vec<u8>,
+    /// Pre-serialized destination (must be a SuperName — name, local, arg, etc.).
+    pub destination: Vec<u8>,
+}
+
+impl OperationObject for StoreOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x70); // StoreOp
+        byte_stream.extend_from_slice(&self.source);
+        byte_stream.extend_from_slice(&self.destination);
+    }
+}
+
+/// An AML LEqual comparison.
+pub struct LEqualOp {
+    /// Pre-serialized left operand.
+    pub left: Vec<u8>,
+    /// Pre-serialized right operand.
+    pub right: Vec<u8>,
+}
+
+impl OperationObject for LEqualOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x93); // LEqualOp
+        byte_stream.extend_from_slice(&self.left);
+        byte_stream.extend_from_slice(&self.right);
+    }
+}
+
+/// An AML CreateDWordField operation.
+pub struct CreateDWordFieldOp {
+    /// Pre-serialized source buffer.
+    pub source_buffer: Vec<u8>,
+    /// Pre-serialized byte index.
+    pub byte_index: Vec<u8>,
+    /// 4-byte field name.
+    pub field_name: [u8; 4],
+}
+
+impl OperationObject for CreateDWordFieldOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x8a); // CreateDWordFieldOp
+        byte_stream.extend_from_slice(&self.source_buffer);
+        byte_stream.extend_from_slice(&self.byte_index);
+        byte_stream.extend_from_slice(&self.field_name);
     }
 }
 
@@ -104,5 +189,61 @@ mod tests {
         };
         let bytes = op.to_bytes();
         verify_expected_bytes(&bytes, &[0xa4, b'S', b'T', b'A', b'_']);
+    }
+
+    #[test]
+    fn verify_if_operation() {
+        // If with a simple predicate (byte 0x01 = One) and empty body
+        let op = IfOp {
+            predicate: vec![0x01],
+            body: vec![],
+        };
+        let bytes = op.to_bytes();
+        // 0xa0 = IfOp, 0x02 = PkgLen (1 byte predicate + 0 body + 1 len byte), 0x01 = predicate
+        verify_expected_bytes(&bytes, &[0xa0, 0x02, 0x01]);
+    }
+
+    #[test]
+    fn verify_else_operation() {
+        // Else with a Return(One) body
+        let body = ReturnOp { result: vec![0x01] }.to_bytes();
+        let op = ElseOp { body };
+        let bytes = op.to_bytes();
+        // 0xa1 = ElseOp, 0x03 = PkgLen, 0xa4 = Return, 0x01 = One
+        verify_expected_bytes(&bytes, &[0xa1, 0x03, 0xa4, 0x01]);
+    }
+
+    #[test]
+    fn verify_store_operation() {
+        let op = StoreOp {
+            source: encode_integer(0),
+            destination: vec![b'S', b'T', b'S', b'0'],
+        };
+        let bytes = op.to_bytes();
+        // 0x70 = StoreOp, 0x00 = Zero, STS0 = destination
+        verify_expected_bytes(&bytes, &[0x70, 0x00, b'S', b'T', b'S', b'0']);
+    }
+
+    #[test]
+    fn verify_lequal_operation() {
+        let op = LEqualOp {
+            left: vec![0x68],  // Arg0
+            right: vec![0x01], // One
+        };
+        let bytes = op.to_bytes();
+        // 0x93 = LEqualOp, 0x68 = Arg0, 0x01 = One
+        verify_expected_bytes(&bytes, &[0x93, 0x68, 0x01]);
+    }
+
+    #[test]
+    fn verify_create_dword_field_operation() {
+        let op = CreateDWordFieldOp {
+            source_buffer: vec![0x6b], // Arg3
+            byte_index: encode_integer(0),
+            field_name: *b"STS0",
+        };
+        let bytes = op.to_bytes();
+        // 0x8a = CreateDWordFieldOp, 0x6b = Arg3, 0x00 = Zero (index), STS0 = name
+        verify_expected_bytes(&bytes, &[0x8a, 0x6b, 0x00, b'S', b'T', b'S', b'0']);
     }
 }

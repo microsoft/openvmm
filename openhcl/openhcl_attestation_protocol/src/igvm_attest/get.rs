@@ -99,6 +99,8 @@ open_enum! {
         TVM_REPORT = 3,
         /// TDX report
         TDX_VM_REPORT = 4,
+        /// CCA report
+        CCA_VM_REPORT = 5,
     }
 }
 
@@ -167,12 +169,14 @@ impl IgvmAttestRequestHeader {
 /// Bitmap of additional Igvm request attributes.
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
+/// 2 - skip_hw_unsealing: Skip hardware unsealing in case key release request fails
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
-    #[bits(30)]
+    pub skip_hw_unsealing: bool,
+    #[bits(29)]
     _reserved: u32,
 }
 
@@ -228,12 +232,14 @@ impl IgvmAttestRequestDataExt {
 }
 
 /// Bitmap indicates a signal to requestor
-/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+/// 0 - IGVM_SIGNAL_RETRY_RECOMMENDED_BIT: Retry recommendation
+/// 1 - IGVM_SIGNAL_SKIP_HW_UNSEALING_RECOMMENDED_BIT: Skip hardware unsealing
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
-    #[bits(31)]
+    pub skip_hw_unsealing: bool,
+    #[bits(30)]
     _reserved: u32,
 }
 
@@ -302,6 +308,7 @@ pub struct IgvmAttestAkCertResponseHeader {
 /// `IgvmAttestRequestBase` in raw bytes.
 pub mod runtime_claims {
     use base64_serde::base64_serde_type;
+    use guid::Guid;
     use mesh::MeshPayload;
     use serde::Deserialize;
     use serde::Serialize;
@@ -418,6 +425,18 @@ pub mod runtime_claims {
         }
     }
 
+    /// Claims for VMGS provenance.
+    #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct VmgsProvisioner {
+        /// VMGS ID
+        #[serde(with = "serde_helpers::as_string")]
+        pub id: Guid,
+        /// Signer (root cert thumbprint + leaf subject name as a decentralized
+        /// identifier)
+        pub signer: String,
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -442,5 +461,25 @@ pub mod runtime_claims {
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,
+        /// VMGS provenance data
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub vmgs_provisioner: Option<VmgsProvisioner>,
+    }
+
+    impl Default for AttestationVmConfig {
+        fn default() -> Self {
+            Self {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: true,
+                tpm_persisted: true,
+                filtered_vpci_devices_allowed: false,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            }
+        }
     }
 }

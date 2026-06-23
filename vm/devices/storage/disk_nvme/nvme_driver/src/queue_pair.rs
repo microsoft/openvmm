@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::time::Instant;
 use task_control::AsyncRun;
 use task_control::TaskControl;
 use thiserror::Error;
@@ -123,6 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
+            submitted_at: (self.qid == 0).then(Instant::now),
         });
     }
 
@@ -179,6 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
+                            submitted_at: None,
                         },
                     )
                 })
@@ -344,8 +347,8 @@ impl DrainAfterRestore {
 struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
     queue_handler: QueueHandler<A>,
     registers: Arc<DeviceRegisters<D>>,
-    recv_req: Option<mesh::Receiver<Req>>,
-    recv_cmd: Option<mesh::Receiver<Cmd>>,
+    recv_req: mesh::Receiver<Req>,
+    recv_cmd: mesh::Receiver<Cmd>,
     interrupt: DeviceInterrupt,
 }
 
@@ -359,8 +362,8 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
             self.queue_handler
                 .run(
                     &self.registers,
-                    self.recv_req.take().unwrap(),
-                    self.recv_cmd.take().unwrap(),
+                    &mut self.recv_req,
+                    &mut self.recv_cmd,
                     &mut self.interrupt,
                 )
                 .await;
@@ -520,8 +523,8 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         let mut task = TaskControl::new(QueueHandlerLoop {
             queue_handler,
             registers,
-            recv_req: Some(recv_req),
-            recv_cmd: Some(recv_cmd),
+            recv_req,
+            recv_cmd,
             interrupt,
         });
         task.insert(spawner, "nvme-queue", ());
@@ -665,7 +668,7 @@ pub enum RequestError {
     Nvme(#[source] NvmeError),
     #[error("memory error")]
     Memory(#[source] GuestMemoryError),
-    #[error("i/o too large for double buffering")]
+    #[error("data request too large for double buffering")]
     TooLarge,
 }
 
@@ -807,7 +810,7 @@ impl Issuer {
                 self.alloc
                     .alloc_bytes(mem.len())
                     .await
-                    .ok_or(RequestError::TooLarge)?,
+                    .map_err(|_| RequestError::TooLarge)?,
             );
 
             if opcode.transfer_host_to_controller() {
@@ -883,11 +886,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &[u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .expect("pool cap is >= 1 page");
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracelimit::warn_ratelimited!(
+                requested_pages = e.requested,
+                max_pages = e.max,
+                "Insufficient memory to complete issue in request"
+            );
+            RequestError::TooLarge
+        })?;
 
         mem.write(data);
         assert_eq!(
@@ -908,11 +914,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &mut [u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .expect("pool capacity is sufficient");
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracelimit::warn_ratelimited!(
+                requested_pages = e.requested,
+                max_pages = e.max,
+                "Insufficient memory to complete issue out request"
+            );
+            RequestError::TooLarge
+        })?;
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
@@ -946,6 +955,9 @@ struct PendingCommand {
     command: spec::Command,
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
+    /// When the command was submitted to the queue. Used only for the admin queue
+    #[inspect(with = "|x| x.map(|submitted_at| submitted_at.elapsed().as_millis() as u64)")]
+    submitted_at: Option<Instant>,
 }
 
 /// Diagnostic information about the completion queue state.
@@ -1150,8 +1162,8 @@ impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        mut recv_req: mesh::Receiver<Req>,
-        mut recv_cmd: mesh::Receiver<Cmd>,
+        recv_req: &mut mesh::Receiver<Req>,
+        recv_cmd: &mut mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
         if matches!(
@@ -1299,6 +1311,24 @@ impl<A: AerHandler> QueueHandler<A> {
 
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+        // Log pending admin command wait durations at save time.
+        if self.qid == 0 {
+            for (_index, cmd) in self.commands.commands.iter() {
+                if let Some(elapsed) = cmd.submitted_at {
+                    tracing::info!(
+                        pci_id = ?self.device_id,
+                        cid = cmd.command.cdw0.cid(),
+                        opcode = cmd.command.cdw0.opcode(),
+                        nsid = cmd.command.nsid,
+                        cdw10 = cmd.command.cdw10,
+                        cdw11 = cmd.command.cdw11,
+                        elapsed = elapsed.elapsed().as_millis() as u64,
+                        "pending admin command at save time",
+                    );
+                }
+            }
+        }
+
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueueHandlerSavedState {
             sq_state: self.sq.save(),

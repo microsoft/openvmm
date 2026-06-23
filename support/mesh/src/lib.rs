@@ -1,9 +1,50 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Mesh IPC implementation based on channels.
+//! Channel-based communication framework for OpenVMM and OpenHCL.
 //!
-//! This crate provides cross-process message-based communication over channels.
+//! mesh provides typed channels (`Sender<T>` / `Receiver<T>`) that work
+//! the same way whether the two ends are in the same process or in
+//! different ones. Components that communicate through mesh channels can
+//! be moved between processes without changing their code.
+//!
+//! This is the facade crate — it re-exports the important types from the
+//! lower-level `mesh_channel`, `mesh_node`, `mesh_protobuf`, and
+//! `mesh_derive` crates. Most code should only depend on this crate.
+//!
+//! # Channels
+//!
+//! - [`channel()`] — multi-producer channel (`Sender<T>` / `Receiver<T>`).
+//! - [`oneshot()`] — single-use transfer (`OneshotSender<T>` /
+//!   `OneshotReceiver<T>`).
+//! - [`rpc::Rpc`] — request/response: bundles a request with a reply
+//!   channel. The conventional pattern is an enum of `Rpc` variants.
+//! - [`Cell`] / [`CellUpdater`] — publish-subscribe for
+//!   configuration updates.
+//! - [`pipe`] — `AsyncRead` / `AsyncWrite` byte stream with backpressure.
+//! - [`CancelContext`] — cooperative cancellation with deadlines.
+//!
+//! # Message types
+//!
+//! Any type can be sent over a channel within a single process. To cross
+//! process boundaries, derive [`MeshPayload`]:
+//!
+//! ```rust,ignore
+//! use mesh::rpc::Rpc;
+//!
+//! #[derive(MeshPayload)]
+//! enum MyRequest {
+//!     DoThing(Rpc<Input, Output>),
+//!     Stop(Rpc<(), ()>),
+//! }
+//! ```
+//!
+//! `MeshPayload` types can include channel endpoints, file descriptors,
+//! and OS handles as fields — these are transferred automatically when
+//! the message crosses a process boundary.
+//!
+//! See the [mesh guide](https://openvmm.dev/guide/reference/architecture/openvmm/mesh.html)
+//! for a full introduction.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]

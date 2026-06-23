@@ -3,22 +3,19 @@
 
 [package]
 name = "vmgstool"
-version = "2.0.0"
+version = "2.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
 [features]
 default = []
 
-# Use native windows crypto APIs
-encryption_win = ["vmgs/encryption_win"]
-# Use OpenSSL crypto APIs
-encryption_ossl = ["vmgs/encryption_ossl"]
+encryption = ["vmgs/encryption", "crypto/native", "crypto/vendored"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom"]
 
-# run windows encryption unit tests in CI
-ci = ["encryption_win"]
+# run encryption unit tests in CI
+ci = ["encryption"]
 
 [dependencies]
 disk_backend.workspace = true
@@ -35,6 +32,7 @@ vmgs_format.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, optional = true }
 hex.workspace = true
 fs-err.workspace = true
 getrandom = { workspace = true, optional = true}

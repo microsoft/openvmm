@@ -6,16 +6,129 @@
 //! Provides traits, iteration loops, and statistics computation for
 //! performance benchmarks using the petri test framework.
 
-// WarmPerfTest and helpers are used in later phases (block I/O, network).
-#![expect(dead_code)]
-
 use anyhow::Context as _;
-use std::time::Duration;
 use std::time::Instant;
 
 use crate::report::MetricResult;
 use crate::report::MetricStats;
 use std::future::Future;
+
+/// `perf record` wrapper for capturing CPU profiles of a specific process,
+/// scoped to specific test phases. Linux only; no-ops on other platforms.
+///
+/// If created with `None` for the directory, all methods are no-ops.
+pub struct PerfRecorder {
+    dir: Option<std::path::PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
+    pid: i32,
+    #[cfg(target_os = "linux")]
+    child: Option<(std::process::Child, std::path::PathBuf)>,
+}
+
+impl PerfRecorder {
+    /// Create a new recorder targeting `pid`. If `dir` is `Some`, traces
+    /// are saved there; if `None`, `start`/`stop` are no-ops.
+    pub fn new(dir: Option<impl Into<std::path::PathBuf>>, pid: i32) -> anyhow::Result<Self> {
+        let dir = if let Some(d) = dir {
+            let d = d.into();
+            std::fs::create_dir_all(&d)
+                .with_context(|| format!("failed to create perf dir: {}", d.display()))?;
+            Some(d)
+        } else {
+            None
+        };
+        Ok(Self {
+            dir,
+            pid,
+            #[cfg(target_os = "linux")]
+            child: None,
+        })
+    }
+
+    /// Start recording. The trace is saved as `<dir>/<name>.data`.
+    ///
+    /// No-op if this recorder was created without a directory.
+    /// If a recording is already in progress, it is stopped first.
+    #[cfg(target_os = "linux")]
+    pub fn start(&mut self, name: &str) -> anyhow::Result<()> {
+        let Some(dir) = self.dir.clone() else {
+            return Ok(());
+        };
+        // Stop any in-progress recording.
+        if self.child.is_some() {
+            self.stop()?;
+        }
+        let data_path = dir.join(format!("{name}.data"));
+        let pid_str = self.pid.to_string();
+        let child = std::process::Command::new("perf")
+            .args([
+                "record",
+                "-p",
+                &pid_str,
+                "-g",
+                "--call-graph",
+                "dwarf,16384",
+                "-F",
+                "997",
+                "-o",
+            ])
+            .arg(&data_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to spawn perf record — is perf installed?")?;
+        tracing::info!(path = %data_path.display(), "perf recording started");
+        self.child = Some((child, data_path));
+        Ok(())
+    }
+
+    /// Stop the current recording.
+    #[cfg(target_os = "linux")]
+    // UNSAFETY: Sending SIGINT to the perf child process via libc::kill.
+    #[expect(unsafe_code)]
+    pub fn stop(&mut self) -> anyhow::Result<()> {
+        if let Some((child, data_path)) = self.child.take() {
+            // SAFETY: Sending SIGINT to a child process we own.
+            // The pid is valid because we just spawned it and haven't
+            // waited on it yet.
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGINT);
+            }
+            let output = child
+                .wait_with_output()
+                .context("failed to wait for perf record")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!(
+                    status = %output.status,
+                    stderr = %stderr,
+                    "perf record exited non-zero"
+                );
+            }
+            tracing::info!(path = %data_path.display(), "perf recording saved");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn start(&mut self, _name: &str) -> anyhow::Result<()> {
+        if self.dir.is_some() {
+            anyhow::bail!("--perf-dir is only supported on Linux");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn stop(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for PerfRecorder {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
 
 /// A performance test that boots a fresh VM per iteration (cold mode).
 ///
@@ -34,15 +147,6 @@ pub trait ColdPerfTest {
     fn warmup_iterations(&self) -> u32 {
         1
     }
-
-    /// Register required artifacts with the resolver.
-    ///
-    /// Called during artifact resolution (both collector and resolver
-    /// passes). Does not require `&self` — implementors should define
-    /// a module-level function and delegate.
-    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>)
-    where
-        Self: Sized;
 
     /// Run a single iteration. Returns one or more metric results.
     fn run_once(
@@ -68,11 +172,10 @@ pub trait WarmPerfTest {
     fn default_iterations(&self) -> u32 {
         5
     }
-
-    /// Register required artifacts with the resolver.
-    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>)
-    where
-        Self: Sized;
+    /// Number of warmup iterations to discard before measuring.
+    fn warmup_iterations(&self) -> u32 {
+        0
+    }
 
     /// Boot the VM and prepare the workload environment.
     fn setup(
@@ -157,8 +260,15 @@ pub async fn run_warm_test(
     iterations: Option<u32>,
 ) -> anyhow::Result<Vec<MetricStats>> {
     let iterations = iterations.unwrap_or(test.default_iterations());
+    let warmup = test.warmup_iterations();
+    let total = warmup + iterations;
 
-    tracing::info!(test = test.name(), iterations, "starting warm perf test");
+    tracing::info!(
+        test = test.name(),
+        warmup,
+        iterations,
+        "starting warm perf test"
+    );
 
     tracing::info!(test = test.name(), "setting up VM");
     let mut state = test
@@ -168,8 +278,14 @@ pub async fn run_warm_test(
 
     let mut all_samples: Vec<Vec<MetricResult>> = Vec::new();
 
-    for i in 0..iterations {
-        let label = format!("iteration {}/{}", i + 1, iterations);
+    for i in 0..total {
+        let is_warmup = i < warmup;
+        let label = if is_warmup {
+            format!("warmup {}/{}", i + 1, warmup)
+        } else {
+            format!("iteration {}/{}", i - warmup + 1, iterations)
+        };
+
         tracing::info!(test = test.name(), label, "running");
         let start = Instant::now();
         let results = test
@@ -178,13 +294,22 @@ pub async fn run_warm_test(
             .with_context(|| format!("{}: {label}", test.name()))?;
         let elapsed = start.elapsed();
 
-        tracing::info!(
-            test = test.name(),
-            label,
-            elapsed_ms = elapsed.as_millis(),
-            "iteration complete"
-        );
-        all_samples.push(results);
+        if is_warmup {
+            tracing::info!(
+                test = test.name(),
+                label,
+                elapsed_ms = elapsed.as_millis(),
+                "warmup complete (discarded)"
+            );
+        } else {
+            tracing::info!(
+                test = test.name(),
+                label,
+                elapsed_ms = elapsed.as_millis(),
+                "iteration complete"
+            );
+            all_samples.push(results);
+        }
     }
 
     tracing::info!(test = test.name(), "tearing down VM");
@@ -246,14 +371,4 @@ fn compute_stats(
     }
 
     Ok(stats)
-}
-
-/// Format a duration as a human-readable string.
-pub fn format_duration(d: Duration) -> String {
-    let secs = d.as_secs();
-    if secs >= 60 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{:.1}s", d.as_secs_f64())
-    }
 }

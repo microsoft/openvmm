@@ -29,7 +29,7 @@ use virtio_resources::net::VirtioNetHandle;
 use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -115,7 +115,7 @@ fn configure_for_sidecar<T: PetriVmmBackend>(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none)))]
 async fn sidecar_aps_unused<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
@@ -152,7 +152,10 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
+    let (vm, agent) = configure_for_sidecar(config, 8, 2)
+        .with_openhcl_command_line("OPENHCL_SIDECAR=log")
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -182,6 +185,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                             requests: None,
                         }
                         .into_resource(),
+                        vnode: None,
                     },
                     VpciDeviceConfig {
                         vtl: DeviceVtl::Vtl0,
@@ -195,6 +199,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                             .into_resource(),
                         )
                         .into_resource(),
+                        vnode: None,
                     },
                 ])
             })
@@ -211,7 +216,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 
     // The virtio device should not have made it through, but the NVMe
     // controller should be there.
-    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -250,6 +255,7 @@ async fn vpci_relay_tdisp_device(
                         enable_tdisp_tests: true,
                     }
                     .into_resource(),
+                    vnode: None,
                 }])
             })
         })
@@ -264,7 +270,7 @@ async fn vpci_relay_tdisp_device(
         .collect::<Vec<_>>();
 
     // The NVMe controller should be present after the HCL performs its TDISP test.
-    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -272,7 +278,7 @@ async fn vpci_relay_tdisp_device(
 }
 
 /// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
-#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(unstable_linux_direct_x64)]
 async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;

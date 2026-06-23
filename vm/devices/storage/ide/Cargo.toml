@@ -13,14 +13,11 @@ ide_resources.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
-pal_async.workspace = true
 pci_core.workspace = true
 safeatomic.workspace = true
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
-scsidisk.workspace = true
-test_with_tracing.workspace = true
 tracing_helpers.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
@@ -33,6 +30,9 @@ tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 disk_file.workspace = true
+pal_async.workspace = true
+scsidisk.workspace = true
+test_with_tracing.workspace = true
 
 tempfile.workspace = true
 

@@ -59,18 +59,13 @@ impl Endpoint for DioEndpoint {
 
     async fn get_queues(
         &mut self,
-        mut config: Vec<QueueConfig<'_>>,
+        mut config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.drain(..).next().unwrap();
-        queues.push(Box::new(DioQueue::new(
-            &config.driver,
-            self.nic.clone(),
-            config.pool,
-            config.initial_rx,
-        )));
+        queues.push(Box::new(DioQueue::new(&config.driver, self.nic.clone())));
         Ok(())
     }
 
@@ -84,7 +79,6 @@ pub struct DioQueue {
     slot: Arc<Mutex<Option<dio::DioNic>>>,
     nic: Option<dio::DioQueue>,
     free: Vec<RxId>,
-    rx_pool: Box<dyn BufferAccess>,
 }
 
 impl InspectMut for DioQueue {
@@ -101,24 +95,18 @@ impl Drop for DioQueue {
 }
 
 impl DioQueue {
-    fn new(
-        driver: &(impl ?Sized + Driver),
-        slot: Arc<Mutex<Option<dio::DioNic>>>,
-        rx_pool: Box<dyn BufferAccess>,
-        initial_rx: &[RxId],
-    ) -> Self {
+    fn new(driver: &(impl ?Sized + Driver), slot: Arc<Mutex<Option<dio::DioNic>>>) -> Self {
         let nic = slot.lock().take();
         Self {
             slot,
             nic: nic.map(|nic| dio::DioQueue::new(driver, nic)),
-            free: initial_rx.to_vec(),
-            rx_pool,
+            free: Vec::new(),
         }
     }
 }
 
 impl Queue for DioQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         if let Some(nic) = &mut self.nic {
             nic.poll_read_ready(cx)
         } else {
@@ -126,11 +114,15 @@ impl Queue for DioQueue {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.free.extend(done);
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let mut n_packets = 0;
         if let Some(nic) = &mut self.nic {
             // Transmit incoming packets to the guest until there are no more available.
@@ -141,7 +133,7 @@ impl Queue for DioQueue {
                     break;
                 };
                 let result = nic.read_with(|buf| {
-                    self.rx_pool.write_packet(
+                    pool.write_packet(
                         id,
                         &RxMetadata {
                             offset: 0,
@@ -171,10 +163,14 @@ impl Queue for DioQueue {
         Ok(n_packets)
     }
 
-    fn tx_avail(&mut self, mut segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        mut segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         let n = segments.len();
         if let Some(nic) = &mut self.nic {
-            let mem = self.rx_pool.guest_memory();
+            let mem = pool.guest_memory();
             while !segments.is_empty() {
                 let (metadata, this, rest) = next_packet(segments);
                 segments = rest;
@@ -193,11 +189,11 @@ impl Queue for DioQueue {
         Ok((true, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.rx_pool.as_mut())
     }
 }

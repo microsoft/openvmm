@@ -56,10 +56,6 @@ impl crate::harness::ColdPerfTest for MemoryTest {
         1
     }
 
-    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-        register_artifacts(resolver);
-    }
-
     async fn run_once(
         &self,
         resolver: &petri::ArtifactResolver<'_>,

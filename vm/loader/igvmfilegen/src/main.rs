@@ -27,6 +27,7 @@ use igvmfilegen_config::Image;
 use igvmfilegen_config::LinuxImage;
 use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
+use igvmfilegen_config::SecureAvicType;
 use igvmfilegen_config::SnpInjectionType;
 use igvmfilegen_config::UefiConfigType;
 use loader::importer::Aarch64Register;
@@ -71,6 +72,9 @@ enum Options {
         /// Additional debug validation when building IGVM files
         #[clap(long)]
         debug_validation: bool,
+        /// Override secure AVIC to disabled for debug SNP guest configs
+        #[clap(long)]
+        disable_secure_avic: bool,
     },
 }
 
@@ -108,12 +112,23 @@ fn main() -> anyhow::Result<()> {
             resources,
             output,
             debug_validation,
+            disable_secure_avic,
         } => {
             // Read the config from the JSON manifest path.
-            let config: Config = serde_json::from_str(
+            let mut config: Config = serde_json::from_str(
                 &fs_err::read_to_string(manifest).context("reading manifest")?,
             )
             .context("parsing manifest")?;
+
+            if disable_secure_avic {
+                for guest_config in &mut config.guest_configs {
+                    if let ConfigIsolationType::Snp { secure_avic, .. } =
+                        &mut guest_config.isolation_type
+                    {
+                        *secure_avic = SecureAvicType::Disabled;
+                    }
+                }
+            }
 
             // Read resources and validate that it covers the required resources
             // from the config.
@@ -184,6 +199,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                 policy,
                 enable_debug,
                 injection_type,
+                secure_avic,
             } => LoaderIsolationType::Snp {
                 shared_gpa_boundary_bits,
                 policy: SnpPolicy::from(policy).with_debug(enable_debug as u8),
@@ -192,6 +208,10 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                     SnpInjectionType::Restricted => {
                         vp_context_builder::snp::InjectionType::Restricted
                     }
+                },
+                secure_avic: match secure_avic {
+                    SecureAvicType::Enabled => vp_context_builder::snp::SecureAvic::Enabled,
+                    SecureAvicType::Disabled => vp_context_builder::snp::SecureAvic::Disabled,
                 },
             },
             ConfigIsolationType::Tdx {

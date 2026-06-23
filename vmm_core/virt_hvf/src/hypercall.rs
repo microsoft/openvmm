@@ -15,14 +15,12 @@ use hvdef::HvError;
 use hvdef::Vtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use std::sync::atomic::Ordering;
-use virt::io::CpuIo;
 
-pub(crate) struct HvfHypercallHandler<'a, 'b, T> {
+pub(crate) struct HvfHypercallHandler<'a, 'b> {
     vp: &'a mut HvfProcessor<'b>,
-    cpu_io: &'a T,
 }
 
-impl<'a, 'b, T: CpuIo> HvfHypercallHandler<'a, 'b, T> {
+impl<'a, 'b> HvfHypercallHandler<'a, 'b> {
     pub const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -33,12 +31,12 @@ impl<'a, 'b, T: CpuIo> HvfHypercallHandler<'a, 'b, T> {
         ]
     );
 
-    pub fn new(vp: &'a mut HvfProcessor<'b>, cpu_io: &'a T) -> Self {
-        Self { vp, cpu_io }
+    pub fn new(vp: &'a mut HvfProcessor<'b>) -> Self {
+        Self { vp }
     }
 }
 
-impl<T: CpuIo> Arm64RegisterState for HvfHypercallHandler<'_, '_, T> {
+impl Arm64RegisterState for HvfHypercallHandler<'_, '_> {
     fn pc(&mut self) -> u64 {
         self.vp.vcpu.pc()
     }
@@ -58,7 +56,7 @@ impl<T: CpuIo> Arm64RegisterState for HvfHypercallHandler<'_, '_, T> {
     }
 }
 
-impl<T> GetVpRegisters for HvfHypercallHandler<'_, '_, T> {
+impl GetVpRegisters for HvfHypercallHandler<'_, '_> {
     fn get_vp_registers(
         &mut self,
         partition_id: u64,
@@ -108,7 +106,7 @@ impl<T> GetVpRegisters for HvfHypercallHandler<'_, '_, T> {
     }
 }
 
-impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
+impl SetVpRegisters for HvfHypercallHandler<'_, '_> {
     fn set_vp_registers(
         &mut self,
         partition_id: u64,
@@ -178,16 +176,20 @@ impl<'a> hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'a> {
     }
 }
 
-impl<T: CpuIo> PostMessage for HvfHypercallHandler<'_, '_, T> {
+impl PostMessage for HvfHypercallHandler<'_, '_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.cpu_io
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.vp
+            .partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> SignalEvent for HvfHypercallHandler<'_, '_, T> {
+impl SignalEvent for HvfHypercallHandler<'_, '_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.cpu_io
-            .signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.vp
+            .partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }

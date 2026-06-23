@@ -9,14 +9,11 @@ rust-version.workspace = true
 [dependencies]
 diag_proto.workspace = true
 
-fs-err.workspace = true
 inspect_proto.workspace = true
-guid.workspace = true
 inspect.workspace = true
 mesh_rpc.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true
-vmsocket.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
@@ -24,6 +21,9 @@ socket2.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+fs-err.workspace = true
+guid.workspace = true
+vmsocket.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
 [lints]

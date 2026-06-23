@@ -51,6 +51,21 @@ pub struct FramebufferFormat {
     pub offset: usize,
 }
 
+/// A dirty rectangle in pixel coordinates, reported by the guest video driver.
+/// Used to communicate changed screen regions from the synthetic video device
+/// to the VNC worker.
+#[derive(Copy, Clone, Debug, MeshPayload)]
+pub struct DirtyRect {
+    /// Left edge (inclusive).
+    pub left: i32,
+    /// Top edge (inclusive).
+    pub top: i32,
+    /// Right edge (exclusive).
+    pub right: i32,
+    /// Bottom edge (exclusive).
+    pub bottom: i32,
+}
+
 /// Functions necessary to control the framebuffer from a video device.
 ///
 /// This trait needs to be async so that an implementation of these functions can be async.

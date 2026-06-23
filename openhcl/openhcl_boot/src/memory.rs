@@ -3,7 +3,9 @@
 
 //! Address space allocator for VTL2 memory used by the bootshim.
 
+use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
@@ -39,7 +41,6 @@ pub enum ReservedMemoryType {
     SidecarNode,
     /// Persistent VTL2 memory used for page allocations in usermode. This
     /// memory is persisted, both location and contents, across servicing.
-    /// Today, we only support a single range.
     Vtl2GpaPool,
     /// Page tables that are used for AP startup, on TDX.
     TdxPageTables,
@@ -138,7 +139,7 @@ pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
     sidecar_image: Option<MemoryRange>,
     page_tables: Option<MemoryRange>,
     log_buffer: Option<MemoryRange>,
-    pool_range: Option<MemoryRange>,
+    pool_ranges: ArrayVec<MemoryRange, MAX_NUMA_NODES>,
 }
 
 impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
@@ -171,7 +172,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image: None,
             page_tables: None,
             log_buffer: None,
-            pool_range: None,
+            pool_ranges: ArrayVec::new(),
         }
     }
 
@@ -194,8 +195,16 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
     }
 
     /// Existing VTL2 GPA pool ranges, reported as type [`MemoryVtlType::VTL2_GPA_POOL`].
-    pub fn with_pool_range(mut self, pool_range: MemoryRange) -> Self {
-        self.pool_range = Some(pool_range);
+    ///
+    /// # Panics
+    ///
+    /// Panics if called more than once.
+    pub fn with_pool_ranges(mut self, pool_ranges: impl Iterator<Item = MemoryRange>) -> Self {
+        assert!(
+            self.pool_ranges.is_empty(),
+            "pool ranges already set on builder"
+        );
+        self.pool_ranges.extend(pool_ranges);
         self
     }
 
@@ -211,7 +220,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image,
             page_tables,
             log_buffer,
-            pool_range,
+            pool_ranges,
         } = self;
 
         if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
@@ -232,7 +241,9 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             persisted_state_region.split_at_offset(PAGE_SIZE_4K);
 
         // The other ranges are reserved, and must overlap with the used range.
-        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 20> = ArrayVec::new();
+        const MAX_RESERVED_RANGES: usize = 20;
+        let mut reserved = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_RANGES>, ArrayVec::new_const());
+        reserved.clear();
         reserved.push((persisted_header, ReservedMemoryType::PersistedStateHeader));
         reserved.push((persisted_payload, ReservedMemoryType::PersistedStatePayload));
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
@@ -258,7 +269,11 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         );
         reserved.sort_unstable_by_key(|(r, _)| r.start());
 
-        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 13> = ArrayVec::new();
+        // Maximum number of used ranges is reserved ranges, plus any allocated
+        // pool ranges (one per node maximally).
+        const MAX_USED_RANGES: usize = MAX_RESERVED_RANGES + MAX_NUMA_NODES;
+        let mut used_ranges = off_stack!(ArrayVec<(MemoryRange, AddressUsage), MAX_USED_RANGES>, ArrayVec::new_const());
+        used_ranges.clear();
 
         // Construct initial used ranges by walking both the bootshim_used range
         // and all reserved ranges that overlap.
@@ -284,8 +299,8 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             }
         }
 
-        // Add any existing pool range as reserved.
-        if let Some(range) = pool_range {
+        // Add any existing pool ranges as reserved.
+        for range in pool_ranges {
             used_ranges.push((
                 range,
                 AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool),
@@ -1038,5 +1053,210 @@ mod tests {
         }
     }
 
-    // FIXME: test pool ranges
+    // Tests for multi-NUMA pool range support in the builder.
+
+    #[test]
+    fn test_single_pool_range() {
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x4000),
+            MemoryRange::new(0x0..0x2000),
+            core::iter::empty(),
+        )
+        .with_pool_ranges([MemoryRange::new(0x10000..0x18000)].into_iter())
+        .init()
+        .unwrap();
+
+        assert!(address_space.has_vtl2_pool());
+
+        // Pool range should be reserved.
+        let reserved: Vec<_> = address_space.reserved_vtl2_ranges().collect();
+        assert!(
+            reserved
+                .iter()
+                .any(|(r, t)| *r == MemoryRange::new(0x10000..0x18000)
+                    && *t == ReservedMemoryType::Vtl2GpaPool)
+        );
+    }
+
+    #[test]
+    fn test_multiple_pool_ranges() {
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[
+            MemoryEntry {
+                range: MemoryRange::new(0x0..0x20000),
+                vnode: 0,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x100000..0x120000),
+                vnode: 1,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+        ];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x4000),
+            MemoryRange::new(0x0..0x2000),
+            core::iter::empty(),
+        )
+        .with_pool_ranges(
+            [
+                MemoryRange::new(0x10000..0x18000),
+                MemoryRange::new(0x110000..0x118000),
+            ]
+            .into_iter(),
+        )
+        .init()
+        .unwrap();
+
+        assert!(address_space.has_vtl2_pool());
+
+        // Both pool ranges should be reserved.
+        let reserved: Vec<_> = address_space
+            .reserved_vtl2_ranges()
+            .filter(|(_, t)| *t == ReservedMemoryType::Vtl2GpaPool)
+            .collect();
+        assert_eq!(reserved.len(), 2);
+        assert_eq!(reserved[0].0, MemoryRange::new(0x10000..0x18000));
+        assert_eq!(reserved[1].0, MemoryRange::new(0x110000..0x118000));
+    }
+
+    #[test]
+    fn test_allocate_pool_single_numa_node() {
+        // With a single NUMA node, pool should be allocated as one range on
+        // node 0 (regardless of force_split, since there's only one node).
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x100000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x4000),
+            MemoryRange::new(0x0..0x2000),
+            core::iter::empty(),
+        )
+        .init()
+        .unwrap();
+
+        // Allocate pool on node 0.
+        let pool = address_space
+            .allocate(
+                Some(0),
+                0x10000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
+            .unwrap();
+        assert_eq!(pool.vnode, 0);
+        assert_eq!(pool.range.len(), 0x10000);
+        assert!(address_space.has_vtl2_pool());
+    }
+
+    #[test]
+    fn test_allocate_pool_two_numa_nodes_node0_fits() {
+        // With 2 NUMA nodes and enough space on node 0, pool should be
+        // allocated entirely on node 0.
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[
+            MemoryEntry {
+                range: MemoryRange::new(0x0..0x100000),
+                vnode: 0,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x200000..0x300000),
+                vnode: 1,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+        ];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x4000),
+            MemoryRange::new(0x0..0x2000),
+            core::iter::empty(),
+        )
+        .init()
+        .unwrap();
+
+        // Node 0 has plenty of free space, so the pool fits entirely on node 0.
+        let pool = address_space
+            .allocate(
+                Some(0),
+                0x10000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
+            .unwrap();
+        assert_eq!(pool.vnode, 0);
+        assert_eq!(pool.range.len(), 0x10000);
+    }
+
+    #[test]
+    fn test_allocate_pool_two_numa_nodes_node0_exhausted() {
+        // Node 0 has no free space after bootshim. Pool must come from node 1.
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[
+            MemoryEntry {
+                range: MemoryRange::new(0x0..0x4000),
+                vnode: 0,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x200000..0x300000),
+                vnode: 1,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+        ];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x4000),
+            MemoryRange::new(0x0..0x2000),
+            core::iter::empty(),
+        )
+        .init()
+        .unwrap();
+
+        // Node 0 allocation should fail (all used by bootshim).
+        assert!(
+            address_space
+                .allocate(
+                    Some(0),
+                    0x10000,
+                    AllocationType::GpaPool,
+                    AllocationPolicy::HighMemory,
+                )
+                .is_none()
+        );
+
+        // Node 1 should succeed.
+        let pool = address_space
+            .allocate(
+                Some(1),
+                0x10000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
+            .unwrap();
+        assert_eq!(pool.vnode, 1);
+        assert_eq!(pool.range.len(), 0x10000);
+    }
 }

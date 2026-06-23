@@ -118,9 +118,11 @@ impl VirtioFsFile {
 
                 Ok(buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry))
             } else {
-                // Windows doesn't report the inode number for . and .., so just use the current file's
-                // inode number for that.
-                let inode_nr = if entry.inode_nr == 0 {
+                // Use the current file's inode number for . and .. entries.
+                // On Windows inode_nr is 0 for these; on Linux it may be
+                // non-zero, so check by name rather than relying on the
+                // inode number to identify them.
+                let inode_nr = if entry.name == "." || entry.name == ".." {
                     self_inode_nr
                 } else {
                     if get_child_fuse_entry()?.is_none() {

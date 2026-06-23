@@ -5,18 +5,17 @@
 //! required by `vmotherboard`.
 
 use crate::partition_unit::Halt;
-use crate::synic::SynicPorts;
-use hvdef::Vtl;
 use std::sync::Arc;
 use virt::VpIndex;
 use virt::io::CpuIo;
 use vmm_core_defs::HaltReason;
 use vmotherboard::Chipset;
 
-#[expect(missing_docs)]
+/// This struct adds the necessary `CpuIo` implementation to a `Chipset`, so it
+/// can be used directly in the VP dispatch loop and passed to the processor
+/// implementations.
 #[derive(Clone)]
-pub struct ChipsetPlusSynic {
-    pub synic_ports: Arc<SynicPorts>,
+pub struct AdaptedChipset {
     pub chipset: Arc<Chipset>,
     fatal_policy: FatalErrorPolicy,
 }
@@ -30,22 +29,17 @@ pub enum FatalErrorPolicy {
     DebugBreak(mesh::Sender<Box<dyn std::error::Error + Send + Sync>>),
 }
 
-impl ChipsetPlusSynic {
-    #[expect(missing_docs)]
-    pub fn new(
-        synic_ports: Arc<SynicPorts>,
-        chipset: Arc<Chipset>,
-        fatal_policy: FatalErrorPolicy,
-    ) -> Self {
+impl AdaptedChipset {
+    /// Create a new `AdaptedChipset` from a `Chipset` and a `FatalErrorPolicy`.
+    pub fn new(chipset: Arc<Chipset>, fatal_policy: FatalErrorPolicy) -> Self {
         Self {
-            synic_ports,
             chipset,
             fatal_policy,
         }
     }
 }
 
-impl CpuIo for ChipsetPlusSynic {
+impl CpuIo for AdaptedChipset {
     fn is_mmio(&self, address: u64) -> bool {
         self.chipset.is_mmio(address)
     }
@@ -56,21 +50,6 @@ impl CpuIo for ChipsetPlusSynic {
 
     fn handle_eoi(&self, irq: u32) {
         self.chipset.handle_eoi(irq)
-    }
-
-    fn signal_synic_event(&self, vtl: Vtl, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.synic_ports.on_signal_event(vtl, connection_id, flag)
-    }
-
-    fn post_synic_message(
-        &self,
-        vtl: Vtl,
-        connection_id: u32,
-        secure: bool,
-        message: &[u8],
-    ) -> hvdef::HvResult<()> {
-        self.synic_ports
-            .on_post_message(vtl, connection_id, secure, message)
     }
 
     fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) -> impl Future<Output = ()> {

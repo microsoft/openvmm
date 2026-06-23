@@ -9,9 +9,11 @@ edition.workspace = true
 [dependencies]
 minimal_rt.workspace = true
 tmk_protocol.workspace = true
-x86defs.workspace = true
 
 arrayvec.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86defs.workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true

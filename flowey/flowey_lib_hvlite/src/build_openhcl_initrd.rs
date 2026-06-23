@@ -3,8 +3,7 @@
 
 //! Wrapper around `update-rootfs.py`
 
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
-use crate::run_cargo_build::common::CommonArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -105,18 +104,21 @@ impl FlowNode for Node {
                 extra_initrd_directories,
             } = extra_params.unwrap_or_default();
 
-            let openvmm_deps_arch = match arch {
-                CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
-                CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-            };
-
             let interactive_dep = if interactive {
                 ctx.reqv(|v| {
-                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioDbgrd,
+                        arch,
+                        v,
+                    )
                 })
             } else {
                 ctx.reqv(|v| {
-                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioShell,
+                        arch,
+                        v,
+                    )
                 })
             };
 

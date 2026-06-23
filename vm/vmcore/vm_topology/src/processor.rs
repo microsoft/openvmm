@@ -91,6 +91,15 @@ pub enum InvalidTopology {
     /// VpInfo indices must be linear and start at 0
     #[error("vp indices don't start at 0 or don't count up")]
     InvalidVpIndices,
+    /// A PPI INTID is not in the valid range (16..32).
+    #[error("PPI INTID {0} is not in the valid range 16..32")]
+    InvalidPpiIntid(u32),
+    /// The GIC interrupt count is invalid.
+    #[error("gic_nr_irqs {0} must be 64..=992 and a multiple of 32")]
+    InvalidGicNrIrqs(u32),
+    /// GICv2 supports at most 8 CPUs.
+    #[error("GICv2 supports at most 8 CPUs, but {0} were requested")]
+    TooManyCpusForGicV2(u32),
     /// Failed to query the topology information from Device Tree.
     #[error("failed to query memory topology from device tree")]
     StdIoError(#[source] std::io::Error),
@@ -158,10 +167,18 @@ impl<
         self.smt_enabled
     }
 
-    /// Returns the number of VPs per socket.
+    /// Returns the configured number of VPs per socket.
     ///
-    /// This will always be a power of 2. The number of VPs actually populated
-    /// in a socket may be smaller than this.
+    /// This is the logical socket size before power-of-two rounding. Use
+    /// this for NUMA VP assignment and other logical topology queries.
+    pub fn vps_per_socket(&self) -> u32 {
+        self.vps_per_socket
+    }
+
+    /// Returns the number of VPs per socket, rounded up to a power of 2.
+    ///
+    /// This is the APIC-ID-space reservation per socket. The number of VPs
+    /// actually populated in a socket may be smaller than this.
     pub fn reserved_vps_per_socket(&self) -> u32 {
         self.vps_per_socket.next_power_of_two()
     }
@@ -169,6 +186,24 @@ impl<
     /// Computes the processor topology information for a VP.
     pub fn vp_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
         T::vp_topology(self, &self.vp_arch(vp_index))
+    }
+
+    /// Sets the virtual NUMA node for each VP.
+    ///
+    /// `vnodes` must have exactly `vp_count()` entries, where `vnodes[i]` is
+    /// the vnode for VP index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vnodes.len() != vp_count()`.
+    pub fn set_vnodes(&mut self, vnodes: &[u32])
+    where
+        T::ArchVpInfo: AsMut<VpInfo>,
+    {
+        assert_eq!(vnodes.len(), self.vps.len());
+        for (vp, &vnode) in self.vps.iter_mut().zip(vnodes) {
+            vp.as_mut().vnode = vnode;
+        }
     }
 }
 

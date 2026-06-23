@@ -87,10 +87,10 @@ impl VmgsClient {
         Ok(())
     }
 
-    /// If VMGS has been configured with encryption, encrypt + write `bug` to
+    /// If VMGS has been configured with encryption, encrypt + write `buf` to
     /// the specified `file_id`. Otherwise, perform a regular plaintext write
     /// instead.
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[instrument(skip_all, fields(file_id))]
     pub async fn write_file_encrypted(
         &self,

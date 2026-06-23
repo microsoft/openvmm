@@ -5,6 +5,8 @@
 
 use x86defs::SegmentRegister;
 
+/// A general-purpose register. These are in the order defined by the x86-64
+/// architecture.
 #[repr(usize)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[expect(clippy::upper_case_acronyms)]

@@ -35,8 +35,6 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-const VIRTIO_RNG_DEVICE_ID: u16 = 4;
-
 #[derive(InspectMut)]
 pub struct VirtioRngDevice {
     driver: VmTaskDriver,
@@ -45,10 +43,10 @@ pub struct VirtioRngDevice {
 }
 
 impl VirtioRngDevice {
-    pub fn new(driver_source: &VmTaskDriverSource, memory: GuestMemory) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource) -> Self {
         Self {
             driver: driver_source.simple(),
-            worker: TaskControl::new(RngWorker { mem: memory }),
+            worker: TaskControl::new(RngWorker),
         }
     }
 }
@@ -56,8 +54,11 @@ impl VirtioRngDevice {
 impl VirtioDevice for VirtioRngDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: VIRTIO_RNG_DEVICE_ID,
-            device_features: VirtioDeviceFeatures::new(),
+            device_id: virtio::spec::VirtioDeviceType::RNG,
+            device_features: VirtioDeviceFeatures::new()
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 1,
             device_register_length: 0,
             shared_memory: DeviceTraitsSharedMemory::default(),
@@ -82,17 +83,23 @@ impl VirtioDevice for VirtioRngDevice {
         let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
-            self.worker.task().mem.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
         )
         .context("failed to create virtio queue")?;
 
-        self.worker
-            .insert(self.driver.clone(), "virtio-rng-queue", RngQueue { queue });
+        self.worker.insert(
+            self.driver.clone(),
+            "virtio-rng-queue",
+            RngQueue {
+                queue,
+                mem: resources.guest_memory,
+            },
+        );
         self.worker.start();
         Ok(())
     }
@@ -113,13 +120,12 @@ impl VirtioDevice for VirtioRngDevice {
 }
 
 #[derive(InspectMut)]
-struct RngWorker {
-    mem: GuestMemory,
-}
+struct RngWorker;
 
 #[derive(InspectMut)]
 struct RngQueue {
     queue: VirtioQueue,
+    mem: GuestMemory,
 }
 
 impl InspectTaskMut<RngQueue> for RngWorker {
@@ -143,7 +149,8 @@ impl AsyncRun<RngQueue> for RngWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_rng_request(&self.mem, work);
+                    let bytes = process_rng_request(&state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -158,25 +165,22 @@ impl AsyncRun<RngQueue> for RngWorker {
     }
 }
 
-fn process_rng_request(mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+fn process_rng_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
     let writable_len = std::cmp::min(work.get_payload_length(true) as usize, MAX_REQUEST_BYTES);
     if writable_len == 0 {
-        work.complete(0);
-        return;
+        return 0;
     }
 
     let mut buf = vec![0u8; writable_len];
     getrandom::fill(&mut buf).expect("host entropy source failure");
     match work.write(mem, &buf) {
-        Ok(()) => {
-            work.complete(writable_len as u32);
-        }
+        Ok(()) => writable_len as u32,
         Err(err) => {
             tracelimit::error_ratelimited!(
                 err = &err as &dyn std::error::Error,
                 "failed to write random bytes to guest memory"
             );
-            work.complete(0);
+            0
         }
     }
 }
@@ -299,7 +303,7 @@ mod tests {
             init_rings(&mem);
 
             let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-            let device = VirtioRngDevice::new(&driver_source, mem.clone());
+            let device = VirtioRngDevice::new(&driver_source);
             let queue_event = Event::new();
             let interrupt_event = Event::new();
 
@@ -330,6 +334,7 @@ mod tests {
                         },
                         notify: interrupt,
                         event: self.queue_event.clone(),
+                        guest_memory: self.mem.clone(),
                     },
                     &VirtioDeviceFeatures::new(),
                     None,
@@ -404,7 +409,7 @@ mod tests {
     async fn rng_reports_correct_traits(driver: DefaultDriver) {
         let harness = TestHarness::new(&driver);
         let traits = harness.device.traits();
-        assert_eq!(traits.device_id, 4);
+        assert_eq!(traits.device_id, virtio::spec::VirtioDeviceType::RNG);
         assert_eq!(traits.max_queues, 1);
         assert_eq!(traits.device_register_length, 0);
     }

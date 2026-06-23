@@ -14,7 +14,6 @@ vmbus_async.workspace = true
 vmbus_serial_protocol.workspace = true
 vm_resource.workspace = true
 
-guid.workspace = true
 mesh.workspace = true
 
 futures.workspace = true
@@ -24,7 +23,7 @@ zerocopy.workspace = true
 [target.'cfg(unix)'.dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-pal_async.workspace = true
+guid.workspace = true
 vmbus_user_channel.workspace = true
 
 [dev-dependencies]

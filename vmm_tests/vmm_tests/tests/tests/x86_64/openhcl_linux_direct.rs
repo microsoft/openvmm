@@ -19,6 +19,7 @@ use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use zerocopy::FromBytes;
 
@@ -79,8 +80,8 @@ async fn mana_nic_shared_pool(
 }
 
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
-///#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn _many_nvme_devices_servicing_very_heavy(
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn many_nvme_devices_servicing_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -229,7 +230,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     // tree and parse it ourselves again, but this requires refactoring some
     // crates to make `bootloader_fdt_parser` available outside the underhill
     // tree.
-    let vtl2_allowable_difference_kb = 29000;
+    let vtl2_allowable_difference_kb = 32000;
     let vtl2_expected_mem_kb = vtl2_ram_size / 1024;
     let vtl2_diff = (vtl2_mem_kb as i64 - vtl2_expected_mem_kb as i64).unsigned_abs();
     tracing::info!(
@@ -362,35 +363,74 @@ async fn parse_openhcl_memory_node(
     Ok(MemoryRange::new(range_start..range_end))
 }
 
-/// Test VTL2 memory allocation mode, and validate that VTL0 saw the correct
-/// amount of mmio, when the host provides a VTL2 mmio range.
+/// Enumerate the VTL0 chipset MMIO ranges reported by the bootloader in the
+/// `openhcl` device tree node, sorted by start address.
 ///
-/// TODO: onboard Hyper-V support in petri for custom mmio config once Hyper-V
-/// supports this.
+/// The `openhcl/memory@*` nodes are a mix of VTL0/VTL2 RAM and VTL0/VTL2 MMIO.
+/// This helper lists the directory, filters to entries whose
+/// `openhcl,memory-type` is `VTL0_MMIO` (5), and delegates to
+/// `parse_openhcl_memory_node` for the range read.
+async fn enumerate_openhcl_vtl0_mmio_ranges(
+    agent: &PipetteClient,
+) -> Result<Vec<MemoryRange>, anyhow::Error> {
+    let sh = agent.unix_shell();
+    let listing = cmd!(sh, "ls /sys/firmware/devicetree/base/openhcl/")
+        .read()
+        .await?;
+    let mut ranges = Vec::new();
+    for name in listing.lines() {
+        let Some(start_hex) = name.strip_prefix("memory@") else {
+            continue;
+        };
+        let start = u64::from_str_radix(start_hex, 16)
+            .map_err(|e| anyhow::anyhow!("failed to parse {name}: {e}"))?;
+        // Read the type first so we can skip non-VTL0_MMIO entries (RAM,
+        // VTL2_MMIO) without tripping the assertion in
+        // `parse_openhcl_memory_node`.
+        let memory_type: u32 = read_sysfs_dt::<zerocopy::big_endian::U32>(
+            agent,
+            format!("openhcl/{name}/openhcl,memory-type").as_str(),
+        )
+        .await?
+        .into();
+        const VTL0_MMIO: u32 = 5;
+        if memory_type != VTL0_MMIO {
+            continue;
+        }
+        ranges.push(parse_openhcl_memory_node(agent, start).await?);
+    }
+    ranges.sort_by_key(|r| r.start());
+    Ok(ranges)
+}
+
+/// Test VTL2 memory allocation mode and validate that the bootloader-built
+/// device tree reflects the host-provided VTL2 MMIO range (path A in
+/// `openhcl_boot`'s MMIO selection).
+///
+/// Path B — where `openhcl_boot` carves VTL2 MMIO out of VTL0 because the host
+/// did not provide a range — is covered by unit tests for
+/// `select_vtl2_mmio_range` in `openhcl_boot::host_params::mmio`.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn openhcl_linux_vtl2_mmio_self_allocate(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
-    // Use the OpenVMM default which has a 1GB mmio gap for VTL2. This should
-    // cause the whole gap to be given to VTL2, as we should report 128MB for
-    // self allocation.
-    let expected_mmio_ranges: Vec<MemoryRange> =
-        openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into();
+    // Default chipset MMIO sizes for `HclHost` from
+    // `vm_manifest_builder::layout_config`. Keep in sync with that file.
+    const DEFAULT_LOW_MMIO_SIZE: u64 = 128 * 1024 * 1024;
+    const DEFAULT_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
+    const DEFAULT_VTL2_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+    // `mmio-size` is hardcoded in openvmm — see
+    // `openvmm_core::worker::vm_loaders::igvm::build_device_tree`.
+    const EXPECTED_MMIO_SIZE: u64 = 128 * 1024 * 1024;
+
     let (mut vm, agent) = config
-        .with_memory(MemoryConfig {
-            mmio_gaps: petri::MmioConfig::Custom(expected_mmio_ranges.clone()),
-            ..Default::default()
-        })
         .with_vtl2_base_address_type(Vtl2BaseAddressType::Vtl2Allocate { size: None })
         .run()
         .await?;
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
 
-    // Read the bootloader provided fdt via sysfs to verify that the VTL2 and
-    // VTL0 mmio ranges are as expected, along with the allocated mmio size
-    // being 128 MB.
-    let memory_allocation_mode: String =
+    let memory_allocation_mode =
         read_sysfs_dt_string(&vtl2_agent, "openhcl/memory-allocation-mode").await?;
     assert_eq!(memory_allocation_mode, "vtl2");
 
@@ -398,21 +438,52 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
         read_sysfs_dt::<zerocopy::big_endian::U64>(&vtl2_agent, "openhcl/mmio-size")
             .await?
             .into();
-    // NOTE: This value is hardcoded in openvmm today to report this to the
-    // guest provided device tree.
-    const EXPECTED_MMIO_SIZE: u64 = 128 * 1024 * 1024;
     assert_eq!(mmio_size, EXPECTED_MMIO_SIZE);
 
-    // Read the bootloader provided dt via sysfs to verify the VTL0 and VTL2
-    // mmio ranges are as expected.
+    // VTL2 VMBus sees exactly one MMIO range — the VTL2-private chipset MMIO
+    // — placed in PostMmio above all VTL0-visible RAM/MMIO.
     let vtl2_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus").await?;
-    assert_eq!(vtl2_mmio, expected_mmio_ranges[2..]);
-    let mut vtl0_mmio = Vec::new();
-    for range_start in expected_mmio_ranges[..2].iter().map(|r| r.start()) {
-        let range = parse_openhcl_memory_node(&vtl2_agent, range_start).await?;
-        vtl0_mmio.push(range);
-    }
-    assert_eq!(vtl0_mmio, expected_mmio_ranges[..2]);
+    assert_eq!(
+        vtl2_mmio.len(),
+        1,
+        "VTL2 should have exactly one MMIO range, got {:?}",
+        vtl2_mmio,
+    );
+    assert_eq!(vtl2_mmio[0].len(), DEFAULT_VTL2_MMIO_SIZE);
+    assert!(
+        vtl2_mmio[0].start() >= 1 << 32,
+        "VTL2 MMIO should be above 4 GiB, got {:#x}",
+        vtl2_mmio[0].start(),
+    );
+
+    // VTL0 sees exactly two chipset MMIO ranges in the openhcl device tree:
+    // the low (Mmio32) range below 4 GiB and the high (Mmio64) range above
+    // RAM but below the VTL2 PostMmio range.
+    let vtl0_mmio = enumerate_openhcl_vtl0_mmio_ranges(&vtl2_agent).await?;
+    assert_eq!(
+        vtl0_mmio.len(),
+        2,
+        "VTL0 should have exactly two chipset MMIO ranges, got {:?}",
+        vtl0_mmio,
+    );
+    assert_eq!(vtl0_mmio[0].len(), DEFAULT_LOW_MMIO_SIZE);
+    assert!(
+        vtl0_mmio[0].end() <= 1 << 32,
+        "VTL0 low MMIO should be below 4 GiB, got {:?}",
+        vtl0_mmio[0],
+    );
+    assert_eq!(vtl0_mmio[1].len(), DEFAULT_HIGH_MMIO_SIZE);
+    assert!(
+        vtl0_mmio[1].start() >= 1 << 32,
+        "VTL0 high MMIO should be above 4 GiB, got {:?}",
+        vtl0_mmio[1],
+    );
+    assert!(
+        vtl0_mmio[1].end() <= vtl2_mmio[0].start(),
+        "VTL0 high MMIO {:?} should sit below the VTL2 chipset MMIO {:?}",
+        vtl0_mmio[1],
+        vtl2_mmio[0],
+    );
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

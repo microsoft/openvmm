@@ -333,15 +333,14 @@ mod windows {
         pub const TBS_COMMAND_PRIORITY_NORMAL: u32 = 100;
 
         /// Allow non-snake / camel case naming that matches the Windows SDK for FFI correctness.
-        #[allow(non_snake_case)]
+        #[expect(non_snake_case)]
         #[repr(C)]
         pub union TBS_CONTEXT_PARAMS2_FLAGS {
             pub asUINT32: u32, // bit 0: requestRaw, bit 1: includeTpm12, bit 2: includeTpm20
         }
 
         #[repr(C)]
-        #[allow(non_camel_case_types)]
-        #[allow(non_snake_case)]
+        #[expect(non_snake_case)]
         pub struct TBS_CONTEXT_PARAMS2 {
             pub version: u32, // must be TPM_VERSION_20 for PARAMS2
             pub Anonymous: TBS_CONTEXT_PARAMS2_FLAGS,

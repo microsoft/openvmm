@@ -12,6 +12,7 @@ xtask_fuzz.workspace = true
 
 pcie = { workspace = true, features = ["fuzz"] }
 pci_bus.workspace = true
+pci_core.workspace = true
 chipset_device.workspace = true
 memory_range.workspace = true
 vmcore.workspace = true

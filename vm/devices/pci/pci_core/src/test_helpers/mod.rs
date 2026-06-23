@@ -43,8 +43,50 @@ impl TestPciInterruptController {
 }
 
 impl SignalMsi for TestPciInterruptControllerInner {
-    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
-        assert_eq!(rid, 0);
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.msi_requests.lock().push_back((address, data));
     }
+}
+
+/// Read a u32 from a `PciCapability`.
+pub fn read_cap_u32(cap: &impl crate::capabilities::PciCapability, offset: u16) -> u32 {
+    let mut value = 0;
+    cap.read(
+        offset,
+        chipset_device::pci::ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+    );
+    value
+}
+
+/// Write a u32 to a `PciCapability`.
+pub fn write_cap_u32(cap: &mut impl crate::capabilities::PciCapability, offset: u16, val: u32) {
+    cap.write(
+        offset,
+        chipset_device::pci::ByteEnabledDwordWrite::with_all_bytes_enabled(val),
+    )
+}
+
+/// Read a u32 from a `PciExtendedCapability`.
+pub fn read_extended_cap_u32(
+    cap: &impl crate::capabilities::extended::PciExtendedCapability,
+    offset: u16,
+) -> u32 {
+    let mut value = 0;
+    cap.read(
+        offset,
+        chipset_device::pci::ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+    );
+    value
+}
+
+/// Write a u32 to a `PciExtendedCapability`.
+pub fn write_extended_cap_u32(
+    cap: &mut impl crate::capabilities::extended::PciExtendedCapability,
+    offset: u16,
+    val: u32,
+) {
+    cap.write(
+        offset,
+        chipset_device::pci::ByteEnabledDwordWrite::with_all_bytes_enabled(val),
+    )
 }

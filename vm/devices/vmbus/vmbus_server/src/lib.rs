@@ -6,7 +6,6 @@
 
 mod channel_bitmap;
 pub mod channels;
-pub mod event;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
@@ -137,6 +136,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     channel_id_offset: u16,
     max_version: Option<MaxVersionInfo>,
     delay_max_version: bool,
+    max_restore_version: Option<MaxVersionInfo>,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
@@ -308,6 +308,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             channel_id_offset: 0,
             max_version: None,
             delay_max_version: false,
+            max_restore_version: None,
             enable_mnf: false,
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
@@ -400,6 +401,16 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     ///      since that's the oldest version the Uefi client supports.
     pub fn delay_max_version(mut self, delay: bool) -> Self {
         self.delay_max_version = delay;
+        self
+    }
+
+    /// Tells the server to limit the protocol version accepted when restoring from saved state.
+    ///
+    /// This is configured separately from [`Self::max_version`] so that the version limit enforced
+    /// during restore can differ from the limit used for new connections. This allows a feature to
+    /// be available for rollback from a future version that has enabled it by default.
+    pub fn max_restore_version(mut self, max_restore_version: Option<MaxVersionInfo>) -> Self {
+        self.max_restore_version = max_restore_version;
         self
     }
 
@@ -529,6 +540,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         if let Some(version) = self.max_version {
             server.set_compatibility_version(version, self.delay_max_version);
         }
+
+        if let Some(version) = self.max_restore_version {
+            server.set_restore_compatibility_version(version);
+        }
+
         let (relay_request_send, relay_response_recv) =
             if let Some(server_relay) = self.server_relay {
                 let r = server_relay.response_receive.boxed().fuse();
@@ -1670,8 +1686,12 @@ impl Notifier for ServerTaskInner {
     fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
-        if let ChannelState::Open(state) = &channel.state {
-            let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
+        // Only inspect ring buffers if we have an active connection; during
+        // disconnect/reset, `version` may be None even if an individual channel
+        // is still in the Open state, and we must not panic during inspect
+        // (e.g., timeout diagnostics rely on inspect succeeding).
+        if let (ChannelState::Open(state), Some(version)) = (&channel.state, version) {
+            let mem = self.get_gm_for_channel(version, channel);
             inspect_rings(
                 &mut resp,
                 mem,
@@ -1835,9 +1855,8 @@ impl ServerTaskInner {
 
             (Some(guest_event_port), interrupt)
         } else {
-            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
-            // proxy_integration from trying to wrap it.
-            (None, Interrupt::null_event())
+            // Use a dummy interrupt which does nothing.
+            (None, Interrupt::null())
         };
 
         // Delete any previously reserved state.

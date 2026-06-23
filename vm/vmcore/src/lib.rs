@@ -11,6 +11,7 @@ extern crate self as vmcore;
 
 pub mod device_state;
 pub mod interrupt;
+pub mod irqfd;
 pub mod isa_dma_channel;
 pub mod line_interrupt;
 pub mod local_only;

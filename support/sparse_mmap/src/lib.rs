@@ -17,6 +17,7 @@ pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
 pub use sys::alloc_shared_memory;
+pub use sys::alloc_shared_memory_hugetlb;
 pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
@@ -198,6 +199,39 @@ mod tests {
     }
 
     #[test]
+    fn test_sparse_mapping_minimum_alignment() {
+        SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), 0).unwrap_err();
+
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), 1).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % SparseMapping::page_size(), 0);
+
+        let alignment = 0x10000;
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                .unwrap();
+        assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+
+        let alignment = 0x200000;
+
+        #[cfg(unix)]
+        {
+            let mapping =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap();
+            assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+        }
+
+        #[cfg(windows)]
+        {
+            let error =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
+
+    #[test]
     fn test_overlapping_mappings() {
         #![expect(clippy::identity_op)]
 
@@ -342,6 +376,77 @@ mod tests {
                 buf.iter().all(|&b| b == 0),
                 "decommitted page should be zeros even with THP"
             );
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_alloc_numa_node0() {
+        let page_size = SparseMapping::page_size();
+        let size = 4 * page_size;
+        let mapping = SparseMapping::new(size).unwrap();
+
+        // Allocate with NUMA node 0 (always present).
+        #[cfg(unix)]
+        {
+            mapping.alloc(0, size).unwrap();
+            mapping.mbind_at(0, size, 0).unwrap();
+        }
+        #[cfg(windows)]
+        mapping.alloc_numa(0, size, Some(0)).unwrap();
+
+        // Memory should be accessible and writable.
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_map_file_numa_node0() {
+        let page_size = SparseMapping::page_size();
+        let size = 4 * page_size;
+        let mapping = SparseMapping::new(size).unwrap();
+        let shmem = alloc_shared_memory(size, "test-numa").unwrap();
+
+        // Map with NUMA node 0 (always present).
+        #[cfg(unix)]
+        {
+            mapping.map_file(0, size, &shmem, 0, true).unwrap();
+            mapping.mbind_at(0, size, 0).unwrap();
+        }
+        #[cfg(windows)]
+        mapping
+            .map_file_numa(0, size, &shmem, 0, true, Some(0))
+            .unwrap();
+
+        // Memory should be accessible and writable.
+        let pattern = vec![0xCDu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_alloc_numa_invalid_node() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(page_size).unwrap();
+
+        // A very large NUMA node number should fail with an error (not panic).
+        #[cfg(unix)]
+        {
+            mapping.alloc(0, page_size).unwrap();
+            let result = mapping.mbind_at(0, page_size, 99999);
+            assert!(result.is_err());
+        }
+        #[cfg(windows)]
+        {
+            let result = mapping.alloc_numa(0, page_size, Some(99999));
+            assert!(result.is_err());
         }
     }
 }

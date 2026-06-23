@@ -12,8 +12,7 @@
 //! - **ATA hard drives** — use [`Disk`] for I/O. Support
 //!   PIO and DMA modes, 28-bit and 48-bit LBA, `IDENTIFY DEVICE`, `FLUSH CACHE`.
 //! - **ATAPI optical drives** — use `PACKET COMMAND` (0xA0) to transport SCSI
-//!   CDBs over the ATA interface, delegating to
-//!   [`SimpleScsiDvd`](scsidisk::scsidvd::SimpleScsiDvd).
+//!   CDBs over the ATA interface, delegating to [`AsyncScsiDisk`].
 //!
 //! # Port I/O
 //!
@@ -54,7 +53,6 @@ use disk_backend::Disk;
 use drive::DiskDrive;
 use drive::DriveRegister;
 use guestmem::GuestMemory;
-use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -77,8 +75,6 @@ use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
-
-const PAGE_SIZE64: u64 = guestmem::PAGE_SIZE as u64;
 
 open_enum! {
     pub enum IdeIoPort: u16 {
@@ -328,19 +324,6 @@ impl Channel {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
 
-        if let Some(status) = self.current_drive_status() {
-            if status.err() {
-                tracelimit::warn_ratelimited!(
-                    "drive is in error state, ignoring enlightened command",
-                );
-                return IoResult::Ok;
-            } else if status.bsy() || status.drq() {
-                tracelimit::warn_ratelimited!(
-                    "command is already pending on this drive, ignoring enlightened command"
-                );
-                return IoResult::Ok;
-            }
-        }
         if self.enlightened_write.is_some() {
             tracelimit::error_ratelimited!("enlightened write while one is in progress, ignoring");
             return IoResult::Ok;
@@ -370,6 +353,20 @@ impl Channel {
             eint13_cmd.device_head.into(),
             bus_master_state,
         );
+
+        if let Some(status) = self.current_drive_status() {
+            if status.err() {
+                tracelimit::warn_ratelimited!(
+                    "drive is in error state, ignoring enlightened command",
+                );
+                return IoResult::Ok;
+            } else if status.bsy() || status.drq() {
+                tracelimit::warn_ratelimited!(
+                    "command is already pending on this drive, ignoring enlightened command"
+                );
+                return IoResult::Ok;
+            }
+        }
 
         let result = if let Some(drive_type) = self.current_drive_type() {
             match drive_type {
@@ -412,6 +409,26 @@ impl Channel {
             "enlightened hdd command"
         );
 
+        // The enlightened INT13 path is a DMA-only fast path used by
+        // the Hyper-V BIOS. Non-DMA commands (PIO reads/writes,
+        // IDENTIFY_DEVICE, etc.) would leave the drive with a PIO
+        // buffer that DMA can't drain, causing the deferred write to
+        // never complete.
+        let cmd = eint13_cmd.command;
+        if !matches!(
+            cmd,
+            IdeCommand::READ_DMA
+                | IdeCommand::READ_DMA_ALT
+                | IdeCommand::WRITE_DMA
+                | IdeCommand::WRITE_DMA_ALT
+                | IdeCommand::READ_DMA_EXT
+                | IdeCommand::WRITE_DMA_EXT
+                | IdeCommand::WRITE_DMA_FUA_EXT
+        ) {
+            tracelimit::warn_ratelimited!(?cmd, "ignoring non-DMA command in enlightened path");
+            return IoResult::Ok;
+        }
+
         // Write out the PRD register for the bus master
         self.write_bus_master_reg(
             BusMasterReg::TABLE_PTR,
@@ -422,7 +439,6 @@ impl Channel {
 
         // Now that we know what the IDE command is, disambiguate between
         // 28-bit LBA and 48-bit LBA
-        let cmd = eint13_cmd.command;
         if cmd == IdeCommand::READ_DMA_EXT || cmd == IdeCommand::WRITE_DMA_EXT {
             // 48-bit LBA, high 24 bits of logical block address
             self.write_drive_register(
@@ -726,10 +742,6 @@ impl Channel {
         write.deferred.complete();
     }
 
-    fn gpa_to_gpn(gpa: u64) -> u64 {
-        gpa / PAGE_SIZE64
-    }
-
     fn perform_dma_memory_phase(&mut self) {
         let Some(drive) = &mut self.drives[self.state.current_drive_idx] else {
             return;
@@ -742,9 +754,9 @@ impl Channel {
             return;
         }
 
-        let (dma_type, mut dma_avail) = match drive.dma_request() {
+        let mut dma_avail = match drive.dma_request() {
             Some((dma_type, avail)) if *dma_type == self.bus_master_state.dma_io_type() => {
-                (Some(*dma_type), avail as u32)
+                avail as u32
             }
             _ => {
                 // No active, appropriate DMA buffer.
@@ -799,49 +811,6 @@ impl Channel {
                     dma.transfer_bytes_left = 0x10000;
                 }
 
-                // Check that every page starting from the base address is within
-                // the guest's physical address space.
-                // This is a sanity check, the guest should not be able to program the DMA
-                // controller with an invalid page access.
-
-                let end_gpa = cur_desc_table_entry
-                    .mem_physical_base
-                    .checked_add(dma.transfer_bytes_left);
-
-                let mut r = None;
-
-                if let Some(end_gpa) = end_gpa {
-                    let start_gpn = Self::gpa_to_gpn(cur_desc_table_entry.mem_physical_base.into());
-                    let end_gpn = Self::gpa_to_gpn(end_gpa.into());
-                    let gpns: Vec<u64> = (start_gpn..=end_gpn).collect();
-
-                    if let Some(paged_range) =
-                        PagedRange::new(0, gpns.len() * PAGE_SIZE64 as usize, &gpns)
-                    {
-                        r = Some(match dma_type.unwrap() {
-                            DmaType::Read => {
-                                self.guest_memory.probe_gpn_readable_range(&paged_range)
-                            }
-                            DmaType::Write => {
-                                self.guest_memory.probe_gpn_writable_range(&paged_range)
-                            }
-                        });
-                    }
-                }
-
-                if r.is_some_and(|res| res.is_err()) || end_gpa.is_none() {
-                    // If there is an error and there is no other IO in parallel,
-                    // we need to stop the current DMA transfer and set the error bit
-                    // in the Bus Master Status register.
-                    self.bus_master_state.dma_state = None;
-                    if !drive.handle_read_dma_descriptor_error() {
-                        self.bus_master_state.dma_error = true;
-                    }
-
-                    tracelimit::error_ratelimited!("dma base address out-of-range error");
-                    return;
-                }
-
                 dma.transfer_base_addr = cur_desc_table_entry.mem_physical_base.into();
                 dma.transfer_complete = (cur_desc_table_entry.end_of_table & 0x80) != 0;
 
@@ -857,11 +826,24 @@ impl Channel {
 
             assert!(bytes_to_transfer != 0);
 
-            drive.dma_transfer(
+            if let Err(err) = drive.dma_transfer(
                 &self.guest_memory,
                 dma.transfer_base_addr,
                 bytes_to_transfer as usize,
-            );
+            ) {
+                // The guest pointed the DMA engine at memory it can't access.
+                // Stop the transfer and raise the bus master DMA error, just as
+                // real hardware would on a failed bus access.
+                self.bus_master_state.dma_state = None;
+                if !drive.handle_read_dma_descriptor_error() {
+                    self.bus_master_state.dma_error = true;
+                }
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "dma transfer memory access error"
+                );
+                return;
+            }
 
             dma_avail -= bytes_to_transfer;
             dma.transfer_base_addr += bytes_to_transfer as u64;
@@ -2935,5 +2917,67 @@ mod tests {
             ..FromZeros::new_zeroed()
         };
         assert_eq!(features.as_bytes(), ex_features.as_bytes());
+    }
+
+    /// Enlightened INT13 with a non-DMA command (READ_SECTORS) should not
+    /// hang. Before the fix, this would start async disk IO that produces
+    /// a PIO buffer on completion. The DMA engine can't drain a PIO buffer,
+    /// so the deferred write completion check (!(bsy || drq)) never passes.
+    #[async_test]
+    async fn enlightened_hdd_non_dma_cmd_completes() {
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        // Set up a PRD table (the enlightened path always writes it,
+        // even though READ_SECTORS won't use it)
+        let table_gpa: u64 = 0x1000;
+        let data_gpa: u32 = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: 512,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        // READ_SECTORS (0x20) is a PIO read command. The enlightened path
+        // is designed for DMA commands only (READ_DMA_EXT, WRITE_DMA_EXT).
+        // Sending a PIO command through it starts async disk IO, but the
+        // resulting PIO buffer can't be drained by DMA -- hang forever.
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_SECTORS,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: 1,
+            byte_count: 0,
+            data_buffer: table_gpa as u32,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _, _) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // After fix: non-DMA commands through the enlightened path are
+        // rejected early and return Ok (not Defer). Before the fix,
+        // this would return Defer and hang forever.
+        assert!(
+            matches!(
+                ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()),
+                IoResult::Ok
+            ),
+            "non-DMA command (READ_SECTORS) via enlightened path should return Ok, not Defer"
+        );
     }
 }

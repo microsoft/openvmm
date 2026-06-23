@@ -40,7 +40,7 @@ If you run into any issues, please refer to
 
 ### _Preface:_ Using ohcldiag-dev
 
-Add support for ohcldiag-dev by specifying the `--vtl2-vsock-path` option at vm
+Add support for ohcldiag-dev by specifying the `--vmbus-vtl2-vsock-path` option at vm
 launch. This will create a Unix socket that the ohcldiag-dev binary can connect to by
 specifying the path to the unix socket. By default, the socket is created in the
 temp directory with path ohcldiag-dev. For example, running via powershell:
@@ -57,7 +57,7 @@ file and launch with the following command line to enable COM0 and COM1 for
 VTL0:
 
 ```powershell
-cargo run -- --hv --vtl2 --igvm openhcl-x64.bin --com3 "term,name=VTL2 OpenHCL" -m 2GB --vmbus-com1-serial "term,name=VTL0 Linux" --vmbus-com2-serial "term,name=COM2" --vtl2-vsock-path $env:temp\ohcldiag-dev
+cargo run -- --hv --vtl2 --igvm openhcl-x64.bin --com3 "term,name=VTL2 OpenHCL" -m 2GB --vmbus-com1-serial "term,name=VTL0 Linux" --vmbus-com2-serial "term,name=COM2" --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
 ```
 
 This will launch OpenVMM in VTL2 mode using [Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/install) to display the
@@ -92,7 +92,9 @@ guest in VTL0. Expose it by adding the following:
 You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 
 ```bash
---disk file:ubuntu.img,uh --vmbus-redirect
+--vmbus-scsi id=scsi0,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk file:ubuntu.img,on=scsi0,relay=relay0 --vmbus-redirect
 ```
 
 ### Assigning NVME devices to VTL2
@@ -101,5 +103,7 @@ You can assign an NVME disk to VTL2 and have OpenHCL relay it to VTL0 as a
 VMBus scsi device (see [Storage Translation](../../../reference/architecture/openhcl/storage_translation.md)):
 
 ```bash
---disk mem:1G,uh-nvme --vmbus-redirect
+--nvme-pci id=nvme0,vpci,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk mem:1G,on=nvme0,relay=relay0 --vmbus-redirect
 ```

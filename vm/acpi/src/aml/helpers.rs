@@ -152,6 +152,18 @@ pub fn char_to_hex(value: u8) -> u8 {
     }
 }
 
+/// Encode an AML Arg reference (Arg0-Arg6: opcodes 0x68-0x6e).
+pub fn encode_arg(n: u8) -> Vec<u8> {
+    assert!(n < 7, "Arg index must be 0-6");
+    vec![0x68 + n]
+}
+
+/// Encode an AML Local variable reference (Local0-Local7: opcodes 0x60-0x67).
+pub fn encode_local(n: u8) -> Vec<u8> {
+    assert!(n < 8, "Local index must be 0-7");
+    vec![0x60 + n]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,76 +10,81 @@
 use flowey::node::prelude::*;
 use std::io::Write;
 
-#[derive(Serialize, Deserialize)]
-pub enum GhCliAuth<C = VarNotClaimed> {
+/// Auth config for the gh CLI node. Uses [`ConfigVar`] so that
+/// `PartialEq`-based config merging works for the `ReadVar` variant.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
+pub enum GhCliAuth {
     /// Prompt user to log-in interactively.
+    #[default]
     LocalOnlyInteractive,
-    /// Set the value of the `GITHUB_TOKEN` environment variable to the
-    /// specified runtime String when invoking the `gh` CLI.
-    AuthToken(ReadVar<String, C>),
+    /// Set the value of the `GITHUB_TOKEN` environment variable.
+    AuthToken(ConfigVar<String>),
+}
+
+#[derive(Serialize, Deserialize)]
+#[doc(hidden)]
+pub enum ClaimedGhCliAuth {
+    LocalOnlyInteractive,
+    AuthToken(ClaimedReadVar<String>),
 }
 
 impl ClaimVar for GhCliAuth {
-    type Claimed = GhCliAuth<VarClaimed>;
+    type Claimed = ClaimedGhCliAuth;
 
     fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
         match self {
-            GhCliAuth::LocalOnlyInteractive => GhCliAuth::LocalOnlyInteractive,
-            GhCliAuth::AuthToken(v) => GhCliAuth::AuthToken(v.claim(ctx)),
+            GhCliAuth::LocalOnlyInteractive => ClaimedGhCliAuth::LocalOnlyInteractive,
+            GhCliAuth::AuthToken(v) => ClaimedGhCliAuth::AuthToken(v.claim(ctx)),
         }
+    }
+}
+
+flowey_config! {
+    /// Config for the use_gh_cli node.
+    pub struct Config {
+        /// Specify what authentication to use
+        pub auth: Option<GhCliAuth>,
     }
 }
 
 flowey_request! {
     pub enum Request {
-        /// Specify what authentication to use
-        WithAuth(GhCliAuth),
         /// Get a path to `gh` executable
         Get(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_gh_cli::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_reqs = Vec::new();
-        let mut with_auth_interactive = false;
-        let mut with_auth_token = None;
 
         for req in requests {
             match req {
-                Request::WithAuth(v) => match v {
-                    GhCliAuth::LocalOnlyInteractive => with_auth_interactive = true,
-                    GhCliAuth::AuthToken(v) => {
-                        same_across_all_reqs_backing_var("WithAuth", &mut with_auth_token, v)?
-                    }
-                },
                 Request::Get(v) => get_reqs.push(v),
             }
         }
 
+        let auth = config.auth.ok_or(anyhow::anyhow!("missing config: auth"))?;
         let get_reqs = get_reqs;
-        let auth = match (with_auth_interactive, with_auth_token) {
-            (true, None) => GhCliAuth::LocalOnlyInteractive,
-            (false, Some(v)) => GhCliAuth::AuthToken(v),
-            (true, Some(_)) => {
-                anyhow::bail!("`WithAuth` must be consistent across requests")
-            }
-            (false, None) => anyhow::bail!("Missing essential request: WithAuth"),
-        };
 
         // -- end of req processing -- //
 
         if get_reqs.is_empty() {
             if let GhCliAuth::AuthToken(tok) = auth {
-                tok.claim_unused(ctx);
+                tok.0.claim_unused(ctx);
             }
             return Ok(());
         }
@@ -99,8 +104,8 @@ impl FlowNode for Node {
             |rt| {
                 let gh_bin_path = rt.read(gh_bin_path).display().to_string();
                 let gh_token = match auth {
-                    GhCliAuth::LocalOnlyInteractive => String::new(),
-                    GhCliAuth::AuthToken(tok) => rt.read(tok),
+                    ClaimedGhCliAuth::LocalOnlyInteractive => String::new(),
+                    ClaimedGhCliAuth::AuthToken(tok) => rt.read(tok),
                 };
                 // only set GITHUB_TOKEN if there is a value to set it to, otherwise
                 // let the user's environment take precedence over authenticating interactively

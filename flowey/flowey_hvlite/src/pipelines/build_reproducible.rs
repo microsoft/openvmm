@@ -10,10 +10,11 @@ use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use flowey_lib_hvlite::common::CommonArch;
+use flowey_lib_hvlite::common::CommonPlatform;
+use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
-use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use std::collections::BTreeSet;
 use target_lexicon::Triple;
 
 /// A list of pre-defined OpenHCL recipes that support being built reproducibly. Each recipe has a matching CI pipeline job that can be reproduced with this local CLI.
@@ -53,14 +54,21 @@ impl IntoPipeline for BuildReproducibleCli {
 
         let mut pipeline = Pipeline::new();
 
-        let (pub_openhcl_igvm, _use_openhcl_igvm) = pipeline.new_artifact("x64-cvm-openhcl-igvm");
+        let (pub_openhcl_igvm, _use_openhcl_igvm) =
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm");
         let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
-            pipeline.new_artifact("x64-cvm-openhcl-igvm-extras");
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm-extras");
 
+        let local_run_args = {
+            let mut args = crate::pipelines_shared::cfg_common_params::LocalRunArgs::default();
+            args.locked = true;
+            args.no_incremental = true;
+            args
+        };
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(
             &mut pipeline,
             backend_hint,
-            None,
+            Some(local_run_args),
         )?;
 
         let openvmm_repo_source =
@@ -89,7 +97,7 @@ impl IntoPipeline for BuildReproducibleCli {
             }
         };
 
-        let igvm_file = match recipe {
+        let recipe = match recipe {
             ReproducibleOpenHclRecipe::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
         };
 
@@ -111,18 +119,18 @@ impl IntoPipeline for BuildReproducibleCli {
             flowey_lib_hvlite::_jobs::build_openhcl_igvm_from_recipe_nix::Params {
                 arch: recipe_arch,
                 kernel_kind,
-                igvm_files: vec![igvm_file]
-                    .into_iter()
-                    .map(|recipe| OpenhclIgvmBuildParams {
+                igvm_files: vec![(
+                    OpenhclIgvmBuildParams {
                         profile: openvmm_hcl_profile,
                         recipe,
                         custom_target: Some(CommonTriple::Custom(openhcl_musl_target(recipe_arch))),
-                    })
-                    .collect(),
-                artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
-                artifact_dir_openhcl_igvm_extras: ctx.publish_artifact(pub_openhcl_igvm_extras),
+                        extra_features: BTreeSet::new(),
+                        release_cfg: release,
+                    },
+                    ctx.publish_typed_artifact(pub_openhcl_igvm),
+                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
+                )],
                 artifact_openhcl_verify_size_baseline: None,
-                done: ctx.new_done_handle(),
             }
         });
 

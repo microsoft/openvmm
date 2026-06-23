@@ -7,6 +7,8 @@ use uefi::boot::MemoryType;
 use uefi::boot::exit_boot_services;
 use uefi::guid;
 
+use crate::uefi::acpi_wrap;
+
 use super::alloc::ALLOCATOR;
 
 const EFI_GUID: uefi::Guid = guid!("610b9e98-c6f6-47f8-8b47-2d2da0d52a91");
@@ -59,6 +61,13 @@ pub fn init() -> Result<(), Status> {
         return Err(Status::ABORTED);
     }
     crate::tmk_logger::init().map_err(|_| Status::NOT_READY)?;
+    // Initialize ACPI table context before exit_boot_services (called
+    // within enable_uefi_vtl_protection) so that the UEFI system table
+    // configuration entries are still accessible.
+    acpi_wrap::AcpiTableContext::init().map_err(|err| {
+        log::error!("Failed to initialize ACPI table context: {:?}", err);
+        Status::ABORTED
+    })?;
     enable_uefi_vtl_protection();
     Ok(())
 }

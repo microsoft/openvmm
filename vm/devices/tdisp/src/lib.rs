@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //!
 //! TDISP is a standardized interface for end-to-end encryption and attestation
 //! of trusted assigned devices to confidential/isolated partitions. This crate

@@ -9,6 +9,8 @@ use aarch64defs::FaultStatusCode;
 use aarch64defs::IssInstructionAbort;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HV_PAGE_SIZE;
@@ -173,7 +175,29 @@ pub async fn emulate<T: EmulatorSupport>(
 ) -> Result<(), VpHaltReason> {
     emulate_core(support, intercept_state, emu_mem, dev)
         .await
-        .map_err(|e| dev.fatal_error(e.into()))
+        .map_err(|e| {
+            let pc = support.pc();
+            let sp = support.sp();
+            let cpsr = support.cpsr();
+            let gpa = support.physical_address();
+            let initial_translation = support.initial_gva_translation();
+            let int_pend = support.interruption_pending();
+            let gpa_mapped = gpa.map(|a| support.is_gpa_mapped(a, false));
+            tracing::warn!(
+                CVM_ALLOWED,
+                pc,
+                sp,
+                ?cpsr,
+                gpa,
+                ?initial_translation,
+                int_pend,
+                gpa_mapped,
+                "emulation failed"
+            );
+            let xs = (0..=30).map(|i| (i, support.x(i))).collect::<Vec<_>>();
+            tracing::warn!(CVM_CONFIDENTIAL, ?xs, "emulation failed");
+            dev.fatal_error(e.into())
+        })
 }
 
 async fn emulate_core<T: EmulatorSupport>(

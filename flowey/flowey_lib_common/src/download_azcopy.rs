@@ -5,38 +5,44 @@
 
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the download_azcopy node.
+    pub struct Config {
+        /// Version of `azcopy` to install (e.g: "10.31.0")
+        pub version: Option<String>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Version of `azcopy` to install (e.g: "v10.31.0")
-        Version(String),
         /// Get a path to `azcopy`
         GetAzCopy(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::download_gh_release::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_azcopy = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::GetAzCopy(v) => get_azcopy.push(v),
             }
         }
-
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
-        let get_azcopy = get_azcopy;
 
         // -- end of req processing -- //
 
@@ -44,6 +50,10 @@ impl FlowNode for Node {
             return Ok(());
         }
 
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
+        let version = &version;
         let azcopy_bin = ctx.platform().binary("azcopy");
 
         // in case we need to unzip the thing we downloaded

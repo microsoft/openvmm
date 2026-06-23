@@ -1,9 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A code generator for protobuf service definitions.
+//! Code generator for protobuf service definitions.
 //!
-//! Used with the prost protobuf code generator.
+//! Used in `build.rs` with the [`prost`](https://docs.rs/prost-build) protobuf
+//! code generator to produce Rust service traits compatible with
+//! [`mesh_rpc`](https://openvmm.dev/rustdoc/linux/mesh_rpc/index.html).
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! // build.rs
+//! fn main() {
+//!     prost_build::Config::new()
+//!         .service_generator(Box::new(mesh_build::MeshServiceGenerator))
+//!         .compile_protos(&["src/my_service.proto"], &["src/"])
+//!         .unwrap();
+//! }
+//! ```
 
 #![forbid(unsafe_code)]
 

@@ -262,7 +262,7 @@ impl Xtask for RunGitHook {
                 log::info!("running pre-commit hook");
 
                 if config.with_fmt {
-                    const FMT_CMD: &str = "fmt --only-diffed --pass rustfmt --pass house-rules";
+                    const FMT_CMD: &str = "fmt --only-diffed --pass rustfmt --pass lints";
                     crate::tasks::Fmt::parse_from(FMT_CMD.split(' ')).run(ctx)?;
                 }
             }

@@ -64,11 +64,7 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
 async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_vmbus_redirect(true)
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 16,
-            vps_per_socket: Some(8),
-            ..Default::default()
-        })
+        .with_processor_topology(ProcessorTopology::heavy())
         .run()
         .await?;
     agent.power_off().await?;

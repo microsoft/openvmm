@@ -9,6 +9,7 @@
     unused_qualifications,
     reason = "generated code contains fully qualified paths"
 )]
+#![expect(clippy::allow_attributes)]
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.

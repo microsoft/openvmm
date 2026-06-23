@@ -43,11 +43,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioConsoleHandle> for VirtioCon
             )
             .await?;
 
-        let device = VirtioConsoleDevice::new(
-            input.driver_source,
-            input.guest_memory.clone(),
-            io.0.into_io(),
-        );
+        let device = VirtioConsoleDevice::new(input.driver_source, io.0.into_io());
 
         Ok(device.into())
     }

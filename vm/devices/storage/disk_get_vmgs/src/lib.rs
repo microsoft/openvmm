@@ -405,7 +405,7 @@ mod tests {
             .await
             .unwrap();
         let file_id = FileId::BIOS_NVRAM;
-        let encryption_key = vec![1; 32];
+        let encryption_key = [1; 32];
 
         vmgs.update_encryption_key(&encryption_key, vmgs::EncryptionAlgorithm::AES_GCM)
             .await

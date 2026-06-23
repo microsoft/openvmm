@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Tooling to sync dependencies in OpenVMM "overlay" repos with OpenVMM.
 
 use anyhow::Context;

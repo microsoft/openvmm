@@ -83,6 +83,7 @@ impl IntoPipeline for CustomVmfirmwareigvmDllCli {
                 verbose: ReadVar::from_static(false),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::local_custom_vmfirmwareigvm_dll::Params {

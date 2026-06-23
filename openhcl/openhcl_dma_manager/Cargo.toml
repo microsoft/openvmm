@@ -6,7 +6,7 @@ name = "openhcl_dma_manager"
 rust-version.workspace = true
 edition.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 hcl_mapper.workspace = true
 lower_vtl_permissions_guard.workspace = true

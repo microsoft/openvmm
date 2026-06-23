@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Client driver for VPCI (Virtual PCI) buses and devices.
 //!
 //! This implementation uses the configuration space-based interface for

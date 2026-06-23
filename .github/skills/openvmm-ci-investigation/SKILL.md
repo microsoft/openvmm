@@ -12,7 +12,10 @@ script**. Do not manually query the GitHub API or download artifacts by hand
 ## Step 1: Run the Script
 
 ```bash
-# Investigate a PR by number (ALWAYS use this first)
+# Investigate the current branch's PR (no argument needed)
+python3 repo_support/investigate_ci.py
+
+# Investigate a specific PR by number
 python3 repo_support/investigate_ci.py 2946
 
 # Or by run ID directly
@@ -38,6 +41,29 @@ Read the script's output to identify:
 - Whether it's a build/fmt/clippy failure vs. a test failure
 
 Then use the information to diagnose the issue and suggest fixes.
+
+## Step 3: Diagnose from Logs and Code
+
+**Always try to diagnose the failure from CI logs, test code, and error
+messages first.** Most failures can be understood without local reproduction.
+Read the relevant test source, trace the error through the code, and form
+a hypothesis before considering local repro.
+
+## Step 4: Reproduce Locally (Only If Needed)
+
+If you cannot diagnose the failure from logs alone, **ask the user** whether
+they want to attempt local reproduction before proceeding. Do not
+automatically start building or running tests on the user's machine.
+
+If the user agrees, check whether the failing platform matches the host
+architecture — you can only reproduce tests locally on the same arch. If
+it doesn't match, explain this to the user and continue diagnosing from
+CI logs and test code.
+
+To reproduce locally, load the `vmm-tests` skill for instructions on
+running with `cargo xflowey vmm-tests-run`. Do **not** use
+`cargo nextest run -p vmm_tests` directly — it won't have the required
+artifacts.
 
 ## Reference: Manual Commands
 

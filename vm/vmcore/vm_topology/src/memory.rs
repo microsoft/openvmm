@@ -4,6 +4,7 @@
 //! Tools to the compute guest memory layout.
 
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
@@ -75,6 +76,12 @@ pub enum Error {
     /// Invalid memory size.
     #[error("invalid memory size")]
     BadSize,
+    /// Invalid per-NUMA-node memory size.
+    #[error("invalid NUMA node memory size")]
+    BadNumaSize,
+    /// Empty NUMA memory sizes.
+    #[error("empty NUMA memory sizes")]
+    EmptyNumaSizes,
     /// Invalid MMIO gap configuration.
     #[error("invalid MMIO gap configuration")]
     BadMmioGaps,
@@ -145,6 +152,46 @@ impl MemoryLayout {
         if ram_size == 0 || ram_size & (PAGE_SIZE - 1) != 0 {
             return Err(Error::BadSize);
         }
+        Self::new_with_numa(
+            &[ram_size],
+            mmio_gaps,
+            pci_ecam_gaps,
+            pci_mmio_gaps,
+            vtl2_range,
+        )
+    }
+
+    /// Like [`Self::new()`], but distributes RAM across NUMA nodes according
+    /// to the per-node sizes in `numa_mem_sizes`.
+    ///
+    /// `numa_mem_sizes[i]` is the number of RAM bytes for vnode `i`.
+    /// Each size must be page-aligned and non-zero. The sum of all sizes
+    /// is the total guest RAM.
+    ///
+    /// RAM is placed sequentially around MMIO gaps, filling each node's
+    /// budget in order. When a node's budget is exhausted mid-chunk,
+    /// the chunk is split and the next node continues from that address.
+    pub fn new_with_numa(
+        numa_mem_sizes: &[u64],
+        mmio_gaps: &[MemoryRange],
+        pci_ecam_gaps: &[MemoryRange],
+        pci_mmio_gaps: &[MemoryRange],
+        vtl2_range: Option<MemoryRange>,
+    ) -> Result<Self, Error> {
+        if numa_mem_sizes.is_empty() {
+            return Err(Error::EmptyNumaSizes);
+        }
+
+        for &size in numa_mem_sizes {
+            if size == 0 || size & (PAGE_SIZE - 1) != 0 {
+                return Err(Error::BadNumaSize);
+            }
+        }
+
+        let ram_size: u64 = numa_mem_sizes
+            .iter()
+            .try_fold(0u64, |acc, &s| acc.checked_add(s))
+            .ok_or(Error::BadSize)?;
 
         validate_ranges(mmio_gaps)?;
         validate_ranges(pci_ecam_gaps)?;
@@ -159,26 +206,44 @@ impl MemoryLayout {
         combined_gaps.sort();
         validate_ranges(&combined_gaps)?;
 
+        let available = subtract_ranges(
+            [MemoryRange::new(0..MemoryRange::MAX_ADDRESS)],
+            combined_gaps,
+        );
+
+        // Distribute RAM across NUMA nodes, filling available ranges in order.
         let mut ram = Vec::new();
         let mut remaining = ram_size;
-        let mut remaining_gaps = combined_gaps.iter().cloned();
-        let mut last_end = 0;
+        let mut node_idx = 0;
+        let mut node_remaining = numa_mem_sizes[0];
 
-        while remaining > 0 {
-            let (this, next_end) = if let Some(gap) = remaining_gaps.next() {
-                (remaining.min(gap.start() - last_end), gap.end())
-            } else {
-                (remaining, 0)
-            };
+        for range in available {
+            let range_size = remaining.min(range.len());
+            let mut offset = 0;
 
-            if this > 0 {
+            while offset < range_size {
+                if node_remaining == 0 {
+                    node_idx += 1;
+                    node_remaining = *numa_mem_sizes
+                        .get(node_idx)
+                        .expect("node budget exhausted before all RAM placed");
+                }
+
+                let piece = (range_size - offset).min(node_remaining);
+                let start = range.start() + offset;
                 ram.push(MemoryRangeWithNode {
-                    range: MemoryRange::new(last_end..last_end + this),
-                    vnode: 0,
+                    range: MemoryRange::new(start..start + piece),
+                    vnode: node_idx as u32,
                 });
+                offset += piece;
+                node_remaining -= piece;
             }
-            remaining -= this;
-            last_end = next_end;
+
+            remaining -= range_size;
+
+            if remaining == 0 {
+                break;
+            }
         }
 
         Self::build(
@@ -204,6 +269,37 @@ impl MemoryLayout {
         Self::build(memory.to_vec(), gaps.to_vec(), vec![], vec![], None)
     }
 
+    /// Makes a new memory layout from already-resolved RAM and fixed ranges.
+    ///
+    /// Each individual range must be non-empty, but the lists themselves may
+    /// be empty (e.g. no PCIe root complexes means empty PCI ECAM/MMIO
+    /// vectors). Ranges within each list must be sorted and non-overlapping.
+    /// MMIO gaps may contain empty placeholder ranges to preserve positional
+    /// indexing (e.g. `mmio()[0]` = low, `mmio()[1]` = high); empty entries
+    /// are ignored during validation. The combined layout is also validated
+    /// for overlaps, including the optional VTL2 range.
+    pub fn new_from_resolved_ranges(
+        ram: Vec<MemoryRangeWithNode>,
+        mmio_gaps: Vec<MemoryRange>,
+        pci_ecam_gaps: Vec<MemoryRange>,
+        pci_mmio_gaps: Vec<MemoryRange>,
+        vtl2_range: Option<MemoryRange>,
+    ) -> Result<Self, Error> {
+        validate_ranges_with_metadata(&ram)?;
+        // MMIO gaps may include empty placeholders for positional indexing;
+        // validate only the non-empty entries.
+        let non_empty_mmio: Vec<_> = mmio_gaps
+            .iter()
+            .copied()
+            .filter(|r| !r.is_empty())
+            .collect();
+        validate_ranges(&non_empty_mmio)?;
+        validate_ranges(&pci_ecam_gaps)?;
+        validate_ranges(&pci_mmio_gaps)?;
+
+        Self::build(ram, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, vtl2_range)
+    }
+
     /// Builds the memory layout.
     ///
     /// `ram` must already be known to be sorted.
@@ -214,6 +310,9 @@ impl MemoryLayout {
         pci_mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
+        // Filter out empty placeholder ranges before validation and overlap
+        // checks — they carry no physical meaning and exist only for
+        // positional indexing in the stored mmio vector.
         let mut all_ranges = ram
             .iter()
             .map(|x| &x.range)
@@ -222,6 +321,7 @@ impl MemoryLayout {
             .chain(&pci_ecam)
             .chain(&pci_mmio)
             .copied()
+            .filter(|r| !r.is_empty())
             .collect::<Vec<_>>();
 
         all_ranges.sort();
@@ -281,41 +381,6 @@ impl MemoryLayout {
         self.ram.last().expect("mmio set").range.end()
     }
 
-    /// The bytes of RAM below 4GB.
-    pub fn ram_below_4gb(&self) -> u64 {
-        self.ram
-            .iter()
-            .filter(|r| r.range.end() < FOUR_GB)
-            .map(|r| r.range.len())
-            .sum()
-    }
-
-    /// The bytes of RAM at or above 4GB.
-    pub fn ram_above_4gb(&self) -> u64 {
-        self.ram
-            .iter()
-            .filter(|r| r.range.end() >= FOUR_GB)
-            .map(|r| r.range.len())
-            .sum()
-    }
-
-    /// The bytes of RAM above the high MMIO gap.
-    ///
-    /// Returns None if there aren't exactly 2 MMIO gaps.
-    pub fn ram_above_high_mmio(&self) -> Option<u64> {
-        if self.mmio.len() != 2 {
-            return None;
-        }
-
-        Some(
-            self.ram
-                .iter()
-                .filter(|r| r.range.start() >= self.mmio[1].end())
-                .map(|r| r.range.len())
-                .sum(),
-        )
-    }
-
     /// The ending RAM address below 4GB.
     ///
     /// Returns None if there is no RAM mapped below 4GB.
@@ -333,7 +398,12 @@ impl MemoryLayout {
     /// One past the last byte of RAM, MMIO, PCI ECAM, or PCI MMIO.
     pub fn end_of_layout(&self) -> u64 {
         [
-            self.mmio.last().expect("mmio set").end(),
+            self.mmio
+                .iter()
+                .filter(|r| !r.is_empty())
+                .map(|r| r.end())
+                .max()
+                .unwrap_or(0),
             self.end_of_ram(),
             self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
             self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
@@ -491,6 +561,69 @@ mod tests {
     }
 
     #[test]
+    fn resolved_ranges_constructor() {
+        let ram = vec![
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(2 * GB..3 * GB),
+                vnode: 1,
+            },
+        ];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+        let pci_ecam = vec![MemoryRange::new(4 * GB..4 * GB + MB)];
+        let pci_mmio = vec![MemoryRange::new(5 * GB..6 * GB)];
+
+        let layout = MemoryLayout::new_from_resolved_ranges(
+            ram.clone(),
+            mmio.clone(),
+            pci_ecam.clone(),
+            pci_mmio.clone(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(layout.ram(), ram);
+        assert_eq!(layout.mmio(), mmio);
+        assert_eq!(layout.probe_address(4 * GB), Some(AddressType::PciEcam));
+        assert_eq!(layout.probe_address(5 * GB), Some(AddressType::PciMmio));
+    }
+
+    #[test]
+    fn resolved_ranges_reject_overlap_with_fixed_ranges() {
+        let ram = vec![MemoryRangeWithNode {
+            range: MemoryRange::new(0..2 * GB),
+            vnode: 0,
+        }];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+
+        assert!(MemoryLayout::new_from_resolved_ranges(ram, mmio, vec![], vec![], None).is_err());
+    }
+
+    #[test]
+    fn resolved_ranges_validate_vtl2_against_ram_end() {
+        let ram = vec![
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(3 * GB..4 * GB),
+                vnode: 0,
+            },
+        ];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+        let vtl2_range = MemoryRange::new(2 * GB..2 * GB + MB);
+
+        assert!(matches!(
+            MemoryLayout::new_from_resolved_ranges(ram, mmio, vec![], vec![], Some(vtl2_range)),
+            Err(Error::Vtl2RangeBeforeEndOfRam)
+        ));
+    }
+
+    #[test]
     fn pci_ranges() {
         let mmio = &[MemoryRange::new(3 * GB..4 * GB)];
         let pci_ecam = &[MemoryRange::new(2 * TB - GB..2 * TB)];
@@ -572,5 +705,101 @@ mod tests {
         assert_eq!(layout.probe_address(TB + 2 * GB), None);
         assert_eq!(layout.probe_address(TB + 3 * GB), None);
         assert_eq!(layout.probe_address(4 * TB), None);
+    }
+
+    #[test]
+    fn numa_two_nodes_even_split() {
+        // 4 GB total, 2 nodes of 2 GB each, MMIO gap at 2-3 GB.
+        let mmio = &[MemoryRange::new(2 * GB..3 * GB)];
+        let layout = MemoryLayout::new_with_numa(&[2 * GB, 2 * GB], mmio, &[], &[], None).unwrap();
+        assert_eq!(
+            layout.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..2 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(3 * GB..5 * GB),
+                    vnode: 1,
+                },
+            ]
+        );
+        assert_eq!(layout.ram_size(), 4 * GB);
+    }
+
+    #[test]
+    fn numa_two_nodes_mid_chunk_split() {
+        // 4 GB total, 2 nodes of 2 GB each, MMIO gap at 3-4 GB.
+        // Node 0's 2 GB fits entirely below the gap; node 1 continues above.
+        // But the first chunk is 3 GB, so node 0 takes 2 GB and node 1
+        // takes the remaining 1 GB of that chunk, plus 1 GB above the gap.
+        let mmio = &[MemoryRange::new(3 * GB..4 * GB)];
+        let layout = MemoryLayout::new_with_numa(&[2 * GB, 2 * GB], mmio, &[], &[], None).unwrap();
+        assert_eq!(
+            layout.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..2 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(2 * GB..3 * GB),
+                    vnode: 1,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(4 * GB..5 * GB),
+                    vnode: 1,
+                },
+            ]
+        );
+        assert_eq!(layout.ram_size(), 4 * GB);
+    }
+
+    #[test]
+    fn numa_three_nodes() {
+        // 3 GB total, 3 nodes of 1 GB each, no gaps.
+        let layout = MemoryLayout::new_with_numa(&[GB, GB, GB], &[], &[], &[], None).unwrap();
+        assert_eq!(
+            layout.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(GB..2 * GB),
+                    vnode: 1,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(2 * GB..3 * GB),
+                    vnode: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn numa_single_node_matches_new() {
+        // Single node should produce the same layout as new().
+        let mmio = &[
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..4 * GB),
+        ];
+        let layout_new = MemoryLayout::new(TB, mmio, &[], &[], None).unwrap();
+        let layout_numa = MemoryLayout::new_with_numa(&[TB], mmio, &[], &[], None).unwrap();
+        assert_eq!(layout_new.ram(), layout_numa.ram());
+    }
+
+    #[test]
+    fn numa_bad_inputs() {
+        // Empty sizes.
+        MemoryLayout::new_with_numa(&[], &[], &[], &[], None).unwrap_err();
+        // Non-page-aligned size.
+        MemoryLayout::new_with_numa(&[GB + 1], &[], &[], &[], None).unwrap_err();
+        // Zero size.
+        MemoryLayout::new_with_numa(&[0], &[], &[], &[], None).unwrap_err();
+        // Mixed: one valid, one zero.
+        MemoryLayout::new_with_numa(&[GB, 0], &[], &[], &[], None).unwrap_err();
     }
 }

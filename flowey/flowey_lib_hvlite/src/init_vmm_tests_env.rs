@@ -4,14 +4,14 @@
 //! Setup the environment variables and directory structure that the VMM tests
 //! require to run.
 
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
-use crate::download_uefi_mu_msvm::MuMsvmArch;
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 flowey_request! {
     pub struct Request {
@@ -28,6 +28,8 @@ flowey_request! {
 
         /// Register an openvmm binary
         pub register_openvmm: Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
+        /// Register an openvmm_vhost binary (Linux only)
+        pub register_openvmm_vhost: Option<ReadVar<crate::build_openvmm_vhost::OpenvmmVhostOutput>>,
         /// Register a windows pipette binary
         pub register_pipette_windows: Option<ReadVar<crate::build_pipette::PipetteOutput>>,
         /// Register a linux-musl pipette binary
@@ -36,14 +38,7 @@ flowey_request! {
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
-        pub register_openhcl_igvm_files: Option<
-            ReadVar<
-                Vec<(
-                    OpenhclIgvmRecipe,
-                    crate::run_igvmfilegen::IgvmOutput,
-                )>,
-            >,
-        >,
+        pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -52,6 +47,8 @@ flowey_request! {
         pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
         /// Register a vmgstool binary
         pub register_vmgstool: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
+        /// Register a vmgstool-dev binary
+        pub register_vmgstool_dev: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
         /// Register a Windows tpm_guest_tests binary
         pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Linux tpm_guest_tests binary
@@ -66,6 +63,11 @@ flowey_request! {
         pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
+        /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
+        /// Should be true in CI where all images are pre-downloaded.
+        pub disable_remote_artifacts: bool,
+        /// Whether to reuse VHDs created with prep_steps
+        pub reuse_prepped_vhds: bool,
     }
 }
 
@@ -76,6 +78,9 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -85,6 +90,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target,
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
@@ -92,6 +98,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
@@ -101,36 +108,52 @@ impl SimpleFlowNode for Node {
             get_env,
             release_igvm_files,
             use_relative_paths,
+            disable_remote_artifacts,
+            reuse_prepped_vhds,
         } = request;
 
-        let openvmm_deps_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => OpenvmmDepsArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => OpenvmmDepsArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
+        let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
 
-        let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
-        });
+        let test_linux_initrd =
+            ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                arch,
+                crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                v,
+            )
         });
+        let test_linux_bzimage =
+            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage
+                .is_available_for(arch)
+                .then(|| {
+                    ctx.reqv(|v| {
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            arch,
+                            crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                            v,
+                        )
+                    })
+                });
 
-        let mu_msvm_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => MuMsvmArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => MuMsvmArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
-        let uefi = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-            arch: mu_msvm_arch,
-            msvm_fd: v,
-        });
+        let uefi =
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
+
+        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
+
+        // In CI, unstable test failures are non-gating and should be reported as
+        // passing (with a warning). Outside of CI, unstable test failures are
+        // reported as failures unless the user explicitly opts in.
+        let ignore_unstable_failures = !matches!(ctx.backend(), FlowBackend::Local);
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
+            let openvmm_vhost = register_openvmm_vhost.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
@@ -138,6 +161,7 @@ impl SimpleFlowNode for Node {
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let vmgstool = register_vmgstool.claim(ctx);
+            let vmgstool_dev = register_vmgstool_dev.claim(ctx);
             let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
@@ -145,11 +169,14 @@ impl SimpleFlowNode for Node {
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
+            let test_linux_bzimage = test_linux_bzimage.claim(ctx);
             let uefi = uefi.claim(ctx);
+            let virtio_win_dir = virtio_win_dir.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
+                let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
                 let uefi = rt.read(uefi);
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
@@ -177,7 +204,7 @@ impl SimpleFlowNode for Node {
                     if windows_via_wsl2 {
                         Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
-                        path.absolute()
+                        std::path::absolute(path)
                             .with_context(|| format!("invalid path {}", path.display()))
                     }
                 };
@@ -246,6 +273,18 @@ impl SimpleFlowNode for Node {
                     );
                 }
 
+                if disable_remote_artifacts {
+                    env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
+                }
+
+                if reuse_prepped_vhds {
+                    env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
+                }
+
+                if ignore_unstable_failures {
+                    env.insert("PETRI_IGNORE_UNSTABLE_FAILURES".into(), "1".into());
+                }
+
                 if let Some(openvmm) = openvmm {
                     // TODO OSS: update filenames to use openvmm naming (requires petri updates)
                     match rt.read(openvmm) {
@@ -258,6 +297,14 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(openvmm_vhost) = openvmm_vhost {
+                    let crate::build_openvmm_vhost::OpenvmmVhostOutput { bin, dbg: _ } =
+                        rt.read(openvmm_vhost);
+                    let dst = test_content_dir.join("openvmm_vhost");
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
                 }
 
                 if let Some(pipette_win) = pipette_win {
@@ -332,6 +379,19 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
+                if let Some(vmgstool_dev) = vmgstool_dev {
+                    match rt.read(vmgstool_dev) {
+                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe, .. } => {
+                            fs_err::copy(exe, test_content_dir.join("vmgstool-dev.exe"))?;
+                        }
+                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin, .. } => {
+                            let dst = test_content_dir.join("vmgstool-dev");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
+                        }
+                    }
+                }
+
                 if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {
                     let TpmGuestTestsOutput::WindowsBin { exe, .. } =
                         rt.read(tpm_guest_tests_windows)
@@ -357,27 +417,16 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 
-                if let Some(openhcl_igvm_files) = openhcl_igvm_files {
-                    for (recipe, openhcl_igvm) in rt.read(openhcl_igvm_files) {
-                        let crate::run_igvmfilegen::IgvmOutput { igvm_bin, .. } = openhcl_igvm;
-
-                        let filename = match recipe {
-                            OpenhclIgvmRecipe::X64 => "openhcl-x64.bin",
-                            OpenhclIgvmRecipe::X64Devkern => "openhcl-x64-devkern.bin",
-                            OpenhclIgvmRecipe::X64Cvm => "openhcl-x64-cvm.bin",
-                            OpenhclIgvmRecipe::X64TestLinuxDirect => {
-                                "openhcl-x64-test-linux-direct.bin"
-                            }
-                            OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64.bin",
-                            OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-devkern.bin",
-                            _ => {
-                                log::info!("petri doesn't support this OpenHCL recipe: {recipe:?}");
-                                continue;
-                            }
-                        };
-
-                        fs_err::copy(igvm_bin, test_content_dir.join(filename))?;
-                    }
+                for openhcl_igvm in rt.read(openhcl_igvm_files) {
+                    let igvm_bin = openhcl_igvm.igvm_bin();
+                    if let Some(recipe) = openhcl_igvm.recipe() {
+                        fs_err::copy(
+                            igvm_bin,
+                            test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
+                        )?;
+                    } else {
+                        log::warn!("petri doesn't support custom OpenHCL files");
+                    };
                 }
 
                 if let Some(release_igvm_files) = release_igvm_files_dir {
@@ -399,9 +448,9 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
-                    OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),
-                    OpenvmmDepsArch::Aarch64 => ("aarch64", "Image"),
+                let (arch_dir, kernel_file_name) = match arch {
+                    CommonArch::X86_64 => ("x64", "vmlinux"),
+                    CommonArch::Aarch64 => ("aarch64", "Image"),
                 };
                 fs_err::create_dir_all(test_content_dir.join(arch_dir))?;
                 fs_err::copy(
@@ -412,26 +461,30 @@ impl SimpleFlowNode for Node {
                     test_linux_kernel,
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
+                if let Some(bzimage_path) = test_linux_bzimage {
+                    fs_err::copy(
+                        bzimage_path,
+                        test_content_dir.join(arch_dir).join("bzImage"),
+                    )?;
+                }
 
-                let uefi_dir = test_content_dir
-                    .join(format!(
-                        "hyperv.uefi.mscoreuefi.{}.RELEASE",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "x64",
-                        }
-                    ))
-                    .join(format!(
-                        "Msvm{}",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "X64",
-                        }
-                    ))
-                    .join("RELEASE_VS2022")
-                    .join("FV");
+                let uefi_dir = test_content_dir.join(match arch {
+                    CommonArch::Aarch64 => {
+                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                    }
+                    CommonArch::X86_64 => {
+                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                    }
+                });
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+
+                {
+                    let src = rt.read(virtio_win_dir);
+                    let dst = test_content_dir.join("virtio-win");
+                    let _ = fs_err::remove_dir_all(&dst);
+                    flowey_lib_common::_util::copy_dir_all(&src, &dst)?;
+                }
 
                 // debug log the current contents of the dir
                 log::debug!("final folder content: {}", test_content_dir.display());

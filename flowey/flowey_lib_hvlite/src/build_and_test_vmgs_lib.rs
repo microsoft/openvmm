@@ -5,9 +5,9 @@
 //!
 //! Tests are windows only at the moment.
 
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use crate::run_cargo_build::CargoBuildOutput;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 

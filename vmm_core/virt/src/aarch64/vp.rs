@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::IsolationType;
 use crate::aarch64::Aarch64PartitionCapabilities;
 use crate::state::HvRegisterState;
 use crate::state::StateElement;
@@ -370,19 +371,38 @@ impl StateElement<Aarch64PartitionCapabilities, Aarch64VpInfo> for SystemRegiste
         true
     }
 
-    fn at_reset(_caps: &Aarch64PartitionCapabilities, _vp: &Aarch64VpInfo) -> Self {
-        Self {
-            // TODO-aarch64: the spec specifies additional 1 bits at reset, but
-            // mshv doesn't seem to match. Investigate.
-            sctlr_el1: u64::from(
+    fn at_reset(caps: &Aarch64PartitionCapabilities, _vp: &Aarch64VpInfo) -> Self {
+        // ITD and SED are RES1 when aarch32 is not supported. When aarch32 is
+        // supported, they reset to 0.
+        let no_aarch32 = !caps.supports_aarch32_el0;
+        let sctlr_el1 = match caps.isolation {
+            IsolationType::Cca => u64::from(
+                SctlrEl1::new()
+                    .with_sa(true)
+                    .with_sa0(true)
+                    .with_cp15ben(true)
+                    .with_n_aa(true)
+                    .with_eos(true)
+                    .with_n_twi(true)
+                    .with_n_twe(true)
+                    .with_eis(true)
+                    .with_span(true),
+            ),
+            _ => u64::from(
                 SctlrEl1::new()
                     .with_eos(true)
                     .with_tscxt(true)
                     .with_eis(true)
                     .with_span(true)
                     .with_n_tlsmd(true)
-                    .with_lsmaoe(true),
+                    .with_lsmaoe(true)
+                    .with_itd(no_aarch32)
+                    .with_sed(no_aarch32),
             ),
+        };
+
+        Self {
+            sctlr_el1,
             ttbr0_el1: 0,
             ttbr1_el1: 0,
             tcr_el1: 0,

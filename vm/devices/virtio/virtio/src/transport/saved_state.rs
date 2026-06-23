@@ -50,8 +50,6 @@ pub mod state {
         pub queue_select: u32,
         #[mesh(6)]
         pub config_generation: u32,
-        #[mesh(7)]
-        pub interrupt_status: u32,
     }
 }
 
@@ -90,11 +88,11 @@ pub(crate) fn validate_restore(
 ) -> Result<(), RestoreError> {
     // Validate feature banks.
     let saved_banks = &common.driver_feature_banks;
-    if saved_banks.len() > device_features.len() {
+    if saved_banks.len() > 2 {
         return Err(RestoreError::InvalidSavedState(
             VirtioRestoreError::TooManyFeatureBanks {
                 saved: saved_banks.len(),
-                device: device_features.len(),
+                device: 2,
             }
             .into(),
         ));

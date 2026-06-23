@@ -13,8 +13,13 @@ use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 
-/// The port used for the pipette connection over AF_VSOCK.
-pub const PIPETTE_VSOCK_PORT: u32 = 0x1337;
+/// The port used for the pipette connection (AF_VSOCK or TCP).
+pub const PIPETTE_PORT: u32 = 0x1337;
+
+/// Marker line printed by pipette once its TCP listener is fully configured
+/// and ready to accept a connection. The host scans the guest serial console
+/// for this exact string before attempting to connect.
+pub const PIPETTE_READY_MARKER: &str = "PIPETTE READY";
 
 /// The bootstrap message sent from the agent to the host.
 #[derive(MeshPayload)]
@@ -51,6 +56,8 @@ pub enum PipetteRequest {
     Crash(FailableRpc<(), ()>),
     /// Crash the kernel.
     KernelCrash(FailableRpc<(), ()>),
+    /// Mounts a filesystem (Linux only).
+    Mount(FailableRpc<MountRequest, ()>),
 }
 
 /// A request to execute a command inside the guest.
@@ -72,6 +79,17 @@ pub struct ExecuteRequest {
     pub env: Vec<EnvPair>,
     /// Whether to clear the environment before setting the new environment.
     pub clear_env: bool,
+    /// If set, chroot into this directory before exec (Linux only).
+    pub chroot: Option<String>,
+    /// If true, allocate a PTY for the process. Stdin, stdout, and stderr
+    /// will all be connected to the PTY secondary. The primary side is
+    /// piped back through the stdout pipe. This enables terminal features
+    /// like signal propagation (Ctrl-C) and line editing.
+    pub allocate_pty: bool,
+    /// If true, redirect stderr to the stdout pipe. The stderr pipe
+    /// (if any) will receive no data. This is useful when callers want
+    /// interleaved stdout+stderr without needing a PTY.
+    pub combine_stderr: bool,
 }
 
 impl std::fmt::Debug for ExecuteRequest {
@@ -85,6 +103,9 @@ impl std::fmt::Debug for ExecuteRequest {
             .field("stderr", &self.stderr.is_some())
             .field("env", &self.env)
             .field("clear_env", &self.clear_env)
+            .field("chroot", &self.chroot)
+            .field("allocate_pty", &self.allocate_pty)
+            .field("combine_stderr", &self.combine_stderr)
             .finish()
     }
 }
@@ -163,6 +184,21 @@ pub struct WriteFileRequest {
     pub path: String,
     /// The receiver of the contents of the file.
     pub receiver: ReadPipe,
+}
+
+/// A request to mount a filesystem.
+#[derive(MeshPayload)]
+pub struct MountRequest {
+    /// The source device or filesystem (e.g. "/dev/vda").
+    pub source: String,
+    /// The target mount point (e.g. "/perf").
+    pub target: String,
+    /// The filesystem type (e.g. "erofs").
+    pub fstype: String,
+    /// Mount flags (e.g. `libc::MS_RDONLY`).
+    pub flags: u64,
+    /// Create the target directory if it doesn't exist.
+    pub mkdir_target: bool,
 }
 
 /// A file that the guest client wishes to be logged on the host for diagnostic purposes.

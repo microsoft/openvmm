@@ -12,7 +12,6 @@ guestmem.workspace = true
 vmcore.workspace = true
 virt.workspace = true
 memory_range = { workspace = true, features = ["mesh"] }
-vm_topology = { workspace = true, features = ["mesh"] }
 
 inspect = { workspace = true, features = ["defer"] }
 mesh.workspace = true

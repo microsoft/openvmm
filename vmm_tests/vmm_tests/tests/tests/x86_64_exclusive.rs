@@ -35,6 +35,19 @@ async fn apicid_offset(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<()
     Ok(())
 }
 
+/// Validate that we can boot a Linux guest from a compressed bzImage kernel.
+#[openvmm_test(linux_direct_bzimage_x64)]
+async fn boot_bzimage(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config.run().await?;
+
+    agent.ping().await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
 /// Boot Linux with legacy xapic with 2 VPs and apic_ids of 253 and 254, the maximum.
 #[openvmm_test(linux_direct_x64)]
 async fn legacy_xapic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {

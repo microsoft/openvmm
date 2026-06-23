@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Virtual PCI relay
 //!
 //! This module provides a virtual PCI relay for the OpenHCL paravisor. It
@@ -339,12 +341,15 @@ impl VpciRelay {
                     async |mmio| {
                         let bus = vpci::bus::VpciBus::new(
                             &self.driver_source,
-                            instance_id,
+                            vpci::bus::VpciBusConfig {
+                                instance_id,
+                                vtom: self.vtom,
+                                vnode: None,
+                            },
                             device,
                             mmio,
                             self.vmbus.as_ref(),
                             interrupt_mapper,
-                            self.vtom,
                         )
                         .await?;
 
