@@ -337,7 +337,7 @@ pub struct VmArg {
     )]
     #[cfg_attr(
         windows,
-        doc = "* NAME_OR_GUID - Either a Hyper-V VM name or GUID, or a path as in vsock:PATH"
+        doc = "* NAME_OR_GUID_OR_PATH - Either a Hyper-V VM name or GUID, or a path as in vsock:PATH"
     )]
     #[cfg_attr(not(windows), doc = "* PATH - A path as in vsock:PATH")]
     #[clap(name = "VM")]
@@ -372,8 +372,6 @@ impl FromStr for VmId {
                     return Ok(Self::HyperVId(guid));
                 }
 
-                // If the hyperv: prefix was explicitly provided, always treat as
-                // a Hyper-V name (preserving disambiguation semantics).
                 if had_prefix || !pal::windows::fs::is_unix_socket(value.as_ref()).unwrap_or(false)
                 {
                     return Ok(Self::HyperV(value.to_owned()));

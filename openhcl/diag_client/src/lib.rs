@@ -111,19 +111,28 @@ pub mod hyperv {
         Ok(socket.convert().into_inner())
     }
 
-    fn query_vm_com_port(script: &str) -> anyhow::Result<String> {
+    fn query_vm_com_port(port: ComPortAccessInfo<'_>) -> anyhow::Result<String> {
+        let script = match port {
+            ComPortAccessInfo::NameAndPortNumber(vm, num) => {
+                format!(r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#)
+            }
+            ComPortAccessInfo::IdAndPortNumber(id, num) => {
+                format!(
+                    r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#
+                )
+            }
+            ComPortAccessInfo::PortPipePath(_) => unreachable!(),
+        };
+
         let output = Command::new("powershell.exe")
             .arg("-NoProfile")
-            .arg(script)
+            .arg(&script)
             .output()
             .context("failed to query VM com port")?;
 
         if !output.status.success() {
             let _ = std::io::stderr().write_all(&output.stderr);
-            anyhow::bail!(
-                "failed to query VM com port: exit status {}",
-                output.status.code().unwrap()
-            );
+            anyhow::bail!("failed to query VM com port: exit status {}", output.status);
         }
         Ok(String::from_utf8(output.stdout)?)
     }
@@ -141,13 +150,8 @@ pub mod hyperv {
         port: ComPortAccessInfo<'_>,
     ) -> anyhow::Result<File> {
         let path = match port {
-            ComPortAccessInfo::NameAndPortNumber(vm, num) => query_vm_com_port(&format!(
-                r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#,
-            ))?,
-            ComPortAccessInfo::IdAndPortNumber(id, num) => query_vm_com_port(&format!(
-                r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#,
-            ))?,
             ComPortAccessInfo::PortPipePath(path) => path.to_owned(),
+            port => query_vm_com_port(port)?,
         };
 
         let path = path.trim();
