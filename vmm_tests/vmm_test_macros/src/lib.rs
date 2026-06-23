@@ -65,6 +65,7 @@ enum Firmware {
     OpenhclLinuxDirect,
     OpenhclPcat(PcatGuest),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
+    UefiIgvmCustom(UefiGuest),
 }
 
 #[derive(Default)]
@@ -144,6 +145,7 @@ impl ResolvedConfig {
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
             Firmware::OpenhclPcat(..) => "openhcl_pcat",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
+            Firmware::UefiIgvmCustom(_) => "uefi_igvm_custom",
         };
 
         let guest_prefix = match &self.firmware {
@@ -151,7 +153,9 @@ impl ResolvedConfig {
                 None
             }
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
-            Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
+            Firmware::Uefi(guest)
+            | Firmware::OpenhclUefi(_, guest)
+            | Firmware::UefiIgvmCustom(guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
@@ -160,7 +164,8 @@ impl ResolvedConfig {
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
-            | Firmware::OpenhclPcat(_) => None,
+            | Firmware::OpenhclPcat(_)
+            | Firmware::UefiIgvmCustom(_) => None,
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -261,6 +266,9 @@ impl ToTokens for FirmwareAndArch {
                     None => quote!(None),
                 };
                 quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation))
+            }
+            Firmware::UefiIgvmCustom(guest) => {
+                quote!(::petri::Firmware::uefi_igvm_custom(resolver, #guest))
             }
         })
     }
@@ -550,6 +558,10 @@ impl Parse for Config {
             "openhcl_uefi_x64" => (
                 MachineArch::X86_64,
                 Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
+            ),
+            "uefi_igvm_custom_x64" => (
+                MachineArch::X86_64,
+                Firmware::UefiIgvmCustom(parse_uefi_guest(input)?),
             ),
             "openhcl_uefi_aarch64" => (
                 MachineArch::Aarch64,

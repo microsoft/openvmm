@@ -217,6 +217,8 @@ pub mod artifacts {
             LATEST_STANDARD_DEV_KERNEL_X64,
             /// OpenHCL IGVM (for CVM)
             LATEST_CVM_X64,
+            /// UEFI IGVM (x64 manifest override)
+            LATEST_UEFI_CUSTOM_X64,
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
@@ -248,6 +250,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_CVM_X64 {}
+
+        impl IsLoadable for LATEST_UEFI_CUSTOM_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
 
         impl IsLoadable for LATEST_LINUX_DIRECT_TEST_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
