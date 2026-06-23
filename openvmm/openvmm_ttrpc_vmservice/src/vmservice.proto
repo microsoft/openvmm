@@ -317,8 +317,8 @@ message NumaNode {
     // Memory for this node. Absent => CPU-only / device-only node.
     optional NodeMemoryConfig memory = 1;
     // VP assignment for this node:
-    //   - absent             => VPs assigned by topology (sockets round-robined
-    //                           across CPU-bearing nodes)
+    //   - absent             => VPs assigned by topology (sockets distributed
+    //                           round-robin across CPU-bearing nodes)
     //   - present, empty     => CPU-less node (no VPs; may coexist with
     //                           topology-assigned nodes)
     //   - present, non-empty => exactly these VP indices
@@ -444,6 +444,9 @@ message VMConfig {
         UEFI uefi = 6;
     }
     WindowsOptions windows_options = 7;
+    // Field 8 was previously map<string, string> extra_data.
+    reserved 8;
+    reserved "extra_data";
     HVSocketConfig hvsocket_config = 9;
 
     // Virtual NUMA topology. Mutually exclusive with a flat
