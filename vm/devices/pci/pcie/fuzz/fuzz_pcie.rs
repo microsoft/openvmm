@@ -280,11 +280,17 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
         Topology::WithSwitch => {
             let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
                 name: "sw0".into(),
-                downstream_port_count: 2,
-                hotplug: false,
+                downstream_ports: (0..NUM_PORTS)
+                    .map(|i| GenericPciePortDefinition {
+                        name: format!("dsp{i}").into(),
+                        devfn: None,
+                        hotplug: false,
+                        settings: PciePortSettings::default(),
+                    })
+                    .collect(),
                 msi_target: MsiTarget::disconnected(),
-                dsp_settings: PciePortSettings::default(),
-            });
+            })
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
             rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         }

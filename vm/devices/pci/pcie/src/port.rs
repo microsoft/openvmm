@@ -79,8 +79,8 @@ pub struct GenericPciePortDefinition {
     /// When `None`, the port is assigned the lowest available devfn at or
     /// above the builder's first-port device number. Ports are assigned in
     /// order; an explicit devfn that collides with an already-assigned port
-    /// is an error. Only honored for root-complex root ports; switch
-    /// downstream ports are always packed sequentially.
+    /// is an error. Honored for both root-complex root ports and switch
+    /// downstream ports.
     pub devfn: Option<u8>,
     /// Whether hotplug is enabled for this port.
     pub hotplug: bool,

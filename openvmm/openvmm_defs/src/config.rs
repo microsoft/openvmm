@@ -243,8 +243,8 @@ pub struct PciePortConfig {
     /// When `None`, the port is assigned the lowest available devfn. Ports are
     /// assigned in order, so an explicit devfn that collides with a
     /// previously-assigned port (including one assigned automatically) is an
-    /// error. Only honored for root-complex root ports; switch downstream ports
-    /// are always packed sequentially.
+    /// error. Honored for both root-complex root ports and switch downstream
+    /// ports.
     pub devfn: Option<u8>,
     /// Enables PCIe hotplug capabilities for this port.
     pub hotplug: bool,
