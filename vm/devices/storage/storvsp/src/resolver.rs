@@ -28,6 +28,9 @@ use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
+
+/// Default I/O queue depth when not explicitly configured.
+const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// The resolver for [`ScsiControllerHandle`].
@@ -69,7 +72,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, ScsiControllerHandle> for Storv
             &controller,
             resource.instance_id,
             resource.max_sub_channel_count,
-            resource.io_queue_depth.unwrap_or(256),
+            resource.io_queue_depth.unwrap_or(DEFAULT_IO_QUEUE_DEPTH),
         );
 
         for ScsiDeviceAndPath { path, device } in resource.devices {
@@ -200,7 +203,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, StorvspIdeDeviceHandle> for Sto
             resource.channel_id,
             resource.device_id,
             ScsiControllerDisk::new(disk.0),
-            resource.io_queue_depth.unwrap_or(256),
+            resource.io_queue_depth.unwrap_or(DEFAULT_IO_QUEUE_DEPTH),
         );
 
         Ok(device.into())
