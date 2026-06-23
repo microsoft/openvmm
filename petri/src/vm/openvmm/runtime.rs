@@ -665,7 +665,7 @@ impl PetriVmInner {
                         Err(e) => {
                             tracing::warn!(
                                 error = e.as_ref() as &dyn std::error::Error,
-                                "pipette TCP handshake failed, retrying"
+                                "pipette TCP connection failed, retrying"
                             );
                         }
                     }
