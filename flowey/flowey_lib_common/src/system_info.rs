@@ -51,16 +51,19 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
     let cpu_list = sys
         .cpus()
         .iter()
-        .map(|cpu| (cpu.brand(), cpu.frequency()))
+        .map(|cpu| (cpu.vendor_id(), cpu.brand(), cpu.frequency()))
         .collect::<Vec<_>>();
 
     let mut cpus = BTreeMap::new();
-    for cpu in cpu_list {
-        *cpus.entry(cpu).or_insert(0usize) += 1;
+    for (vendor, name, freq) in cpu_list {
+        let (count, freq_sum) = cpus.entry((vendor, name)).or_insert((0u64, 0u64));
+        *count += 1;
+        *freq_sum += freq;
     }
 
-    for ((brand, frequency), count) in cpus {
-        log::info!("CPU: {brand} @ {frequency} MHz × {count}");
+    for ((vendor, name), (count, freq_sum)) in cpus {
+        let avg_freq = freq_sum / count;
+        log::info!("CPU: {vendor} [{name}] @ {avg_freq} MHz × {count}");
     }
 
     let os_info = [
