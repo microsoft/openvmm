@@ -1713,7 +1713,8 @@ fn test_reserved_channel_close_response_after_unload() {
     env.gpadl(1, 10);
     env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
 
-    env.open_reserved(1, 1, VMBUS_SINT.into());
+    const RESERVED_SINT: u32 = 5;
+    env.open_reserved(1, 1, RESERVED_SINT);
     env.c().open_complete(offer_id1, 0);
 
     // Unload while the reserved channel is still open.
@@ -1723,7 +1724,7 @@ fn test_reserved_channel_close_response_after_unload() {
     env.notifier.messages.clear();
 
     // Close the reserved channel while disconnected and complete the close.
-    env.close_reserved(1, 4, VMBUS_SINT.into());
+    env.close_reserved(1, 4, RESERVED_SINT);
     env.c().close_complete(offer_id1);
 
     // A CloseReservedChannelResponse should still be sent to the reserved
@@ -1736,7 +1737,7 @@ fn test_reserved_channel_close_response_after_unload() {
             offer_id1,
             ConnectionTarget {
                 vp: 4,
-                sint: VMBUS_SINT,
+                sint: RESERVED_SINT as u8,
             },
         ),
     );
