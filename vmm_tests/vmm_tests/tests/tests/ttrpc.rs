@@ -506,26 +506,27 @@ fn test_ttrpc_consomme_port_forward(
         // Build a `ModifyResource` request that binds/unbinds host_port ->
         // GUEST_PORT depending on the modify type (Update = bind, Remove =
         // unbind).
-        let modify_request = |modify_type: vmservice::ModifyType| vmservice::ModifyResourceRequest {
-            r#type: modify_type as i32,
-            resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
-                vmservice::NicConfig {
-                    nic_id: nic_id.clone(),
-                    mac_address: mac.clone(),
-                    backend: Some(vmservice::nic_config::Backend::Consomme(
-                        vmservice::ConsommeBackend {
-                            cidr: String::new(),
-                            ports: vec![vmservice::PortConfig {
-                                host_port: host_port as u32,
-                                guest_port: GUEST_PORT as u32,
-                                protocol: vmservice::IpProtocol::Tcp as i32,
-                            }],
-                        },
-                    )),
-                    ..Default::default()
-                },
-            )),
-        };
+        let modify_request =
+            |modify_type: vmservice::ModifyType| vmservice::ModifyResourceRequest {
+                r#type: modify_type as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                    vmservice::NicConfig {
+                        nic_id: nic_id.clone(),
+                        mac_address: mac.clone(),
+                        backend: Some(vmservice::nic_config::Backend::Consomme(
+                            vmservice::ConsommeBackend {
+                                cidr: String::new(),
+                                ports: vec![vmservice::PortConfig {
+                                    host_port: host_port as u32,
+                                    guest_port: GUEST_PORT as u32,
+                                    protocol: vmservice::IpProtocol::Tcp as i32,
+                                }],
+                            },
+                        )),
+                        ..Default::default()
+                    },
+                )),
+            };
 
         // Bind the port. This completes once the guest NIC is up and consomme
         // has applied the forward.
@@ -558,7 +559,11 @@ fn test_ttrpc_consomme_port_forward(
                 .await
             {
                 Ok(Ok(buf)) if buf == BANNER => {
-                    tracing::info!(attempt, host_port, "received guest banner over forwarded port");
+                    tracing::info!(
+                        attempt,
+                        host_port,
+                        "received guest banner over forwarded port"
+                    );
                     got_banner = true;
                     break;
                 }
