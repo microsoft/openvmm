@@ -189,8 +189,6 @@ async fn run_via_pipette(
         .context("failed to connect to pipette")?;
 
     tracing::info!("connected to pipette");
-    client.ping().await.context("ping failed")?;
-    tracing::info!("ping OK");
 
     // Set up VFIO devices before running the guest command.
     let vfio_env = qemu::setup_vfio_devices(&client, &config.profile.devices).await?;
