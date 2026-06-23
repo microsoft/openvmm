@@ -585,14 +585,11 @@ impl VfioAssignedPciDevice {
     }
 
     /// Tear down VFIO MSI-X eventfd mapping when the guest disables MSI-X.
+    ///
+    /// Callers must only invoke this when MSI-X is currently enabled (the
+    /// kernel returns EINVAL otherwise).
     fn msix_disable(&mut self) {
-        let count = self
-            .msix
-            .as_ref()
-            .expect("msix must be present")
-            .vector_count;
-
-        if let Err(e) = self.vfio_device.device.unmap_msix(0, count as u32) {
+        if let Err(e) = self.vfio_device.device.unmap_msix() {
             tracing::warn!(
                 error = e.as_ref() as &dyn std::error::Error,
                 pci_id = self.pci_id.as_str(),

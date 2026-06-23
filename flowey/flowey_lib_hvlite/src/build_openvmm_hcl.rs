@@ -144,12 +144,11 @@ impl FlowNode for Node {
             // Forbid cc-rs from compiling anything for the openvmm_hcl build.
             // Every C library it links comes prebuilt out of the openvmm-deps
             // sdk sysroot, so a build script reaching for cc-rs is a bug.
-            // TODO: Soon
-            // let extra_env = Some(ReadVar::from_static(
-            //     [("CC_FORCE_DISABLE".to_string(), "1".to_string())]
-            //         .into_iter()
-            //         .collect(),
-            // ));
+            let extra_env = Some(ReadVar::from_static(
+                [("CC_FORCE_DISABLE".to_string(), "1".to_string())]
+                    .into_iter()
+                    .collect(),
+            ));
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
@@ -167,7 +166,7 @@ impl FlowNode for Node {
                 features: CargoFeatureSet::Specific(features),
                 target,
                 no_split_dbg_info,
-                extra_env: None,
+                extra_env,
                 pre_build_deps,
                 output: v,
             });

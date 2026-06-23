@@ -66,8 +66,7 @@ fn zigzag(n: i64) -> u64 {
 
 /// Reverses the zigzag encoding.
 fn unzigzag(n: u64) -> i64 {
-    let n = n as i64;
-    ((n << 63) >> 63) ^ (n >> 1)
+    ((n >> 1) as i64) ^ -((n & 1) as i64)
 }
 
 /// The protobuf wire type.
@@ -987,6 +986,8 @@ mod tests {
             (-2, 3),
             (2147483647, 4294967294),
             (-2147483648, 4294967295),
+            (i64::MAX, u64::MAX - 1),
+            (i64::MIN, u64::MAX),
         ];
         for (a, b) in cases.iter().copied() {
             assert_eq!(zigzag(a), b);

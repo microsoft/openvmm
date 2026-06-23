@@ -1266,7 +1266,9 @@ impl MemoryRegion {
         let _ = access_type;
 
         #[cfg(feature = "bitmap")]
-        if let Some(bitmaps) = &self.bitmaps {
+        if len == 0 {
+            return Ok(());
+        } else if let Some(bitmaps) = &self.bitmaps {
             let SendPtrU8(bitmap) = bitmaps[access_type as usize];
             let start = offset / PAGE_SIZE64;
             let end = (offset + len - 1) / PAGE_SIZE64;
@@ -1290,6 +1292,7 @@ impl MemoryRegion {
                 }
             }
         }
+
         Ok(())
     }
 }
@@ -2059,7 +2062,7 @@ impl GuestMemory {
     /// Check if a given PagedRange is readable or not.
     pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
         self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            self.read_plain_inner(addr)
+            self.read_plain_inner::<u8>(addr).map(|_| ())
         })
     }
 
@@ -2786,6 +2789,39 @@ mod tests {
         gm.read_plain::<[u8; PAGE_SIZE * 2]>(0).unwrap_err();
     }
 
+    #[cfg(feature = "bitmap")]
+    #[test]
+    fn test_probe_readable_range_bitmap() {
+        // `probe_gpn_readable_range` must consult the access bitmap for every
+        // page in the range.
+        let len = PAGE_SIZE * 4;
+        let mapping = SparseMapping::new(len).unwrap();
+        mapping.alloc(0, len).unwrap();
+        // Bit i corresponds to page i: pages 0 and 2 are readable, 1 and 3 not.
+        let bitmap = vec![0b0101];
+        let mapping = Arc::new(GuestMemoryMapping {
+            mapping,
+            bitmap: Some(bitmap),
+        });
+        let gm = GuestMemory::new("test", mapping);
+
+        let probe = |offset: usize, len: usize, gpns: &[u64]| {
+            let range = PagedRange::new(offset, len, gpns).unwrap();
+            gm.probe_gpn_readable_range(&range)
+        };
+
+        // Readable pages succeed, including a range starting at GPN 0.
+        probe(0, PAGE_SIZE, &[0]).unwrap();
+        probe(0, PAGE_SIZE, &[2]).unwrap();
+        probe(0, PAGE_SIZE * 2, &[0, 2]).unwrap();
+        probe(100, 500, &[0]).unwrap(); // partial page within a readable page
+
+        // Any unreadable page in the range fails.
+        probe(0, PAGE_SIZE, &[1]).unwrap_err();
+        probe(0, PAGE_SIZE * 2, &[0, 1]).unwrap_err();
+        probe(0, PAGE_SIZE * 2, &[2, 3]).unwrap_err();
+    }
+
     struct FaultingMapping {
         mapping: SparseMapping,
     }
@@ -2851,11 +2887,13 @@ mod tests {
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
 
         // Test probe_gpn_writable_range with FaultingMapping
-        // FaultingMapping layout:
+        // FaultingMapping layout (page_fault fails the first and last quarters
+        // of the mapping; for this 4-page mapping each quarter is one page):
         // - Page 0 (address 0 to PAGE_SIZE): unmapped, fails on access
         // - Page 1 (address PAGE_SIZE to 2*PAGE_SIZE): writable
-        // - Pages 2-3 (address 2*PAGE_SIZE to 4*PAGE_SIZE): read-only
-        // - Page 4 and beyond: unmapped, fails on access
+        // - Page 2 (address 2*PAGE_SIZE to 3*PAGE_SIZE): read-only
+        // - Page 3 (address 3*PAGE_SIZE to 4*PAGE_SIZE): unmapped, fails on access
+        // - Page 4 and beyond: out of range (the mapping is only 4 pages)
 
         // Test 1: Probe unmapped page - should fail
         let gpns = vec![0];
@@ -2943,11 +2981,37 @@ mod tests {
         let range = PagedRange::new(0, 1, &gpns).unwrap();
         assert!(gm.probe_gpn_readable_range(&range).is_err());
 
-        // Test 18: Cross-boundary range on writable + read-only
+        // Test 18: Cross-boundary range spanning writable, read-only, and
+        // unmapped pages
         let gpns = vec![1, 2, 3];
         let range = PagedRange::new(PAGE_SIZE / 2, PAGE_SIZE * 2, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // All readable
+        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 3 is unmapped
         assert!(gm.probe_gpn_writable_range(&range).is_err()); // Pages 2-3 not writable
+    }
+
+    #[cfg(feature = "bitmap")]
+    #[test]
+    fn test_zero_length_access_at_offset_zero() {
+        // Regression test for a fuzzing-reported subtract-with-overflow panic
+        // in `check_access`: a zero-length access at offset 0 underflowed while
+        // computing the index of the last accessed page (`offset + len - 1`).
+        // A zero-length access touches no pages and so must succeed without
+        // consulting the bitmap, even when the page is marked inaccessible.
+        let len = PAGE_SIZE * 4;
+        let mapping = SparseMapping::new(len).unwrap();
+        mapping.alloc(0, len).unwrap();
+        let bitmap = vec![0b0000]; // every page marked inaccessible
+        let mapping = Arc::new(GuestMemoryMapping {
+            mapping,
+            bitmap: Some(bitmap),
+        });
+        let gm = GuestMemory::new("test", mapping);
+
+        // Zero-sized plain accesses reach `check_access` with offset 0 and
+        // len 0; these previously panicked with "attempt to subtract with
+        // overflow".
+        gm.read_plain::<()>(0).unwrap();
+        gm.write_plain::<()>(0, &()).unwrap();
     }
 
     #[test]
