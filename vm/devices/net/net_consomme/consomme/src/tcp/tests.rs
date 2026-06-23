@@ -528,8 +528,9 @@ impl TcpTestHarness {
     }
 
     /// Flood guest→host data (without reading the host socket) until the
-    /// advertised receive window closes to zero. Only sends segments that fit
-    /// the current window, so nothing is dropped. Returns bytes accepted.
+    /// available receive buffer (`rx_window_avail`) reaches zero, which drives
+    /// the advertised window to zero. Only sends segments that fit the current
+    /// window, so nothing is dropped. Returns bytes accepted.
     async fn flood_guest_until_window_closed(&mut self) -> usize {
         let guest_mac = self.guest_mac;
         let gateway_mac = self.gateway_mac;

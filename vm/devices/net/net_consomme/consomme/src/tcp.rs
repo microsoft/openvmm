@@ -1278,8 +1278,9 @@ impl TcpConnectionInner {
 
     /// Whether draining to the host reopened the receive window enough to
     /// re-advertise it (RFC 1122 §4.2.3.3 receiver SWS avoidance). Fires once on
-    /// the closed-to-open transition, and only once the guest can see a full
-    /// segment post-scale-truncation, so it never emits a sub-MSS update.
+    /// the closed-to-open transition, once the guest-visible (post-scale-
+    /// truncation) window reaches the reopen threshold: a full segment, or half
+    /// the window cap when the cap is smaller than one segment.
     fn should_reopen_window(&self) -> bool {
         let reopen_threshold = self.tx_mss.min(self.rx_window_cap / 2);
         self.rx_window_last_adv < reopen_threshold
