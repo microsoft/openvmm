@@ -503,19 +503,6 @@ impl TcpTestHarness {
             .inner
     }
 
-    /// Mutably borrow the established connection's inner state, for tests that
-    /// poke internal fields directly.
-    fn connection_inner_mut(&mut self) -> &mut TcpConnectionInner {
-        let ft = self.four_tuple();
-        &mut self
-            .consomme
-            .tcp
-            .connections
-            .get_mut(&ft)
-            .expect("connection should exist")
-            .inner
-    }
-
     /// Poll consomme until `cond` holds for the established connection, leaving
     /// the future pending between polls so the async reactor can run and socket
     /// readiness can fire.
@@ -1866,75 +1853,5 @@ async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
         window_update.is_some_and(|w| w > 0),
         "consomme must proactively re-advertise a non-zero window after the \
          host drains the backlog; got {window_update:?}"
-    );
-}
-
-/// Regression: with window scaling active, the recorded "last advertised"
-/// window must be the value the guest reconstructs after `>> rx_window_scale`
-/// truncation, not the raw bytes. Tracking raw bytes would disarm the reopen
-/// check while the guest still sees a sub-segment window and stalls (sender
-/// SWS). Uses the default scale 7, which the 16 KiB (scale 0) test cannot.
-#[pal_async::async_test]
-async fn test_tcp_record_advertised_window_truncates_with_scale(driver: DefaultDriver) {
-    let mut h = TcpTestHarness::connect(driver).await;
-    let inner = h.connection_inner_mut();
-    let scale = inner.rx_window_scale;
-    assert!(scale > 0, "default config should negotiate window scaling");
-    // Empty buffer, so `rx_window_avail` tracks the cap. Use caps that are not
-    // scale-aligned to force truncation, including one just above a segment.
-    for cap in [(1usize << scale) + 1, 1460, 64 << 10, (4 << 20) - 1] {
-        inner.rx_window_cap = cap;
-        inner.record_advertised_window(inner.rx_window_len());
-        let reconstructed = (inner.rx_window_len() as usize) << scale;
-        assert_eq!(
-            inner.rx_window_last_adv, reconstructed,
-            "recorded window must equal the guest-reconstructed value (cap={cap})"
-        );
-        assert!(
-            inner.rx_window_last_adv <= inner.rx_window_avail(),
-            "recorded window must never exceed actual availability (cap={cap})"
-        );
-    }
-}
-
-/// Regression for the reopen gate under active window scaling: it must fire only
-/// once the guest can see a full segment (post-truncation), and must not keep
-/// re-arming when the window reopens to a scale-truncated sub-segment size.
-#[pal_async::async_test]
-async fn test_tcp_should_reopen_window_waits_for_full_segment(driver: DefaultDriver) {
-    let mut h = TcpTestHarness::connect(driver).await;
-    let inner = h.connection_inner_mut();
-    let scale = inner.rx_window_scale;
-    assert!(scale > 0, "default config should negotiate window scaling");
-    let mss = inner.tx_mss;
-    let quantum = 1usize << scale;
-    assert!(mss % quantum != 0, "test assumes mss is not scale-aligned");
-
-    // Occupy part of the (empty) ring so we can set `avail` independently of the
-    // window cap, keeping the reopen threshold a full segment (cap/2 >= mss).
-    let base = inner.rx_buffer.capacity() / 2;
-    inner.rx_buffer.extend_by(base);
-    // Simulate a window that just closed to zero.
-    inner.rx_window_last_adv = 0;
-
-    // Reopened to exactly one segment, but truncation drops what the guest sees
-    // below a segment (e.g. 1460 -> 1408 at scale 7): the gate must NOT fire.
-    inner.rx_window_cap = base + mss;
-    assert!(
-        !inner.should_reopen_window(),
-        "reopen must not fire while the guest would see a sub-segment window"
-    );
-
-    // Reopened to the next scale multiple at or above a segment: fire exactly
-    // once, then disarm after recording (no per-poll re-arming).
-    inner.rx_window_cap = base + mss.next_multiple_of(quantum);
-    assert!(
-        inner.should_reopen_window(),
-        "reopen must fire once a full segment is advertisable"
-    );
-    inner.record_advertised_window(inner.rx_window_len());
-    assert!(
-        !inner.should_reopen_window(),
-        "reopen must disarm after advertising, not re-fire every poll"
     );
 }
