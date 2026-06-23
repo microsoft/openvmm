@@ -118,6 +118,64 @@ impl PendingRequests {
     fn is_empty(&self) -> bool {
         self.ports.is_empty() && self.state_updates.is_empty()
     }
+
+    fn buffer_control(&mut self, request: ControlRequest) {
+        match request {
+            ControlRequest::Port(request) => self.buffer_request(request),
+            ControlRequest::UpdateState(rpc) => self.state_updates.push(rpc),
+        }
+    }
+
+    /// Adds a port request, coalescing it with any existing request for the
+    /// same port.
+    fn buffer_request(&mut self, request: ConsommeRequest) {
+        let key = PortKey::for_request(&request);
+        if let Some(existing) = self.ports.remove(&key) {
+            let cancels = matches!(existing, ConsommeRequest::Bind(_))
+                && matches!(request, ConsommeRequest::Unbind(_));
+            if cancels {
+                // Unbind cancels a not-yet-applied bind; complete both as no-ops.
+                into_rpc(existing).complete(Ok(()));
+                into_rpc(request).complete(Ok(()));
+                tracing::debug!(guest_port = key.guest_port, "coalesced bind and unbind");
+                return;
+            }
+            // Newer request wins; report the older one as superseded.
+            into_rpc(existing).fail(PortRequestSuperseded);
+        }
+        self.ports.insert(key, request);
+    }
+}
+
+/// Drains all currently-available items from `recv` into `buffer`, registering a
+/// waker when nothing is ready and dropping the receiver if the channel closed.
+/// Returns whether any item was read.
+fn drain_receiver<T>(
+    recv: &mut Option<mesh::Receiver<T>>,
+    cx: &mut Context<'_>,
+    channel: &'static str,
+    mut buffer: impl FnMut(T),
+) -> bool {
+    let mut received = false;
+    loop {
+        let polled = recv.as_mut().map(|r| r.poll_recv(cx));
+        match polled {
+            Some(Poll::Ready(Ok(item))) => {
+                buffer(item);
+                received = true;
+            }
+            Some(Poll::Ready(Err(err))) => {
+                tracing::warn!(
+                    err = &err as &dyn std::error::Error,
+                    channel,
+                    "consomme request channel closed"
+                );
+                *recv = None;
+            }
+            Some(Poll::Pending) | None => break,
+        }
+    }
+    received
 }
 
 /// Coalescing key: bind/unbind for the same protocol, family, and guest port
@@ -218,69 +276,21 @@ impl ConsommeEndpoint {
     /// wakers for channels with nothing ready. Returns whether any new request
     /// was read.
     fn drain_channels(&mut self, cx: &mut Context<'_>) -> bool {
-        let mut received = false;
-        loop {
-            let polled = self.control_recv.as_mut().map(|r| r.poll_recv(cx));
-            match polled {
-                Some(Poll::Ready(Ok(request))) => {
-                    self.buffer_control(request);
-                    received = true;
-                }
-                Some(Poll::Ready(Err(err))) => {
-                    tracing::warn!(
-                        err = &err as &dyn std::error::Error,
-                        "consomme control channel closed"
-                    );
-                    self.control_recv = None;
-                }
-                Some(Poll::Pending) | None => break,
-            }
-        }
-        loop {
-            let polled = self.port_recv.as_mut().map(|r| r.poll_recv(cx));
-            match polled {
-                Some(Poll::Ready(Ok(request))) => {
-                    self.buffer_request(request);
-                    received = true;
-                }
-                Some(Poll::Ready(Err(err))) => {
-                    tracing::warn!(
-                        err = &err as &dyn std::error::Error,
-                        "consomme port request channel closed"
-                    );
-                    self.port_recv = None;
-                }
-                Some(Poll::Pending) | None => break,
-            }
-        }
+        let Self {
+            control_recv,
+            port_recv,
+            pending,
+            ..
+        } = self;
+        // Borrow each receiver and `pending` separately so the shared buffering
+        // logic can be reused for both channels without a borrow conflict.
+        let mut received = drain_receiver(control_recv, cx, "control", |request| {
+            pending.buffer_control(request)
+        });
+        received |= drain_receiver(port_recv, cx, "port request", |request| {
+            pending.buffer_request(request)
+        });
         received
-    }
-
-    fn buffer_control(&mut self, request: ControlRequest) {
-        match request {
-            ControlRequest::Port(request) => self.buffer_request(request),
-            ControlRequest::UpdateState(rpc) => self.pending.state_updates.push(rpc),
-        }
-    }
-
-    /// Adds a port request to `pending`, coalescing it with any existing request
-    /// for the same port.
-    fn buffer_request(&mut self, request: ConsommeRequest) {
-        let key = PortKey::for_request(&request);
-        if let Some(existing) = self.pending.ports.remove(&key) {
-            let cancels = matches!(existing, ConsommeRequest::Bind(_))
-                && matches!(request, ConsommeRequest::Unbind(_));
-            if cancels {
-                // Unbind cancels a not-yet-applied bind; complete both as no-ops.
-                into_rpc(existing).complete(Ok(()));
-                into_rpc(request).complete(Ok(()));
-                tracing::debug!(guest_port = key.guest_port, "coalesced bind and unbind");
-                return;
-            }
-            // Newer request wins; report the older one as superseded.
-            into_rpc(existing).fail(PortRequestSuperseded);
-        }
-        self.pending.ports.insert(key, request);
     }
 }
 
@@ -466,11 +476,12 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             }
             Ok(bound)
         });
-        bind_result?;
 
         // Apply requests buffered while no queue was running (see
-        // `wait_for_endpoint_action`). No pool is needed: these operations don't
-        // indicate received packets.
+        // `wait_for_endpoint_action`). This runs regardless of whether the
+        // static port-forward binding above succeeded, so the buffered RPCs
+        // always complete here instead of stalling until some unrelated future
+        // request triggers the next restart.
         let pending = std::mem::take(&mut self.pending);
         queue.with_consomme_no_pool(|c| {
             for request in pending.ports.into_values() {
@@ -484,6 +495,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 });
             }
         });
+
+        bind_result?;
 
         queues.push(queue);
         Ok(())
@@ -925,18 +938,22 @@ mod tests {
     #[test]
     fn unbind_cancels_pending_bind() {
         let mut ep = endpoint();
-        ep.buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
         assert_eq!(ep.pending.ports.len(), 1);
         // An unbind for the same port annihilates the not-yet-applied bind.
-        ep.buffer_request(ConsommeRequest::Unbind(Rpc::detached(cfg(80))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Unbind(Rpc::detached(cfg(80))));
         assert!(ep.pending.ports.is_empty());
     }
 
     #[test]
     fn newer_request_supersedes_same_port() {
         let mut ep = endpoint();
-        ep.buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        ep.buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
         // The two binds collapse to a single pending entry.
         assert_eq!(ep.pending.ports.len(), 1);
     }
@@ -944,8 +961,10 @@ mod tests {
     #[test]
     fn different_ports_are_independent() {
         let mut ep = endpoint();
-        ep.buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        ep.buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(81))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
+        ep.pending
+            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(81))));
         assert_eq!(ep.pending.ports.len(), 2);
     }
 
