@@ -564,9 +564,7 @@ impl VpciDevice {
     /// deactivated state when attestation fails during
     /// [`Self::tdisp_on_device_activate`].
     ///
-    /// Reads back the current value on entry so other command bits
-    /// (e.g. interrupt disable) that the guest just set are preserved
-    /// across the rollback.
+    /// This is not safety critical, this is for cleanup purposes only.
     fn clear_command_register(&self) {
         let mut shadows = self.shadows.lock();
         let mut cleared = shadows.command;
@@ -576,9 +574,7 @@ impl VpciDevice {
         drop(shadows);
 
         // Push the update through so the host observes MMIO and
-        // bus-master as disabled. Use the same accessor path that
-        // `write_cfg` uses for STATUS_COMMAND so we don't re-enter the
-        // BAR-flush logic that runs only on the disabled→enabled edge.
+        // bus-master as disabled. Avoids re-entering the BAR-flush logic.
         let mut accessor = self.config_space.lock();
         accessor.write(
             self.dev.id,
@@ -591,24 +587,20 @@ impl VpciDevice {
     ///
     /// If the TDI is not already in `Run`, drives a bind/attest cycle first. On
     /// attestation failure, the command register is rolled back to the
-    /// deactivated state via [`Self::clear_command_register`]. There is an
-    /// unavoidable race where BARs briefly appear mapped to the guest while
-    /// attestation is in flight; this is safe because until resource validation
-    /// has run, the resources cannot be used for private operations.
+    /// deactivated state via [`Self::clear_command_register`].
     ///
     /// Then notifies TDISP about each currently active MMIO BAR via
-    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`];
-    /// already-validated BARs are deduped in the TDISP state.
-    ///
-    /// Callers must drive this future to completion (typically via a deferred
-    /// chipset write).
+    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`].
     pub async fn tdisp_on_device_activate(&self) {
         use openhcl_tdisp::TdispTdiState;
         use tdisp::TdispVpciAttestationInterface;
 
-        // If the TDI is not in Run, attest first; on failure roll the
-        // command register back so the guest sees the device as
-        // deactivated. See the function docs for the race discussion.
+        // If the TDI is not in Run, attest first. On failure roll the command
+        // register back so the guest sees the device as deactivated.
+        //
+        // This can be raced with TOCTOU, but it's not safety critical. `tdisp_attest_device`
+        // is atomic, either the attestation succeeds in its entirety and unblocks resources
+        // or it fails and the device remains inaccessible.
         let state = self.tdisp_tdi_state().await;
         if state != TdispTdiState::Run {
             tracing::info!(
@@ -689,7 +681,7 @@ impl VpciDevice {
                         base_address,
                         length_bytes,
                         error = %e,
-                        "failed to notify TDISP of active MMIO BAR; failing activation"
+                        "failed to notify TDISP of active MMIO BAR. Failing activation."
                     );
                     self.tdisp_fail_attestation().await;
                     return;
@@ -702,10 +694,7 @@ impl VpciDevice {
 
     /// Common teardown for any failure during the MMIO-enable activation
     /// path: post-Bind attestation failure, per-BAR unblock failure, or
-    /// similar. Issues a preserve-report unbind so the cached attestation
-    /// report (if any) is retained for a future retry, and rolls the
-    /// command register back so the guest sees the device as deactivated.
-    /// Mirrors the MMIO-disable path.
+    /// similar. Unbinds the device and cleans up resources.
     async fn tdisp_fail_attestation(&self) {
         use openhcl_tdisp::TdispGuestUnbindReason;
         use openhcl_tdisp::TdispVirtualDeviceInterface;
@@ -722,24 +711,15 @@ impl VpciDevice {
         self.clear_command_register();
     }
 
-    /// Notifies TDISP that the guest has disabled MMIO on this device.
-    /// If the TDI is in `Run`, issues a full `tdisp_unbind` so the TDI
-    /// returns to `Unlocked` and *all* per-attest state (cached interface
-    /// report, device id, intercepted BARs, validated MMIO bars, DMA
-    /// flag) is cleared. Subsequent `QueryIsolatedResources` calls will
-    /// either return `NotReady` or trigger a fresh attest (via
-    /// `tdisp_isolation_report`'s auto-attest path) before answering.
-    /// Mirrors [`Self::tdisp_on_device_activate`] for the disable edge.
+    /// Notifies TDISP that the guest has disabled MMIO on this device. If the
+    /// TDI is in `Run`, issues a full `tdisp_unbind` so the TDI returns to
+    /// `Unlocked` and *all* per-attest state (cached interface report, device
+    /// id, intercepted BARs, validated MMIO bars, DMA flag) is cleared. Mirrors
+    /// [`Self::tdisp_on_device_activate`] for the disable edge.
     ///
-    /// Call this when STATUS_COMMAND transitions MMIO from enabled to
-    /// disabled; the caller is responsible for detecting the edge. If
-    /// the TDI is not in `Run` (e.g. `Uninitialized`, `Unlocked`, or
-    /// `Locked`), this is a no-op; there is no active host-side
-    /// bind/attest pair to tear down here.
-    ///
-    /// Awaits each operation through the trait interface so that locking is
-    /// fully owned by the TDISP interface. Callers must drive this to
-    /// completion, typically via a deferred chipset write.
+    /// Called when STATUS_COMMAND transitions MMIO from enabled to disabled. If
+    /// the TDI is not in `Run` (e.g. `Uninitialized`, `Unlocked`, or `Locked`),
+    /// this is a no-op.
     pub async fn tdisp_on_device_deactivate(&self) {
         use openhcl_tdisp::TdispGuestUnbindReason;
         use openhcl_tdisp::TdispVirtualDeviceInterface;

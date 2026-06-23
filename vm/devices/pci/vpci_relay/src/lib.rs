@@ -652,17 +652,9 @@ impl TdispIsolationReporter for RelayedVpciDevice {
                     );
                     return TdispIsolationReport::Error;
                 }
-
-                // Snapshot must be captured before the trailing unbind,
-                // which now wipes `tdi_report`.
-                let snapshot = device.tdisp_isolation_snapshot().await;
-
-                return build(snapshot);
             }
 
-            // Fallthrough: TDI is in Locked / Run / Uninitialized. The
-            // cached snapshot reflects the current bind, so we can return
-            // it directly without driving the state machine.
+            // TDI is in Locked / Run, request the report without attesting.
             build(device.tdisp_isolation_snapshot().await)
         })
     }

@@ -46,10 +46,9 @@ pub enum IsolationSnapshot {
     /// has been unblocked yet. The paravisor cannot answer the isolation
     /// query in this state. Callers should map this to an error reply.
     NotReady,
-    /// The TDI is in `Run` and at least one BAR or DMA has been unblocked.
-    /// BAR entries may be `SHARED`, `PRIVATE`, or `INVALID` (for BAR IDs
-    /// outside the device's known range, e.g. upper halves of 64-bit
-    /// BARs). `dma` is always `SHARED` or `PRIVATE`.
+    /// The TDI is in `Run`. BAR entries may be `SHARED`, `PRIVATE`, or
+    /// `INVALID` (for BAR IDs outside the device's known range, e.g. upper
+    /// halves of 64-bit BARs). `dma` is always `SHARED` or `PRIVATE`.
     Ready {
         /// Classification for each of the device's six BARs.
         bars: [ResourceIsolation; 6],
@@ -77,16 +76,9 @@ struct VpciClientTdispMutableState {
     tdi_report: Option<TdiReportStruct>,
     /// Set of BAR IDs whose MMIO pages are intercepted (e.g. a BAR that hosts
     /// the MSI-X table / PBA emulated by the host). These pages are not backed
-    /// by convertible guest RAM on the host.
+    /// by guest RAM on the host.
     #[inspect(iter_by_index)]
     intercepted_bars: HashSet<u16>,
-    /// Cached result of the first successful `query_capabilities` call.
-    /// The capabilities of a device are static across the VM's lifetime,
-    /// so we cache the first successful response to avoid re-issuing the
-    /// host command on every subsequent activation.
-    #[inspect(skip)]
-    #[cfg_attr(not(feature = "dev_snp_ohcl_tio_support"), allow(dead_code))]
-    cached_capabilities: Option<TdispDeviceInterfaceInfo>,
 }
 
 /// Tracks the parameters used to unblock a BAR's MMIO pages, so the same
@@ -155,7 +147,6 @@ impl VpciClientTdispState {
                 dma_unblocked: false,
                 tdi_report: None,
                 intercepted_bars: HashSet::new(),
-                cached_capabilities: None,
             },
             isolation_type,
             vtom,
@@ -368,24 +359,18 @@ impl VpciClientTdispState {
 
     /// See: [`TdispVirtualDeviceInterface::tdisp_unbind`]
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
-        // Flip all unblocked MMIO ranges and DMA back to shared before
-        // we tell the host to unbind the TDI. This is best-effort: a
-        // failure here is logged but doesn't abort the unbind, because
-        // the channel is already being torn down and the host-side TDI
-        // state is our only source of truth for what remains bound.
-        //
-        // Invariant: every "what is currently unblocked" field on
-        // `mutable_state` must be read here to issue the corresponding
-        // re-block *before* the unbind command goes out and the cache
-        // gets cleared. If a future field gets added that represents
-        // an unblocked resource, it must participate in this same
-        // read-then-block-then-clear flow.
+        // Flip all unblocked MMIO ranges and DMA back to shared before we tell
+        // the host to unbind the TDI. This is best-effort: a failure here is
+        // logged but doesn't abort the unbind (this is not security critical to
+        // perform).
         if let Some(validator) = self.resource_validator.clone() {
             let device_id = self.mutable_state.guest_device_id;
-            for (bar_id, mmio) in &self.mutable_state.validated_mmio_bars {
+            let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
+            for (bar_id, mmio) in validated_bars_clone {
                 // length == 0 is the "classified SHARED, never unblocked"
                 // sentinel meaning there is nothing to block.
                 if mmio.length_in_bytes == 0 {
+                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
                     continue;
                 }
                 if let Err(e) = validator.tdisp_block_mmio(
@@ -394,7 +379,7 @@ impl VpciClientTdispState {
                     mmio.base_gpa,
                     0,
                     mmio.length_in_bytes,
-                    *bar_id,
+                    bar_id,
                 ) {
                     tracing::error!(
                         bar_id,
@@ -403,6 +388,9 @@ impl VpciClientTdispState {
                         error = &*e as &dyn std::error::Error,
                         "tdisp_unbind: failed to re-block MMIO range"
                     );
+                } else {
+                    // Successful re-block, remove the bar from the validated list.
+                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
                 }
             }
 
@@ -413,9 +401,18 @@ impl VpciClientTdispState {
                         error = &*e as &dyn std::error::Error,
                         "tdisp_unbind: failed to re-block DMA"
                     );
+                } else {
+                    // Successful re-block, clear the DMA unblocked flag.
+                    self.mutable_state.dma_unblocked = false;
                 }
             }
         }
+
+        // Clear every per-attest field. All of these will be fetched cleanly on
+        // the next re-attest cycle.
+        self.mutable_state.tdi_report = None;
+        self.mutable_state.guest_device_id = 0;
+        self.mutable_state.intercepted_bars.clear();
 
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
@@ -425,16 +422,7 @@ impl VpciClientTdispState {
             .await?;
 
         match res.response::<TdispCommandResponseUnbind>() {
-            Ok(_) => {
-                // Clear every per-attest field. Capabilities are static
-                // device properties and stay cached.
-                self.mutable_state.validated_mmio_bars.clear();
-                self.mutable_state.dma_unblocked = false;
-                self.mutable_state.tdi_report = None;
-                self.mutable_state.guest_device_id = 0;
-                self.mutable_state.intercepted_bars.clear();
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
         }
     }
@@ -450,14 +438,6 @@ impl VpciClientTdispState {
     /// command. A failure is not cached, so the next call will retry.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub async fn query_capabilities(&mut self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
-        if let Some(cached) = self.mutable_state.cached_capabilities.as_ref() {
-            tracing::debug!(
-                ?cached,
-                "query_capabilities: returning cached device interface info"
-            );
-            return Ok(cached.clone());
-        }
-
         tracing::info!(
             ?self.isolation_type,
             "querying TDISP capabilities for device given VM isolation type"
@@ -477,6 +457,12 @@ impl VpciClientTdispState {
                 );
                 anyhow::bail!("VBS isolation is not currently supported for TDISP")
             }
+            IsolationType::Cca => {
+                tracing::warn!(
+                    "query_capabilities: VM is running with CCA isolation (NOT SUPPORTED)"
+                );
+                anyhow::bail!("CCA isolation is not currently supported for TDISP")
+            }
             IsolationType::None => {
                 tracing::warn!("query_capabilities: VM is running with no isolation (no TDISP)");
                 anyhow::bail!("TDISP is not supported without isolation")
@@ -493,7 +479,7 @@ impl VpciClientTdispState {
             "tdisp_query_capabilities: device interface info",
         );
 
-        // TDISP TODO: Support TDX
+        // TDISP TODO: Support TDX + CCA
         let expected_guest_protocol = TdispGuestProtocolType::AmdSevTioV1;
         if device_interface_info.guest_protocol_type == expected_guest_protocol as i32 {
             tracing::info!(
@@ -501,7 +487,6 @@ impl VpciClientTdispState {
                 "tdisp_query_capabilities: TDISP is supported",
             );
 
-            self.mutable_state.cached_capabilities = Some(device_interface_info.clone());
             Ok(device_interface_info)
         } else {
             tracing::info!(
@@ -527,20 +512,30 @@ impl VpciClientTdispState {
             "tdisp_attest_device: beginning attestation flow"
         );
 
-        // The host-side state machine only accepts Bind from Unlocked. If
-        // the TDI is in any other state (e.g. Locked from a partial prior
-        // attempt, or Run from a previous attest cycle), issue a
-        // tdisp_unbind first to reset the host state. The unbind clears
-        // all per-attest bookkeeping so the new attestation rebuilds it
-        // from a clean slate.
-        if self.tdi_state() != TdispTdiState::Unlocked {
+        // If there are any existing attestation artifacts, we need to clear
+        // them before starting a new attestation.
+        if self.tdi_state() != TdispTdiState::Unlocked
+            || self.mutable_state.dma_unblocked
+            || !self.mutable_state.validated_mmio_bars.is_empty()
+        {
             tracing::info!(
                 current_state = %self.tdi_state(),
                 "tdisp_attest_device: TDI not in Unlocked, unbinding before rebind"
             );
             self.tdisp_unbind(TdispGuestUnbindReason::Graceful)
                 .await
-                .context("tdisp_attest_device: failed to unbind before rebind")?;
+                .context("tdisp_attest_device: failed to unbind device from running state")?;
+        }
+
+        // If there are *still* any attestation artifacts after unbind,
+        // something went wrong. We can't continue out of paranoia.
+        if self.tdi_state() != TdispTdiState::Unlocked
+            || self.mutable_state.dma_unblocked
+            || !self.mutable_state.validated_mmio_bars.is_empty()
+        {
+            anyhow::bail!(
+                "tdisp_attest_device: failed to clear existing attestation state, cannot proceed with new attestation"
+            );
         }
 
         self.tdisp_bind_interface()
@@ -580,7 +575,8 @@ impl VpciClientTdispState {
 
         // Auto-mark any MMIO range that the device reports as mapping the MSI-X
         // table or PBA as intercepted. Intercepted BARs are not backed by RAM
-        // on the host and therefore cannot be made private.
+        // on the host and therefore cannot be made private. Unblock calls will
+        // be skipped for these BARs.
         for range in &tdi_report.mmio_interface_info {
             if range.flags.range_maps_msix_table() || range.flags.range_maps_msix_pba() {
                 tracing::info!(
@@ -606,20 +602,12 @@ impl VpciClientTdispState {
         self.tdi_state()
     }
 
-    /// Mark a BAR as being intercepted and virtualized by the paravisor
-    /// (e.g. a BAR whose memory is registered as [`BarMemoryKind::Intercept`]).
-    /// The classic case is the MSI-X table / PBA BAR, which is handled
-    /// entirely inside the paravisor's VPCI layer and has no host-side
-    /// backing page.
+    /// Mark a BAR as being intercepted by the host. The classic case is the
+    /// MSI-X table / PBA BAR which is handled by the hypervisor through MMIO
+    /// enlightenments.
     ///
-    /// `tdisp_on_mmio_reconfigured` must NOT call `tdisp_unblock_mmio` on
-    /// such a BAR: the underlying `HvCallModifySparseGpaPageHostVisibility`
-    /// hypercall on a non-convertible GPA terminates the partition. This
-    /// provides the paravisor a way to tell TDISP "I handle this BAR, leave
-    /// it alone" before any guest configuration occurs.
-    ///
-    /// Intentionally intercept-vs-not is a static property of the device's
-    /// emulator, so this state is *not* cleared on unbind.
+    /// `tdisp_on_mmio_reconfigured` must NOT call `tdisp_unblock_mmio` on such
+    /// a BAR because it is not RAM.
     pub fn mark_bar_intercepted(&mut self, bar_id: u16) {
         if self.mutable_state.intercepted_bars.insert(bar_id) {
             tracing::info!(
@@ -639,11 +627,10 @@ impl VpciClientTdispState {
     /// interface report and `intercepted_bars`.
     ///
     /// This is the single source of truth used by both
-    /// [`Self::isolation_snapshot`] and [`Self::tdisp_on_mmio_reconfigured`]:
-    /// a BAR whose classification here is `PRIVATE` is exactly one that
-    /// `tdisp_on_mmio_reconfigured` will call `tdisp_unblock_mmio` for;
-    /// `SHARED` is skipped. `INVALID` means the BAR has no entry in the
-    /// cached report (or there is no cached report yet).
+    /// [`Self::isolation_snapshot`] and [`Self::tdisp_on_mmio_reconfigured`]: a
+    /// BAR whose classification here is `PRIVATE` is exactly one that
+    /// `tdisp_on_mmio_reconfigured` will call `tdisp_unblock_mmio` for, while
+    /// `SHARED` is skipped. `INVALID` means the BAR has no entry in the report.
     fn classify_bar(&self, bar_id: u16) -> ResourceIsolation {
         // Host-intercepted BARs (MSI-X table / PBA) have no host-RAM
         // backing and can never be flipped private, so always SHARED,
@@ -703,9 +690,16 @@ impl VpciClientTdispState {
             bars[bar_id as usize] = self.classify_bar(bar_id);
         }
 
-        // TDISP devices always private DMA, even if at this moment the device's
-        // DMA isn't unblocked.
-        let dma = ResourceIsolation::PRIVATE;
+        let dma: ResourceIsolation = {
+            // If any BAR is classified as PRIVATE, the the device should also have PRIVATE DMA.
+            if bars.contains(&ResourceIsolation::PRIVATE) {
+                // TDISP devices with private MMIO always have private DMA, even
+                // if at this moment the device's DMA isn't unblocked.
+                ResourceIsolation::PRIVATE
+            } else {
+                ResourceIsolation::SHARED
+            }
+        };
 
         IsolationSnapshot::Ready { bars, dma }
     }
@@ -716,13 +710,12 @@ impl VpciClientTdispState {
     /// Consults the TDI interface report saved during attestation to decide
     /// whether the MMIO range actually requires validation. Ranges whose
     /// `is_non_tee_mem` flag is set are not protected memory and must NOT be
-    /// passed to `tdisp_unblock_mmio`; only ranges with `is_non_tee_mem` clear
+    /// passed to `tdisp_unblock_mmio`. Only ranges with `is_non_tee_mem` clear
     /// are validated.
     ///
     /// BARs that the paravisor has marked as intercepted (see
-    /// [`Self::mark_bar_intercepted`]) are skipped unconditionally, because these
-    /// pages have no host-side RAM backing and must never be flipped to
-    /// private.
+    /// [`Self::mark_bar_intercepted`]) are skipped unconditionally because
+    /// these pages have no host-side RAM backing.
     ///
     /// # Arguments
     ///
@@ -797,14 +790,10 @@ impl VpciClientTdispState {
 
             let device_id = self.mutable_state.guest_device_id;
 
-            validator.tdisp_unblock_mmio(
-                self.target_vtl,
-                device_id,
-                base_address,
-                0,
-                length,
-                bar_id,
-            )?;
+            validator
+                .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
+                .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
+
             self.mutable_state.validated_mmio_bars.insert(
                 bar_id,
                 ValidatedMmio {
@@ -892,15 +881,11 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     ///
     /// This is a higher level function that wraps the lower level TDISP
     /// operations such as bind and start, and is designed to be called by
-    /// higher level code that just wants to attest the device without needing
-    /// to orchestrate the individual steps of the TDISP flow.
+    /// higher level code to perform the attestation process atomically.
     ///
-    /// Resources will remain locked until the guest calls platform-specific validation
-    /// methods to unblock them (e.g. SEV platform firmware calls). This method does not perform those
-    /// validation steps.
-    ///
-    /// The resulting device state will be Run if attestation is successful (Ok() is returned), or
-    /// Unlocked if attestation fails (Err() is returned).
+    /// The resulting device state will be Run with resoures unblocked if
+    /// attestation is successful (Ok() is returned), or Unlocked if attestation
+    /// fails (Err() is returned).
     async fn tdisp_attest_device(
         &self,
         interface_info: TdispDeviceInterfaceInfo,
@@ -912,7 +897,7 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// error representing why the device is not suitable for TDISP.
     async fn tdisp_query_capabilities(&self) -> anyhow::Result<TdispDeviceInterfaceInfo>;
 
-    /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
+    /// Get the TDI state of the device.
     async fn tdisp_tdi_state(&self) -> TdispTdiState;
 
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
@@ -984,23 +969,6 @@ impl TdispVpciAttestationInterface for VpciDevice {
 }
 
 impl VpciDevice {
-    /// Non-blocking variant of
-    /// [`TdispVpciAttestationInterface::tdisp_isolation_snapshot`] for
-    /// synchronous callers (e.g. the guest-facing VPCI channel dispatch
-    /// thread, which cannot await).
-    ///
-    /// Returns `None` if the TDISP mutex is contended. All vpci packets
-    /// for a given device are serialized through the same VMBus channel
-    /// worker, so this lock should not be contended during normal
-    /// guest-driven queries. Contention indicates an internal bug and
-    /// callers should treat it as an error.
-    pub fn tdisp_try_isolation_snapshot(&self) -> Option<IsolationSnapshot> {
-        self.tdisp
-            .0
-            .try_lock()
-            .map(|guard| guard.isolation_snapshot())
-    }
-
     /// Async equivalent of [`Self::tdisp_try_isolation_snapshot`]: awaits
     /// the per-device TDISP mutex and returns the current isolation
     /// snapshot. Use from async contexts where blocking on the mutex is
@@ -1122,59 +1090,27 @@ mod tests {
                 ResourceIsolation::INVALID,
             ]
         );
-        assert_eq!(dma, ResourceIsolation::SHARED);
-    }
-
-    #[test]
-    fn isolation_snapshot_dma_private_after_unblock() {
-        let mut state = new_state();
-        state.mutable_state.tdi_report = Some(make_report(vec![]));
-        state.mutable_state.dma_unblocked = true;
-        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
-            panic!("expected Ready");
-        };
-        assert_eq!(bars, [ResourceIsolation::INVALID; 6]);
         assert_eq!(dma, ResourceIsolation::PRIVATE);
     }
 
-    /// Simulates the post-`tdisp_unbind_preserve_report` state: the cached
-    /// report and intercepted-BAR markings survive the unbind, while
-    /// `dma_unblocked` and `validated_mmio_bars` are cleared. The resulting
-    /// snapshot should still classify BARs against the cached report (so
-    /// `QueryIsolatedResources` can answer) even though the TDI has been
-    /// returned to `Unlocked`.
     #[test]
-    fn isolation_snapshot_ready_after_preserving_report() {
+    fn isolation_snapshot_dma_private_with_any_private_mmio() {
         let mut state = new_state();
-        state.mutable_state.intercepted_bars.insert(4);
-        state.mutable_state.tdi_report = Some(make_report(vec![
-            tee_range(0),
-            non_tee_range(2),
-            tee_range(4),
-        ]));
-
-        // Pretend the device was in Run and is now Unlocked after a
-        // preserve-report unbind. `validated_mmio_bars` and
-        // `dma_unblocked` are cleared; `tdi_report` and
-        // `intercepted_bars` survive.
-        state.mutable_state.tdi_state = TdispTdiState::Unlocked;
-        state.mutable_state.validated_mmio_bars.clear();
-        state.mutable_state.dma_unblocked = false;
-
+        state.mutable_state.tdi_report = Some(make_report(vec![tee_range(0)]));
         let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
-            panic!("expected Ready even in Unlocked with cached report");
+            panic!("expected Ready");
         };
         assert_eq!(
             bars,
             [
                 ResourceIsolation::PRIVATE,
                 ResourceIsolation::INVALID,
-                ResourceIsolation::SHARED,
                 ResourceIsolation::INVALID,
-                ResourceIsolation::SHARED,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::INVALID,
                 ResourceIsolation::INVALID,
             ]
         );
-        assert_eq!(dma, ResourceIsolation::SHARED);
+        assert_eq!(dma, ResourceIsolation::PRIVATE);
     }
 }

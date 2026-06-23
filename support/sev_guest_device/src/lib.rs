@@ -350,7 +350,7 @@ impl SevGuestDevice {
         // failure it also disables VMPCK0 to prevent IV reuse making future
         // calls fail. We must surface that as an error here rather than
         // returning the zero-initialized response body as if the request had
-        // succeeded. Generally, the best thing we can do is stop the VM.
+        // succeeded.
         let exitinfo1 = snp_guest_request.exitinfo1;
         let exitinfo2 = snp_guest_request.exitinfo2;
         if exitinfo1.fw_error != 0 || exitinfo1.vmm_error != 0 || exitinfo2 != 0 {
@@ -359,7 +359,7 @@ impl SevGuestDevice {
                 fw_error = exitinfo1.fw_error,
                 vmm_error = exitinfo1.vmm_error,
                 exitinfo2 = format_args!("{:#x}", exitinfo2),
-                "tio_guest_request: ASP/VMM reported an error; ioctl returned 0 but the request was not performed"
+                "tio_guest_request: ASP/VMM reported an error. Ioctl returned 0 but the request was not performed"
             );
             return Err(Error::TioGuestRequestFirmware {
                 msg_type,

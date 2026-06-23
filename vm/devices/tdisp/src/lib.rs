@@ -148,9 +148,7 @@ pub enum TdispIsolationReport {
         /// DMA path isolation.
         dma: TdispResourceIsolation,
     },
-    /// An internal paravisor error prevented reading the isolation state
-    /// (e.g. a non-blocking try-lock on the TDISP mutex failed, which
-    /// should be unreachable from any guest-driven sequence). The
+    /// An internal paravisor error prevented reading the isolation state. The
     /// paravisor should answer with an error status and log the event.
     Error,
 }

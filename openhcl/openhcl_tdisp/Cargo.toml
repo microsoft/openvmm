@@ -7,7 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio", "hcl/dev_snp_ohcl_tio_support", "hvdef/dev_snp_ohcl_tio_support"]
+dev_snp_ohcl_tio_support = [ "hcl/dev_snp_ohcl_tio_support", "hvdef/dev_snp_ohcl_tio_support"]
 
 [dependencies]
 hcl.workspace = true
@@ -15,7 +15,6 @@ hvdef.workspace = true
 memory_range.workspace = true
 parking_lot.workspace = true
 sev_guest_device.workspace = true
-sev_guest_device_tio = { workspace = true, optional = true }
 tdisp.workspace = true
 tdisp_proto.workspace = true
 x86defs.workspace = true

@@ -178,9 +178,7 @@ impl ChipsetDevice for ErasedChipsetDevice {
         self.0.supports_tdisp()
     }
 
-    fn supports_tdisp_isolation(
-        &mut self,
-    ) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
         self.0.supports_tdisp_isolation()
     }
 }

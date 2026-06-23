@@ -917,13 +917,13 @@ const _: () = assert!(size_of::<VpciQueryIsolatedResources>() == 8);
 
 /// Reply to `MessageType::VPCI_QUERY_ISOLATED_RESOURCES`.
 ///
-/// Synthesized entirely by the paravisor from local TDISP state. If
-/// `status == Status::SUCCESS`, each entry in `bar_isolation` is one of
-/// `SHARED`, `PRIVATE`, or `INVALID` — `INVALID` is used for BAR slots
-/// that are not part of the device's known BAR ID set (including the
-/// upper halves of 64-bit BARs, which are not tracked independently).
-/// `dma_isolation` is always `SHARED` or `PRIVATE` on success. On any
-/// non-success status, all entries are `INVALID`.
+/// Synthesized entirely by the paravisor from local TDISP state. If `status ==
+/// Status::SUCCESS`, each entry in `bar_isolation` is one of `SHARED`,
+/// `PRIVATE`, or `INVALID`. `INVALID` is used for BAR slots that are not part
+/// of the device's known BAR ID set (including the upper halves of 64-bit BARs,
+/// which are not tracked independently). `dma_isolation` is always `SHARED` or
+/// `PRIVATE` on success. On any non-success status, all BAR entries are
+/// `INVALID`.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpciIsolatedResourcesReply {

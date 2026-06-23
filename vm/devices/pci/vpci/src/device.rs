@@ -1023,7 +1023,7 @@ impl ReadyState {
                             tracelimit::info_ratelimited!(
                                 instance_id = %dev.instance_id,
                                 negotiated_version = ?self.vpci_version,
-                                "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol; replying NOT_SUPPORTED"
+                                "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol. Replying NOT_SUPPORTED."
                             );
                             protocol::VpciIsolatedResourcesReply {
                                 status: protocol::Status::NOT_SUPPORTED,
@@ -1031,10 +1031,10 @@ impl ReadyState {
                                 dma_isolation: protocol::ResourceIsolation::INVALID,
                             }
                         } else {
-                            // The reporter returns a `'static` boxed future,
-                            // so we can drop the sync device guard before
-                            // awaiting it. This avoids holding the chipset
-                            // device lock across attestation work.
+                            // The reporter returns a `'static` boxed future, so
+                            // we can drop the sync device guard before awaiting
+                            // it. This avoids holding the chipset device lock
+                            // across attestation work.
                             let fut = {
                                 let mut locked_dev = dev.device.lock();
                                 locked_dev
