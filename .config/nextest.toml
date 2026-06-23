@@ -70,7 +70,7 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 aarch64-tcg = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(~vmm_tests) and (test(smmu) | test(aarch64_tcg))'
+filter = 'package(~vmm_tests) and test(aarch64_tcg)'
 test-group = 'aarch64-tcg'
 
 # Profile for AI agent runs. Minimizes output noise: only prints slow, failing,

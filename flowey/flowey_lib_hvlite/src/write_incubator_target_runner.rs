@@ -413,18 +413,25 @@ mod tests {
     #[test]
     fn adds_incubator_target_runner_env() {
         let mut env = BTreeMap::new();
+        let runner = Path::new("tmp").join("runner.sh");
         add_incubator_target_runner_env(
             &mut env,
             &target_lexicon::triple!("aarch64-unknown-linux-musl"),
-            Path::new("/tmp/runner.sh"),
+            &runner,
         );
 
         assert_eq!(
             env.get("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER")
                 .unwrap(),
-            "/tmp/runner.sh"
+            &runner.display().to_string()
         );
-        assert_eq!(env.get("TMPDIR").unwrap(), "/tmp/nextest-archive-tmp");
+        assert_eq!(
+            env.get("TMPDIR").unwrap(),
+            &Path::new("tmp")
+                .join(NEXTEST_ARCHIVE_TMP_DIR)
+                .display()
+                .to_string()
+        );
         assert_eq!(
             env.get("RUST_LOG").unwrap(),
             &std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_INCUBATOR_RUST_LOG.into())
