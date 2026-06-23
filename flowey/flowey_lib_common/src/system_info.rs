@@ -60,7 +60,7 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
     }
 
     for ((brand, frequency), count) in cpus {
-        log::info!("CPU: {brand} @ {frequency} MHz (X{count})");
+        log::info!("CPU: {brand} @ {frequency} MHz × {count}");
     }
 
     let os_info = [
@@ -101,19 +101,16 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
         FlowPlatform::Windows => std::process::Command::new("bcdedit")
             .output()
             .ok()
-            .map(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|o| o.status.success().then(|| String::from_utf8(o.stdout).ok()))
             .flatten()
             .map(|o| o.to_lowercase().contains(".efi")),
         FlowPlatform::Linux(_) => Path::new("/sys/firmware/efi").try_exists().ok(),
         _ => None,
     };
 
-    log::info!(
-        "Firmware: {}",
-        match is_uefi {
-            Some(true) => "UEFI",
-            Some(false) => "PCAT",
-            None => "Unknown",
-        }
-    );
+    match is_uefi {
+        Some(true) => log::info!("Using UEFI firmware"),
+        Some(false) => log::info!("Not using UEFI firmware"),
+        None => log::info!("Unknown firmware"),
+    }
 }
