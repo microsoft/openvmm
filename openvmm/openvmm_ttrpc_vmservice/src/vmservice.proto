@@ -397,11 +397,12 @@ message PcieRootComplex {
     // NUMA node this root complex is associated with. Absent => none.
     optional uint32 node = 10;
     // Root ports on this complex.
-    repeated PcieRootPort root_ports = 11;
+    repeated PciePort root_ports = 11;
 }
 
-// A PCIe root port. Hosts at most one device or switch (see `attached`).
-message PcieRootPort {
+// A PCIe port: a root-complex root port or a switch downstream port. Hosts at
+// most one device or switch (see `attached`).
+message PciePort {
     // Port name, used to target runtime hot-add (AddPcieDevice).
     string name = 1;
     // Allow runtime hot-plug into this port.
@@ -409,6 +410,9 @@ message PcieRootPort {
     // What is attached behind this port. Absent => empty port (available for
     // hotplug if `hotplug` is set).
     PcieAttachment attached = 3;
+    // Device/function (`device << 3 | function`) to place this port at on its
+    // bus. Absent => lowest available devfn.
+    optional uint32 devfn = 4;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
@@ -417,18 +421,7 @@ message PcieSwitch {
     // Switch name.
     string name = 1;
     // Downstream ports of this switch.
-    repeated PcieDownstreamPort downstream_ports = 2;
-}
-
-// A PCIe switch downstream port. Hosts at most one device or nested switch.
-message PcieDownstreamPort {
-    // Port name, used to target runtime hot-add (AddPcieDevice).
-    string name = 1;
-    // Allow runtime hot-plug into this port.
-    bool   hotplug = 2;
-    // What is attached behind this port. Absent => empty port (available for
-    // hotplug if `hotplug` is set).
-    PcieAttachment attached = 3;
+    repeated PciePort downstream_ports = 2;
 }
 
 // What sits behind a PCIe port: an endpoint device or a (nested) switch.
