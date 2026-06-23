@@ -7,7 +7,7 @@ use flowey::pipeline::prelude::*;
 
 pub const AMD_POOL_1ES: &str = "openvmm-gh-amd-westus3";
 pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
-pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
+pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus3";
 
 pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64-v2";
 pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64-v2";
