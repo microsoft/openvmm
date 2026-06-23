@@ -723,6 +723,10 @@ impl ResolvedArtifactSelections {
             {
                 self.build.openhcl_cvm = true;
             }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_UEFI_CUSTOM_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.openhcl_uefi_custom = true;
+            }
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
             {
                 self.build.openhcl_linux_direct = true;

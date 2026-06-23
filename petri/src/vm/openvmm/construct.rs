@@ -21,6 +21,7 @@ use crate::ProcessorTopology;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
+use crate::UefiFirmware;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
@@ -356,7 +357,7 @@ impl PetriVmConfigOpenVmm {
         let mut vsock_listener = Some(vsock_listener);
         let vsock_path_string = vsock_path.to_string_lossy();
 
-        // Configure the UEFI helper device on the chipset for Firmware::Uefi.
+        // Configure the UEFI helper device on the chipset for UEFI firmware.
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
             let uefi_cfg = firmware.uefi_config();
@@ -876,7 +877,7 @@ impl PetriVmConfigSetupCore<'_> {
             (
                 _,
                 Firmware::Uefi {
-                    uefi_firmware: firmware,
+                    firmware,
                     guest: _, // load_boot_disk
                     uefi_config:
                         UefiConfig {
@@ -890,26 +891,40 @@ impl PetriVmConfigSetupCore<'_> {
                             efi_diagnostics_rate_limit: _, // applied to top-level Config below
                         },
                 },
-            ) => {
-                let firmware = File::open(firmware.clone())
-                    .context("Failed to open uefi firmware file")?
-                    .into();
-                LoadMode::Uefi {
-                    firmware,
-                    enable_debugging: false,
-                    enable_memory_protections: false,
-                    disable_frontpage: *disable_frontpage,
-                    enable_tpm: self.tpm_config.is_some(),
-                    enable_battery: false,
-                    enable_serial: true,
-                    enable_vpci_boot: *enable_vpci_boot,
-                    uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
-                    default_boot_always_attempt: *default_boot_always_attempt,
-                    bios_guid: Guid::new_random(),
-                    enable_vmbus: !self.no_vmbus,
-                    force_dma_bounce: *force_dma_bounce,
+            ) => match firmware {
+                UefiFirmware::File(firmware) => {
+                    let firmware = File::open(firmware.clone())
+                        .context("Failed to open uefi firmware file")?
+                        .into();
+                    LoadMode::Uefi {
+                        firmware,
+                        enable_debugging: false,
+                        enable_memory_protections: false,
+                        disable_frontpage: *disable_frontpage,
+                        enable_tpm: self.tpm_config.is_some(),
+                        enable_battery: false,
+                        enable_serial: true,
+                        enable_vpci_boot: *enable_vpci_boot,
+                        uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
+                        default_boot_always_attempt: *default_boot_always_attempt,
+                        bios_guid: Guid::new_random(),
+                        enable_vmbus: !self.no_vmbus,
+                        force_dma_bounce: *force_dma_bounce,
+                    }
                 }
-            }
+                UefiFirmware::Igvm(igvm_path) => {
+                    let file = File::open(igvm_path.clone())
+                        .context("failed to open uefi igvm firmware file")?
+                        .into();
+                    LoadMode::Igvm {
+                        file,
+                        cmdline: String::new(),
+                        vtl2_base_address: Vtl2BaseAddressType::File,
+                        uefi: true,
+                        com_serial: None,
+                    }
+                }
+            },
             (
                 MachineArch::X86_64,
                 Firmware::OpenhclLinuxDirect {

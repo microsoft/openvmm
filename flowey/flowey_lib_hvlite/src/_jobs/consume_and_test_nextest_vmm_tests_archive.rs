@@ -254,6 +254,7 @@ impl SimpleFlowNode for Node {
             register_test_igvm_agent_rpc_server,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
+            register_openhcl_uefi_custom_x64: None,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
             release_igvm_files,

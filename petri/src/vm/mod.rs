@@ -2431,6 +2431,15 @@ impl Default for TpmConfig {
     }
 }
 
+/// Firmware file source for UEFI-based VMs.
+#[derive(Debug)]
+pub enum UefiFirmware {
+    /// Load a raw UEFI firmware binary.
+    File(ResolvedArtifact),
+    /// Load a UEFI IGVM file.
+    Igvm(ResolvedArtifact),
+}
+
 /// Firmware to load into the test VM.
 // TODO: remove the guests from the firmware enum so that we don't pass them
 // to the VMM backend after we have already used them generically.
@@ -2479,7 +2488,7 @@ pub enum Firmware {
         /// The guest OS the VM will boot into.
         guest: UefiGuest,
         /// The firmware to use.
-        uefi_firmware: ResolvedArtifact,
+        firmware: UefiFirmware,
         /// UEFI configuration
         uefi_config: UefiConfig,
     },
@@ -2635,13 +2644,13 @@ impl Firmware {
     /// Constructs a standard [`Firmware::Uefi`] configuration.
     pub fn uefi(resolver: &ArtifactResolver<'_>, arch: MachineArch, guest: UefiGuest) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
-        let uefi_firmware = match arch {
+        let firmware = match arch {
             MachineArch::X86_64 => resolver.require(UEFI_FIRMWARE_X64).erase(),
             MachineArch::Aarch64 => resolver.require(UEFI_FIRMWARE_AARCH64).erase(),
         };
         Firmware::Uefi {
             guest,
-            uefi_firmware,
+            firmware: UefiFirmware::File(firmware),
             uefi_config: Default::default(),
         }
     }
@@ -2665,6 +2674,17 @@ impl Firmware {
             igvm_path,
             uefi_config: Default::default(),
             openhcl_config: Default::default(),
+        }
+    }
+
+    /// Constructs an x64 [`Firmware::Uefi`] configuration using the custom IGVM
+    /// generated from the UEFI manifest override path.
+    pub fn uefi_igvm_custom(resolver: &ArtifactResolver<'_>, guest: UefiGuest) -> Self {
+        use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
+        Firmware::Uefi {
+            guest,
+            firmware: UefiFirmware::Igvm(resolver.require(LATEST_UEFI_CUSTOM_X64).erase()),
+            uefi_config: Default::default(),
         }
     }
 

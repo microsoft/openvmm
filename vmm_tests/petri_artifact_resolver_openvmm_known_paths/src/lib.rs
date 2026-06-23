@@ -82,6 +82,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
             _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
+            _ if id == openhcl_igvm::LATEST_UEFI_CUSTOM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::UefiCustom),
             _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
@@ -264,6 +265,7 @@ enum OpenhclFlavor {
     Standard,
     StandardDevKernel,
     Cvm,
+    UefiCustom,
     LinuxDirect,
 }
 
@@ -739,6 +741,14 @@ fn openhcl_bin_path(
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
                 xflowey_args: &["build-igvm", "x64-cvm"],
+            },
+        ),
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::UefiCustom) => (
+            "flowey-out/artifacts/build-igvm/debug/uefi-x64-custom",
+            "openhcl-uefi-x64-custom.bin",
+            MissingCommand::Custom {
+                description: "OpenHCL UEFI x64 custom IGVM file",
+                cmd: "cargo xflowey build-igvm x64 --override-manifest ROOT/vm/loader/manifests/uefi-x64.json",
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect) => (
