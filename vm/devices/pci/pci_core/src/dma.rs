@@ -61,7 +61,8 @@ impl DmaTarget {
     ///
     /// `bus_range` and `devfn` set the device's requester-ID identity, shared
     /// by both the DMA and MSI sides. The MSI backend is taken (late-bound)
-    /// from `msi`. All functions share the same guest memory; `with_devfn`
+    /// from `msi`. Since there is no IOMMU, all targets derived from this one
+    /// share the same guest memory; [`with_rid_offset`](Self::with_rid_offset)
     /// only updates the MSI identity.
     pub fn new(
         bus_range: AssignedBusRange,

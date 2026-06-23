@@ -89,7 +89,7 @@ pub struct TranslationFault<E: std::error::Error + 'static> {
     "DMA requester ID {rid:#06x} bus outside assigned bus range {secondary:#04x}..={subordinate:#04x}"
 )]
 struct RidOutOfRange {
-    rid: u16,
+    rid: u32,
     secondary: u8,
     subordinate: u8,
 }
@@ -166,7 +166,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
         let rid = ((secondary as u32) << 8) + self.rid_offset as u32;
         if rid >> 8 > subordinate as u32 {
             return Err(RidOutOfRange {
-                rid: rid as u16,
+                rid,
                 secondary,
                 subordinate,
             });

@@ -46,6 +46,8 @@ impl MsiRoute {
     /// If the resolved bus falls outside the assigned bus range, the route is
     /// left disabled and a ratelimited warning is emitted.
     pub fn enable(&self, address: u64, data: u32) {
+        // `resolve_default_bdf` emits the ratelimited warning when the
+        // resolved bus is out of range; just leave the route disabled here.
         let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
             self.inner.disable();
             return;
