@@ -46,7 +46,7 @@ use vmm_test_macros::vmm_test_with;
 /// OpenHCL IGVM. On hosts without SNP the petri requirements framework
 /// skips it.
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 )]
 async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     config: PetriVmBuilder<T>,
