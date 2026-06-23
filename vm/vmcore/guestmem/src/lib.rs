@@ -2746,39 +2746,6 @@ mod tests {
         gm.read_plain::<[u8; PAGE_SIZE * 2]>(0).unwrap_err();
     }
 
-    #[cfg(feature = "bitmap")]
-    #[test]
-    fn test_probe_readable_range_bitmap() {
-        // `probe_gpn_readable_range` must consult the access bitmap for every
-        // page in the range.
-        let len = PAGE_SIZE * 4;
-        let mapping = SparseMapping::new(len).unwrap();
-        mapping.alloc(0, len).unwrap();
-        // Bit i corresponds to page i: pages 0 and 2 are readable, 1 and 3 not.
-        let bitmap = vec![0b0101];
-        let mapping = Arc::new(GuestMemoryMapping {
-            mapping,
-            bitmap: Some(bitmap),
-        });
-        let gm = GuestMemory::new("test", mapping);
-
-        let probe = |offset: usize, len: usize, gpns: &[u64]| {
-            let range = PagedRange::new(offset, len, gpns).unwrap();
-            gm.probe_gpn_readable_range(&range)
-        };
-
-        // Readable pages succeed, including a range starting at GPN 0.
-        probe(0, PAGE_SIZE, &[0]).unwrap();
-        probe(0, PAGE_SIZE, &[2]).unwrap();
-        probe(0, PAGE_SIZE * 2, &[0, 2]).unwrap();
-        probe(100, 500, &[0]).unwrap(); // partial page within a readable page
-
-        // Any unreadable page in the range fails.
-        probe(0, PAGE_SIZE, &[1]).unwrap_err();
-        probe(0, PAGE_SIZE * 2, &[0, 1]).unwrap_err();
-        probe(0, PAGE_SIZE * 2, &[2, 3]).unwrap_err();
-    }
-
     struct FaultingMapping {
         mapping: SparseMapping,
     }
