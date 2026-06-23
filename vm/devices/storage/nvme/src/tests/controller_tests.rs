@@ -36,8 +36,8 @@ fn instantiate_controller(
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
-    let dma_target = DmaTarget::new(gm.clone(), msi_conn.target().clone());
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, gm.clone(), &msi_conn);
     let controller = NvmeController::new(
         vm_task_driver,
         &dma_target,

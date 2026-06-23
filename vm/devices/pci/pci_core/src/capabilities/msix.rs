@@ -612,7 +612,6 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus_range::AssignedBusRange;
     use crate::msi::MsiConnection;
     use crate::test_helpers::TestPciInterruptController;
     use crate::test_helpers::read_cap_u32;
@@ -620,8 +619,8 @@ mod tests {
 
     #[test]
     fn msix_check() {
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
-        let (mut msix, mut cap) = MsixEmulator::new(2, 64, msi_conn.target());
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 64, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
         // check capabilities
@@ -744,9 +743,9 @@ mod tests {
     #[test]
     fn route_set_msi_on_unmask() {
         let (irqfd, calls) = mock_irqfd(2);
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
-        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
@@ -786,9 +785,9 @@ mod tests {
     #[test]
     fn route_mask_on_vector_mask() {
         let (irqfd, calls) = mock_irqfd(2);
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
-        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
@@ -815,9 +814,9 @@ mod tests {
     #[test]
     fn route_global_disable_masks_all() {
         let (irqfd, calls) = mock_irqfd(2);
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
-        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
@@ -847,9 +846,9 @@ mod tests {
     #[test]
     fn route_consume_pending_on_pba_read() {
         let (irqfd, _calls) = mock_irqfd(2);
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
-        let (msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let (msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
@@ -874,9 +873,9 @@ mod tests {
     #[test]
     fn route_set_msi_on_addr_data_change_while_unmasked() {
         let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
-        let (mut msix, mut cap) = MsixEmulator::new(2, 1, msi_conn.target());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 1, &msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 

@@ -40,12 +40,11 @@ impl MsiRoute {
         self.inner.event()
     }
 
-    /// Configures the MSI address and data for this route, using
-    /// the route's default BDF as the requester ID.
+    /// Configures the MSI address and data for this route, using the route's
+    /// default requester ID `(secondary_bus << 8) + rid_offset`.
     ///
-    /// If the route's BDF carries an explicit bus override that falls
-    /// outside the assigned bus range, the route is left disabled and a
-    /// ratelimited warning is emitted.
+    /// If the resolved bus falls outside the assigned bus range, the route is
+    /// left disabled and a ratelimited warning is emitted.
     pub fn enable(&self, address: u64, data: u32) {
         let Some(resolved) = resolve_default_bdf(&self.default_bdf) else {
             self.inner.disable();
@@ -104,52 +103,54 @@ impl SignalMsi for DisconnectedMsiTarget {
     }
 }
 
-/// Default BDF source for MSI device identification.
+/// Default requester-ID source for MSI device identification.
 ///
-/// [`MsiTarget::signal_msi`] uses this to compose the requester ID
-/// from the port's secondary bus (or explicit bus override) combined
-/// with the configured `devfn`.
+/// [`MsiTarget::signal_msi`] composes the requester ID at signal time as
+/// `(secondary_bus << 8) + rid_offset`, reading the secondary bus from the
+/// live [`AssignedBusRange`]. For a single-function device `rid_offset` is
+/// just its devfn; for SR-IOV VFs it may carry into the bus byte to address
+/// functions on higher buses within the assigned range.
 #[derive(Clone, Debug)]
 struct DefaultBdf {
     bus_range: AssignedBusRange,
-    devfn: u8,
-    /// When set, overrides the bus portion of the RID instead of
-    /// using `bus_range.secondary`. Used by [`MsiTarget::with_rid`]
-    /// for VFs that span multiple bus numbers.
-    bus_override: Option<u8>,
+    rid_offset: u16,
 }
 
-/// Resolves a BDF from a [`DefaultBdf`] source, validating an explicit
-/// `bus_override` against the assigned bus range.
+/// Resolves a requester ID from a [`DefaultBdf`] source, composing it as
+/// `(secondary_bus << 8) + rid_offset` against the live bus range.
 ///
-/// Returns `None` when the override bus falls outside the assigned range, in
-/// which case a ratelimited warning is emitted and the caller should drop the
-/// MSI / disable the route. The derived (non-override) bus is the range's
-/// secondary bus and is therefore always in range.
+/// Returns `None` when the resulting bus falls outside the assigned range
+/// (the offset reaches past the subordinate bus), in which case a ratelimited
+/// warning is emitted and the caller should drop the MSI / disable the route.
+/// The offset is non-negative, so the bus is always at least the secondary
+/// bus; only the upper bound can be exceeded.
 fn resolve_default_bdf(default: &DefaultBdf) -> Option<u32> {
-    let bus = if let Some(bus) = default.bus_override {
-        if !default.bus_range.contains_bus(bus) {
-            let (secondary, subordinate) = default.bus_range.bus_range();
-            tracelimit::warn_ratelimited!(
-                bus,
-                secondary,
-                subordinate,
-                "dropping MSI: rid bus override outside assigned bus range"
-            );
-            return None;
-        }
-        bus
-    } else {
-        let (secondary, _) = default.bus_range.bus_range();
-        secondary
-    };
-    Some((bus as u32) << 8 | default.devfn as u32)
+    let (secondary, subordinate) = default.bus_range.bus_range();
+    let rid = ((secondary as u32) << 8) + default.rid_offset as u32;
+    if rid >> 8 > subordinate as u32 {
+        tracelimit::warn_ratelimited!(
+            rid,
+            secondary,
+            subordinate,
+            "dropping MSI: rid bus outside assigned bus range"
+        );
+        return None;
+    }
+    Some(rid)
 }
 
-/// A connection between a device and an MSI target.
+/// A late-bound MSI backend slot.
+///
+/// A connection carries no device identity — it is purely the backend that
+/// MSIs are delivered to, filled in after construction via [`connect`].
+/// Identity is supplied when a target is derived via
+/// [`msi_target`](Self::msi_target), or when a
+/// [`DmaTarget`](crate::dma::DmaTarget) is built from it.
+///
+/// [`connect`]: Self::connect
 #[derive(Debug)]
 pub struct MsiConnection {
-    target: MsiTarget,
+    inner: Arc<RwLock<MsiTargetInner>>,
 }
 
 /// An MSI target that can be used to signal MSI interrupts.
@@ -171,8 +172,7 @@ impl MsiTarget {
             })),
             default_bdf: DefaultBdf {
                 bus_range: AssignedBusRange::new(),
-                devfn: 0,
-                bus_override: None,
+                rid_offset: 0,
             },
         }
     }
@@ -204,31 +204,24 @@ impl std::fmt::Debug for MsiTargetInner {
 }
 
 impl MsiConnection {
-    /// Creates a new disconnected MSI target connection.
+    /// Creates a new disconnected MSI connection.
     ///
-    /// `bus_range` and `devfn` configure the default BDF identity
-    /// for this connection. When a device signals an MSI via
-    /// [`MsiTarget::signal_msi`], the BDF is resolved from the bus
-    /// range's secondary bus and the given `devfn`.
-    pub fn new(bus_range: AssignedBusRange, devfn: u8) -> Self {
+    /// The connection is purely the late-bound MSI backend slot; it carries
+    /// no device identity. Callers stamp identity when they derive a target
+    /// via [`msi_target`](Self::msi_target), or by building a
+    /// [`DmaTarget`](crate::dma::DmaTarget) from it.
+    pub fn new() -> Self {
         Self {
-            target: MsiTarget {
-                inner: Arc::new(RwLock::new(MsiTargetInner {
-                    signal_msi: Arc::new(DisconnectedMsiTarget),
-                    irqfd: None,
-                })),
-                default_bdf: DefaultBdf {
-                    bus_range,
-                    devfn,
-                    bus_override: None,
-                },
-            },
+            inner: Arc::new(RwLock::new(MsiTargetInner {
+                signal_msi: Arc::new(DisconnectedMsiTarget),
+                irqfd: None,
+            })),
         }
     }
 
     /// Updates the MSI target to which this connection signals interrupts.
     pub fn connect(&self, signal_msi: Arc<dyn SignalMsi>) {
-        let mut inner = self.target.inner.write();
+        let mut inner = self.inner.write();
         inner.signal_msi = signal_msi;
     }
 
@@ -237,13 +230,34 @@ impl MsiConnection {
     /// When present, [`MsiTarget::new_route`] can create [`MsiRoute`]
     /// instances for direct interrupt delivery.
     pub fn connect_irqfd(&self, irqfd: Arc<dyn IrqFd>) {
-        let mut inner = self.target.inner.write();
+        let mut inner = self.inner.write();
         inner.irqfd = Some(irqfd);
     }
 
-    /// Returns the MSI target for this connection.
-    pub fn target(&self) -> &MsiTarget {
-        &self.target
+    /// Derives an MSI target with the given identity, sharing this
+    /// connection's (late-bound) backend slot.
+    pub fn msi_target(&self, bus_range: AssignedBusRange, devfn: u8) -> MsiTarget {
+        MsiTarget {
+            inner: self.inner.clone(),
+            default_bdf: DefaultBdf {
+                bus_range,
+                rid_offset: devfn as u16,
+            },
+        }
+    }
+
+    /// Derives an MSI target with no device identity (an empty bus range).
+    ///
+    /// Use for MSI emitters that don't need a meaningful requester ID, or
+    /// that re-anchor identity themselves (e.g. PCIe switches).
+    pub fn target(&self) -> MsiTarget {
+        self.msi_target(AssignedBusRange::new(), 0)
+    }
+}
+
+impl Default for MsiConnection {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -255,14 +269,7 @@ impl MsiTarget {
     /// bus range, then call `with_devfn(port_number)` to get a
     /// target that resolves to `(bus << 8) | devfn`.
     pub fn with_devfn(&self, devfn: u8) -> MsiTarget {
-        MsiTarget {
-            inner: self.inner.clone(),
-            default_bdf: DefaultBdf {
-                bus_range: self.default_bdf.bus_range.clone(),
-                devfn,
-                bus_override: None,
-            },
-        }
+        self.with_rid_offset(devfn as u16)
     }
 
     /// Returns a new `MsiTarget` sharing the same connection but with
@@ -275,31 +282,41 @@ impl MsiTarget {
             inner: self.inner.clone(),
             default_bdf: DefaultBdf {
                 bus_range,
-                devfn,
-                bus_override: None,
+                rid_offset: devfn as u16,
             },
         }
     }
 
-    /// Returns a new `MsiTarget` sharing the same connection and bus
-    /// range but with the default RID set to the given value.
+    /// Returns a new `MsiTarget` sharing the same connection and bus range
+    /// but with the requester-ID offset set so the target resolves to the
+    /// given absolute `rid`.
     ///
-    /// The RID is a 16-bit value: `(bus << 8) | devfn`. Unlike
-    /// [`with_devfn`](Self::with_devfn), this sets an explicit bus
-    /// number rather than deriving it from the bus range's secondary
-    /// bus. Use this for SR-IOV VFs that may span multiple bus
-    /// numbers within the port's assigned range.
+    /// The offset is computed against the *current* secondary bus, so call
+    /// this only once the bus range is assigned. For targets derived before
+    /// the bus is programmed (e.g. SR-IOV VFs), use
+    /// [`with_rid_offset`](Self::with_rid_offset) instead.
     ///
-    /// The bus is validated against the assigned bus range when an MSI is
-    /// signaled (see [`signal_msi`](Self::signal_msi)), not here, because
-    /// the range may not be programmed yet when the target is derived.
+    /// The resulting bus is validated against the assigned bus range when an
+    /// MSI is signaled (see [`signal_msi`](Self::signal_msi)), not here.
     pub fn with_rid(&self, rid: u16) -> MsiTarget {
+        let (secondary, _) = self.default_bdf.bus_range.bus_range();
+        self.with_rid_offset(rid.wrapping_sub((secondary as u16) << 8))
+    }
+
+    /// Returns a new `MsiTarget` sharing the same connection and bus range
+    /// but with the requester-ID offset set to `rid_offset`.
+    ///
+    /// The RID is resolved at signal time as `(secondary_bus << 8) +
+    /// rid_offset`, so the target tracks the live bus assignment. This is the
+    /// primitive for SR-IOV VFs, which are constructed before the PF's bus is
+    /// programmed: pass the VF's RID offset (e.g. VF Offset + index × VF
+    /// Stride) and it resolves correctly once the bus range is assigned.
+    pub fn with_rid_offset(&self, rid_offset: u16) -> MsiTarget {
         MsiTarget {
             inner: self.inner.clone(),
             default_bdf: DefaultBdf {
                 bus_range: self.default_bdf.bus_range.clone(),
-                devfn: rid as u8,
-                bus_override: Some((rid >> 8) as u8),
+                rid_offset,
             },
         }
     }
@@ -464,11 +481,13 @@ mod tests {
     fn signal_msi_resolves_default_bdf() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0x18); // devfn = dev 3, fn 0
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
-        msi_conn.target().signal_msi(0xFEE0_0000, 42);
+        msi_conn
+            .msi_target(bus_range, 0x18)
+            .signal_msi(0xFEE0_0000, 42);
 
         let (devid, addr, data) = recorder.pop().unwrap();
         assert_eq!(devid, Some((5 << 8) | 0x18));
@@ -480,13 +499,15 @@ mod tests {
     fn signal_msi_with_rid_accepts_bus_in_range() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         // RID with bus=7, devfn=0x0A → within [5, 10]
         let rid: u16 = (7 << 8) | 0x0A;
-        msi_conn.target().signal_msi_with_rid(rid, 0xABCD, 99);
+        msi_conn
+            .msi_target(bus_range, 0)
+            .signal_msi_with_rid(rid, 0xABCD, 99);
 
         let (devid, addr, data) = recorder.pop().unwrap();
         assert_eq!(devid, Some(rid as u32));
@@ -498,18 +519,22 @@ mod tests {
     fn signal_msi_with_rid_drops_bus_outside_range() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         // bus=11, above subordinate=10 → dropped
         let rid_above: u16 = 11 << 8;
-        msi_conn.target().signal_msi_with_rid(rid_above, 0xABCD, 1);
+        msi_conn
+            .msi_target(bus_range.clone(), 0)
+            .signal_msi_with_rid(rid_above, 0xABCD, 1);
         assert!(recorder.pop().is_none());
 
         // bus=4, below secondary=5 → dropped
         let rid_below: u16 = 4 << 8;
-        msi_conn.target().signal_msi_with_rid(rid_below, 0xABCD, 2);
+        msi_conn
+            .msi_target(bus_range, 0)
+            .signal_msi_with_rid(rid_below, 0xABCD, 2);
         assert!(recorder.pop().is_none());
     }
 
@@ -517,16 +542,20 @@ mod tests {
     fn signal_msi_with_rid_accepts_boundary_buses() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         // Exactly at secondary bus (5)
-        msi_conn.target().signal_msi_with_rid(5 << 8, 0x1000, 10);
+        msi_conn
+            .msi_target(bus_range.clone(), 0)
+            .signal_msi_with_rid(5 << 8, 0x1000, 10);
         assert!(recorder.pop().is_some());
 
         // Exactly at subordinate bus (10)
-        msi_conn.target().signal_msi_with_rid(10 << 8, 0x2000, 20);
+        msi_conn
+            .msi_target(bus_range, 0)
+            .signal_msi_with_rid(10 << 8, 0x2000, 20);
         assert!(recorder.pop().is_some());
     }
 
@@ -535,10 +564,14 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(3, 8);
         let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new(bus_range, 0x10); // devfn = dev 2, fn 0
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
 
-        let route = msi_conn.target().new_route().unwrap().unwrap();
+        let route = msi_conn
+            .msi_target(bus_range, 0x10)
+            .new_route()
+            .unwrap()
+            .unwrap();
         route.enable(0xFEE0_0000, 55);
 
         let log = calls[0].lock();
@@ -558,10 +591,14 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
         let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
 
-        let route = msi_conn.target().new_route().unwrap().unwrap();
+        let route = msi_conn
+            .msi_target(bus_range, 0)
+            .new_route()
+            .unwrap()
+            .unwrap();
         let rid: u16 = (7 << 8) | 0x0A;
         route.enable_with_rid(rid, 0xBEEF, 77);
 
@@ -582,10 +619,14 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
         let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
 
-        let route = msi_conn.target().new_route().unwrap().unwrap();
+        let route = msi_conn
+            .msi_target(bus_range, 0)
+            .new_route()
+            .unwrap()
+            .unwrap();
         // bus=11, above subordinate → should disable
         let rid: u16 = 11 << 8;
         route.enable_with_rid(rid, 0xBEEF, 77);
@@ -599,11 +640,11 @@ mod tests {
     fn with_devfn_derives_target_with_new_devfn() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(2, 5);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
-        let derived = msi_conn.target().with_devfn(0x18); // dev 3, fn 0
+        let derived = msi_conn.msi_target(bus_range, 0).with_devfn(0x18); // dev 3, fn 0
         derived.signal_msi(0x1000, 1);
 
         let (devid, _, _) = recorder.pop().unwrap();
@@ -614,13 +655,15 @@ mod tests {
     fn with_bus_range_derives_target_with_new_range() {
         let parent_range = AssignedBusRange::new();
         parent_range.set_bus_range(1, 20);
-        let msi_conn = MsiConnection::new(parent_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         let child_range = AssignedBusRange::new();
         child_range.set_bus_range(10, 15);
-        let derived = msi_conn.target().with_bus_range(child_range, 0x08);
+        let derived = msi_conn
+            .msi_target(parent_range, 0)
+            .with_bus_range(child_range, 0x08);
         derived.signal_msi(0x2000, 2);
 
         let (devid, _, _) = recorder.pop().unwrap();
@@ -636,13 +679,13 @@ mod tests {
     fn with_rid_signal_msi_accepts_bus_in_range() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         // RID with bus=7 (within [5, 10]), devfn=0x0A
         let rid: u16 = (7 << 8) | 0x0A;
-        let derived = msi_conn.target().with_rid(rid);
+        let derived = msi_conn.msi_target(bus_range, 0).with_rid(rid);
         derived.signal_msi(0x1000, 7);
 
         let (devid, addr, data) = recorder.pop().unwrap();
@@ -655,17 +698,17 @@ mod tests {
     fn with_rid_signal_msi_drops_bus_outside_range() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         let recorder = RecordingSignalMsi::new();
         msi_conn.connect(recorder.clone());
 
         // bus=11 > subordinate=10 → dropped
-        let derived_above = msi_conn.target().with_rid(11 << 8);
+        let derived_above = msi_conn.msi_target(bus_range.clone(), 0).with_rid(11 << 8);
         derived_above.signal_msi(0x1000, 1);
         assert!(recorder.pop().is_none());
 
         // bus=4 < secondary=5 → dropped
-        let derived_below = msi_conn.target().with_rid(4 << 8);
+        let derived_below = msi_conn.msi_target(bus_range, 0).with_rid(4 << 8);
         derived_below.signal_msi(0x2000, 2);
         assert!(recorder.pop().is_none());
     }
@@ -675,12 +718,12 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
         let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new(bus_range, 0);
+        let msi_conn = MsiConnection::new();
         msi_conn.connect_irqfd(irqfd);
 
         // Derive a target whose override bus (11) is outside [5, 10], then
         // enable a route from it: the route must be disabled, not enabled.
-        let derived = msi_conn.target().with_rid(11 << 8);
+        let derived = msi_conn.msi_target(bus_range, 0).with_rid(11 << 8);
         let route = derived.new_route().unwrap().unwrap();
         route.enable(0xBEEF, 77);
 

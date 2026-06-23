@@ -120,10 +120,11 @@ pub(super) struct PcieDeviceWiringParams<'a> {
     pub msi_platform: PcieMsiPlatform<'a>,
     /// Raw guest memory (wrapped with IOMMU DMA translation when applicable).
     pub guest_memory: &'a GuestMemory,
-    /// The device's assigned bus range (for IOMMU stream/device ID).
+    /// The device's assigned bus range (for IOMMU stream/device ID and the
+    /// MSI/DMA requester identity).
     pub bus_range: &'a pci_core::bus_range::AssignedBusRange,
-    /// The MSI target derived from the device's [`MsiConnection`].
-    pub msi_target: pci_core::msi::MsiTarget,
+    /// The device's MSI connection, providing the late-bound MSI backend.
+    pub msi: &'a pci_core::msi::MsiConnection,
     /// SMMU shared state if this device is behind an SMMU, or `None`.
     #[cfg(guest_arch = "aarch64")]
     pub smmu: Option<&'a Arc<smmu::SmmuSharedState>>,
@@ -168,8 +169,9 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
             "smmu",
             shared.translator(0),
             params.bus_range.clone(),
+            0,
             params.guest_memory.clone(),
-            params.msi_target,
+            params.msi,
         );
         let smmu_msi = msi.signal_msi.map(|inner_msi| {
             Arc::new(smmu::SmmuSignalMsi::new(shared.clone(), 0, inner_msi))
@@ -196,15 +198,21 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
                 "amd-iommu",
                 shared.translator(),
                 params.bus_range.clone(),
+                0,
                 params.guest_memory.clone(),
-                params.msi_target,
+                params.msi,
             ),
             msi,
         };
     }
 
     PcieDeviceWiring {
-        dma_target: DmaTarget::new(params.guest_memory.clone(), params.msi_target),
+        dma_target: DmaTarget::new(
+            params.bus_range.clone(),
+            0,
+            params.guest_memory.clone(),
+            params.msi,
+        ),
         msi,
     }
 }

@@ -1066,9 +1066,9 @@ mod tests {
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
             .build()
             .unwrap()
     }
@@ -1095,10 +1095,10 @@ mod tests {
         );
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
 
         GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
             .chbcr_range(Some(chbcr))
             .build()
             .unwrap()
@@ -1447,13 +1447,13 @@ mod tests {
         // Test with hotplug disabled (None)
         let root_port_no_hotplug = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port-no-hotplug",
                 false,
                 None,
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1471,13 +1471,13 @@ mod tests {
         // Test with hotplug enabled (Some(slot_number))
         let root_port_with_hotplug = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port-hotplug",
                 false,
                 Some(5),
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1496,13 +1496,13 @@ mod tests {
     fn test_root_port_invalid_bus_range_handling() {
         let mut root_port = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port",
                 false,
                 None,
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1744,7 +1744,7 @@ mod tests {
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let port_defs = vec![GenericPciePortDefinition {
             name: "port-0".into(),
             devfn: None,
@@ -1752,7 +1752,7 @@ mod tests {
             settings: PciePortSettings::default(),
         }];
         let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
             .first_port_device_number(1)
             .build()
             .unwrap();
@@ -1896,9 +1896,7 @@ mod tests {
         // bit, even though there is more than one port.
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
-        let rc_bus_range = AssignedBusRange::new();
-        rc_bus_range.set_bus_range(0, 0);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let port_defs = vec![
             GenericPciePortDefinition {
                 name: "a".into(),
@@ -1914,7 +1912,7 @@ mod tests {
             },
         ];
         let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.target())
             .build()
             .unwrap();
 
@@ -1945,9 +1943,9 @@ mod tests {
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 255));
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(0, 255);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let result = GenericPcieRootComplex::builder(&mut register_mmio, 0..=255u8, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
             .build();
         assert!(
             result.is_err(),
@@ -1972,11 +1970,9 @@ mod tests {
             .collect();
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
-        let rc_bus_range = AssignedBusRange::new();
-        rc_bus_range.set_bus_range(0, 0);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
-            .root_ports(port_defs, msi_conn.target())
+            .root_ports(port_defs, &msi_conn.target())
             .first_port_device_number(first_port_device_number)
             .build()?;
         Ok(rc

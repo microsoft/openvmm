@@ -57,8 +57,8 @@ impl ScsiDvdNvmeTest {
         let dma_client = mem.dma_client();
         let payload_mem = mem.payload_mem();
 
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
-        let dma_target = DmaTarget::new(guest_mem.clone(), msi_conn.target().clone());
+        let msi_conn = MsiConnection::new();
+        let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
         let nvme = NvmeController::new(
             &driver_source,
             &dma_target,

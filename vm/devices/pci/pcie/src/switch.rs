@@ -674,7 +674,6 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pci_core::bus_range::AssignedBusRange;
     use pci_core::msi::MsiConnection;
 
     /// Builds a switch definition with `downstream_port_count` uniform
@@ -1531,14 +1530,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "root-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
-            msi_conn.target(),
+            &msi_conn.target(),
             PciePortSettings::default(),
             None,
             None,

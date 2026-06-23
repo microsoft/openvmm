@@ -60,9 +60,14 @@ pub async fn build_vpci_device(
         .arc_mutex_device(device_name)
         .with_external_pci();
 
-    let msi_conn = MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
 
-    let dma_target = DmaTarget::new(guest_memory, msi_conn.target().clone());
+    let dma_target = DmaTarget::new(
+        pci_core::bus_range::AssignedBusRange::new(),
+        0,
+        guest_memory,
+        &msi_conn,
+    );
     let device = resolve_and_add_pci_device(device_builder, ctx, &dma_target).await?;
 
     {

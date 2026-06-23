@@ -2001,7 +2001,7 @@ impl InitializedVm {
                 // (start_bus << 8) | devfn.
                 let rc_bus_range = pci_core::bus_range::AssignedBusRange::new();
                 rc_bus_range.set_bus_range(rc.start_bus, rc.end_bus);
-                let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 // When the AMD IOMMU is enabled for this root complex,
                 // reserve device 0 for the IOMMU RCiEP and start root
@@ -2029,7 +2029,10 @@ impl InitializedVm {
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
                             )
-                            .root_ports(root_port_definitions, msi_conn.target())
+                            .root_ports(
+                                root_port_definitions,
+                                &msi_conn.msi_target(rc_bus_range, 0),
+                            )
                             .first_port_device_number(root_port_start_device)
                             .chbcr_range(chbcr_range)
                             .build()
@@ -2129,8 +2132,7 @@ impl InitializedVm {
             let parent_segment = parent_port_info.segment;
             let parent_rc_idx = parent_port_info.rc_idx;
 
-            let msi_conn =
-                pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+            let msi_conn = pci_core::msi::MsiConnection::new();
 
             // Defer MSI wiring to after IOMMU setup.
             let msi_target = msi_conn.target().clone();
@@ -2341,7 +2343,7 @@ impl InitializedVm {
                     )
                 })?;
 
-                let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 let pcie_ctx =
                     pcie_wiring::build_device_wiring(pcie_wiring::PcieDeviceWiringParams {
@@ -2354,7 +2356,7 @@ impl InitializedVm {
                         },
                         guest_memory: gm,
                         bus_range: &pi.bus_range,
-                        msi_target: msi_conn.target().clone(),
+                        msi: &msi_conn,
                         #[cfg(guest_arch = "aarch64")]
                         smmu: smmu_states[pi.rc_idx].as_ref(),
                     });
@@ -3540,7 +3542,7 @@ impl LoadedVm {
                                 .bus_range;
 
                             let segment = self.inner.pcie_host_bridges[rc_idx].segment;
-                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range.clone(), 0);
+                            let msi_conn = pci_core::msi::MsiConnection::new();
 
                             let pcie_ctx = pcie_wiring::build_device_wiring(
                                 pcie_wiring::PcieDeviceWiringParams {
@@ -3553,7 +3555,7 @@ impl LoadedVm {
                                     },
                                     guest_memory: &self.inner.gm,
                                     bus_range: &bus_range,
-                                    msi_target: msi_conn.target().clone(),
+                                    msi: &msi_conn,
                                     #[cfg(guest_arch = "aarch64")]
                                     smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
                                 },
