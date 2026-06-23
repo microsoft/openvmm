@@ -14,6 +14,10 @@ harness = false
 name = "tmks"
 harness = false
 
+[[test]]
+name = "cca"
+harness = false
+
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
@@ -50,8 +54,8 @@ unix_socket.workspace = true
 vmgs_resources.workspace = true
 
 anyhow.workspace = true
-futures.workspace = true
 fs-err.workspace = true
+futures.workspace = true
 jiff.workspace = true
 resource_dll_parser.workspace = true
 tracing.workspace = true

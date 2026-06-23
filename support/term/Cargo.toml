@@ -16,9 +16,5 @@ features = [
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-[dependencies]
-crossterm = { workspace = true, features = ["windows"] }
-thiserror.workspace = true
-
 [lints]
 workspace = true

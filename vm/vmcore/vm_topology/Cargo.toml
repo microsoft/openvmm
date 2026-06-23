@@ -13,6 +13,7 @@ mesh = ["dep:mesh_protobuf", "memory_range/mesh"]
 
 [dependencies]
 aarch64defs.workspace = true
+cxl_spec.workspace = true
 memory_range.workspace = true
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }

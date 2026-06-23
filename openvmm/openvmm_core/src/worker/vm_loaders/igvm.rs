@@ -3,6 +3,7 @@
 
 //! Loader implementation to load IGVM files.
 
+use super::super::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm::IgvmDirectiveHeader;
@@ -263,9 +264,7 @@ struct BuildDeviceTreeParams<'a> {
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&'a [u8]>,
-    chipset_low_mmio: MemoryRange,
-    chipset_high_mmio: MemoryRange,
-    vtl2_chipset_mmio: MemoryRange,
+    chipset_mmio: ChipsetMmioRanges,
 }
 
 /// Build a device tree representing the whole guest partition.
@@ -279,10 +278,14 @@ fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::
         with_vmbus_redirect,
         com_serial,
         entropy,
-        chipset_low_mmio,
-        chipset_high_mmio,
-        vtl2_chipset_mmio,
+        chipset_mmio,
     } = params;
+
+    let ChipsetMmioRanges {
+        low: chipset_low_mmio,
+        high: chipset_high_mmio,
+        vtl2: vtl2_chipset_mmio,
+    } = chipset_mmio;
 
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -523,12 +526,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
-    /// VTL0 chipset low MMIO range for the device tree VMBus node.
-    pub chipset_low_mmio: MemoryRange,
-    /// VTL0 chipset high MMIO range for the device tree VMBus node.
-    pub chipset_high_mmio: MemoryRange,
-    /// VTL2-private chipset MMIO range for the device tree VTL2 VMBus node.
-    pub vtl2_chipset_mmio: MemoryRange,
+    /// Resolved chipset MMIO ranges for device tree and UEFI config.
+    pub chipset_mmio: ChipsetMmioRanges,
 }
 
 pub fn load_igvm(
@@ -571,10 +570,14 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
-        chipset_low_mmio,
-        chipset_high_mmio,
-        vtl2_chipset_mmio,
+        chipset_mmio,
     } = params;
+
+    let ChipsetMmioRanges {
+        low: chipset_low_mmio,
+        high: chipset_high_mmio,
+        ..
+    } = chipset_mmio;
 
     let relocations_enabled = match vtl2_base_address {
         Vtl2BaseAddressType::File | Vtl2BaseAddressType::Vtl2Allocate { .. } => false,
@@ -985,9 +988,7 @@ fn load_igvm_x86(
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
-                    chipset_low_mmio,
-                    chipset_high_mmio,
-                    vtl2_chipset_mmio,
+                    chipset_mmio,
                 })
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;

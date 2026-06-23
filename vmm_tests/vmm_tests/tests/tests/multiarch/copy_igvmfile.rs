@@ -11,9 +11,9 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmfwDll;
 use petri_artifacts_common::tags::IsVmgsTool;
-use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::CUSTOM_RESOURCE_CODE;
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64;
+use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
 use std::process::Command;
 use vmm_test_macros::vmm_test;
@@ -439,6 +439,15 @@ fn extract_vmfw_resource(dll_path: &Path, resource_id: u32) -> anyhow::Result<Ve
         })?;
 
     file.seek(SeekFrom::Start(start))?;
+
+    const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB (matches vmgstool guard)
+    anyhow::ensure!(
+        len <= MAX_IGVM_SIZE,
+        "VMFW resource size {} exceeds MAX_IGVM_SIZE {}",
+        len,
+        MAX_IGVM_SIZE,
+    );
+
     let mut bytes = vec![0u8; len];
     file.read_exact(&mut bytes)?;
     Ok(bytes)

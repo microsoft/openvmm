@@ -29,6 +29,8 @@ pub struct Command<'a> {
     env: Vec<EnvPair>,
     clear_env: bool,
     chroot: Option<String>,
+    allocate_pty: bool,
+    combine_stderr: bool,
 }
 
 impl<'a> Command<'a> {
@@ -44,6 +46,8 @@ impl<'a> Command<'a> {
             env: Vec::new(),
             clear_env: false,
             chroot: None,
+            allocate_pty: false,
+            combine_stderr: false,
         }
     }
 
@@ -118,6 +122,25 @@ impl<'a> Command<'a> {
         self
     }
 
+    /// Allocate a PTY for the child process (Linux guests only).
+    ///
+    /// When set, stdin/stdout/stderr are all connected to a PTY secondary,
+    /// enabling terminal features like Ctrl-C signal propagation and
+    /// line editing. The PTY primary is relayed through the stdout pipe.
+    pub fn pty(&mut self, allocate: bool) -> &mut Self {
+        self.allocate_pty = allocate;
+        self
+    }
+
+    /// Redirect stderr to the stdout pipe.
+    ///
+    /// When set, the child's stderr is merged into stdout so callers
+    /// receive interleaved output through a single stream.
+    pub fn combine_stderr(&mut self, combine: bool) -> &mut Self {
+        self.combine_stderr = combine;
+        self
+    }
+
     /// Spawns the command, defaulting to inheriting (relaying, really) the
     /// current process for stdin, stdout, and stderr.
     pub async fn spawn(&self) -> anyhow::Result<Child> {
@@ -154,11 +177,14 @@ impl<'a> Command<'a> {
             .as_ref()
             .map_or(default_stdio, |x| &x.0)
             .pipes(StdioFd::Stdout);
-        let (stderr_read, stderr_write) = self
-            .stderr
-            .as_ref()
-            .map_or(default_stdio, |x| &x.0)
-            .pipes(StdioFd::Stderr);
+        let (stderr_read, stderr_write) = if self.combine_stderr {
+            (None, None)
+        } else {
+            self.stderr
+                .as_ref()
+                .map_or(default_stdio, |x| &x.0)
+                .pipes(StdioFd::Stderr)
+        };
 
         let request = pipette_protocol::ExecuteRequest {
             program: self.program.clone(),
@@ -170,6 +196,8 @@ impl<'a> Command<'a> {
             env: self.env.clone(),
             clear_env: self.clear_env,
             chroot: self.chroot.clone(),
+            allocate_pty: self.allocate_pty,
+            combine_stderr: self.combine_stderr,
         };
 
         let response = self
@@ -256,7 +284,7 @@ impl StdioInner {
                                 move || {
                                     block_on(futures::io::copy(
                                         read,
-                                        &mut AllowStdIo::new(std::io::stdout()),
+                                        &mut AllowStdIo::new(term::raw_stdout()),
                                     ))
                                 }
                             })
@@ -270,7 +298,7 @@ impl StdioInner {
                                 move || {
                                     block_on(futures::io::copy(
                                         read,
-                                        &mut AllowStdIo::new(std::io::stderr()),
+                                        &mut AllowStdIo::new(term::raw_stderr()),
                                     ))
                                 }
                             })

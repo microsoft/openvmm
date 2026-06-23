@@ -17,8 +17,8 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
-use crate::platform::nvram::VsmConfig;
 use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::borrow::Cow;
@@ -37,7 +37,7 @@ mod spec_services;
 #[derive(Debug, Error)]
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
-    BadNvramStorage(#[source] crate::platform::nvram::NvramStorageError),
+    BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
     InjectPreBootVar(
         Cow<'static, ucs2::Ucs2LeSlice>,

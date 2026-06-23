@@ -222,6 +222,7 @@ impl IoHandler {
                 Event::Sq(sq_idx, r) => {
                     let command = r?;
                     let cid = command.cdw0.cid();
+                    state.sqs[sq_idx].io_count += 1;
 
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
@@ -246,10 +247,13 @@ impl IoHandler {
                             }
                         });
                         state.ios.push(io);
-                        state.sqs[sq_idx].io_count += 1;
                         continue;
                     }
 
+                    // Invalid namespace — synthesize the completion inline.
+                    // `io_count` was already incremented above so the
+                    // unconditional decrement on the completion-posting path
+                    // (or in `delete_sq`/`state.completions` drain) balances.
                     IoResult {
                         cid,
                         sq_idx,

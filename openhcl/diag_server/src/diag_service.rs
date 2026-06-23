@@ -4,7 +4,6 @@
 //! RPC service for diagnostics.
 
 use crate::grpc_result;
-use crate::new_pty;
 use anyhow::Context;
 use azure_profiler_proto::AzureProfiler;
 use azure_profiler_proto::ProfileRequest;
@@ -367,7 +366,7 @@ impl DiagServiceHandler {
             let stderr_socket;
             let pty;
             if request.tty {
-                pty = new_pty::new_pty().context("failed to create pty")?;
+                pty = term::open_pty().context("failed to create pty")?;
 
                 let primary = PolledPipe::new(driver, pty.0)
                     .context("failed to create polled pty primary")?;

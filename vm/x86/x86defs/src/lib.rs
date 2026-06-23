@@ -447,6 +447,7 @@ pub struct PageFaultErrorCode {
     _unused: u32,
 }
 
+pub const X64_PAGE_SIZE: u64 = 0x1000;
 pub const X64_LARGE_PAGE_SIZE: u64 = 0x200000;
 
 #[bitfield(u64)]

@@ -71,6 +71,7 @@ pub mod user_facing {
     pub use crate::new_simple_flow_node;
     pub use crate::node::FlowPlatformLinuxDistro;
     pub use crate::pipeline::Artifact;
+    pub use crate::pipeline::ArtifactType;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -151,6 +152,22 @@ pub mod user_facing {
             } else {
                 anyhow::bail!("Linux distro not supported on host arch {}", $host_arch);
             }
+        };
+    }
+
+    /// Claim a set of vars
+    #[macro_export]
+    macro_rules! claim_vars {
+        ($ctx:ident, ($($var:ident),* $(,)?)) => {
+            $(let $var = $var.claim($ctx);)*
+        };
+    }
+
+    /// Read a set of vars
+    #[macro_export]
+    macro_rules! read_vars {
+        ($rt:ident, ($($var:ident),* $(,)?)) => {
+            $(let $var = $rt.read($var);)*
         };
     }
 }
@@ -340,7 +357,7 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         T: 'static,
     {
         let val = ReadVar::from_static(val);
-        val.write_into(ctx, self, |v| v);
+        val.write_into(ctx, self);
     }
 
     pub(crate) fn into_json(self) -> WriteVar<serde_json::Value> {
@@ -673,14 +690,14 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         F: FnOnce(T) -> U + 'static,
     {
         let (read_from, write_into) = ctx.new_var();
-        self.write_into(ctx, write_into, f);
+        self.write_into_with(ctx, write_into, f);
         read_from
     }
 
     /// Maps a `ReadVar<T>` into an existing `WriteVar<U>` by applying a
     /// function to the Var at runtime.
     #[track_caller]
-    pub fn write_into<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
+    pub fn write_into_with<F, U>(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<U>, f: F)
     where
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
@@ -695,6 +712,15 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
                 rt.write(write_into, &f(this));
             }
         });
+    }
+
+    /// Maps a `ReadVar<T>` into an existing `WriteVar<U>`
+    #[track_caller]
+    pub fn write_into(&self, ctx: &mut NodeCtx<'_>, write_into: WriteVar<T>)
+    where
+        T: 'static,
+    {
+        self.write_into_with(ctx, write_into, |x| x);
     }
 
     /// Zips self (`ReadVar<T>`) with another `ReadVar<U>`, returning a new
@@ -1138,13 +1164,9 @@ impl<'ctx> NodeCtx<'ctx> {
 
     /// Emit a Rust-based step that cannot fail.
     ///
-    /// This is equivalent to `emit_rust_step`, but it is for steps that cannot
+    /// This is equivalent to [`NodeCtx::emit_rust_step`], but it is for steps that cannot
     /// fail and that do not need to be emitted as a separate step in a YAML
     /// pipeline. This simplifies the pipeline logs.
-    ///
-    /// As a convenience feature, this function returns a special _optional_
-    /// [`ReadVar<SideEffect>`], which will not result in a "unused variable"
-    /// error if no subsequent step ends up claiming it.
     pub fn emit_minor_rust_step<F, G>(
         &mut self,
         label: impl AsRef<str>,

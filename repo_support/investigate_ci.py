@@ -6,9 +6,10 @@
 """investigate_ci.py - Quick CI failure investigation for OpenVMM PRs.
 
 Usage:
-    python repo_support/investigate_ci.py <PR_NUMBER_OR_RUN_ID>
+    python repo_support/investigate_ci.py [PR_NUMBER_OR_RUN_ID]
 
 Examples:
+    python repo_support/investigate_ci.py                # Investigate the current branch's PR
     python repo_support/investigate_ci.py 2946          # Investigate PR #2946
     python repo_support/investigate_ci.py 23017249697   # Investigate run directly
 
@@ -93,6 +94,64 @@ def _pick_best_run(runs: list[dict]) -> dict | None:
     return runs[0]
 
 
+def _run_id_from_sha(head_sha: str, label: str) -> str:
+    """List CI runs for a commit SHA and return the best run's ID."""
+    print(f"    Head SHA: {head_sha}")
+    runs_json = gh(
+        "run",
+        "list",
+        "-R",
+        REPO,
+        "--commit",
+        head_sha,
+        "--json",
+        "databaseId,status,conclusion,name",
+    )
+    runs = json.loads(runs_json)
+    if not runs:
+        print(f"ERROR: No CI runs found for {label}", file=sys.stderr)
+        sys.exit(1)
+
+    chosen = _pick_best_run(runs)
+    assert chosen is not None
+    run_id = str(chosen["databaseId"])
+    print(f"    Found run: {chosen.get('name', '?')} (ID: {run_id})")
+    return run_id
+
+
+def resolve_current_branch_run() -> str:
+    """Resolve the CI run for the PR associated with the current git branch.
+
+    Uses `gh pr view` with no argument, which resolves the PR for the
+    current branch. Exits with an error if there is no associated PR.
+    """
+    print("==> No PR/run specified; resolving PR for the current branch...")
+    pr_proc = subprocess.run(
+        ["gh", "pr", "view", "--json", "number,headRefOid"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pr_proc.returncode != 0:
+        print(
+            "ERROR: No PR found for the current branch. Push the branch and "
+            "open a PR, or pass a PR number or run ID explicitly.",
+            file=sys.stderr,
+        )
+        if pr_proc.stderr.strip():
+            print(pr_proc.stderr.strip(), file=sys.stderr)
+        sys.exit(1)
+    try:
+        pr = json.loads(pr_proc.stdout)
+        number = pr["number"]
+        head_sha = pr["headRefOid"]
+    except (json.JSONDecodeError, KeyError):
+        print("ERROR: Could not parse PR info for the current branch", file=sys.stderr)
+        sys.exit(1)
+    print(f"    Current branch PR: #{number}")
+    return _run_id_from_sha(head_sha, f"PR #{number}")
+
+
 def resolve_run_id(input_val: str) -> str:
     """Resolve a PR number or run ID string to a run ID."""
     try:
@@ -129,27 +188,7 @@ def resolve_run_id(input_val: str) -> str:
             head_sha = None
 
         if head_sha:
-            print(f"    PR head SHA: {head_sha}")
-            runs_json = gh(
-                "run",
-                "list",
-                "-R",
-                REPO,
-                "--commit",
-                head_sha,
-                "--json",
-                "databaseId,status,conclusion,name",
-            )
-            runs = json.loads(runs_json)
-            if not runs:
-                print(f"ERROR: No CI runs found for PR #{num}", file=sys.stderr)
-                sys.exit(1)
-
-            chosen = _pick_best_run(runs)
-            assert chosen is not None
-            run_id = str(chosen["databaseId"])
-            print(f"    Found run: {chosen.get('name', '?')} (ID: {run_id})")
-            return run_id
+            return _run_id_from_sha(head_sha, f"PR #{num}")
 
     # PR lookup failed or returned invalid data; treat as run ID.
     print(f"==> Treating '{input_val}' as run ID...")
@@ -504,11 +543,14 @@ def main() -> None:
         print(__doc__)
         sys.exit(0)
 
-    if len(sys.argv) != 2:
+    if len(sys.argv) > 2:
         print(__doc__)
         sys.exit(1)
 
-    run_id = resolve_run_id(sys.argv[1])
+    if len(sys.argv) == 2:
+        run_id = resolve_run_id(sys.argv[1])
+    else:
+        run_id = resolve_current_branch_run()
     get_run_status(run_id)
     failed_jobs = get_failed_jobs(run_id)
 

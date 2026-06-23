@@ -60,6 +60,12 @@ pub enum KvmError {
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization was requested but the host does not support it")]
+    NestedVirtUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("unsupported CPU vendor")]
+    UnsupportedCpuVendor,
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
@@ -83,6 +89,7 @@ struct KvmMemoryRangeState {
 pub struct KvmPartition {
     #[inspect(flatten)]
     inner: Arc<KvmPartitionInner>,
+    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
     #[inspect(skip)]
@@ -106,6 +113,9 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    #[cfg(guest_arch = "x86_64")]
+    reserved_vps_per_socket: u32,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
@@ -121,6 +131,7 @@ struct KvmPartitionInner {
     /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
     #[cfg(guest_arch = "aarch64")]
     gic_nr_irqs: u32,
+    #[cfg(guest_arch = "x86_64")]
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -141,7 +152,6 @@ enum KvmRunVpError {
     ExtintInterrupt(#[source] kvm::Error),
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 pub struct KvmProcessorBinder {
     partition: Arc<KvmPartitionInner>,
     vpindex: VpIndex,

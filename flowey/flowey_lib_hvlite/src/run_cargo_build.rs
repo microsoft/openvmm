@@ -274,7 +274,7 @@ impl FlowNode for Node {
                     }
                 });
             } else {
-                base_output.write_into(ctx, output, |o| {
+                base_output.write_into_with(ctx, output, |o| {
                     CargoBuildOutput::from_base_cargo_build_output(o, None)
                 });
             }

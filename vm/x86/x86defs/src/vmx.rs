@@ -74,7 +74,37 @@ pub struct VmxExit {
 }
 
 pub const VMX_ENTRY_CONTROL_LONG_MODE_GUEST: u32 = 0x00000200;
-pub const VMX_FEATURE_CONTROL_LOCKED: u64 = 0x0000000000000001;
+
+/// IA32_FEATURE_CONTROL MSR (0x3A) layout.
+#[bitfield(u64)]
+pub struct Ia32FeatureControl {
+    /// Lock bit. Once set, further writes to IA32_FEATURE_CONTROL are ignored
+    /// until the next reset.
+    pub locked: bool,
+    /// Enable VMX inside SMX operation.
+    pub vmx_enabled_inside_smx: bool,
+    /// Enable VMX outside SMX operation.
+    pub vmx_enabled_outside_smx: bool,
+    #[bits(5)]
+    _reserved0: u64,
+    /// SENTER local function enables (bits 8..14).
+    #[bits(7)]
+    pub senter_local_enables: u8,
+    /// SENTER global enable.
+    pub senter_global_enable: bool,
+    #[bits(1)]
+    _reserved1: u64,
+    /// SGX launch control enable.
+    pub sgx_launch_control_enable: bool,
+    /// SGX global enable.
+    pub sgx_global_enable: bool,
+    #[bits(1)]
+    _reserved2: u64,
+    /// LMCE (Local Machine Check Exception) on.
+    pub lmce_on: bool,
+    #[bits(43)]
+    _reserved3: u64,
+}
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq)]

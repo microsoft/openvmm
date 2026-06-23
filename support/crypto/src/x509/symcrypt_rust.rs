@@ -6,14 +6,7 @@
 use super::X509Error;
 use der::Decode;
 use der::Encode;
-#[cfg(symcrypt)]
-use rsa::sha2;
 use x509_cert::Certificate;
-
-#[cfg(symcrypt)]
-fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> X509Error {
-    X509Error(crate::BackendError::SymCrypt(err, op))
-}
 
 #[cfg(symcrypt)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
@@ -35,7 +28,7 @@ fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
     crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
 }
 
-pub struct X509CertificateInner(Certificate);
+pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -44,7 +37,7 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         // Currently we only expect RSA public keys.
         // If someday we need to support other public key types, the return
         // type of this function will need to change.
@@ -55,37 +48,20 @@ impl X509CertificateInner {
                 .subject_public_key
                 .raw_bytes(),
         )
-        .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
-        #[cfg(symcrypt)]
-        let key = symcrypt::rsa::RsaKey::set_public_key(
+        .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
+        crate::rsa::RsaPublicKey::from_components(
             key.modulus.as_bytes(),
             key.public_exponent.as_bytes(),
-            symcrypt::rsa::RsaKeyUsage::SignAndEncrypt,
         )
-        .map_err(|e| err(e, "constructing RSA public key"))?;
-        #[cfg(rust)]
-        let key = key.try_into().unwrap();
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::sys::RsaPublicKeyInner(key),
-        ))
     }
 
     pub fn verify(
         &self,
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
-        use rsa::pkcs1v15::RsaSignatureAssociatedOid;
-
         let oid = self.0.signature_algorithm().oid;
-        let hash = match oid {
-            sha2::Sha256::OID => crate::rsa::HashAlgorithm::Sha256,
-            _ => {
-                return Err(rsa_der_err(
-                    der::ErrorKind::OidUnknown { oid }.to_error(),
-                    "unrecognized signature algorithm OID",
-                ));
-            }
-        };
+        let hash = crate::HashAlgorithm::try_from(oid)
+            .map_err(|e| rsa_der_err(e, "unrecognized signature algorithm OID"))?;
 
         let tbs_der = self
             .0
@@ -170,6 +146,7 @@ impl X509CertificateInner {
             .map_err(|e| der_err(e, "encoding certificate as DER"))
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,
         country: &str,
@@ -178,82 +155,44 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use core::str::FromStr;
         use x509_cert::builder::Builder;
-        use x509_cert::name::Name;
 
-        // Profile that produces a basic self-signed certificate with no
-        // extensions and the same `Name` for both the subject and issuer.
-        struct SelfSignedProfile {
-            subject: Name,
-        }
-
-        impl x509_cert::builder::profile::BuilderProfile for SelfSignedProfile {
-            fn get_issuer(&self, _subject: &Name) -> Name {
-                self.subject.clone()
-            }
-
-            fn get_subject(&self) -> Name {
-                self.subject.clone()
-            }
-
-            fn build_extensions(
-                &self,
-                _spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-                _issuer_spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-                _tbs: &x509_cert::TbsCertificate,
-            ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
-                Ok(Vec::new())
-            }
-        }
-
-        let name = Name::from_str(&format!(
-            "CN={common_name},O={organization},L={locality},ST={state},C={country}"
-        ))?;
-
-        let modulus = key.modulus();
-        let exponent = key.public_exponent();
-        let pkcs1_pub = pkcs1::RsaPublicKey {
-            modulus: der::asn1::UintRef::new(&modulus)?,
-            public_exponent: der::asn1::UintRef::new(&exponent)?,
-        };
-        let pkcs1_der = pkcs1_pub.to_der()?;
-        let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                oid: pkcs1::ALGORITHM_OID,
-                parameters: Some(der::asn1::Any::null()),
-            },
-            subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_der)?,
-        };
-
-        let serial_number = x509_cert::serial_number::SerialNumber::from(1u32);
-        let validity = x509_cert::time::Validity::new(
-            der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))?
-                .into(),
-            x509_cert::time::Time::INFINITY,
-        );
-
-        let profile = SelfSignedProfile { subject: name };
-        let builder =
-            x509_cert::builder::CertificateBuilder::new(profile, serial_number, validity, spki)?;
-
-        #[cfg(symcrypt)]
-        let blob = key.0.0.export_key_pair_blob()?;
-        #[cfg(symcrypt)]
-        let key = rsa::RsaPrivateKey::from_components(
-            rsa::BoxedUint::from_be_slice_vartime(&blob.modulus),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.pub_exp),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.private_exp),
-            vec![
-                rsa::BoxedUint::from_be_slice_vartime(&blob.p),
-                rsa::BoxedUint::from_be_slice_vartime(&blob.q),
-            ],
+        let (builder, _pkcs1_der) = super::builder::self_signed_builder(
+            key,
+            country,
+            state,
+            locality,
+            organization,
+            common_name,
         )?;
-        #[cfg(rust)]
-        let key = key.0.0.clone();
-        let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key);
 
-        let cert = builder.build(&signer)?;
+        #[cfg(symcrypt)]
+        let cert = builder.build(&super::builder::rsa_keypair_signer::RsaKeyPairSigner {
+            key,
+            pkcs1_der: _pkcs1_der,
+        })?;
+        #[cfg(rust)]
+        let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
+            key.0.0.clone(),
+        ))?;
         Ok(Self(cert))
+    }
+
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        Ok(self.0.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        Ok(self.0.tbs_certificate().serial_number().as_bytes().to_vec())
+    }
+
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .0
+            .tbs_certificate()
+            .subject()
+            .common_name()
+            .map_err(|e| der_err(e, "getting common_name"))?
+            .map(|s| s.value().into_owned()))
     }
 }

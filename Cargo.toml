@@ -30,6 +30,7 @@ members = [
   "hyperv/tools/hypestv",
   # fuzzing
   "support/inspect/fuzz",
+  "support/mesh/mesh_protobuf/fuzz",
   "support/mesh/mesh_rpc/fuzz",
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
@@ -47,6 +48,7 @@ members = [
   "guest_test_uefi",
   "petri/pipette",
   # tools
+  "petri/incubator",
   "petri/make_imc_hive",
   "petri/petri-tool",
   "vm/devices/get/test_igvm_agent_rpc_server",
@@ -99,6 +101,7 @@ vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
+initrd_cpio = { path = "petri/initrd_cpio" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 
@@ -123,6 +126,7 @@ fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
 hybrid_vsock = { path = "support/hybrid_vsock" }
+hvs_file = { path = "support/hvs_file" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -221,6 +225,7 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
+amd_iommu = { path = "vm/devices/iommu/amd_iommu" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
@@ -232,12 +237,14 @@ chipset_resources = { path = "vm/devices/chipset_resources" }
 firmware_pcat = { path = "vm/devices/firmware/firmware_pcat" }
 firmware_uefi = { path = "vm/devices/firmware/firmware_uefi" }
 firmware_uefi_custom_vars = { path = "vm/devices/firmware/firmware_uefi_custom_vars" }
+firmware_uefi_resources = { path = "vm/devices/firmware/firmware_uefi_resources" }
 uefi_nvram_storage = { path = "vm/devices/firmware/uefi_nvram_storage" }
 uefi_specs = { path = "vm/devices/firmware/uefi_specs" }
 uefi_nvram_specvars = { path = "vm/devices/firmware/uefi_nvram_specvars" }
 hyperv_secure_boot_templates = { path = "vm/devices/firmware/hyperv_secure_boot_templates" }
 hyperv_uefi_custom_vars_json = { path = "vm/devices/firmware/hyperv_uefi_custom_vars_json" }
 framebuffer = { path = "vm/devices/framebuffer" }
+hcl_compat_uefi_nvram_resources = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_resources" }
 hcl_compat_uefi_nvram_storage = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_storage" }
 generation_id = { path = "vm/devices/firmware/generation_id" }
 get_helpers = { path = "vm/devices/get/get_helpers" }
@@ -255,6 +262,7 @@ hyperv_ic_protocol = { path = "vm/devices/hyperv_ic_protocol" }
 hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
+cxl_spec = { path = "vm/devices/cxl" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }
@@ -288,8 +296,11 @@ vfio_assigned_device = { path = "vm/devices/pci/vfio_assigned_device" }
 vfio_assigned_device_resources = { path = "vm/devices/pci/vfio_assigned_device_resources" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
+pci_resource_assignment = { path = "vm/devices/pci/pci_resource_assignment" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 pcie = { path = "vm/devices/pci/pcie" }
+iommu_common = { path = "vm/devices/iommu/iommu_common" }
+smmu = { path = "vm/devices/iommu/smmu" }
 vpci = { path = "vm/devices/pci/vpci" }
 vpci_client = { path = "vm/devices/pci/vpci_client" }
 vpci_protocol = { path = "vm/devices/pci/vpci_protocol" }
@@ -411,6 +422,7 @@ vm_topology = { path = "vm/vmcore/vm_topology" }
 vmcore = { path = "vm/vmcore" }
 
 # vmm_core
+hyperv_dump = { path = "vmm_core/hyperv_dump" }
 state_unit = { path = "vmm_core/state_unit" }
 virt = { path = "vmm_core/virt" }
 virt_hvf = { path = "vmm_core/virt_hvf" }
@@ -512,9 +524,10 @@ flate2 = "1.1"
 
 # --- Cryptography & secure computing ---
 constant_time_eq = "0.5"
+cms = { version = "0.3.0-pre.2", default-features = false }
 der = "0.8"
 getrandom = "0.4"
-ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
+ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "07a121e4b46659cdfa8711740c6622728adffd65", default-features = false }
 openssl = "0.10.79"
 openssl-sys = "0.9"
 pkcs1 = "0.8.0-rc.4"
@@ -522,6 +535,7 @@ pkcs8 = "0.11.0"
 rsa = { version = "0.10.0-rc.18", default-features = false }
 sha1 = { version = "0.11.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
+signature = { version = "3.0.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }
 
@@ -642,6 +656,9 @@ windows-result = "0.4"
 windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"
+
+# --- Cross-platform bindings ---
+sysinfo = "0.39"
 
 [profile.release]
 panic = 'abort'

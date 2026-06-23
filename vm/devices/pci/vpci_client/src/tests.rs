@@ -29,6 +29,7 @@ use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
+use vpci::bus::VpciBusConfig;
 use vpci::bus::VpciBusDevice;
 use vpci::test_helpers::TestVpciInterruptController;
 
@@ -94,11 +95,14 @@ async fn test_negotiate_version(driver: DefaultDriver) {
     let device = make_noop_device();
     let msi_controller = TestVpciInterruptController::new();
     let (bus, mut channel) = VpciBusDevice::new(
-        Guid::new_random(),
+        VpciBusConfig {
+            instance_id: Guid::new_random(),
+            vtom: None,
+            vnode: None,
+        },
         device,
         &mut ExternallyManagedMmioIntercepts,
         VpciInterruptMapper::new(msi_controller),
-        None,
     )
     .unwrap();
 
@@ -147,11 +151,14 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
     let device = make_noop_device();
     let msi_controller = TestVpciInterruptController::new();
     let (bus, mut channel) = VpciBusDevice::new(
-        Guid::new_random(),
+        VpciBusConfig {
+            instance_id: Guid::new_random(),
+            vtom: None,
+            vnode: None,
+        },
         device,
         &mut ExternallyManagedMmioIntercepts,
         VpciInterruptMapper::new(msi_controller),
-        None,
     )
     .unwrap();
 
