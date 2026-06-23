@@ -6,9 +6,6 @@ name = "tmk_vmm"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-unstable_whp = ["virt_whp/unstable_whp"]
-
 [dependencies]
 tmk_protocol.workspace = true
 
@@ -21,6 +18,7 @@ vm_topology.workspace = true
 vmcore.workspace = true
 vm_loader.workspace = true
 x86defs.workspace = true
+memory_range.workspace = true
 
 pal_async.workspace = true
 mesh.workspace = true
@@ -44,6 +42,7 @@ underhill_mem.workspace = true
 virt_kvm.workspace = true
 virt_mshv.workspace = true
 virt_mshv_vtl.workspace = true
+user_driver.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 virt_hvf.workspace = true

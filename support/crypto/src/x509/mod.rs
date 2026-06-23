@@ -3,31 +3,50 @@
 
 //! X.509 certificate operations.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
+
+#[cfg(any(rust, symcrypt, all(native, target_os = "macos"),))]
+mod builder;
 
 #[cfg(openssl)]
-mod ossl;
+pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
 #[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
+pub(crate) mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
+
+#[cfg(all(native, windows))]
+pub(crate) mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
 
 use thiserror::Error;
 
 /// An error for X.509 operations.
 #[cfg(not(rust))]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error")]
-pub struct X509Error(#[source] super::BackendError);
+pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error during {1}")]
-pub struct X509Error(#[source] der::Error, &'static str);
+pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
@@ -39,7 +58,7 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         self.0.public_key()
     }
 
@@ -55,6 +74,11 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
     pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
@@ -64,6 +88,7 @@ impl X509Certificate {
         self.0.to_der()
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Build a self-signed never-expiring X.509 certificate (for testing).
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,
@@ -82,6 +107,23 @@ impl X509Certificate {
             common_name,
         )
         .map(Self)
+    }
+
+    /// Get the Common Name (CN) from the X.509 certificate's subject name. If
+    /// there are multiple CNs present, return the first.
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.0.subject_common_name()
+    }
+
+    /// String representation of the certificate's issuer Distinguished Name.
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        self.0.issuer_dn()
+    }
+
+    /// Raw bytes of the certificate's serial number, as encoded in the
+    /// underlying certificate.
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        self.0.serial_number()
     }
 }
 
@@ -110,8 +152,7 @@ mod tests {
     fn self_signed_cert_verifies() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
-        let pubkey = cert.public_key().unwrap();
-        assert!(cert.verify(&pubkey).unwrap());
+        assert!(cert.verify(&key).unwrap());
         assert!(cert.issued(&cert).unwrap());
     }
 
@@ -145,5 +186,13 @@ mod tests {
         let reparsed = X509Certificate::from_der(&der).unwrap();
         let pubkey = reparsed.public_key().unwrap();
         assert!(reparsed.verify(&pubkey).unwrap());
+    }
+
+    #[test]
+    fn subject_common_name() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&key);
+        let sn = cert.subject_common_name().unwrap().unwrap();
+        assert_eq!(sn, "test.example.com");
     }
 }

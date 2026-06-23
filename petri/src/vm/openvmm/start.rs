@@ -43,7 +43,19 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu,
         } = self;
+
+        // Resolve deferred IOMMU assignments.
+        for (name, iommu_config) in &pending_iommu {
+            let rc = config
+                .pcie_root_complexes
+                .iter_mut()
+                .find(|rc| rc.name == *name)
+                .with_context(|| format!("IOMMU configured for unknown root complex '{name}'"))?;
+            rc.iommu = Some(iommu_config.clone());
+        }
 
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
@@ -94,10 +106,14 @@ impl PetriVmConfigOpenVmm {
         let shared_memory = memory_backing_file
             .as_ref()
             .map(|mem_path| {
-                openvmm_helpers::shared_memory::open_memory_backing_file(
-                    mem_path,
-                    config.memory.mem_size,
-                )
+                let total_mem_size: u64 = config
+                    .numa
+                    .nodes
+                    .iter()
+                    .filter_map(|n| n.mem.as_ref())
+                    .map(|m| m.mem_size)
+                    .sum();
+                openvmm_helpers::shared_memory::open_memory_backing_file(mem_path, total_mem_size)
             })
             .transpose()?;
 
@@ -109,6 +125,18 @@ impl PetriVmConfigOpenVmm {
 
         let is_minimal = resources.properties.minimal_mode;
 
+        // Resolve the TCP pipette port now, while the VM is starting.
+        // Consomme binds the port during launch, so the oneshot should
+        // be ready.  Caching the resolved port here lets wait_for_agent
+        // reconnect after a reset without needing the oneshot again.
+        let tcp_pipette_port = match resources.tcp_pipette_port.take() {
+            Some(recv) => Some(
+                recv.await
+                    .context("failed to receive TCP pipette port from consomme")?,
+            ),
+            None => None,
+        };
+
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
@@ -116,6 +144,7 @@ impl PetriVmConfigOpenVmm {
                 worker,
                 framebuffer_view,
                 cidata_mounted: false,
+                tcp_pipette_port,
                 pid,
             },
             halt_notif,
@@ -138,9 +167,12 @@ impl PetriVmConfigOpenVmm {
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         // Set up the IMC hive for Windows guests that use pipette in VTL0.
+        // Skip when VMBus is disabled — the no-vmbus prepped image has
+        // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
+            && !self.resources.properties.no_vmbus
         {
             let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
             imc_hive_file

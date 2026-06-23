@@ -754,7 +754,7 @@ fn test_restore_max_version_rejects_higher_version() {
 
     let mut env2 = TestEnv::new();
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -774,13 +774,11 @@ fn test_restore_max_version_rejects_disallowed_feature_flags() {
     let state = env.server.save();
 
     let mut env2 = TestEnv::new();
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
-        },
-        false,
-    );
+        });
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -806,7 +804,7 @@ fn test_restore_max_version_pre_copper() {
     let mut env2 = TestEnv::new();
     let offer_id2 = env2.offer(1);
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10Rs5 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10Rs5 as u32));
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id2, false).unwrap();
@@ -825,13 +823,11 @@ fn test_restore_max_version_copper_with_feature_flags() {
 
     let mut env2 = TestEnv::new();
     let offer_id2 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags,
-        },
-        false,
-    );
+        });
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id2, false).unwrap();
@@ -896,13 +892,11 @@ fn test_restore_max_version_reserved_channel_success() {
 
     let mut env2 = TestEnv::new();
     let offer_id1 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags,
-        },
-        false,
-    );
+        });
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id1, true).unwrap();
@@ -926,7 +920,7 @@ fn test_restore_max_version_reserved_channel_rejects_higher_version() {
     let mut env2 = TestEnv::new();
     let _offer_id1 = env2.offer(1);
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -953,13 +947,11 @@ fn test_restore_max_version_reserved_channel_rejects_disallowed_feature_flags() 
 
     let mut env2 = TestEnv::new();
     let _offer_id1 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
-        },
-        false,
-    );
+        });
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -1421,6 +1413,53 @@ fn test_save_restore_hot_add_during_restore() {
 }
 
 #[test]
+fn test_save_restore_closed_channel_without_per_device_restore() {
+    // A channel that is in the Closed state at save time (offered to the
+    // guest but never opened) and is not re-restored per-device must not
+    // be rescinded by revoke_unclaimed_channels. The existing offer has
+    // no per-device state to lose, and rescinding races with any
+    // in-flight probe in the guest that is attempting to open the
+    // channel.
+    let mut env = TestEnv::new();
+
+    let _offer_id1 = env.offer(1);
+    let _offer_id2 = env.offer(2);
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    let state = env.server.save();
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+    let offer_id2 = env.offer(2);
+
+    env.c().restore(state).unwrap();
+    // Only offer_id1 is restored per-device; offer_id2 simulates a
+    // device that doesn't support save/restore (e.g. the IC devices),
+    // which re-offers itself but leaves the per-device restore to
+    // revoke_unclaimed_channels.
+    env.c().restore_channel(offer_id1, false).unwrap();
+
+    env.c().revoke_unclaimed_channels();
+
+    // No messages should be sent: in particular, no rescind for
+    // offer_id2.
+    assert!(env.notifier.messages.is_empty());
+
+    // Both channels should remain in the Closed state, ready to be
+    // opened by the guest.
+    assert!(matches!(
+        env.server.channels[offer_id1].state,
+        ChannelState::Closed
+    ));
+    assert!(matches!(
+        env.server.channels[offer_id2].state,
+        ChannelState::Closed
+    ));
+}
+
+#[test]
 fn test_pending_messages() {
     let mut env = TestEnv::new();
 
@@ -1787,6 +1826,41 @@ fn test_mnf_channel() {
 
     env.notifier
         .check_messages(make_messages(&expected_channels));
+}
+
+#[test]
+fn test_mnf_channel_open_with_interrupts_disabled() {
+    // A channel with MNF enabled, opened by the guest with interrupts disabled (via
+    // VP_INDEX_DISABLE_INTERRUPT as the target VP), should not have monitor info in its
+    // OpenParams.
+    let mut env = TestEnv::new();
+    let offer_id = env.offer_with_mnf(1);
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+
+    env.c()
+        .handle_open_channel(&protocol::OpenChannel2 {
+            open_channel: protocol::OpenChannel {
+                channel_id: ChannelId(1),
+                open_id: 1,
+                ring_buffer_gpadl_id: GpadlId(1),
+                target_vp: protocol::VP_INDEX_DISABLE_INTERRUPT,
+                downstream_ring_buffer_page_offset: 0,
+                user_data: UserDefinedData::new_zeroed(),
+            },
+            ..FromZeros::new_zeroed()
+        })
+        .unwrap();
+
+    let (id, action) = env.recv.recv().unwrap();
+    assert_eq!(id, offer_id);
+    let Action::Open(op, ..) = action else {
+        panic!("unexpected action: {:?}", action);
+    };
+    assert_eq!(op.open_data.target_vp, None);
+    assert_eq!(op.monitor_info, None);
 }
 
 #[test]

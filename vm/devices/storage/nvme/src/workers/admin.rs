@@ -102,6 +102,22 @@ pub struct AdminState {
     )]
     changed_namespaces: Vec<u32>,
     notified_changed_namespaces: bool,
+    /// Asynchronous Event Configuration (Set Features FID 0x0B / CDW11),
+    /// stored verbatim and echoed back via Get Features. The NVMe Base
+    /// specification lists this Feature as mandatory for I/O controllers
+    /// (Base 2.0c section 3.1.2.1.1 / Base 2.3 section 3.1.3.6, "Feature
+    /// Support Requirements"). Each bit in CDW11 enables a class of
+    /// asynchronous event notification (refer to
+    /// [`spec::Cdw11FeatureAsyncEventConfig`]). Initiators that strictly
+    /// follow the spec may refuse to allocate any Asynchronous Event
+    /// Request resources when the Set Features command for this Feature
+    /// is rejected, which breaks AEN delivery (including the
+    /// changed-namespace AEN that drives namespace hot-add notification).
+    ///
+    /// Defaults to all bits set so that any AEN class the controller
+    /// chooses to fire is enabled until the host explicitly narrows the
+    /// mask via Set Features.
+    async_event_config: u32,
     #[inspect(skip)]
     recv_changed_namespace: futures::channel::mpsc::Receiver<u32>,
     #[inspect(skip)]
@@ -168,6 +184,7 @@ impl AdminState {
             asynchronous_event_requests: Vec::new(),
             changed_namespaces: Vec::new(),
             notified_changed_namespaces: false,
+            async_event_config: u32::MAX,
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
@@ -381,7 +398,22 @@ impl AdminHandler {
             // command or the completed sq deletion.
             poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
-            if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
+            // Fire the changed-namespace AEN only when the host has
+            // enabled the Attached Namespace Attribute Notices class via
+            // Set Features 0Bh (NVMe Base 2.0c section 5.21.1.11 /
+            // Base 2.3 section 5.2.26.1.5, CDW11 bit 8). Per spec,
+            // "If this bit is cleared to '0', then the controller shall
+            // not send the Attached Namespace Attribute Changed
+            // asynchronous event to the host." The mask defaults to all
+            // bits set, so this only suppresses delivery when the host
+            // has explicitly opted out via Set Features.
+            let ns_aen_enabled = spec::Cdw11FeatureAsyncEventConfig::from(state.async_event_config)
+                .namespace_attribute_notices();
+
+            if !state.changed_namespaces.is_empty()
+                && !state.notified_changed_namespaces
+                && ns_aen_enabled
+            {
                 if let Some(cid) = state.asynchronous_event_requests.pop() {
                     state.admin_cq.write(
                         spec::Completion {
@@ -654,6 +686,17 @@ impl AdminHandler {
                     );
                 }
             }
+            spec::Feature::ASYNC_EVENT_CONFIG => {
+                // The Asynchronous Event Configuration feature is mandatory
+                // for I/O controllers per the NVMe Base specification's
+                // Feature Support Requirements table (Base 2.0c section
+                // 3.1.2.1.1 / Base 2.3 section 3.1.3.6). The host sets bits
+                // in CDW11 to enable each class of asynchronous event
+                // notification. We store the value verbatim; Get Features
+                // echoes it back, and the AEN dispatch loop consults the
+                // relevant bits before firing each notification class.
+                state.async_event_config = command.cdw11;
+            }
             feature => {
                 tracelimit::warn_ratelimited!(?feature, "unsupported feature");
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
@@ -685,6 +728,15 @@ impl AdminHandler {
                 dw[0] = spec::Cdw11FeatureVolatileWriteCache::new()
                     .with_wce(true)
                     .into();
+            }
+            spec::Feature::ASYNC_EVENT_CONFIG => {
+                // Echo back the most recently configured mask. The cache
+                // is initialized to all bits set (refer to
+                // [`AdminState::new`]) so that a host which never issues
+                // Set Features 0Bh still sees every notification class
+                // reported as enabled, preserving the pre-existing
+                // behavior of unconditional AEN delivery.
+                dw[0] = state.async_event_config;
             }
             spec::Feature::NVM_RESERVATION_PERSISTENCE => {
                 let namespace = self

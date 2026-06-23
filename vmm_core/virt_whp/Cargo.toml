@@ -6,9 +6,6 @@ name = "virt_whp"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-unstable_whp = ["whp/unstable_whp"]
-
 [target.'cfg(windows)'.dependencies]
 chipset_device.workspace = true
 hv1_emulator.workspace = true

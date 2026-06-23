@@ -111,7 +111,7 @@ impl DiskIo for CryptDisk {
         let mut writer = buffers.writer();
         for i in 0..buffers.len() >> self.inner.sector_shift() {
             reader.read(&mut buf)?;
-            ctx.cipher((sector + i as u64).into(), &mut buf)
+            ctx.cipher(sector + i as u64, &mut buf)
                 .map_err(crypto_error)?;
             writer.write(&buf)?;
         }
@@ -143,7 +143,7 @@ impl DiskIo for CryptDisk {
         while offset < buffers.len() {
             let this_buf = &mut buf[offset..][..sector_size];
             reader.read(this_buf)?;
-            ctx.cipher(tweak.into(), this_buf).map_err(crypto_error)?;
+            ctx.cipher(tweak, this_buf).map_err(crypto_error)?;
             offset += sector_size;
             tweak += 1;
         }

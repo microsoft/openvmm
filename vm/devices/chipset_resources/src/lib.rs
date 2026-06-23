@@ -5,8 +5,76 @@
 
 #![forbid(unsafe_code)]
 
+use local_clock::InspectableLocalClock;
+use vm_resource::CanResolveTo;
+use vm_resource::ResourceKind;
+
 /// The PCI bus name used by the Gen1 (i440BX + PIIX4) chipset.
 pub const LEGACY_CHIPSET_PCI_BUS_NAME: &str = "i440bx";
+
+/// Resource kind for CMOS RTC time-source handles.
+pub enum CmosRtcTimeSourceHandleKind {}
+
+impl ResourceKind for CmosRtcTimeSourceHandleKind {
+    const NAME: &'static str = "cmos_rtc_time_source";
+}
+
+/// Resolved runtime time source for CMOS RTC devices.
+pub struct ResolvedCmosRtcTimeSource(pub Box<dyn InspectableLocalClock>);
+
+impl CanResolveTo<ResolvedCmosRtcTimeSource> for CmosRtcTimeSourceHandleKind {
+    type Input<'a> = ();
+}
+
+pub mod cmos_rtc_time_source {
+    //! Resource definitions and resolvers for CMOS RTC time sources.
+
+    use super::CmosRtcTimeSourceHandleKind;
+    use super::ResolvedCmosRtcTimeSource;
+    use local_clock::LocalClockDelta;
+    use local_clock::SystemTimeClock;
+    use mesh::MeshPayload;
+    use vm_resource::ResolveResource;
+    use vm_resource::ResourceId;
+    use vm_resource::declare_static_resolver;
+
+    /// A time source backed by the host system clock with a configurable
+    /// millisecond delta.
+    #[derive(MeshPayload)]
+    pub struct SystemTimeClockHandle {
+        /// Offset from system time in milliseconds.
+        pub delta_milliseconds: i64,
+    }
+
+    impl ResourceId<CmosRtcTimeSourceHandleKind> for SystemTimeClockHandle {
+        const ID: &'static str = "system_time_clock";
+    }
+
+    /// Resolver for [`SystemTimeClockHandle`].
+    pub struct SystemTimeClockResolver;
+
+    declare_static_resolver! {
+        SystemTimeClockResolver,
+        (CmosRtcTimeSourceHandleKind, SystemTimeClockHandle),
+    }
+
+    impl ResolveResource<CmosRtcTimeSourceHandleKind, SystemTimeClockHandle>
+        for SystemTimeClockResolver
+    {
+        type Output = ResolvedCmosRtcTimeSource;
+        type Error = std::convert::Infallible;
+
+        fn resolve(
+            &self,
+            resource: SystemTimeClockHandle,
+            (): (),
+        ) -> Result<Self::Output, Self::Error> {
+            Ok(ResolvedCmosRtcTimeSource(Box::new(SystemTimeClock::new(
+                LocalClockDelta::from_millis(resource.delta_milliseconds),
+            ))))
+        }
+    }
+}
 
 pub mod i8042 {
     //! Resource definitions for the i8042 PS2 keyboard/mouse controller.
@@ -26,6 +94,22 @@ pub mod i8042 {
 
     impl ResourceId<ChipsetDeviceHandleKind> for I8042DeviceHandle {
         const ID: &'static str = "i8042";
+    }
+}
+
+pub mod isa_dma {
+    //! Resource definitions for the generic ISA DMA controller.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::IsaDmaControllerHandleKind;
+
+    /// A handle to a generic dual 8237 ISA DMA controller.
+    #[derive(MeshPayload)]
+    pub struct GenericIsaDmaDeviceHandle;
+
+    impl ResourceId<IsaDmaControllerHandleKind> for GenericIsaDmaDeviceHandle {
+        const ID: &'static str = "genericIsaDma";
     }
 }
 
@@ -244,5 +328,136 @@ pub mod hyperv_guest_watchdog {
 
     impl ResourceId<ChipsetDeviceHandleKind> for HyperVGuestWatchdogDeviceHandle {
         const ID: &'static str = "hyperv_guest_watchdog";
+    }
+}
+
+pub mod pm {
+    //! Resource definitions for power management devices.
+
+    use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Interface to enable/disable hypervisor PM timer assist.
+    pub trait PmTimerAssist: Send + Sync {
+        /// Sets the port of the PM timer assist, or disables it if `None`.
+        fn set(&self, port: Option<u16>);
+    }
+
+    /// Resolved PM timer assist, wrapping a boxed trait object.
+    pub struct ResolvedPmTimerAssist(pub Box<dyn PmTimerAssist>);
+
+    /// Resource kind for PM timer assist implementations.
+    pub enum PmTimerAssistHandleKind {}
+
+    impl ResourceKind for PmTimerAssistHandleKind {
+        const NAME: &'static str = "pm_timer_assist";
+    }
+
+    impl CanResolveTo<ResolvedPmTimerAssist> for PmTimerAssistHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to the Hyper-V power management device (non-PCI, ACPI/PIO).
+    #[derive(MeshPayload)]
+    pub struct HyperVPowerManagementDeviceHandle {
+        /// IRQ line triggered on ACPI power event.
+        pub acpi_irq: u32,
+        /// Base port IO address of the device's dynamic register region.
+        pub pio_base: u16,
+        /// Optional PM timer assist resource.
+        pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for HyperVPowerManagementDeviceHandle {
+        const ID: &'static str = "hyperv_power_management";
+    }
+
+    /// A handle to the PIIX4 power management device (PCI function 3).
+    #[derive(MeshPayload)]
+    pub struct Piix4PowerManagementDeviceHandle {
+        /// Optional PM timer assist resource.
+        pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+    }
+
+    /// The fixed BDF used by the PIIX4 PM device in the Gen1 chipset.
+    pub const PIIX4_PM_BDF: (u8, u8, u8) = (0, 7, 3);
+
+    /// Default PIO base address for the PM dynamic register region.
+    ///
+    /// This value must match what is reported by the firmware (FADT).
+    pub const DEFAULT_PM_PIO_BASE: u16 = 0x400;
+
+    /// Default ACPI IRQ line for the Hyper-V power management device.
+    pub const DEFAULT_ACPI_IRQ: u32 = 9;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4PowerManagementDeviceHandle {
+        const ID: &'static str = "piix4_power_management";
+    }
+}
+
+pub mod i440bx_host_pci_bridge {
+    //! Resource definitions for the i440BX Host-PCI Bridge.
+
+    use memory_range::MemoryRange;
+    use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Memory mapping state for a GPA range managed by the i440BX PAM registers.
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum GpaState {
+        /// Reads and writes go to RAM.
+        #[default]
+        Writable,
+        /// Reads go to RAM, writes go to MMIO.
+        WriteProtected,
+        /// Reads go to ROM, writes go to RAM.
+        WriteOnly,
+        /// Reads and writes go to MMIO.
+        Mmio,
+    }
+
+    /// A trait to adjust GPA memory range mappings.
+    ///
+    /// This is called when the i440BX PAM (Physical Address Management) PCI
+    /// configuration registers are modified, or for VGA memory.
+    pub trait AdjustGpaRange: Send {
+        /// Adjusts a memory range's mapping state.
+        fn adjust_gpa_range(&mut self, range: MemoryRange, state: GpaState);
+    }
+
+    /// Resolved platform-specific [`AdjustGpaRange`] implementation.
+    pub struct ResolvedAdjustGpaRange(pub Box<dyn AdjustGpaRange>);
+
+    /// Resource kind for platform-specific [`AdjustGpaRange`] implementations.
+    pub enum AdjustGpaRangeHandleKind {}
+
+    impl ResourceKind for AdjustGpaRangeHandleKind {
+        const NAME: &'static str = "i440bx_adjust_gpa_range";
+    }
+
+    impl CanResolveTo<ResolvedAdjustGpaRange> for AdjustGpaRangeHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to an i440BX Host-PCI Bridge device.
+    #[derive(MeshPayload)]
+    pub struct I440BxHostPciBridgeDeviceHandle {
+        /// Platform-specific implementation of GPA range adjustment.
+        pub adjust_gpa_range: Resource<AdjustGpaRangeHandleKind>,
+    }
+
+    /// The fixed BDF used by the i440BX Host-PCI Bridge in the Gen1 chipset.
+    pub const I440BX_HOST_PCI_BRIDGE_BDF: (u8, u8, u8) = (0, 0, 0);
+
+    impl ResourceId<ChipsetDeviceHandleKind> for I440BxHostPciBridgeDeviceHandle {
+        const ID: &'static str = "i440bx-host-pci-bridge";
     }
 }

@@ -11,6 +11,7 @@ pipette_protocol.workspace = true
 
 mesh.workspace = true
 mesh_remote.workspace = true
+pal.workspace = true
 pal_async.workspace = true
 vmsocket.workspace = true
 
@@ -20,6 +21,7 @@ futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
 socket2.workspace = true
+term.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 unicycle.workspace = true

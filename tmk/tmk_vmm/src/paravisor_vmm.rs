@@ -37,13 +37,13 @@ impl RunContext<'_> {
             // TODO: match openhcl defaults when TDX is supported.
             disable_lower_vtl_timer_virt: true,
         };
-        let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
+        let p = virt_mshv_vtl::UhProtoPartition::new(&params, |_| self.state.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
             processor_topology: &self.state.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
-            vtom: None,
+            vtom: p.get_vtom(),
             mem_layout: &self.state.memory_layout,
             complete_memory_layout: &self.state.memory_layout,
             boot_init: None,
@@ -51,6 +51,18 @@ impl RunContext<'_> {
             maximum_vtl: hvdef::Vtl::Vtl0,
         })
         .await?;
+
+        let cvm_params = if isolation == virt::IsolationType::Cca {
+            let cvm_memory = m.cvm_memory().unwrap();
+            Some(virt_mshv_vtl::CvmLateParams {
+                shared_gm: cvm_memory.shared_gm.clone(),
+                isolated_memory_protector: cvm_memory.protector.clone(),
+                shared_dma_client: Arc::new(user_driver::lockmem::LockedMemorySpawner),
+                private_dma_client: self.state.cca_private_dma_client(),
+            })
+        } else {
+            None
+        };
 
         let (partition, vps) = p
             .build(UhLateParams {
@@ -65,7 +77,7 @@ impl RunContext<'_> {
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,
                 vmtime: self.vmtime_source,
-                cvm_params: None,
+                cvm_params,
                 vmbus_relay: false,
             })
             .await?;
@@ -76,7 +88,7 @@ impl RunContext<'_> {
         let r = self
             .run(m.vtl0(), partition.caps(), test, async |_this, runner| {
                 let [vp] = vps.try_into().ok().unwrap();
-                threads.push(start_vp(vp, runner).await?);
+                threads.push(start_vp(vp, runner, isolation).await?);
                 Ok(())
             })
             .await?;
@@ -95,17 +107,26 @@ impl RunContext<'_> {
 async fn start_vp(
     mut vp: UhProcessorBox,
     mut runner: RunnerBuilder,
+    isolation: virt::IsolationType,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let vp_thread = std::thread::spawn(move || {
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();
-        pool.client().set_idle_task(async move |mut control| {
-            let vp = vp
-                .bind_processor::<virt_mshv_vtl::HypervisorBacked>(&driver, Some(&mut control))
-                .unwrap();
-
-            runner.build(vp).unwrap().run_vp().await;
-        });
+        match isolation {
+            #[cfg(guest_arch = "aarch64")]
+            virt::IsolationType::Cca => pool.client().set_idle_task(async move |mut control| {
+                let vp = vp
+                    .bind_processor::<virt_mshv_vtl::CcaBacked>(&driver, Some(&mut control))
+                    .unwrap();
+                runner.build(vp).unwrap().run_vp().await;
+            }),
+            _ => pool.client().set_idle_task(async move |mut control| {
+                let vp = vp
+                    .bind_processor::<virt_mshv_vtl::HypervisorBacked>(&driver, Some(&mut control))
+                    .unwrap();
+                runner.build(vp).unwrap().run_vp().await;
+            }),
+        }
         pool.run()
     });
     Ok(vp_thread)

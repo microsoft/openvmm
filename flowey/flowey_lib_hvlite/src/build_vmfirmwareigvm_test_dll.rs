@@ -11,7 +11,6 @@
 
 use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
 use crate::common::CommonArch;
-use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
@@ -29,8 +28,9 @@ flowey_request! {
     pub struct Request {
         /// Target architecture for the DLL.
         pub arch: CommonArch,
-        /// The IGVM file to embed as the `VMFW`/`NONCONFIDENTIAL` resource.
-        pub igvm: ReadVar<IgvmOutput>,
+        /// Path to the OpenHCL IGVM file to embed as the
+        /// `VMFW`/`NONCONFIDENTIAL` resource.
+        pub igvm_bin: ReadVar<PathBuf>,
         /// The resulting DLL output.
         pub vmfirmwareigvm_test_dll: WriteVar<VmfirmwareigvmTestDllOutput>,
     }
@@ -48,13 +48,13 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             arch,
-            igvm,
+            igvm_bin,
             vmfirmwareigvm_test_dll,
         } = request;
 
         let dll = ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
             arch,
-            igvm,
+            igvm_bin,
             // Fixed version so the DLL is stable across rebuilds. The exact
             // value is not significant (it is not used at runtime), but a
             // distinct value makes it obvious in metadata that this DLL was

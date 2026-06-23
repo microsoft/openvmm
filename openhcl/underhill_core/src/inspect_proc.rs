@@ -18,6 +18,8 @@ fn inspect_meminfo(req: Request<'_>) {
         "Mapped",
         "Slab",
         "AnonPages",
+        "Active(anon)",
+        "Inactive(anon)",
         "SUnreclaim",
         "KernelStack",
         "PageTables",

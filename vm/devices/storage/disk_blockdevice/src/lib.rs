@@ -646,6 +646,13 @@ impl DiskIo for BlockDevice {
         sector_count: u64,
         _block_level_only: bool,
     ) -> Result<(), DiskError> {
+        // Some backends (for example regular files opened through this path)
+        // cannot service BLKDISCARD. In that case, report success and treat
+        // unmap as a no-op.
+        if self.optimal_unmap_sectors == 0 {
+            return Ok(());
+        }
+
         let file = self.file.clone();
         let file_offset = sector_offset << self.sector_shift;
         let length = sector_count << self.sector_shift;
@@ -654,6 +661,17 @@ impl DiskIo for BlockDevice {
             Ok(()) => {}
             Err(_) if sector_offset + sector_count > self.sector_count() => {
                 return Err(DiskError::IllegalBlock);
+            }
+            Err(err)
+                if matches!(
+                    err.raw_os_error(),
+                    Some(libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS)
+                ) =>
+            {
+                tracing::debug!(
+                    error = &err as &dyn std::error::Error,
+                    "discard not supported; ignoring"
+                );
             }
             Err(err) => return Err(self.map_io_error(err)),
         }

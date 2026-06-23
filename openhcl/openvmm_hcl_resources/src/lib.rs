@@ -19,11 +19,21 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
     #[cfg(guest_arch = "x86_64")]
+    chipset::dma::resolver::GenericIsaDmaResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_pm::resolver::Piix4PowerManagementResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::i440bx_host_pci_bridge::resolver::I440BxHostPciBridgeResolver,
+    #[cfg(guest_arch = "x86_64")]
     chipset::pit::resolver::PitResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::pic::resolver::PicResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::ioapic::resolver::GenericIoApicResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pm::resolver::HyperVPowerManagementResolver,
+    chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
+    firmware_uefi::resolver::UefiDeviceResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,

@@ -23,6 +23,8 @@ mod vtl2;
 
 use crate::memory::vtl2_mapper::MappingState;
 use crate::memory::vtl2_mapper::ResetMappingState;
+#[cfg(guest_arch = "aarch64")]
+use aarch64defs::Vendor;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::hv::GlobalHv;
@@ -72,6 +74,7 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp_state::WhpVpStateAccess;
+#[cfg(guest_arch = "x86_64")]
 use x86defs::cpuid::Vendor;
 
 #[cfg(guest_arch = "aarch64")]
@@ -83,6 +86,8 @@ pub struct Whp {
     pub user_mode_apic: bool,
     /// Use the hypervisor's in-built enlightenment support if available.
     pub offload_enlightenments: bool,
+    /// Enable nested virtualization (VMX/SVM) for the guest.
+    pub nested_virt: bool,
 }
 
 #[derive(Inspect)]
@@ -388,6 +393,26 @@ impl Vplc {
             start_vp_context: Default::default(),
         }
     }
+
+    /// Resets the pending per-VTL VP signals to the initial state from `Vplc::new`.
+    ///
+    /// This is used when resetting the partition or scrubbing a VTL, so that
+    /// the freshly-reinitialized VTL does not observe stale events queued
+    /// before the reset.
+    fn reset(&self) {
+        let Self {
+            message_queues,
+            check_queues,
+            extint_pending,
+            start_vp_context,
+            start_vp,
+        } = self;
+        message_queues.clear();
+        check_queues.store(false, Ordering::Relaxed);
+        extint_pending.store(false, Ordering::Relaxed);
+        *start_vp_context.lock() = None;
+        start_vp.store(false, Ordering::Relaxed);
+    }
 }
 
 impl<'a> WhpVpRef<'a> {
@@ -663,14 +688,7 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 }
             }
 
-            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
-            {
-                let _ = vp_info;
-                let _ = vtlp;
-                let _ = vtl;
-            }
-
-            #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+            #[cfg(guest_arch = "aarch64")]
             {
                 let _ = vtlp;
                 vp.vp
@@ -747,6 +765,14 @@ pub enum Error {
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
     #[error("{0} is not supported on this architecture")]
     UnsupportedParameter(&'static str),
+    #[error("WHP does not support nested virtualization on this host")]
+    NestedVirtUnsupported,
+    #[error("nested_virt requires the in-hypervisor APIC")]
+    NestedVirtIncompatibleWithUserModeApic,
+    #[error("nested_virt is incompatible with VTL2")]
+    NestedVirtIncompatibleWithVtl2,
+    #[error("nested_virt is incompatible with isolation")]
+    NestedVirtIncompatibleWithIsolation,
 }
 
 trait WhpResultExt<T> {
@@ -788,7 +814,38 @@ impl virt::Hypervisor for Whp {
     ) -> Result<WhpProtoPartition<'a>, Error> {
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
-        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0, user_mode_apic, offload_enlightenments)?;
+        let nested_virt = self.nested_virt;
+
+        // Nested virt is x86-only.
+        #[cfg(guest_arch = "x86_64")]
+        if nested_virt && user_mode_apic {
+            return Err(Error::NestedVirtIncompatibleWithUserModeApic);
+        }
+        #[cfg(not(guest_arch = "x86_64"))]
+        if nested_virt {
+            return Err(Error::UnsupportedParameter("nested_virt"));
+        }
+
+        // The HV rejects the generic hypercall intercept on nested
+        // partitions, which VTL2 and isolation both need.
+        if nested_virt {
+            if let Some(hv_config) = &config.hv_config {
+                if hv_config.vtl2.is_some() {
+                    return Err(Error::NestedVirtIncompatibleWithVtl2);
+                }
+            }
+            if config.isolation.is_isolated() {
+                return Err(Error::NestedVirtIncompatibleWithIsolation);
+            }
+        }
+
+        let vtl0 = VtlPartition::new(
+            &config,
+            Vtl::Vtl0,
+            user_mode_apic,
+            offload_enlightenments,
+            nested_virt,
+        )?;
         let vtl2 = if config
             .hv_config
             .as_ref()
@@ -799,6 +856,7 @@ impl virt::Hypervisor for Whp {
                 Vtl::Vtl2,
                 user_mode_apic,
                 offload_enlightenments,
+                nested_virt,
             )?)
         } else {
             None
@@ -810,6 +868,7 @@ impl virt::Hypervisor for Whp {
             config,
             user_mode_apic,
             offload_enlightenments,
+            nested_virt,
         })
     }
 }
@@ -826,6 +885,7 @@ pub struct WhpProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     user_mode_apic: bool,
     offload_enlightenments: bool,
+    nested_virt: bool,
 }
 
 impl ProtoPartition for WhpProtoPartition<'_> {
@@ -870,6 +930,7 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             self.vtl2,
             self.user_mode_apic,
             self.offload_enlightenments,
+            self.nested_virt,
         )?);
 
         let with_vtl0 = Arc::new(WhpPartitionAndVtl {
@@ -959,9 +1020,10 @@ impl WhpPartitionInner {
         vtl2: Option<VtlPartition>,
         user_mode_apic: bool,
         offload_enlightenments: bool,
+        nested_virt: bool,
     ) -> Result<Self, Error> {
         // These are validated by VtlPartition::new and only consumed on x86_64.
-        let _ = (user_mode_apic, offload_enlightenments);
+        let _ = (user_mode_apic, offload_enlightenments, nested_virt);
 
         // FUTURE: register cpuid results with the hypervisor, and register
         // appropriate per-VP results where necessary (or tell the hypervisor
@@ -992,7 +1054,8 @@ impl WhpPartitionInner {
                         .with_deprecate_auto_eoi(true)
                         .with_use_relaxed_timing(true)
                         .with_use_ex_processor_masks(true)
-                        .with_use_apic_msrs(use_apic_msrs);
+                        .with_use_apic_msrs(use_apic_msrs)
+                        .with_nested(nested_virt);
                     const MAX_CPUS: u32 = 2048;
                     cpuid.extend_from_slice(
                         &hv1_emulator::cpuid::make_hv_cpuid_leaves(
@@ -1087,28 +1150,32 @@ impl WhpPartitionInner {
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
+            caps.nested_virt = nested_virt;
             caps
         };
-        #[cfg(guest_arch = "aarch64")]
-        let caps = {
-            let features =
-                whp::capabilities::processor_features().for_op("get processor features")?;
-            virt::aarch64::Aarch64PartitionCapabilities {
-                supports_aarch32_el0: features
-                    .bank0
-                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
-            }
-        };
-
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
+            #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
             #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
             #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
             #[cfg(guest_arch = "aarch64")]
-            whp::abi::WHvProcessorVendorArm => Vendor([0; 12]),
+            whp::abi::WHvProcessorVendorArm => Vendor::ARM,
             _ => panic!("unsupported processor vendor"),
+        };
+
+        #[cfg(guest_arch = "aarch64")]
+        let caps = {
+            let features =
+                whp::capabilities::processor_features().for_op("get processor features")?;
+            virt::aarch64::Aarch64PartitionCapabilities {
+                isolation: IsolationType::None,
+                supports_aarch32_el0: features
+                    .bank0
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+                vendor,
+            }
         };
 
         let hvstate = if proto_config.hv_config.is_some() {
@@ -1247,6 +1314,7 @@ impl VtlPartition {
         vtl: Vtl,
         user_mode_apic: bool,
         offload_enlightenments: bool,
+        nested_virt: bool,
     ) -> Result<Self, Error> {
         #[cfg(not(guest_arch = "x86_64"))]
         {
@@ -1255,6 +1323,9 @@ impl VtlPartition {
             }
             if !offload_enlightenments {
                 return Err(Error::UnsupportedParameter("no_enlightenments"));
+            }
+            if nested_virt {
+                return Err(Error::UnsupportedParameter("nested_virt"));
             }
         }
 
@@ -1298,6 +1369,19 @@ impl VtlPartition {
             .for_op("set processor count")?;
 
         #[cfg(guest_arch = "x86_64")]
+        if nested_virt {
+            match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
+                Ok(_) => {}
+                Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
+                    return Err(Error::NestedVirtUnsupported);
+                }
+                Err(err) => {
+                    return Err(err).for_op("enable nested virtualization");
+                }
+            }
+        }
+
+        #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
 
@@ -1335,7 +1419,7 @@ impl VtlPartition {
             }
         }
 
-        #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+        #[cfg(guest_arch = "aarch64")]
         {
             let gic_params = whp::abi::WHV_ARM64_IC_PARAMETERS {
                 EmulationMode: whp::abi::WHV_ARM64_IC_EMULATION_MODE::GicV3,
@@ -1377,7 +1461,13 @@ impl VtlPartition {
 
         let mut with_overlays = false;
         if let Some(hv_config) = &config.hv_config {
-            extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
+            // The HV rejects the generic hypercall intercept on nested
+            // partitions. Skip it when nested_virt is enabled. In all other
+            // cases, we need it for HvPostMessage at the very least
+            // (HvSignalEvent is covered by the unknown synic connection exit).
+            if !nested_virt {
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
+            }
             #[cfg(guest_arch = "x86_64")]
             {
                 extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
@@ -1431,12 +1521,7 @@ impl VtlPartition {
 
                     #[cfg(guest_arch = "aarch64")]
                     {
-                        features.bank0 |= F::AccessVpRegs | F::SyncContext;
-                    }
-
-                    #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
-                    {
-                        features.bank0 |= F::TbFlushHypercalls;
+                        features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
                     }
 
                     if vtl == Vtl::Vtl0 {
@@ -1446,6 +1531,22 @@ impl VtlPartition {
                         // BUG: this feature is required for running VTL2 w/ vmbus
                         // under OpenVMM to avoid timer/vmbus sint contention
                         features.bank0 |= F::DirectSyntheticTimers;
+                    }
+
+                    // On Intel, opt into enlightened VMCS and nested
+                    // DebugCtl for nested virt. These are Intel-only;
+                    // the HV rejects them on AMD.
+                    #[cfg(guest_arch = "x86_64")]
+                    if nested_virt
+                        && whp::capabilities::processor_vendor().for_op("get processor vendor")?
+                            == whp::abi::WHvProcessorVendorIntel
+                    {
+                        if supported_synth_features.bank0.is_set(F::EnlightenedVmcs) {
+                            features.bank0 |= F::EnlightenedVmcs;
+                        }
+                        if supported_synth_features.bank0.is_set(F::NestedDebugCtl) {
+                            features.bank0 |= F::NestedDebugCtl;
+                        }
                     }
 
                     // Enable overlay emulation for offloading only if vtl2 is not present.
@@ -1642,13 +1743,18 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
         self.state.reset(false, is_bsp);
 
+        // For each enabled VTL: apply arch fixups that WHP doesn't handle
+        // and clear any pending `start_vp_context` (via `finish_reset`),
+        // then clear stale pending per-VTL VP signal flags (via
+        // `Vplc::reset`).
         // VTL0 is always present.
         self.finish_reset(Vtl::Vtl0);
-        self.vplc(Vtl::Vtl0).message_queues.clear();
+        self.vplc(Vtl::Vtl0).reset();
         if self.state.vtls.vtl2.is_some() {
             self.finish_reset(Vtl::Vtl2);
-            self.vplc(Vtl::Vtl2).message_queues.clear();
+            self.vplc(Vtl::Vtl2).reset();
         }
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
@@ -1663,11 +1769,30 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
     fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
+
+        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2 will
+        // re-issue `HvCallEnableVpVtl` on each AP to program its startup
+        // context (RIP/RSP/CR3/GDT/IDT)
+        //
+        // Leave `enabled_vtls` alone so that `state.reset` keeps `active_vtl`
+        // at VTL2 on the AP, allowing it to idle in VTL2 (in startup suspend)
+        // during the servicing window.
+        if !is_bsp {
+            self.inner.vtl2_enable.store(false, Ordering::Relaxed);
+        }
+
         self.state.reset(true, is_bsp);
 
-        // Scrub only resets VTL2.
+        // Scrub only resets VTL2. Reset the Vplc to clear any stale pending
+        // signals (message queue notifications, external interrupts, start-VP
+        // requests, etc.) -- the hypervisor zeroes the equivalent per-VTL
+        // activity flags during a VTL scrub.
         self.finish_reset(Vtl::Vtl2);
-        self.vplc(Vtl::Vtl2).message_queues.clear();
+        self.vplc(Vtl::Vtl2).reset();
+
+        // Clear any pending VTL2 wake signal, since VTL2 is now back in
+        // startup suspend and any prior wake request is stale.
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
@@ -1702,8 +1827,12 @@ impl virt::Hv1 for WhpPartition {
         Some(self)
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        #[cfg(guest_arch = "x86_64")]
+        if self.inner.caps.nested_virt {
+            anyhow::bail!("synic ports are not supported with nested virtualization on Windows");
+        }
+        Ok(self.synic_ports.clone())
     }
 }
 

@@ -8,6 +8,7 @@
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
+use crate::vm_controller::GuestPowerActions;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
 use crate::vm_controller::VmControllerEvent;
@@ -37,9 +38,12 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -571,15 +575,22 @@ impl VmService {
             pcie_root_complexes: vec![],
             pcie_devices: vec![],
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices: vec![],
-            memory: MemoryConfig {
-                mem_size: config_mem_size,
-                prefetch_memory: false,
-                private_memory: false,
-                transparent_hugepages: false,
-                hugepages: false,
-                hugepage_size: None,
-                numa_mem_sizes: None,
+            numa: NumaTopology {
+                nodes: vec![NumaNode {
+                    mem: Some(MemoryConfig {
+                        mem_size: config_mem_size,
+                        prefetch_memory: false,
+                        private_memory: false,
+                        transparent_hugepages: false,
+                        hugepages: false,
+                        hugepage_size: None,
+                        host_numa_node: None,
+                    }),
+                    vps: VpAssignment::FromTopology,
+                }],
+                distances: vec![],
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -611,9 +622,9 @@ impl VmService {
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
+            isa_dma_controller: chipset.isa_dma_controller,
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
-            generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
             efi_diagnostics_log_level: Default::default(),
@@ -662,6 +673,7 @@ impl VmService {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        vnode: None,
                     });
                 } else {
                     config.virtio_devices.push((VirtioBus::Mmio, resource));
@@ -685,6 +697,7 @@ impl VmService {
                             vtl: DeviceVtl::Vtl0,
                             instance_id: Guid::new_random(),
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
+                            vnode: None,
                         });
                     } else {
                         config.virtio_devices.push((VirtioBus::Mmio, resource));
@@ -748,6 +761,10 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            // The ttrpc/grpc server never exits on a guest power event; it uses
+            // the historical defaults (none of which is Exit), so the
+            // ExitRequested event handled below is unreachable here.
+            guest_power_actions: GuestPowerActions::default(),
         };
 
         // Spawn the controller task.
@@ -799,6 +816,12 @@ impl VmService {
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
+            }
+            VmControllerEvent::ExitRequested { code } => {
+                // The server leaves the guest power actions at their defaults
+                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
+                // log rather than exiting the server out from under its clients.
+                tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {

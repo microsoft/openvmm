@@ -707,12 +707,20 @@ impl ReadyState {
                 device_count: 1,
                 device: [],
             };
+            let (flags, numa_node) = if let Some(vnode) = dev.vnode {
+                (
+                    protocol::DeviceDescription2Flags::new().with_numa_affinity_specified(true),
+                    vnode,
+                )
+            } else {
+                (protocol::DeviceDescription2Flags::new(), 0)
+            };
             let device = protocol::DeviceDescription2 {
                 pnp_id,
                 slot: SlotNumber::new(),
                 serial_num: dev.serial_num,
-                flags: 0,
-                numa_node: 0,
+                flags,
+                numa_node,
                 rsvd: 0,
             };
 
@@ -1221,6 +1229,8 @@ pub struct VpciChannel {
     hardware_ids: HardwareIds,
     #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
+    /// NUMA node affinity reported to the guest in `DeviceDescription2`.
+    vnode: Option<u16>,
 
     // The underlying device.
     #[inspect(skip)]
@@ -1335,6 +1345,7 @@ impl VpciChannel {
         instance_id: Guid,
         config_space: VpciConfigSpace,
         msi_mapper: VpciInterruptMapper,
+        vnode: Option<u16>,
     ) -> Result<Self, NotPciDevice> {
         let (hardware_ids, bar_masks);
         {
@@ -1351,6 +1362,7 @@ impl VpciChannel {
             serial_num: instance_id.data1, // Use FIOV precedent of serial number from first block of GUID
             hardware_ids,
             bar_masks,
+            vnode,
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
@@ -1540,6 +1552,7 @@ mod tests {
             serial_num: 0x1234,
             hardware_ids,
             bar_masks,
+            vnode: None,
             device,
             bars_set: false,
             interrupts: Vec::new(),
@@ -1704,7 +1717,7 @@ mod tests {
             assert_eq!(device.pnp_id.sub_vendor_id, self.config.type0_sub_vendor_id);
             assert_eq!(device.pnp_id.sub_system_id, self.config.type0_sub_system_id);
             assert_eq!(device.slot, SlotNumber::new());
-            assert_eq!(device.flags, 0,);
+            assert_eq!(device.flags, protocol::DeviceDescription2Flags::new());
             assert_eq!(device.numa_node, 0);
             assert_eq!(device.rsvd, 0);
         }

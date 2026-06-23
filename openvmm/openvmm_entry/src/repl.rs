@@ -112,6 +112,13 @@ enum InteractiveCommand {
         dir: PathBuf,
     },
 
+    /// Dump VM state (VP registers + memory) to a .vmrs file for WinDbg.
+    #[clap(visible_alias = "dump")]
+    DumpState {
+        /// Path for the output .vmrs file.
+        path: PathBuf,
+    },
+
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
     PulseSaveRestore,
@@ -396,7 +403,7 @@ pub(crate) struct ReplResources {
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
     resources: ReplResources,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let ReplResources {
         vm_rpc,
         vm_controller,
@@ -477,7 +484,7 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                term::set_raw_console(true).expect("failed to set raw console mode");
+                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -497,7 +504,8 @@ pub(crate) async fn run_repl(
                     }
                 }
 
-                term::set_raw_console(false).expect("failed to set raw console mode");
+                crossterm::terminal::disable_raw_mode()
+                    .expect("failed to disable raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");
@@ -579,7 +587,10 @@ pub(crate) async fn run_repl(
     let mut inspect_completion_engine_recv =
         inspect_completion_engine_recv.map(Event::InspectRequestFromCompletionEngine);
 
-    loop {
+    // The exit status to return: 0 normally, or the code the controller asks to
+    // exit with on a guest power event the user opted into. The top-level runner
+    // does cleanup and exits with it.
+    let exit_request: i32 = loop {
         let event = {
             let pulse_save_restore = pin!(async {
                 match pulse_save_restore_interval {
@@ -638,7 +649,7 @@ pub(crate) async fn run_repl(
                 res.send(deferred);
                 continue;
             }
-            Event::Quit => break,
+            Event::Quit => break 0,
             Event::PulseSaveRestore => {
                 vm_rpc.call(VmRpc::PulseSaveRestore, ()).await??;
                 continue;
@@ -729,7 +740,8 @@ pub(crate) async fn run_repl(
                         if let Some(err) = &error {
                             tracing::error!(error = err.as_str(), "vm worker stopped");
                         }
-                        break;
+                        // Non-zero exit when the worker stopped with an error.
+                        break i32::from(error.is_some());
                     }
                     VmControllerEvent::VncWorkerStopped { .. } => {
                         // VNC stopped but VM is still running, continue.
@@ -737,6 +749,7 @@ pub(crate) async fn run_repl(
                     VmControllerEvent::GuestHalt(reason) => {
                         tracing::info!(reason = reason.as_str(), "guest halted");
                     }
+                    VmControllerEvent::ExitRequested { code } => break code,
                 }
                 continue;
             }
@@ -829,6 +842,27 @@ pub(crate) async fn run_repl(
                     }
                     Err(err) => {
                         eprintln!("error: save-snapshot failed: {err:#}");
+                    }
+                }
+            }
+            InteractiveCommand::DumpState { path } => {
+                match vm_controller
+                    .call(
+                        VmControllerRpc::DumpState,
+                        path.to_string_lossy().into_owned(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| Ok(r?))
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "VM state dumped to VMRS file"
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: dump-state failed: {err:#}");
                     }
                 }
             }
@@ -1443,9 +1477,9 @@ pub(crate) async fn run_repl(
             }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
         }
-    }
+    };
 
-    Ok(())
+    Ok(exit_request)
 }
 
 // -- Rustyline helpers --

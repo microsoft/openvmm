@@ -410,7 +410,7 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     ) -> Result<(), Error> {
         match notification {
             HostNotifications::RX_CLEAR_BUFFER => {
-                todo!("clear rx buffer unimplemented")
+                self.state.rx_bytes.clear();
             }
             HostNotifications::TX_DATA_AVAILABLE => {
                 let message = protocol::TxDataAvailableMessage::read_from_prefix(buf)

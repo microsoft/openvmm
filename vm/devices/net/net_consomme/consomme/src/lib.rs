@@ -22,6 +22,7 @@ mod dhcpv6;
 mod dns;
 mod dns_resolver;
 mod icmp;
+mod local_addr_map;
 mod ndp;
 mod tcp;
 mod udp;
@@ -31,6 +32,13 @@ mod windows;
 
 /// Standard DNS port number.
 const DNS_PORT: u16 = 53;
+
+/// Default per-connection TCP ring buffer bounds: start small and autotune up
+/// to a few MiB so idle/short connections stay cheap while bulk flows ramp.
+const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
+    initial: 16 * 1024,
+    max: 4 * 1024 * 1024,
+};
 
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -46,13 +54,56 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
+pub use smoltcp::wire::IpVersion;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct FourTuple {
+    src: SocketAddr,
+    dst: SocketAddr,
+}
+
+impl core::fmt::Display for FourTuple {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}-{}", self.src, self.dst)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct PortForwardKey {
+    family: IpVersion,
+    guest_port: u16,
+}
+
+impl PortForwardKey {
+    fn new(family: IpVersion, guest_port: u16) -> Self {
+        Self { family, guest_port }
+    }
+
+    fn from_socket_addr(addr: SocketAddr, guest_port: u16) -> Self {
+        let family = match addr {
+            SocketAddr::V4(_) => IpVersion::Ipv4,
+            SocketAddr::V6(_) => IpVersion::Ipv6,
+        };
+        Self::new(family, guest_port)
+    }
+}
+
+impl core::fmt::Display for PortForwardKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.family, self.guest_port)
+    }
+}
 
 /// A consomme instance.
 #[derive(InspectMut)]
@@ -72,6 +123,7 @@ struct ConsommeState {
     params: ConsommeParams,
     #[inspect(skip)]
     buffer: Box<[u8]>,
+    local_addr_map: local_addr_map::LocalAddrMap,
 }
 
 /// Dynamic networking properties of a consomme endpoint.
@@ -112,8 +164,13 @@ pub struct ConsommeParams {
     /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
     /// its own IPv6 address using the advertised prefix and its interface identifier.
     /// This field is learned from incoming IPv6 traffic from the guest.
-    #[inspect(with = "Option::is_some")]
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6: Option<Ipv6Address>,
+    /// Current routable IPv6 address learned from guest via SLAAC (if any).
+    /// The guest will typically have two addresses: a local and a routable one.
+    /// This field is learned from incoming IPv6 traffic from the guest.
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
+    pub client_ip_ipv6_routable: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
     #[inspect(debug)]
     pub udp_timeout: Duration,
@@ -121,6 +178,36 @@ pub struct ConsommeParams {
     /// routable IPv6 address.
     #[inspect(display)]
     pub skip_ipv6_checks: bool,
+    /// Per-connection TCP receive ring buffer bounds (guest-to-host).
+    pub tcp_rx_buffer: TcpBufferBounds,
+    /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
+    pub tcp_tx_buffer: TcpBufferBounds,
+}
+
+/// Bounds for a per-connection TCP ring buffer.
+///
+/// The buffer is allocated at `initial` and may grow up to `max` as demand
+/// warrants. Both values are clamped to `[16 KiB, 4 MiB]` and rounded up to a
+/// power of two, then `initial` is clamped to be no greater than `max`. The
+/// advertised TCP window scale is derived from `max`, so `max` is fixed for
+/// the connection's lifetime.
+///
+/// Note that if the peer does not negotiate window scaling, the effective
+/// receive window (and thus the useful rx capacity) is capped at `u16::MAX`
+/// regardless of `max`.
+#[derive(Inspect, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpBufferBounds {
+    /// Starting capacity, allocated up front.
+    pub initial: usize,
+    /// Ceiling for autotuned growth.
+    pub max: usize,
+}
+
+impl TcpBufferBounds {
+    /// Use the same value for `initial` and `max`. Disables autotune growth.
+    pub const fn fixed(n: usize) -> Self {
+        Self { initial: n, max: n }
+    }
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -150,9 +237,12 @@ impl ConsommeParams {
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
+            client_ip_ipv6_routable: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
+            tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+            tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
         })
     }
 
@@ -238,6 +328,134 @@ impl ConsommeParams {
             ns.push(self.gateway_link_local_ipv6.into());
         }
         ns
+    }
+
+    fn is_local_address(&self, addr: &SocketAddr) -> bool {
+        match addr {
+            SocketAddr::V4(v4) => v4.ip().is_loopback() || v4.ip() == &self.client_ip,
+            SocketAddr::V6(v6) => {
+                v6.ip().is_loopback()
+                    || self.client_ip_ipv6.is_some_and(|ip| v6.ip() == &ip)
+                    || self
+                        .client_ip_ipv6_routable
+                        .is_some_and(|ip| v6.ip() == &ip)
+            }
+        }
+    }
+}
+
+impl ConsommeState {
+    fn try_ft_from_remote_address(
+        &mut self,
+        remote_addr: &SocketAddr,
+        dst_port: u16,
+    ) -> Option<FourTuple> {
+        Self::translate_remote_address(
+            &self.params,
+            &mut self.local_addr_map,
+            remote_addr,
+            dst_port,
+        )
+    }
+
+    fn translate_remote_address(
+        params: &ConsommeParams,
+        local_addr_map: &mut local_addr_map::LocalAddrMap,
+        remote_addr: &SocketAddr,
+        dst_port: u16,
+    ) -> Option<FourTuple> {
+        // Pick the best destination (guest) address based on the origination of the remote packet.
+        let dst = match remote_addr {
+            SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(params.client_ip, dst_port)),
+            SocketAddr::V6(v6) => {
+                let client_ipv6 = if !v6.ip().is_unicast_link_local()
+                    && let Some(routable) = params.client_ip_ipv6_routable
+                {
+                    routable
+                } else if let Some(ipv6) = params.client_ip_ipv6 {
+                    ipv6
+                } else if let Some(routable) = params.client_ip_ipv6_routable {
+                    routable
+                } else {
+                    tracelimit::warn_ratelimited!(addr = %remote_addr, "Client IPv6 address is not known, dropping packet");
+                    return None;
+                };
+
+                SocketAddr::V6(SocketAddrV6::new(client_ipv6, dst_port, 0, 0))
+            }
+        };
+
+        // If the remote IP is loopback or matches the client IP address, replace
+        // it with a unique virtual address so that the guest routes the reply
+        // back through the virtual adapter and we can reverse-translate it on the
+        // outgoing path.
+        //
+        // This is skipped for endpoints that are themselves dedicated to
+        // loopback traffic (their `client_ip` is a loopback address, as used by
+        // WSL's VirtioProxy localhost forwarding). The guest routes those
+        // replies back through this adapter based on the loopback source, so
+        // rewriting the source out of the loopback range would break the return
+        // path.
+        let is_loopback_adapter = params.client_ip.is_loopback();
+        let src = match remote_addr {
+            SocketAddr::V4(v4) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
+                let subnet_base =
+                    Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
+                let virtual_ip = local_addr_map.get_or_allocate_v4(
+                    *v4.ip(),
+                    subnet_base,
+                    params.net_mask,
+                    params.gateway_ip,
+                    params.client_ip,
+                );
+                match virtual_ip {
+                    Some(ip) => SocketAddr::V4(SocketAddrV4::new(ip, v4.port())),
+                    None => {
+                        // Pool exhausted, fall back to gateway IP.
+                        SocketAddr::V4(SocketAddrV4::new(params.gateway_ip, v4.port()))
+                    }
+                }
+            }
+            SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
+                let virtual_ip = local_addr_map.get_or_allocate_v6(
+                    *v6.ip(),
+                    params.gateway_link_local_ipv6,
+                    params.client_ip_ipv6,
+                    params.client_ip_ipv6_routable,
+                );
+                match virtual_ip {
+                    Some(ip) => SocketAddr::V6(SocketAddrV6::new(ip, v6.port(), 0, 0)),
+                    None => {
+                        // Pool exhausted, fall back to gateway link-local.
+                        SocketAddr::V6(SocketAddrV6::new(
+                            params.gateway_link_local_ipv6,
+                            v6.port(),
+                            0,
+                            0,
+                        ))
+                    }
+                }
+            }
+            SocketAddr::V6(v6) => {
+                // Remove flow info and scope id from the source address.
+                SocketAddr::V6(SocketAddrV6::new(*v6.ip(), v6.port(), 0, 0))
+            }
+            _ => *remote_addr,
+        };
+
+        Some(FourTuple { src, dst })
+    }
+
+    /// Resolve a destination address that the guest is sending to. If it is a
+    /// virtual mapped address, return the real host address. Otherwise return
+    /// the address unchanged.
+    fn resolve_destination(&self, addr: &SocketAddr) -> SocketAddr {
+        let ip = addr.ip();
+        if let Some(real_ip) = self.local_addr_map.resolve_virtual(&ip) {
+            SocketAddr::new(real_ip, addr.port())
+        } else {
+            *addr
+        }
     }
 }
 
@@ -461,6 +679,28 @@ impl IpAddresses {
     }
 }
 
+/// Returns `true` if two IPv4 addresses are in the same subnet given a mask.
+pub(crate) fn is_same_ipv4_subnet(
+    addr1: Ipv4Address,
+    addr2: Ipv4Address,
+    subnet_mask: Ipv4Address,
+) -> bool {
+    let subnet_mask = subnet_mask.to_bits();
+    (addr1.to_bits() & subnet_mask) == (addr2.to_bits() & subnet_mask)
+}
+
+/// Returns `true` if two IPv6 addresses share the same prefix of the given length.
+pub(crate) fn is_same_ipv6_subnet(addr1: Ipv6Address, addr2: Ipv6Address, prefix_len: u8) -> bool {
+    if prefix_len == 0 {
+        return true;
+    }
+    if prefix_len >= 128 {
+        return addr1 == addr2;
+    }
+    let mask = u128::MAX << (128 - prefix_len);
+    (addr1.to_bits() & mask) == (addr2.to_bits() & mask)
+}
+
 /// Returns `true` if the given IPv6 address is a globally routable unicast
 /// address (i.e., not loopback, unspecified, or link-local).
 fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
@@ -503,12 +743,15 @@ impl Consomme {
                 }
             };
         let timeout = params.udp_timeout;
+        let tcp_rx_buffer = params.tcp_rx_buffer;
+        let tcp_tx_buffer = params.tcp_tx_buffer;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
+                local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
-            tcp: tcp::Tcp::new(),
+            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
@@ -522,6 +765,16 @@ impl Consomme {
     /// changed at runtime.
     pub fn params_mut(&mut self) -> &mut ConsommeParams {
         &mut self.state.params
+    }
+
+    /// Clears the local address mapping table. Call this after changing the
+    /// network configuration (e.g., via [`ConsommeParams::set_cidr`]) to avoid
+    /// stale or conflicting virtual address mappings.
+    ///
+    /// Some in-flight packets may be lost during the transition; this is
+    /// acceptable.
+    pub fn clear_local_addr_map(&mut self) {
+        self.state.local_addr_map.clear();
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -687,11 +940,27 @@ impl<T: Client> Access<'_, T> {
         }
 
         let next_header = ipv6.next_header();
+        let src_addr = ipv6.src_addr();
         let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
         let addresses = Ipv6Addresses {
-            src_addr: ipv6.src_addr(),
+            src_addr,
             dst_addr: ipv6.dst_addr(),
         };
+
+        // Learn the client's routable IPv6 address from outgoing traffic.
+        // This is more reliable than relying solely on DAD Neighbor
+        // Solicitations, which some clients skip on private virtual links.
+        if !src_addr.is_unspecified()
+            && !src_addr.is_multicast()
+            && !src_addr.is_unicast_link_local()
+            && self.inner.state.params.client_ip_ipv6_routable != Some(src_addr)
+        {
+            tracing::debug!(
+                client_ipv6_routable = %src_addr,
+                "learned client routable IPv6 address from outgoing traffic"
+            );
+            self.inner.state.params.client_ip_ipv6_routable = Some(src_addr);
+        }
 
         match next_header {
             IpProtocol::Udp => {
@@ -728,5 +997,48 @@ impl<T: Client> Access<'_, T> {
                 .params
                 .internal_nameservers(self.inner.host_has_ipv6);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::Ipv6Address;
+
+    #[test]
+    fn test_is_same_ipv6_subnet_basic() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 2);
+        assert!(is_same_ipv6_subnet(a, b, 48));
+        assert!(!is_same_ipv6_subnet(a, b, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_zero() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        assert!(is_same_ipv6_subnet(a, b, 0));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_128_exact_match() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        assert!(is_same_ipv6_subnet(a, a, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_128_no_match() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+        assert!(!is_same_ipv6_subnet(a, b, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_above_128_does_not_panic() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+        // prefix_len > 128 should behave like /128 (exact match), not panic.
+        assert!(is_same_ipv6_subnet(a, a, 200));
+        assert!(!is_same_ipv6_subnet(a, b, 255));
     }
 }

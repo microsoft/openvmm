@@ -80,6 +80,10 @@ trait ControlVp: ProtobufSaveRestore {
 
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp;
+
+    /// Get full VP state for dump generation.
+    #[cfg(feature = "dump")]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState>;
 }
 
 enum StopReason {
@@ -246,6 +250,36 @@ where
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp {
         self
+    }
+
+    #[cfg(all(guest_arch = "x86_64", feature = "dump"))]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
+        let mut access = self.vp.access_state(vtl);
+        let registers = access.registers().context("failed to get registers")?;
+        let debug_registers = access
+            .debug_regs()
+            .context("failed to get debug registers")?;
+        let xsave = access.xsave().context("failed to get xsave state")?;
+        let xcr0 = access.xcr().context("failed to get xcr0")?;
+        Ok(hyperv_dump::VpState::X64(hyperv_dump::X64VpState {
+            registers,
+            debug_registers,
+            xsave,
+            xcr0,
+        }))
+    }
+
+    #[cfg(all(guest_arch = "aarch64", feature = "dump"))]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
+        let mut access = self.vp.access_state(vtl);
+        let registers = access.registers().context("failed to get registers")?;
+        let system_registers = access
+            .system_registers()
+            .context("failed to get system registers")?;
+        Ok(hyperv_dump::VpState::Aarch64(hyperv_dump::Aarch64VpState {
+            registers,
+            system_registers: Some(system_registers),
+        }))
     }
 }
 
@@ -943,6 +977,24 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 #[error("the vp runner was dropped")]
 struct RunnerGoneError(#[source] RpcError);
 
+#[cfg(feature = "dump")]
+impl VpSet {
+    /// Gets full VP state for dump generation.
+    ///
+    /// Returns all registers needed for a `.vmrs` dump file.
+    pub async fn get_dump_vp_state(
+        &self,
+        vp: VpIndex,
+        vtl: Vtl,
+    ) -> anyhow::Result<hyperv_dump::VpState> {
+        self.vps[vp.index() as usize]
+            .send
+            .call(|x| VpEvent::State(StateEvent::GetDumpVpState(x)), vtl)
+            .await
+            .map_err(RunnerGoneError)?
+    }
+}
+
 #[cfg(feature = "gdb")]
 impl VpSet {
     /// Set the debug state for a single VP.
@@ -1049,6 +1101,8 @@ enum StateEvent {
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
+    #[cfg(feature = "dump")]
+    GetDumpVpState(Rpc<Vtl, anyhow::Result<hyperv_dump::VpState>>),
     #[cfg(feature = "gdb")]
     Debug(DebugEvent),
 }
@@ -1293,6 +1347,8 @@ impl RunnerInner {
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
+            #[cfg(feature = "dump")]
+            StateEvent::GetDumpVpState(rpc) => rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl)),
             #[cfg(feature = "gdb")]
             StateEvent::Debug(event) => match event {
                 DebugEvent::SetDebugState(rpc) => {

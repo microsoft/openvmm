@@ -7,12 +7,10 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-# Use this feature to enable tests that pulls in the `ms-tpm-20-ref`
-# with dependency on openssl.
-test_tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
+# Use this feature to enable tests that pull in `ms-tpm-20-ref`.
+test_tpm = ["dep:ms-tpm-20-ref"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_protocol.workspace = true
 cvm_tracing.workspace = true
 inspect.workspace = true
@@ -21,6 +19,13 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(target_env = "musl")'.dependencies]
+# TODO: Change this to symcrypt if the OSS TPM can be made to work with it
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [dev-dependencies]
 getrandom.workspace = true

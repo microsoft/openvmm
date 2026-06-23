@@ -451,8 +451,7 @@ impl<'a> WhpProcessor<'a> {
             }
         }
 
-        let notifications =
-            &mut self.state.vtls[self.state.active_vtl].deliverability_notifications;
+        let notifications = &mut self.state.vtls[vtl].deliverability_notifications;
 
         notifications.set_sints(notifications.sints() & !sints);
         self.flush_messages(vtl, sints);

@@ -24,6 +24,7 @@ const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_ASYNC_DIO
     | FUSE_ATOMIC_O_TRUNC
     | FUSE_BIG_WRITES
+    | FUSE_MAX_PAGES
     | FUSE_INIT_EXT;
 
 // Default flags2 to negotiate when FUSE_INIT_EXT is supported.
@@ -511,7 +512,7 @@ impl Session {
         out.congestion_threshold = info.congestion_threshold;
         out.max_write = info.max_write;
         out.time_gran = info.time_gran;
-        out.max_pages = ((info.max_write - 1) / PAGE_SIZE - 1).try_into().unwrap();
+        out.max_pages = info.max_write.div_ceil(PAGE_SIZE).min(u16::MAX as u32) as u16;
         // Only report flags2 when extended init was negotiated.
         if info.want & FUSE_INIT_EXT != 0 {
             out.flags2 = info.want2;
@@ -805,8 +806,8 @@ mod tests {
 
     const INIT_REPLY: &[u8] = &[
         80, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 39, 0, 0, 0, 0, 0, 2, 0, 41,
-        144, 12, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1, 0, 0, 0, 254, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        144, 12, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
     const GETATTR_REPLY: &[u8] = &[
@@ -903,11 +904,12 @@ mod tests {
     }
 
     /// A minimal Fuse implementation that records the SessionInfo seen during init
-    /// and optionally requests FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2.
+    /// and optionally requests FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 or overrides max_write.
     #[derive(Default)]
     struct InitCapturingFs {
         info: Arc<Mutex<Option<(u32, u32, u32)>>>, // (want, want2, capable)
         request_direct_io_mmap: bool,
+        max_write_override: Option<u32>,
     }
 
     impl Fuse for InitCapturingFs {
@@ -915,6 +917,9 @@ mod tests {
             if self.request_direct_io_mmap && info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0
             {
                 info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+            }
+            if let Some(max_write) = self.max_write_override {
+                info.max_write = max_write;
             }
             *self.info.lock() = Some((info.want, info.want2, info.capable()));
         }
@@ -1090,6 +1095,107 @@ mod tests {
 
         // An error reply should have been sent.
         assert!(sender.last_error.is_some());
+    }
+
+    #[test]
+    fn init_negotiates_fuse_max_pages_when_kernel_supports_it() {
+        // Kernel advertises FUSE_MAX_PAGES.
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The filesystem should see FUSE_MAX_PAGES in the negotiated flags.
+        let info = info_ref.lock();
+        let &(want, _want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
+        assert_ne!(
+            want & FUSE_MAX_PAGES,
+            0,
+            "FUSE_MAX_PAGES should be negotiated"
+        );
+
+        // The reply must advertise FUSE_MAX_PAGES, the default max_write of
+        // 256 pages * 4096 bytes, and the matching max_pages.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_ne!(
+            init_out.flags & FUSE_MAX_PAGES,
+            0,
+            "Reply flags must include FUSE_MAX_PAGES"
+        );
+        assert_eq!(init_out.max_write, 256 * 4096);
+        assert_eq!(init_out.max_pages, 256);
+    }
+
+    #[test]
+    fn init_without_max_pages_does_not_advertise_it() {
+        // Kernel does NOT advertise FUSE_MAX_PAGES.
+        let flags = 0x003FFFFB; // matches FUSE_INIT_REQUEST
+        let request_data = make_init_request(7, 27, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(
+            init_out.flags & FUSE_MAX_PAGES,
+            0,
+            "Reply flags must NOT include FUSE_MAX_PAGES when kernel lacks it"
+        );
+    }
+
+    #[test]
+    fn init_max_pages_uses_ceiling_division() {
+        // The fix replaced integer division with div_ceil so that a max_write
+        // that is not a whole number of pages still reports enough max_pages
+        // to cover the largest possible request.
+        //
+        // 4097 bytes spans 2 pages; the old `max_write / PAGE_SIZE` produced 1.
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs {
+            max_write_override: Some(4097),
+            ..Default::default()
+        };
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.max_write, 4097);
+        assert_eq!(
+            init_out.max_pages, 2,
+            "max_pages must round up to cover max_write"
+        );
     }
 
     /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)

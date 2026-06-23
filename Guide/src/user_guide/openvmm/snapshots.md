@@ -40,7 +40,8 @@ Start a VM with file-backed memory:
 ```bash
 cargo run -- \
   --uefi \
-  --disk memdiff:file:path/to/disk.vhdx \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M,file=path/to/memory.bin
 ```
 
@@ -67,7 +68,8 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
-  --disk memdiff:file:path/to/disk.vhdx \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
   --processors 4 \
   --restore-snapshot path/to/snapshot-dir

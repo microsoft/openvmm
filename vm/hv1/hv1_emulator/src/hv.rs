@@ -8,6 +8,8 @@ use super::synic::ProcessorSynic;
 use crate::VtlProtectAccess;
 use crate::pages::LockedPage;
 use crate::pages::OverlayPage;
+#[cfg(guest_arch = "aarch64")]
+use aarch64defs::Vendor;
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
 use hvdef::HvError;
@@ -25,6 +27,7 @@ use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time::ReferenceTimeSource;
+#[cfg(guest_arch = "x86_64")]
 use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
 
@@ -210,17 +213,13 @@ impl ProcessorVtlHv {
         }
         let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
 
-        if new_vp_assist_page_reg.enabled()
-            && (!self.vp_assist_page_reg.enabled()
-                || new_vp_assist_page_reg.gpa_page_number()
-                    != self.vp_assist_page_reg.gpa_page_number())
-        {
-            self.vp_assist_page
-                .remap(new_vp_assist_page_reg.gpa_page_number(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?
-        } else if !new_vp_assist_page_reg.enabled() {
-            self.vp_assist_page.unmap(prot_access);
-        }
+        self.vp_assist_page
+            .sync(
+                new_vp_assist_page_reg.enabled(),
+                new_vp_assist_page_reg.gpa_page_number(),
+                prot_access,
+            )
+            .map_err(|_| MsrError::InvalidAccess)?;
 
         self.vp_assist_page_reg = new_vp_assist_page_reg;
 
