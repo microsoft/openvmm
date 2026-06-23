@@ -439,6 +439,15 @@ fn extract_vmfw_resource(dll_path: &Path, resource_id: u32) -> anyhow::Result<Ve
         })?;
 
     file.seek(SeekFrom::Start(start))?;
+
+    const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB (matches vmgstool guard)
+    anyhow::ensure!(
+        len <= MAX_IGVM_SIZE,
+        "VMFW resource size {} exceeds MAX_IGVM_SIZE {}",
+        len,
+        MAX_IGVM_SIZE,
+    );
+
     let mut bytes = vec![0u8; len];
     file.read_exact(&mut bytes)?;
     Ok(bytes)
