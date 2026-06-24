@@ -129,7 +129,7 @@ fn test_ttrpc_interface(
             let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
             let console_path = tempdir.path().join(format!("console-{i}.sock"));
             let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
-            std::fs::create_dir_all(&virtiofs_root).unwrap();
+            std::fs::create_dir_all(&virtiofs_root)?;
 
             let consomme_nic_id = Guid::new_random().to_string();
 
@@ -265,8 +265,6 @@ fn test_ttrpc_interface(
                     }),
                     Some(vmservice::ProcessorConfig {
                         processor_count: 2,
-                        vps_per_socket: Some(1),
-                        enable_smt: Some(false),
                         ..Default::default()
                     }),
                     Some(vmservice::PcieTopologyConfig {

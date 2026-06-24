@@ -90,10 +90,6 @@ message ProcessorConfig {
     uint32 processor_count = 1;
     uint32 processor_weight = 2;
     uint32 processor_limit = 3;
-
-    // Max VPs per socket. Absent => single socket / hypervisor default.
-    optional uint32 vps_per_socket = 4;
-    optional bool enable_smt = 5;
 }
 
 message DevicesConfig {
@@ -450,8 +446,8 @@ message VMConfig {
     reserved "extra_data";
     HVSocketConfig hvsocket_config = 9;
 
-    // Virtual NUMA topology. Mutually exclusive with a flat
-    // MemoryConfig.memory_mb (mirrors the CLI --memory vs --numa conflict).
+    // Virtual NUMA topology. Mutually exclusive with memory_config
+    // (mirrors the CLI --memory vs --numa conflict).
     NumaConfig numa_config = 10;
     // PCIe root complexes / ports / switches.
     PcieTopologyConfig pcie = 11;

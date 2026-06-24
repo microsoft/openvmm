@@ -593,10 +593,10 @@ impl VmService {
             .build()
             .context("failed to build vm configuration")?;
 
-        // Build the NUMA topology. A flat `MemoryConfig.memory_mb` and an
-        // explicit `NumaConfig` are mutually exclusive (mirrors the CLI
-        // `--memory` vs `--numa` conflict). `config_mem_size` is the total
-        // guest memory reported to the `VmController`.
+        // Build the NUMA topology. A `MemoryConfig` and an explicit
+        // `NumaConfig` are mutually exclusive (mirrors the CLI `--memory` vs
+        // `--numa` conflict). `config_mem_size` is the total guest memory
+        // reported to the `VmController`.
         let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
             if req_config.memory_config.is_some() {
                 bail!("memory_config and numa_config are mutually exclusive");
@@ -633,14 +633,6 @@ impl VmService {
             .as_ref()
             .map(|c| c.processor_count)
             .unwrap_or(1);
-        let vps_per_socket = req_config
-            .processor_config
-            .as_ref()
-            .and_then(|c| c.vps_per_socket);
-        let enable_smt = req_config
-            .processor_config
-            .as_ref()
-            .and_then(|c| c.enable_smt);
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
@@ -665,8 +657,8 @@ impl VmService {
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
                 proc_count: config_proc_count,
-                vps_per_socket,
-                enable_smt,
+                vps_per_socket: None,
+                enable_smt: None,
                 arch: Default::default(),
             },
             hypervisor: HypervisorConfig {
@@ -1404,6 +1396,12 @@ async fn build_pcie_device(
 #[cfg(target_os = "linux")]
 fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     let vmservice::VfioDevice { host_pci_address } = vfio;
+    // The address is joined into a sysfs path below; reject path separators so
+    // it cannot escape `/sys/bus/pci/devices` (an absolute path or `..` would
+    // otherwise redirect the join).
+    if host_pci_address.contains('/') || host_pci_address.contains("..") {
+        anyhow::bail!("PCI address must not contain path separators");
+    }
     let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&host_pci_address);
     let iommu_group_link =
         std::fs::read_link(sysfs_path.join("iommu_group")).with_context(|| {
