@@ -317,11 +317,11 @@ message NumaNode {
     // Memory for this node. Absent => CPU-only / device-only node.
     optional NodeMemoryConfig memory = 1;
     // VP assignment for this node:
-    //   - absent             => VPs assigned by topology (sockets distributed
-    //                           round-robin across CPU-bearing nodes)
-    //   - present, empty     => CPU-less node (no VPs; may coexist with
-    //                           topology-assigned nodes)
-    //   - present, non-empty => exactly these VP indices
+    //   - absent: VPs assigned by topology (sockets distributed round-robin
+    //     across CPU-bearing nodes)
+    //   - present, empty: CPU-less node (no VPs; may coexist with
+    //     topology-assigned nodes)
+    //   - present, non-empty: exactly these VP indices
     optional VpAssignment vps = 2;
 }
 
@@ -356,8 +356,9 @@ message NumaDistance {
     uint32 src = 1;
     // Destination node index.
     uint32 dst = 2;
-    // 10 = local, 20 = default cross-node, 255 = unreachable. Range 10..=255.
-    // TBD(C): u8 in Rust; validated in the handler.
+    // 10 = local, 20 = default cross-node, 255 = unreachable. Range 10..=255
+    // (a u8 in the config); out-of-range values are rejected when the topology
+    // is realized.
     uint32 distance = 3;
 }
 
