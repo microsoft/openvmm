@@ -147,12 +147,37 @@ impl GpadlMap {
         map.insert(id, gpadl);
     }
 
-    /// Removes the specified GPADL from the mapping, calling `f` when there are
-    /// no more [`GpadlView`] instances.
+    /// Removes the specified GPADL from the mapping and begins its teardown.
+    ///
+    /// `f` is the teardown callback that must run once the GPADL is no longer
+    /// mapped by any device (i.e. once there are no outstanding [`GpadlView`]
+    /// instances).
+    ///
+    /// The return value indicates who is responsible for running `f`:
+    ///
+    /// * `Some(f)` returns ownership of the callback to the caller, who must run
+    ///   it to complete the teardown. This happens either when the GPADL has no
+    ///   outstanding [`GpadlView`] instances (so teardown can finish
+    ///   immediately) or when the GPADL is not present in the map at all.
+    /// * `None` means the callback has been retained and will be run
+    ///   automatically when the last outstanding [`GpadlView`] is dropped. The
+    ///   caller must not run `f` itself in this case.
+    ///
+    /// A GPADL that is not present in the map is not an error condition: GPADL
+    /// teardown is driven by untrusted guest requests.
     pub fn remove(&self, id: GpadlId, f: TeardownFn) -> Option<TeardownFn> {
         let gpadl = {
             let mut map = self.map.lock();
-            map.remove(&id).unwrap()
+            match map.remove(&id) {
+                Some(gpadl) => gpadl,
+                None => {
+                    tracelimit::warn_ratelimited!(
+                        gpadl_id = id.0,
+                        "teardown of gpadl not present in channel map; completing immediately"
+                    );
+                    return Some(f);
+                }
+            }
         };
         let mut state = gpadl.state.lock();
         assert!(!state.tearing_down && state.teardown.is_none());
