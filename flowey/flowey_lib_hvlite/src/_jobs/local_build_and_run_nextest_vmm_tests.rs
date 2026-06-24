@@ -902,8 +902,6 @@ impl SimpleFlowNode for Node {
                     ReadVar::from_static(nextest_config_file.clone()),
                 ],
                 extra_env: Some(extra_env),
-                pipette_bin: None,
-                copy_incubator_bin: false,
                 qemu_binary: Some(qemu_binary),
                 target: target_triple.clone(),
                 nextest_env: v,

@@ -3794,6 +3794,7 @@ dependencies = [
  "pal_async",
  "pipette_client",
  "serde",
+ "tempfile",
  "toml_edit",
  "tracing",
  "tracing-subscriber",

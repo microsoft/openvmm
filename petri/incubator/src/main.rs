@@ -8,6 +8,7 @@
 use anyhow::Context;
 use clap::Parser;
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 /// Standalone CLI for launching the incubator.
@@ -48,6 +49,11 @@ struct Args {
     /// Override the QEMU binary path from the profile.
     #[clap(long, env = "INCUBATOR_QEMU_BINARY")]
     qemu_binary: Option<PathBuf>,
+    /// Do not allocate a PTY for the guest command or put the host terminal
+    /// into raw mode. Set automatically when running as a cargo-nextest target
+    /// runner, where raw mode would interfere with nextest's Ctrl-C handling.
+    #[clap(long, env = "INCUBATOR_NO_PTY")]
+    no_pty: bool,
     /// Timeout in seconds.
     #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 1800)]
     timeout: u64,
@@ -121,6 +127,9 @@ fn main() -> anyhow::Result<()> {
         guest_current_dir: args.guest_current_dir,
         timeout: std::time::Duration::from_secs(args.timeout),
         qemu_binary_override: args.qemu_binary,
+        // Only drive an interactive PTY when stdin is a real terminal and the
+        // caller hasn't opted out (cargo-nextest sets --no-pty).
+        allocate_pty: !args.no_pty && std::io::stdin().is_terminal(),
     })?;
 
     tracing::info!(

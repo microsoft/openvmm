@@ -340,8 +340,6 @@ impl SimpleFlowNode for Node {
                 test_content_dir: test_content_dir.clone(),
                 extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
                 extra_env: Some(extra_env),
-                pipette_bin: None,
-                copy_incubator_bin: false,
                 qemu_binary: Some(qemu_binary),
                 target: target.clone(),
                 nextest_env: v,

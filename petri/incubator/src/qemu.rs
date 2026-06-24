@@ -14,7 +14,6 @@ use pal_async::process::PolledChild;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -166,13 +165,19 @@ fn shell_single_quote(s: &str) -> String {
 /// Prepare the boot initrd by injecting the init script into the base initrd.
 ///
 /// Reads the gzip-compressed base initrd, injects the `rdinit` script (see
-/// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], writes the patched initrd
-/// into `output_dir`, and returns its path.
+/// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], and writes the patched
+/// initrd to a uniquely-named temporary file under `scratch_dir`. The returned
+/// [`tempfile::TempPath`] deletes the file when dropped, so the caller must
+/// keep it alive for as long as QEMU needs to read the initrd.
+///
+/// A unique temp file (rather than a fixed name) is required because multiple
+/// incubator processes run concurrently under nextest and share the same
+/// output directory; a fixed path would race.
 pub fn prepare_initrd(
     base_initrd: &Path,
-    output_dir: &Path,
+    scratch_dir: &Path,
     guest_pipette_path: &str,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<tempfile::TempPath> {
     let initrd_data = std::fs::read(base_initrd).context("failed to read initrd")?;
 
     let patched_initrd = initrd_cpio::inject_into_initrd(
@@ -183,12 +188,17 @@ pub fn prepare_initrd(
     )
     .context("failed to inject init script into initrd")?;
 
-    std::fs::create_dir_all(output_dir).context("failed to create incubator output dir")?;
-    let patched_initrd_path = output_dir.join(".incubator-initrd.gz");
-    std::fs::write(&patched_initrd_path, &patched_initrd)
+    std::fs::create_dir_all(scratch_dir).context("failed to create incubator output dir")?;
+    let mut patched_initrd_file = tempfile::Builder::new()
+        .prefix(".incubator-initrd")
+        .suffix(".gz")
+        .tempfile_in(scratch_dir)
+        .context("failed to create patched initrd temp file")?;
+    patched_initrd_file
+        .write_all(&patched_initrd)
         .context("failed to write patched initrd")?;
 
-    Ok(patched_initrd_path)
+    Ok(patched_initrd_file.into_temp_path())
 }
 
 /// Wait for pipette to signal readiness via the serial console relay

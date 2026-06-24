@@ -81,12 +81,6 @@ flowey_request! {
         /// Additional environment variables used to discover path roots that
         /// must be visible in the incubator share.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
-        /// Optional pipette binary to copy into the shared test content directory.
-        pub pipette_bin: Option<ReadVar<PathBuf>>,
-        /// Copy the incubator binary into the shared test content directory, so
-        /// it remains valid as the target runner after temporary build outputs
-        /// are cleaned up.
-        pub copy_incubator_bin: bool,
         /// Path to the QEMU binary (overrides the profile's binary setting).
         pub qemu_binary: Option<ReadVar<PathBuf>>,
         /// The test target triple, used to name the `CARGO_TARGET_*_RUNNER`
@@ -116,8 +110,6 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             extra_share_paths,
             extra_env,
-            pipette_bin,
-            copy_incubator_bin,
             qemu_binary,
             target,
             nextest_env,
@@ -132,12 +124,11 @@ impl SimpleFlowNode for Node {
             let test_content_dir = test_content_dir.claim(ctx);
             let extra_share_paths = extra_share_paths.claim(ctx);
             let extra_env = extra_env.claim(ctx);
-            let pipette_bin = pipette_bin.claim(ctx);
             let qemu_binary = qemu_binary.claim(ctx);
             let nextest_env = nextest_env.claim(ctx);
 
             move |rt| {
-                let mut incubator_bin = rt.read(incubator_bin).absolute()?;
+                let incubator_bin = rt.read(incubator_bin).absolute()?;
                 let profile_path = rt.read(profile_path).absolute()?;
                 let kernel = kernel.map(|v| rt.read(v).absolute()).transpose()?;
                 let initrd = initrd.map(|v| rt.read(v).absolute()).transpose()?;
@@ -149,7 +140,6 @@ impl SimpleFlowNode for Node {
                     .map(|p| p.absolute().map_err(Into::into))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let extra_env = extra_env.map(|v| rt.read(v)).unwrap_or_default();
-                let pipette_bin = pipette_bin.map(|v| rt.read(v).absolute()).transpose()?;
                 let qemu_binary = qemu_binary.map(|v| rt.read(v).absolute()).transpose()?;
 
                 let mut share_paths = vec![repo_root.as_path(), test_content_dir.as_path()];
@@ -165,17 +155,6 @@ impl SimpleFlowNode for Node {
                 let tmp_dir = test_content_dir.join(NEXTEST_ARCHIVE_TMP_DIR);
                 fs_err::create_dir_all(&output_dir)?;
                 fs_err::create_dir_all(&tmp_dir)?;
-                if copy_incubator_bin {
-                    let dst = test_content_dir.join("incubator");
-                    fs_err::copy(&incubator_bin, &dst)?;
-                    dst.make_executable()?;
-                    incubator_bin = dst;
-                }
-                if let Some(pipette_bin) = pipette_bin {
-                    let dst = test_content_dir.join("pipette");
-                    fs_err::copy(&pipette_bin, &dst)?;
-                    dst.make_executable()?;
-                }
 
                 incubator_bin.make_executable()?;
                 if let Some(qemu_binary) = &qemu_binary {
@@ -253,6 +232,9 @@ fn incubator_runner_env(config: IncubatorRunnerConfig<'_>) -> BTreeMap<String, S
     // The runner always receives a host command path that must be translated
     // into the guest share.
     env.insert("INCUBATOR_MAP_COMMAND_PATH".into(), "true".into());
+    // Never drive an interactive PTY / raw mode under cargo-nextest; it would
+    // fight nextest's own Ctrl-C handling.
+    env.insert("INCUBATOR_NO_PTY".into(), "true".into());
     env.insert("TMPDIR".into(), tmp_dir.display().to_string());
     if let Some(kernel) = kernel {
         env.insert("INCUBATOR_KERNEL".into(), kernel.display().to_string());

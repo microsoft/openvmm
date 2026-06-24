@@ -17,6 +17,7 @@ mesh.workspace = true
 pal_async.workspace = true
 pipette_client.workspace = true
 serde = { workspace = true, features = ["derive"] }
+tempfile.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

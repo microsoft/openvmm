@@ -12,7 +12,6 @@ use pal_async::pipe::PolledPipe;
 use pal_async::process::PolledChild;
 use pal_async::task::Spawn;
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -43,6 +42,11 @@ pub struct IncubatorConfig {
     pub timeout: Duration,
     /// If set, override the QEMU binary path specified in the profile.
     pub qemu_binary_override: Option<PathBuf>,
+    /// Whether to allocate a PTY for the guest command and put the host
+    /// terminal into raw mode. Disabled when running non-interactively (e.g.
+    /// as a cargo-nextest target runner), where raw mode would interfere with
+    /// nextest's Ctrl-C handling.
+    pub allocate_pty: bool,
 }
 
 /// Result of an incubator run.
@@ -104,7 +108,11 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
     // pipette prints its readiness marker.
     let output_dir = config.output_dir.clone();
     std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
-    let serial_log = output_dir.join("incubator-serial.log");
+    // Each incubator process runs a single test, but several run concurrently
+    // under nextest sharing this output directory, so disambiguate the serial
+    // log by process id to avoid clobbering each other. The path is logged
+    // below so it remains discoverable from the test's captured output.
+    let serial_log = output_dir.join(format!("incubator-serial.{}.log", std::process::id()));
     tracing::info!(path = %serial_log.display(), "serial log");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
@@ -216,7 +224,7 @@ async fn run_via_pipette(
         .split_first()
         .context("empty guest command")?;
 
-    let use_pty = std::io::stdin().is_terminal();
+    let use_pty = config.allocate_pty;
 
     let mut cmd = client.command(program);
     cmd.args(args);
