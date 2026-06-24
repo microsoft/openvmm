@@ -901,7 +901,7 @@ impl SimpleFlowNode for Node {
                             profile_path: ReadVar::from_static(profile_path),
                             kernel: Some(kernel),
                             initrd: Some(initrd),
-                            workspace_dir: ReadVar::from_static(test_content_dir.clone()),
+                            repo_root: openvmm_repo_path.clone(),
                             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
                             extra_share_paths: vec![
                                 ReadVar::from_static(nextest_archive_file.clone()),

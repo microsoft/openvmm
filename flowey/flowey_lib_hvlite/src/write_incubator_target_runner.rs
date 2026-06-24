@@ -91,8 +91,11 @@ flowey_request! {
         pub kernel: Option<ReadVar<PathBuf>>,
         /// Path to the base initrd. If omitted, incubator auto-detects it.
         pub initrd: Option<ReadVar<PathBuf>>,
-        /// Path to the OpenVMM repo root.
-        pub workspace_dir: ReadVar<PathBuf>,
+        /// Path to the OpenVMM repo root. Must contain any repo-relative paths
+        /// referenced by the runner's environment (e.g. `NEXTEST_WORKSPACE_ROOT`,
+        /// `CARGO_MANIFEST_DIR`) so they fall under the computed incubator share
+        /// root and translate correctly into the guest.
+        pub repo_root: ReadVar<PathBuf>,
         /// Directory containing VMM test runtime artifacts and test outputs.
         pub test_content_dir: ReadVar<PathBuf>,
         /// Additional host paths that must be visible in the incubator share.
@@ -126,7 +129,7 @@ impl SimpleFlowNode for Node {
             profile_path,
             kernel,
             initrd,
-            workspace_dir,
+            repo_root,
             test_content_dir,
             extra_share_paths,
             extra_env,
@@ -141,7 +144,7 @@ impl SimpleFlowNode for Node {
             let profile_path = profile_path.claim(ctx);
             let kernel = kernel.claim(ctx);
             let initrd = initrd.claim(ctx);
-            let workspace_dir = workspace_dir.claim(ctx);
+            let repo_root = repo_root.claim(ctx);
             let test_content_dir = test_content_dir.claim(ctx);
             let extra_share_paths = extra_share_paths.claim(ctx);
             let extra_env = extra_env.claim(ctx);
@@ -154,7 +157,7 @@ impl SimpleFlowNode for Node {
                 let profile_path = rt.read(profile_path).absolute()?;
                 let kernel = kernel.map(|v| rt.read(v).absolute()).transpose()?;
                 let initrd = initrd.map(|v| rt.read(v).absolute()).transpose()?;
-                let workspace_dir = rt.read(workspace_dir).absolute()?;
+                let repo_root = rt.read(repo_root).absolute()?;
                 let test_content_dir = rt.read(test_content_dir).absolute()?;
                 let extra_share_paths = rt
                     .read(extra_share_paths)
@@ -165,7 +168,7 @@ impl SimpleFlowNode for Node {
                 let pipette_bin = pipette_bin.map(|v| rt.read(v).absolute()).transpose()?;
                 let qemu_binary = qemu_binary.map(|v| rt.read(v).absolute()).transpose()?;
 
-                let mut share_paths = vec![workspace_dir.as_path(), test_content_dir.as_path()];
+                let mut share_paths = vec![repo_root.as_path(), test_content_dir.as_path()];
                 share_paths.extend(extra_share_paths.iter().map(|p| p.as_path()));
                 let images_dir = extra_env.get("VMM_TEST_IMAGES").map(PathBuf::from);
                 if let Some(ref images_dir) = images_dir {

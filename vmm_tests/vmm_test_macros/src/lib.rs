@@ -404,7 +404,17 @@ impl Parse for ArgItem {
             let content;
             syn::parenthesized!(content in input);
             let lit: syn::LitStr = content.parse()?;
-            Ok(ArgItem::RequiresCapability(lit.value()))
+            if !content.is_empty() {
+                return Err(content.error("requires_capability expects a single string literal"));
+            }
+            let value = lit.value();
+            if value.is_empty() {
+                return Err(Error::new(
+                    lit.span(),
+                    "requires_capability name must not be empty",
+                ));
+            }
+            Ok(ArgItem::RequiresCapability(value))
         } else {
             Ok(ArgItem::Config(input.parse()?))
         }

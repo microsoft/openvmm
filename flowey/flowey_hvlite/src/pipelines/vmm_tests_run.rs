@@ -536,7 +536,7 @@ fn incubator_target_runner_bootstrap_pipeline(
             target,
             profile: CommonProfile::from_release(release),
             profile_path: ReadVar::from_static(profile_path),
-            workspace_dir: ReadVar::from_static(repo_root),
+            repo_root: ReadVar::from_static(repo_root),
             test_content_dir: ReadVar::from_static(test_content_dir),
             done,
         },

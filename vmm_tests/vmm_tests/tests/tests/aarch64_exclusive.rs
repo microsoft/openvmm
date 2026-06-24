@@ -153,13 +153,23 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         .run()
         .await?;
 
-    // Verify the assigned device appears in the guest as a block device.
+    // Verify the assigned device appears in the guest as /dev/vda with the
+    // expected size. The incubator provisions a 64 MiB VFIO-backed virtio-blk
+    // disk (the `test-disk` device in the aarch64-tcg-pcie incubator profile).
+    // Checking the sysfs size proves the VFIO-assigned device is the one that
+    // showed up, rather than merely that *some* vda exists.
+    const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
     let sh = agent.unix_shell();
-    let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
-    tracing::info!(block_devs = %block_devs, "guest block devices");
+    let vda_size = sh
+        .read_file("/sys/block/vda/size")
+        .await
+        .context("VFIO-assigned virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    tracing::info!(vda_sectors, "guest /dev/vda size");
     anyhow::ensure!(
-        block_devs.contains("vda"),
-        "expected vda block device from VFIO-assigned virtio-blk, found: {block_devs}"
+        vda_sectors == TEST_DISK_SIZE / 512,
+        "unexpected /dev/vda size: expected {} sectors, got {vda_sectors}",
+        TEST_DISK_SIZE / 512
     );
 
     // Read from the disk to exercise DMA and interrupts through the IOMMU.

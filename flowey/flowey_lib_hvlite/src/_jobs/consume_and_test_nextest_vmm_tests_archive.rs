@@ -346,7 +346,7 @@ impl SimpleFlowNode for Node {
                             profile_path,
                             kernel: Some(kernel),
                             initrd: Some(initrd),
-                            workspace_dir: openvmm_repo_path.clone(),
+                            repo_root: openvmm_repo_path.clone(),
                             test_content_dir: test_content_dir.clone(),
                             extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
                             extra_env: Some(target_runner_extra_env),

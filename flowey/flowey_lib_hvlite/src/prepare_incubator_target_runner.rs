@@ -17,8 +17,10 @@ flowey_request! {
         pub profile: CommonProfile,
         /// Path to the incubator profile TOML file.
         pub profile_path: ReadVar<PathBuf>,
-        /// Path to the OpenVMM repo root.
-        pub workspace_dir: ReadVar<PathBuf>,
+        /// Path to the OpenVMM repo root. Must contain any repo-relative paths
+        /// referenced by the runner's environment so they fall under the computed
+        /// incubator share root and translate correctly into the guest.
+        pub repo_root: ReadVar<PathBuf>,
         /// Directory containing VMM test runtime artifacts and test outputs.
         pub test_content_dir: ReadVar<PathBuf>,
         /// Completion indicator.
@@ -45,7 +47,7 @@ impl SimpleFlowNode for Node {
             target,
             profile,
             profile_path,
-            workspace_dir,
+            repo_root,
             test_content_dir,
             done,
         } = request;
@@ -100,7 +102,7 @@ impl SimpleFlowNode for Node {
             profile_path,
             kernel: Some(kernel),
             initrd: Some(initrd),
-            workspace_dir,
+            repo_root,
             test_content_dir,
             extra_share_paths: Vec::new(),
             extra_env: None,
