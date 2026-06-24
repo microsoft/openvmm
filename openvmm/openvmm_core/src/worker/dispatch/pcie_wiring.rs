@@ -225,10 +225,7 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
                 params.msi,
             ),
         };
-        return PcieDeviceWiring {
-            dma_target,
-            msi,
-        };
+        return PcieDeviceWiring { dma_target, msi };
     }
 
     PcieDeviceWiring {
