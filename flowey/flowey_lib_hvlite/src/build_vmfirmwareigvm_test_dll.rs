@@ -28,8 +28,8 @@ flowey_request! {
     pub struct Request {
         /// Target architecture for the DLL.
         pub arch: CommonArch,
-        /// Path to the OpenHCL IGVM file to embed as the
-        /// `VMFW`/`NONCONFIDENTIAL` resource.
+        /// Path to the OpenHCL IGVM file to embed under resource id `1`
+        /// (`ResourceCode::Custom` in `vmgstool`).
         pub igvm_bin: ReadVar<PathBuf>,
         /// The resulting DLL output.
         pub vmfirmwareigvm_test_dll: WriteVar<VmfirmwareigvmTestDllOutput>,

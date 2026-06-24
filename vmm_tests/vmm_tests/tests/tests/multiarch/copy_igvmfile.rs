@@ -79,15 +79,14 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     .await?;
 
     // (2) Copy the IGVM out of the DLL and into the VMGS file.
-    let mut cmd = Command::new(vmgstool_path);
-    cmd.arg("copy-igvmfile")
-        .arg("--filepath")
-        .arg(&vmgs_path)
-        .arg("--data-path")
-        .arg(dll_path)
-        .arg("--resource-code")
-        .arg(resource_code_arg);
-    run_host_cmd(cmd).await?;
+    run_host_cmd(copy_igvmfile_cmd(
+        vmgstool_path,
+        &vmgs_path,
+        dll_path,
+        resource_code_arg,
+        false,
+    ))
+    .await?;
 
     // (3) Boot a Hyper-V OpenHCL VM that takes its IGVM from the VMGS file
     // we just prepared.
@@ -200,10 +199,13 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
         false,
     ))
     .await;
-    anyhow::ensure!(
-        matches!(res, Err(petri::CommandError::Command(..))),
-        "copy-igvmfile over an existing file id 8 unexpectedly succeeded without --allow-overwrite",
-    );
+    match res {
+        Err(petri::CommandError::Command(..)) => {}
+        Err(e) => return Err(e.into()),
+        Ok(_) => anyhow::bail!(
+            "copy-igvmfile over an existing file id 8 unexpectedly succeeded without --allow-overwrite"
+        ),
+    }
 
     // Second copy WITH `--allow-overwrite` must succeed.
     run_host_cmd(copy_igvmfile_cmd(
@@ -253,10 +255,11 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
         false,
     ))
     .await;
-    anyhow::ensure!(
-        matches!(res, Err(petri::CommandError::Command(..))),
-        "copy-igvmfile unexpectedly succeeded on a non-PE data file",
-    );
+    match res {
+        Err(petri::CommandError::Command(..)) => {}
+        Err(e) => return Err(e.into()),
+        Ok(_) => anyhow::bail!("copy-igvmfile unexpectedly succeeded on a non-PE data file"),
+    }
 
     Ok(())
 }
@@ -302,10 +305,11 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
         false,
     ))
     .await;
-    anyhow::ensure!(
-        matches!(res, Err(petri::CommandError::Command(..))),
-        "copy-igvmfile unexpectedly succeeded on a nonexistent data file",
-    );
+    match res {
+        Err(petri::CommandError::Command(..)) => {}
+        Err(e) => return Err(e.into()),
+        Ok(_) => anyhow::bail!("copy-igvmfile unexpectedly succeeded on a nonexistent data file"),
+    }
 
     Ok(())
 }
@@ -354,10 +358,13 @@ async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
         false,
     ))
     .await;
-    anyhow::ensure!(
-        matches!(res, Err(petri::CommandError::Command(..))),
-        "copy-igvmfile unexpectedly succeeded for a resource code absent from the DLL",
-    );
+    match res {
+        Err(petri::CommandError::Command(..)) => {}
+        Err(e) => return Err(e.into()),
+        Ok(_) => anyhow::bail!(
+            "copy-igvmfile unexpectedly succeeded for a resource code absent from the DLL"
+        ),
+    }
 
     // File id 8 must still be empty after the failed attempt: a `CUSTOM`
     // copy WITHOUT `--allow-overwrite` should therefore succeed, proving
