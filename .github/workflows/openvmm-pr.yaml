@@ -6375,8 +6375,8 @@ jobs:
         flowey e 29 flowey_core::pipeline::artifact::resolve 1
         flowey e 29 flowey_core::pipeline::artifact::resolve 2
         flowey e 29 flowey_core::pipeline::artifact::resolve 0
-        flowey e 29 flowey_core::pipeline::artifact::resolve 3
         flowey e 29 flowey_core::pipeline::artifact::resolve 5
+        flowey e 29 flowey_core::pipeline::artifact::resolve 3
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 29 flowey_lib_common::install_dist_pkg 0

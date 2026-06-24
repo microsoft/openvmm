@@ -4084,8 +4084,8 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 3
     displayName: creating new test content dir
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed

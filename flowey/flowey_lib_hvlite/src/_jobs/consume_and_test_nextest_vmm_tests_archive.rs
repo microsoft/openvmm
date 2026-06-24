@@ -25,6 +25,10 @@ use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct VmmTestsDepArtifacts {
+    /// Incubator binary (bundling its profiles directory) used to run tests
+    /// inside an emulated VM (e.g. QEMU TCG). Only set when running via
+    /// [`Params::incubator_profile`].
+    pub incubator: Option<ReadVar<IncubatorOutput>>,
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
     pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
@@ -80,18 +84,6 @@ macro_rules! vmm_tests_artifact_builder {
     };
 }
 
-/// Configuration for running tests inside an incubator (e.g., QEMU TCG).
-#[derive(Serialize, Deserialize)]
-pub struct IncubatorParams {
-    /// Pre-built incubator binary (runs on the CI host, not inside the VM),
-    /// along with the bundled incubator profiles directory.
-    pub incubator: ReadVar<IncubatorOutput>,
-    /// Name of the incubator profile to use (without the `.toml` extension),
-    /// resolved against the profiles directory bundled in the incubator
-    /// artifact (e.g. "aarch64-tcg-pcie").
-    pub profile_name: String,
-}
-
 flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
@@ -114,8 +106,12 @@ flowey_request! {
         /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
-        /// If set, run tests inside an incubator instead of directly on the host.
-        pub incubator: Option<IncubatorParams>,
+        /// If set, run tests inside an incubator using the named profile,
+        /// instead of directly on the host. The profile name (without the
+        /// `.toml` extension) is resolved against the profiles directory
+        /// bundled in the incubator artifact supplied via
+        /// [`VmmTestsDepArtifacts::incubator`] (e.g. "aarch64-tcg-pcie").
+        pub incubator_profile: Option<String>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -158,7 +154,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
-            incubator,
+            incubator_profile,
             prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
@@ -171,6 +167,7 @@ impl SimpleFlowNode for Node {
         });
 
         let VmmTestsDepArtifacts {
+            incubator: register_incubator,
             openvmm: register_openvmm,
             openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
@@ -292,11 +289,12 @@ impl SimpleFlowNode for Node {
         }
 
         let (extra_env, pre_run_deps, nextest_working_dir, nextest_config_file) =
-            if let Some(incubator_params) = incubator {
-                let IncubatorParams {
-                    incubator,
-                    profile_name,
-                } = incubator_params;
+            if let Some(profile_name) = incubator_profile {
+                let incubator = register_incubator.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "incubator profile was set but no incubator artifact was provided"
+                    )
+                })?;
 
                 let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
 
@@ -366,6 +364,9 @@ impl SimpleFlowNode for Node {
                     Some(nextest_config_file),
                 )
             } else {
+                if let Some(register_incubator) = register_incubator {
+                    register_incubator.claim_unused(ctx);
+                }
                 (extra_env, pre_run_deps, None, None)
             };
 

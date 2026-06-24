@@ -90,7 +90,8 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// The test assigns that device into the L2 guest and verifies it appears
 /// as a block device, then reads from it to exercise DMA and interrupts.
 ///
-/// Assigned to the `aarch64-tcg` nextest test group.
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
+/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
 #[openvmm_test(linux_direct_aarch64, requires_capability("test-disk-vfio"))]
 async fn boot_no_vmbus_pcie_aarch64_tcg(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
