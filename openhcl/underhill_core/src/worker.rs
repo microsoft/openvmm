@@ -3416,11 +3416,9 @@ async fn new_underhill_vm(
                 vmm_core::device_builder::PciDeviceResolveContext {
                     driver_source: &driver_source,
                     resolver: &resolver,
-                    guest_memory: device_memory,
                     resource,
                     doorbell_registration: None,
                     shared_mem_mapper: None,
-                    software_iommu: false,
                 },
                 vmbus.control(),
                 &chipset_builder,
@@ -3429,6 +3427,7 @@ async fn new_underhill_vm(
                     vtom,
                     vnode: None,
                 },
+                device_memory.clone(),
                 |device_id| {
                     let device = partition
                         .new_virtual_device()

@@ -283,6 +283,11 @@ name:
 --pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
 ```
 
+- `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
+  its bus. `dev` is 0-31 and the optional `fn` is 0-7 (both decimal or
+  `0x`-prefixed hex). When omitted, the port is assigned the lowest
+  available devfn. Ports are assigned in order, so an explicit `addr` that
+  collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.

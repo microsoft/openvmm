@@ -65,8 +65,8 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
@@ -89,9 +89,9 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pcie::GenericPciePortDefinition;
 use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
-use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
@@ -857,7 +857,7 @@ fn convert_vtl2_config(
 ///
 /// When CXL is enabled, emit a default Flex Bus capability advertising both
 /// cache and memory support.
-fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
+fn build_root_port_settings(rp_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
         acs_capabilities_supported: rp_cfg
             .acs_capabilities_supported
@@ -871,11 +871,12 @@ fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
 }
 
 /// Converts a manifest root-port entry into the runtime root-port definition.
-fn build_root_port_definition(rp_cfg: &PcieRootPortConfig) -> GenericPcieRootPortDefinition {
+fn build_root_port_definition(rp_cfg: &PciePortConfig) -> GenericPciePortDefinition {
     let settings = build_root_port_settings(rp_cfg);
 
-    GenericPcieRootPortDefinition {
+    GenericPciePortDefinition {
         name: rp_cfg.name.as_str().into(),
+        devfn: rp_cfg.devfn,
         hotplug: rp_cfg.hotplug,
         settings,
     }
@@ -2000,7 +2001,7 @@ impl InitializedVm {
                 // (start_bus << 8) | devfn.
                 let rc_bus_range = pci_core::bus_range::AssignedBusRange::new();
                 rc_bus_range.set_bus_range(rc.start_bus, rc.end_bus);
-                let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 // When the AMD IOMMU is enabled for this root complex,
                 // reserve device 0 for the IOMMU RCiEP and start root
@@ -2028,7 +2029,10 @@ impl InitializedVm {
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
                             )
-                            .root_ports(root_port_definitions, msi_conn.target())
+                            .root_ports(
+                                root_port_definitions,
+                                &msi_conn.msi_target(rc_bus_range, 0),
+                            )
                             .first_port_device_number(root_port_start_device)
                             .chbcr_range(chbcr_range)
                             .build()
@@ -2128,8 +2132,7 @@ impl InitializedVm {
             let parent_segment = parent_port_info.segment;
             let parent_rc_idx = parent_port_info.rc_idx;
 
-            let msi_conn =
-                pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+            let msi_conn = pci_core::msi::MsiConnection::new();
 
             // Defer MSI wiring to after IOMMU setup.
             let msi_target = msi_conn.target().clone();
@@ -2143,18 +2146,16 @@ impl InitializedVm {
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
                 .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                .add(|_services| {
+                .try_add(|_services| {
+                    let downstream_ports = switch
+                        .ports
+                        .iter()
+                        .map(build_root_port_definition)
+                        .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
-                        downstream_port_count: switch.num_downstream_ports,
-                        hotplug: switch.hotplug,
+                        downstream_ports,
                         msi_target,
-                        dsp_settings: PciePortSettings {
-                            acs_capabilities_supported: switch
-                                .acs_capabilities_supported
-                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
-                            cxl_flex_bus_port_capability: None,
-                        },
                     };
                     GenericPcieSwitch::new(definition)
                 })?;
@@ -2342,7 +2343,7 @@ impl InitializedVm {
                     )
                 })?;
 
-                let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 let pcie_ctx =
                     pcie_wiring::build_device_wiring(pcie_wiring::PcieDeviceWiringParams {
@@ -2355,6 +2356,7 @@ impl InitializedVm {
                         },
                         guest_memory: gm,
                         bus_range: &pi.bus_range,
+                        msi: &msi_conn,
                         #[cfg(guest_arch = "aarch64")]
                         smmu: smmu_states[pi.rc_idx].as_ref(),
                     });
@@ -2363,17 +2365,15 @@ impl InitializedVm {
                     vmm_core::device_builder::PciDeviceResolveContext {
                         driver_source,
                         resolver,
-                        guest_memory: &pcie_ctx.guest_memory,
                         resource: dev_cfg.resource,
                         doorbell_registration: partition
                             .clone()
                             .into_doorbell_registration(Vtl::Vtl0),
                         shared_mem_mapper: Some(mapper),
-                        software_iommu: pcie_ctx.software_iommu,
                     },
                     chipset_builder,
                     port_name.clone(),
-                    msi_conn.target(),
+                    &pcie_ctx.dma_target,
                 )
                 .await?;
 
@@ -2572,13 +2572,11 @@ impl InitializedVm {
                         vmm_core::device_builder::PciDeviceResolveContext {
                             driver_source: &driver_source,
                             resolver: &resolver,
-                            guest_memory: &gm,
                             resource: dev_cfg.resource,
                             doorbell_registration: partition
                                 .clone()
                                 .into_doorbell_registration(vtl),
                             shared_mem_mapper: Some(&mapper),
-                            software_iommu: false,
                         },
                         vmbus.control(),
                         &chipset_builder,
@@ -2591,6 +2589,7 @@ impl InitializedVm {
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
+                        gm.clone(),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -3543,7 +3542,7 @@ impl LoadedVm {
                                 .bus_range;
 
                             let segment = self.inner.pcie_host_bridges[rc_idx].segment;
-                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range.clone(), 0);
+                            let msi_conn = pci_core::msi::MsiConnection::new();
 
                             let pcie_ctx = pcie_wiring::build_device_wiring(
                                 pcie_wiring::PcieDeviceWiringParams {
@@ -3556,6 +3555,7 @@ impl LoadedVm {
                                     },
                                     guest_memory: &self.inner.gm,
                                     bus_range: &bus_range,
+                                    msi: &msi_conn,
                                     #[cfg(guest_arch = "aarch64")]
                                     smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
                                 },
@@ -3570,13 +3570,11 @@ impl LoadedVm {
                                         .resolve(
                                             resource,
                                             pci_resources::ResolvePciDeviceHandleParams {
-                                                msi_target: msi_conn.target(),
+                                                dma_target: &pcie_ctx.dma_target,
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
-                                                guest_memory: &pcie_ctx.guest_memory,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
-                                                software_iommu: pcie_ctx.software_iommu,
                                             },
                                         )
                                         .await

@@ -193,6 +193,10 @@ struct TcpConnectionInner {
     rx_buffer_max: usize,
     #[inspect(with = "inspect_seq")]
     rx_seq: TcpSeqNumber,
+    /// Window last advertised to the guest, as it reconstructs it after
+    /// window-scale truncation. Used to detect a zero-window reopen.
+    #[inspect(hex)]
+    rx_window_last_adv: usize,
     #[inspect(flatten)]
     rx_assembler: assembler::Assembler,
     needs_ack: bool,
@@ -778,6 +782,7 @@ impl TcpConnection {
             rx_window_scale,
             rx_buffer_max: rx_bounds.max,
             rx_seq,
+            rx_window_last_adv: rx_bounds.initial,
             rx_assembler: assembler::Assembler::new(),
             needs_ack: false,
             is_shutdown: false,
@@ -1175,6 +1180,11 @@ impl TcpConnectionInner {
                     Poll::Pending => break,
                 }
             }
+            // Draining to the host may have reopened the window; re-advertise it
+            // so the guest resumes without waiting on its persist timer.
+            if self.should_reopen_window() {
+                self.needs_ack = true;
+            }
             // Autotune: if the host kept up (drained to empty) and the buffer
             // was at least 75% full this cycle, the guest is rx-bound. Grow
             // both the ring and the advertised window ceiling so the next ACK
@@ -1243,7 +1253,38 @@ impl TcpConnectionInner {
     }
 
     fn rx_window_len(&self) -> u16 {
-        ((self.rx_window_cap - self.rx_buffer.len()) >> self.rx_window_scale) as u16
+        (self.rx_window_avail() >> self.rx_window_scale) as u16
+    }
+
+    /// Available receive window in unscaled bytes.
+    fn rx_window_avail(&self) -> usize {
+        self.rx_window_cap - self.rx_buffer.len()
+    }
+
+    /// The receive window as the guest reconstructs it: `rx_window_avail`
+    /// rounded down to the scale quantum, since the low `rx_window_scale` bits
+    /// are not transmitted. Equals `rx_window_avail` when scaling is off.
+    fn rx_window_advertised(&self) -> usize {
+        (self.rx_window_avail() >> self.rx_window_scale) << self.rx_window_scale
+    }
+
+    /// Record the window just advertised to the guest. `window_len` is the
+    /// scaled value placed on the wire; the guest shifts it back up by the
+    /// window scale, so track that reconstructed value to keep the reopen
+    /// check accurate.
+    fn record_advertised_window(&mut self, window_len: u16) {
+        self.rx_window_last_adv = (window_len as usize) << self.rx_window_scale;
+    }
+
+    /// Whether draining to the host reopened the receive window enough to
+    /// re-advertise it (RFC 1122 §4.2.3.3 receiver SWS avoidance). Fires once on
+    /// the closed-to-open transition, once the guest-visible (post-scale-
+    /// truncation) window reaches the reopen threshold: a full segment, or half
+    /// the window cap when the cap is smaller than one segment.
+    fn should_reopen_window(&self) -> bool {
+        let reopen_threshold = self.tx_mss.min(self.rx_window_cap / 2);
+        self.rx_window_last_adv < reopen_threshold
+            && self.rx_window_advertised() >= reopen_threshold
     }
 
     fn send_next(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
@@ -1263,6 +1304,15 @@ impl TcpConnectionInner {
         // (even with no shift) to enable window scale support.
         let window_scale = self.enable_window_scaling.then_some(self.rx_window_scale);
 
+        // RFC 7323 §2.2: the window in a SYN/SYN-ACK is not scaled even with the
+        // window_scale option present. Advertise the real window clamped to 16
+        // bits; the active-open SYN (no ACK) carries a zero window.
+        let window_len = if ack_number.is_some() {
+            self.rx_window_avail().min(u16::MAX as usize) as u16
+        } else {
+            0
+        };
+
         // Advertise the maximum possible segment size, allowing the guest
         // to truncate this to its own MTU calculation.
         let max_seg_size = u16::MAX;
@@ -1272,11 +1322,7 @@ impl TcpConnectionInner {
             control: TcpControl::Syn,
             seq_number: self.tx_send,
             ack_number,
-            window_len: if ack_number.is_some() {
-                self.rx_window_len()
-            } else {
-                0
-            },
+            window_len,
             window_scale,
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
@@ -1287,6 +1333,10 @@ impl TcpConnectionInner {
 
         sender.send_packet(&tcp, None);
         self.tx_send += 1;
+        if ack_number.is_some() {
+            // The guest reads the SYN-ACK window unscaled, so record that value.
+            self.rx_window_last_adv = window_len as usize;
+        }
     }
 
     fn send_data(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
@@ -1317,13 +1367,14 @@ impl TcpConnectionInner {
                 break;
             }
 
+            let window_len = self.rx_window_len();
             let mut tcp = TcpRepr {
                 src_port: sender.ft.dst.port(),
                 dst_port: sender.ft.src.port(),
                 control: TcpControl::None,
                 seq_number: self.tx_send,
                 ack_number: Some(self.rx_seq),
-                window_len: self.rx_window_len(),
+                window_len,
                 window_scale: None,
                 max_seg_size: None,
                 sack_permitted: false,
@@ -1408,6 +1459,7 @@ impl TcpConnectionInner {
             self.stats.tx_segment_size.add_sample(payload_len as u64);
             self.tx_send = tx_next;
             self.needs_ack = false;
+            self.record_advertised_window(window_len);
         }
 
         assert!(self.tx_send <= tx_end);
@@ -1439,13 +1491,14 @@ impl TcpConnectionInner {
     /// shouldn't be combined with data so that they are interpreted correctly
     /// by the peer.
     fn ack(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let window_len = self.rx_window_len();
         let tcp = TcpRepr {
             src_port: sender.ft.dst.port(),
             dst_port: sender.ft.src.port(),
             control: TcpControl::None,
             seq_number: self.tx_send,
             ack_number: Some(self.rx_seq),
-            window_len: self.rx_window_len(),
+            window_len,
             window_scale: None,
             max_seg_size: None,
             sack_permitted: false,
@@ -1458,6 +1511,7 @@ impl TcpConnectionInner {
 
         sender.send_packet(&tcp, None);
         self.stats.standalone_acks_tx.increment();
+        self.record_advertised_window(window_len);
     }
 
     fn handle_listen_syn(

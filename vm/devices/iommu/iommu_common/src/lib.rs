@@ -82,6 +82,18 @@ pub struct TranslationFault<E: std::error::Error + 'static> {
     pub error: E,
 }
 
+/// Error returned when a requester ID's bus falls outside the device's
+/// assigned bus range, faulting the DMA access.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "DMA requester ID {rid:#06x} bus outside assigned bus range {secondary:#04x}..={subordinate:#04x}"
+)]
+struct RidOutOfRange {
+    rid: u32,
+    secondary: u8,
+    subordinate: u8,
+}
+
 /// A [`GuestMemoryAccess`](guestmem::GuestMemoryAccess) implementation that
 /// translates IOVAs via an [`IommuTranslator`] before accessing guest memory.
 ///
@@ -94,6 +106,11 @@ pub struct TranslatingMemory<T: IommuTranslator> {
     translator: T,
     /// The device's assigned bus range, used to derive the RID.
     bus_range: AssignedBusRange,
+    /// Offset added to `(secondary_bus << 8)` to form the requester ID for
+    /// each access. For a single-function device this is just its devfn; for
+    /// SR-IOV VFs it may carry into the bus byte to address functions on
+    /// higher buses within the assigned range.
+    rid_offset: u16,
     /// The raw (untranslated) guest memory.
     inner_gm: GuestMemory,
 }
@@ -110,21 +127,51 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
         bus_range: AssignedBusRange,
         inner_gm: GuestMemory,
     ) -> GuestMemory {
+        Self::new_guest_memory_for_rid_offset(label, translator, bus_range, 0, inner_gm)
+    }
+
+    /// Create a new translating `GuestMemory` for a requester-ID offset
+    /// relative to the secondary bus.
+    ///
+    /// Every access resolves the RID as `(secondary_bus << 8) + rid_offset`,
+    /// reading the secondary bus from the live `bus_range`, so the identity
+    /// tracks the bus assignment. This is the primitive for SR-IOV virtual
+    /// functions, which are constructed before the PF's bus is programmed.
+    pub fn new_guest_memory_for_rid_offset(
+        label: impl Into<std::sync::Arc<str>>,
+        translator: T,
+        bus_range: AssignedBusRange,
+        rid_offset: u16,
+        inner_gm: GuestMemory,
+    ) -> GuestMemory {
         let tm = TranslatingMemory {
             translator,
             bus_range,
+            rid_offset,
             inner_gm,
         };
         GuestMemory::new(label, tm)
     }
 
-    /// Derive the requester ID (RID) from the current bus range.
+    /// Derive the requester ID (RID) for a DMA access.
     ///
-    /// Returns `(secondary_bus as u16) << 8`. If secondary_bus is 0,
-    /// the RID is 0 — the IOMMU handles this case (translation or fault).
-    fn rid(&self) -> u16 {
-        let (secondary, _) = self.bus_range.bus_range();
-        (secondary as u16) << 8
+    /// The RID is composed as `(secondary_bus << 8) + rid_offset` against the
+    /// live bus range. [`RidOutOfRange`] is returned when the resulting bus
+    /// reaches past the subordinate bus — the access then faults rather than
+    /// translating with a device identity outside the assigned range. The
+    /// offset is non-negative, so the bus is always at least the secondary
+    /// bus.
+    fn rid(&self) -> Result<u16, RidOutOfRange> {
+        let (secondary, subordinate) = self.bus_range.bus_range();
+        let rid = ((secondary as u32) << 8) + self.rid_offset as u32;
+        if rid >> 8 > subordinate as u32 {
+            return Err(RidOutOfRange {
+                rid,
+                secondary,
+                subordinate,
+            });
+        }
+        Ok(rid as u16)
     }
 }
 
@@ -155,7 +202,9 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
             let current_iova = iova + offset as u64;
             let chunk_len = chunk_size(current_iova, len - offset);
 
-            let rid = self.rid();
+            let rid = self
+                .rid()
+                .map_err(|err| GuestMemoryBackingError::other(current_iova, err))?;
             let result = self
                 .translator
                 .translate(rid, current_iova, write, |gpa| op(gpa, offset, chunk_len));
@@ -222,5 +271,186 @@ unsafe impl<T: IommuTranslator> guestmem::GuestMemoryAccess for TranslatingMemor
                 .fill_at(gpa, val, chunk_len)
                 .map_err(|e| GuestMemoryBackingError::other(addr, e))
         })
+    }
+}
+
+/// A [`DmaTargetIommu`](pci_core::dma::DmaTargetIommu) implementation that
+/// produces per-RID translating [`GuestMemory`] from any [`IommuTranslator`].
+///
+/// IOMMU backends (SMMU, AMD-Vi, …) plug into the
+/// [`DmaTarget`](pci_core::dma::DmaTarget) machinery by handing one of these
+/// their arch-specific [`IommuTranslator`]. They do not need to depend on
+/// `pci_core::dma` or construct [`GuestMemory`] for virtual functions
+/// themselves — this type performs the RID composition and `GuestMemory`
+/// construction generically.
+pub struct TranslatingDmaTarget<T: IommuTranslator + Clone> {
+    /// Debug label applied to each VF's `GuestMemory`.
+    label: std::sync::Arc<str>,
+    /// The IOMMU's arch-specific translator, cloned per derived VF.
+    translator: T,
+    /// The device's assigned bus range; the requester ID is derived as
+    /// `(secondary << 8) + rid_offset` per access.
+    bus_range: AssignedBusRange,
+    /// The raw (untranslated) guest memory.
+    inner_gm: GuestMemory,
+}
+
+impl<T: IommuTranslator + Clone> TranslatingDmaTarget<T> {
+    /// Creates a new per-RID `GuestMemory` factory.
+    ///
+    /// - `label`: debug label applied to each VF's `GuestMemory`
+    /// - `translator`: the IOMMU's arch-specific translator (cloned per VF)
+    /// - `bus_range`: the device's assigned bus range, used to derive the
+    ///   default function-0 RID
+    /// - `inner_gm`: the raw (untranslated) guest memory
+    pub fn new(
+        label: impl Into<std::sync::Arc<str>>,
+        translator: T,
+        bus_range: AssignedBusRange,
+        inner_gm: GuestMemory,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            translator,
+            bus_range,
+            inner_gm,
+        }
+    }
+}
+
+impl<T: IommuTranslator + Clone> pci_core::dma::DmaTargetIommu for TranslatingDmaTarget<T> {
+    fn guest_memory_for_rid_offset(&self, rid_offset: u16) -> GuestMemory {
+        TranslatingMemory::new_guest_memory_for_rid_offset(
+            self.label.clone(),
+            self.translator.clone(),
+            self.bus_range.clone(),
+            rid_offset,
+            self.inner_gm.clone(),
+        )
+    }
+}
+
+/// Build a [`DmaTarget`](pci_core::dma::DmaTarget) backed by an IOMMU translator.
+///
+/// Builds a [`TranslatingDmaTarget`] factory over `translator`/`guest_memory`
+/// and hands it to [`DmaTarget::with_iommu`](pci_core::dma::DmaTarget::with_iommu),
+/// which derives the base function-`devfn` translating memory from it and
+/// stamps the MSI identity from `msi`. IOMMU backends (SMMU, AMD-Vi, …) call
+/// this to plug their arch-specific translator into the
+/// [`DmaTarget`](pci_core::dma::DmaTarget) machinery.
+pub fn new_dma_target<T>(
+    label: &str,
+    translator: T,
+    bus_range: AssignedBusRange,
+    devfn: u8,
+    guest_memory: GuestMemory,
+    msi: &pci_core::msi::MsiConnection,
+) -> pci_core::dma::DmaTarget
+where
+    T: IommuTranslator + Clone,
+{
+    let iommu = std::sync::Arc::new(TranslatingDmaTarget::new(
+        format!("{label}-translating"),
+        translator,
+        bus_range.clone(),
+        guest_memory,
+    ));
+    pci_core::dma::DmaTarget::with_iommu(bus_range, devfn, iommu, msi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Identity translator: GPA == IOVA, never faults. Records nothing — the
+    /// `rid` validation happens in `TranslatingMemory` before `translate` is
+    /// ever called.
+    #[derive(Clone)]
+    struct IdentityTranslator;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("identity translator never faults")]
+    struct NeverFault;
+
+    impl IommuTranslator for IdentityTranslator {
+        type Error = NeverFault;
+
+        fn max_iova(&self) -> u64 {
+            u64::MAX
+        }
+
+        fn translate<R>(
+            &self,
+            _rid: u16,
+            iova: u64,
+            _write: bool,
+            op: impl FnOnce(u64) -> R,
+        ) -> Result<R, TranslationFault<Self::Error>> {
+            Ok(op(iova))
+        }
+    }
+
+    fn bus_range(secondary: u8, subordinate: u8) -> AssignedBusRange {
+        let r = AssignedBusRange::new();
+        r.set_bus_range(secondary, subordinate);
+        r
+    }
+
+    #[test]
+    fn rid_offset_in_range_translates() {
+        let inner = GuestMemory::allocate(0x1000);
+        let gm = TranslatingMemory::new_guest_memory_for_rid_offset(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            (2 << 8) | 0x02, // secondary 5 + offset -> bus 7 within [5, 10]
+            inner.clone(),
+        );
+
+        gm.write_at(0x100, &[0xAB, 0xCD]).unwrap();
+        let mut buf = [0u8; 2];
+        gm.read_at(0x100, &mut buf).unwrap();
+        assert_eq!(buf, [0xAB, 0xCD]);
+
+        // Identity mapping wrote through to inner GPA 0x100.
+        let mut inner_buf = [0u8; 2];
+        inner.read_at(0x100, &mut inner_buf).unwrap();
+        assert_eq!(inner_buf, [0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn rid_offset_out_of_range_faults() {
+        let inner = GuestMemory::allocate(0x1000);
+        let mut buf = [0u8; 2];
+
+        // secondary 5 + offset (6 << 8) -> bus 11, above subordinate 10 ->
+        // access faults
+        let gm_above = TranslatingMemory::new_guest_memory_for_rid_offset(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            6 << 8,
+            inner.clone(),
+        );
+        assert!(gm_above.read_at(0x100, &mut buf).is_err());
+        assert!(gm_above.write_at(0x100, &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn derived_rid_uses_secondary_bus_in_range() {
+        // No override: the derived RID uses the secondary bus, which is
+        // always within the range, so the access translates.
+        let inner = GuestMemory::allocate(0x1000);
+        let gm = TranslatingMemory::new_guest_memory(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            inner.clone(),
+        );
+
+        gm.write_at(0x40, &[0x11]).unwrap();
+        let mut buf = [0u8; 1];
+        gm.read_at(0x40, &mut buf).unwrap();
+        assert_eq!(buf, [0x11]);
     }
 }

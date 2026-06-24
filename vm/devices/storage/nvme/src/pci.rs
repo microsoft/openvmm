@@ -26,7 +26,6 @@ use chipset_device::pci::PciConfigSpace;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -36,7 +35,7 @@ use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::MsiTarget;
+use pci_core::dma::DmaTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -111,11 +110,12 @@ impl NvmeController {
     /// Creates a new NVMe controller.
     pub fn new(
         driver_source: &VmTaskDriverSource,
-        guest_memory: GuestMemory,
-        msi_target: &MsiTarget,
+        dma_target: &DmaTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
     ) -> Self {
+        let msi_target = dma_target.msi_target();
+        let guest_memory = dma_target.guest_memory().clone();
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
             .bar0(

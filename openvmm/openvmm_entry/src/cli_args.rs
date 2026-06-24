@@ -1064,9 +1064,17 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
+    # Attach root port rc0rp2 at device 5, function 0
+    --pcie-root-port rc0:rc0rp2,addr=5
+
+    # Attach root port rc0rp3 at device 5, function 1
+    --pcie-root-port rc0:rc0rp3,addr=5.1
+
 Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
+    `addr=<dev>[.<fn>]`            device/function to place this port at (default:
+                                   lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
@@ -3095,6 +3103,7 @@ fn parse_cxl_cfmws_window_restriction_u16_bitmask(
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub devfn: Option<u8>,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
@@ -3118,6 +3127,7 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
+        let mut devfn = None;
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
         let mut cxl = false;
@@ -3129,6 +3139,13 @@ impl FromStr for PcieRootPortCli {
             let value = kv.next();
 
             match key {
+                "addr" => {
+                    let value = value.context("addr option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("addr option expects a single value")
+                    }
+                    devfn = Some(parse_pcie_addr(value)?);
+                }
                 "hotplug" => {
                     if value.is_some() {
                         anyhow::bail!("hotplug option does not take a value")
@@ -3155,11 +3172,42 @@ impl FromStr for PcieRootPortCli {
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            devfn,
             hotplug,
             acs_capabilities_supported,
             cxl,
         })
     }
+}
+
+/// Parses a PCIe address of the form `XX[.Y]`, where `XX` is the device number
+/// (0-31) and the optional `Y` is the function number (0-7), into a devfn
+/// (`device << 3 | function`).
+fn parse_pcie_addr(s: &str) -> anyhow::Result<u8> {
+    let parse_int = |v: &str| -> anyhow::Result<u8> {
+        if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).context("invalid hex number")
+        } else {
+            v.parse().context("invalid number")
+        }
+    };
+
+    let mut parts = s.split('.');
+    let device = parse_int(parts.next().context("expected device number")?)?;
+    let function = match parts.next() {
+        Some(f) => parse_int(f)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected token in addr '{s}'");
+    }
+    if device > 31 {
+        anyhow::bail!("device number {device} out of range (0-31)");
+    }
+    if function > 7 {
+        anyhow::bail!("function number {function} out of range (0-7)");
+    }
+    Ok((device << 3) | function)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4599,6 +4647,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4610,6 +4659,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4622,6 +4672,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: true,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4633,6 +4684,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
@@ -4644,6 +4696,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
@@ -4655,9 +4708,45 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: true,
+            }
+        );
+
+        // Test addr= (device only, and device.function)
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port5,addr=5").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port5".to_string(),
+                devfn: Some(5 << 3),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port6,addr=5.1").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port6".to_string(),
+                devfn: Some((5 << 3) | 1),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port7,addr=0x1f.7").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port7".to_string(),
+                devfn: Some(0xff),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -4668,6 +4757,10 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=32").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr").is_err());
     }
 
     #[test]

@@ -16,6 +16,10 @@ use crate::spec::hwid::HardwareIds;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAddress;
+use chipset_device::pci::PciConfigByteEnable;
 use guestmem::MappableGuestMemory;
 use inspect::Inspect;
 use std::ops::RangeInclusive;
@@ -512,19 +516,21 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     // ===== Configuration Space Read/Write Functions =====
 
-    /// Read from the config space. `offset` must be 32-bit aligned.
+    /// Read from the config space.
     /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
-    pub fn read_u32(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
+    pub fn read(
+        &self,
+        address: PciConfigAddress,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> CommonHeaderResult {
         use cfg_space::CommonHeader;
+        let offset = address.byte_offset();
 
-        tracing::trace!(
-            "ConfigSpaceCommonHeaderEmulator: read_u32 offset={:#x}",
-            offset
-        );
+        tracing::trace!("ConfigSpaceCommonHeaderEmulator: read offset={:#x}", offset);
 
-        *value = match CommonHeader(offset) {
+        match CommonHeader(offset) {
             CommonHeader::DEVICE_VENDOR => {
-                (self.hardware_ids.device_id as u32) << 16 | self.hardware_ids.vendor_id as u32
+                value.set_low_high(self.hardware_ids.vendor_id, self.hardware_ids.device_id);
             }
             CommonHeader::STATUS_COMMAND => {
                 let mut status =
@@ -536,20 +542,22 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                     }
                 }
 
-                (status.into_bits() as u32) << 16 | self.state.command.into_bits() as u32
+                value.set_low_high(self.state.command.into_bits(), status.into_bits());
             }
             CommonHeader::CLASS_REVISION => {
-                (u8::from(self.hardware_ids.base_class) as u32) << 24
-                    | (u8::from(self.hardware_ids.sub_class) as u32) << 16
-                    | (u8::from(self.hardware_ids.prog_if) as u32) << 8
-                    | self.hardware_ids.revision_id as u32
+                value.set_bytes(
+                    self.hardware_ids.revision_id,
+                    u8::from(self.hardware_ids.prog_if),
+                    u8::from(self.hardware_ids.sub_class),
+                    u8::from(self.hardware_ids.base_class),
+                );
             }
             CommonHeader::RESERVED_CAP_PTR => {
-                if self.capabilities.is_empty() {
+                value.set(if self.capabilities.is_empty() {
                     0
                 } else {
                     COMMON_HEADER_END as u32
-                }
+                });
             }
             // Capabilities space - handled by common emulator
             _ if (COMMON_HEADER_END..EXT_CAP_START).contains(&offset) => {
@@ -570,30 +578,36 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         };
 
         tracing::trace!(
-            "ConfigSpaceCommonHeaderEmulator: read_u32 offset={:#x} -> value={:#x}",
+            ?value,
+            "ConfigSpaceCommonHeaderEmulator: read offset={:#x}",
             offset,
-            *value
         );
         // Handled access
         CommonHeaderResult::Handled
     }
 
-    /// Write to the config space. `offset` must be 32-bit aligned.
+    /// Write to the config space.
     /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
-    pub fn write_u32(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
+    pub fn write(
+        &mut self,
+        address: PciConfigAddress,
+        val: ByteEnabledDwordWrite,
+    ) -> CommonHeaderResult {
         use cfg_space::CommonHeader;
+        let offset = address.byte_offset();
 
         tracing::trace!(
-            "ConfigSpaceCommonHeaderEmulator: write_u32 offset={:#x} val={:#x}",
+            ?val,
+            "ConfigSpaceCommonHeaderEmulator: write offset={:#x}",
             offset,
-            val
         );
 
         match CommonHeader(offset) {
             CommonHeader::STATUS_COMMAND => {
-                let mut command = cfg_space::Command::from_bits(val as u16);
+                let mut command =
+                    cfg_space::Command::from_bits(val.merge_low(self.state.command.into_bits()));
                 if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
-                    tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
+                    tracelimit::warn_ratelimited!(offset, ?val, "setting invalid command bits");
                     // still do our best
                     command =
                         cfg_space::Command::from_bits(command.into_bits() & SUPPORTED_COMMAND_BITS);
@@ -632,22 +646,22 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     }
 
     /// Helper for reading BAR registers
-    fn read_bar(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
+    fn read_bar(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> CommonHeaderResult {
         if !self.is_bar_offset(offset) {
             return CommonHeaderResult::Unhandled;
         }
 
         let bar_index = self.get_bar_index(offset);
-        if bar_index < N {
-            *value = self.state.base_addresses[bar_index];
+        value.set(if bar_index < N {
+            self.state.base_addresses[bar_index]
         } else {
-            *value = 0;
-        }
+            0
+        });
         CommonHeaderResult::Handled
     }
 
     /// Helper for writing BAR registers
-    fn write_bar(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
+    fn write_bar(&mut self, offset: u16, val: ByteEnabledDwordWrite) -> CommonHeaderResult {
         if !self.is_bar_offset(offset) {
             return CommonHeaderResult::Unhandled;
         }
@@ -656,6 +670,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         if !self.state.command.mmio_enabled() {
             let bar_index = self.get_bar_index(offset);
             if bar_index < N {
+                let val = val.merge(self.state.base_addresses[bar_index]);
                 let mut bar_value = val & self.bar_masks[bar_index];
 
                 // For even-indexed BARs, set the 64-bit type bit if the BAR is configured
@@ -672,39 +687,54 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     }
 
     /// Read from capabilities space. `offset` must be 32-bit aligned and >= COMMON_HEADER_END.
-    fn read_capabilities(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
+    fn read_capabilities(
+        &self,
+        offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> CommonHeaderResult {
         if (COMMON_HEADER_END..EXT_CAP_START).contains(&offset) {
             if let Some((cap_index, cap_offset)) =
                 self.get_capability_index_and_offset(offset - COMMON_HEADER_END)
             {
-                *value = self.capabilities[cap_index].read_u32(cap_offset);
                 if cap_offset == 0 {
-                    let next = if cap_index < self.capabilities.len() - 1 {
-                        offset as u32 + self.capabilities[cap_index].len() as u32
-                    } else {
-                        0
-                    };
-                    assert!(*value & 0xff00 == 0);
-                    *value |= next << 8;
+                    // Byte 1 of the first DWORD of the capability is the offset of the next
+                    // capability (or 0).
+                    if let Some(mut v) = value.restrict(PciConfigByteEnable::BYTE1) {
+                        let next = if cap_index < self.capabilities.len() - 1 {
+                            offset as u32 + self.capabilities[cap_index].len() as u32
+                        } else {
+                            0
+                        };
+                        v.set(next << 8);
+                    }
+
+                    if let Some(v) = value.exclude(PciConfigByteEnable::BYTE1) {
+                        self.capabilities[cap_index].read(cap_offset, v);
+                    }
+                } else {
+                    self.capabilities[cap_index].read(cap_offset, value);
                 }
-                CommonHeaderResult::Handled
             } else {
                 // Unimplemented registers in a present function read as 0.
-                *value = 0;
-                CommonHeaderResult::Handled
+                value.set(0);
             }
+            CommonHeaderResult::Handled
         } else {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         }
     }
 
     /// Write to capabilities space. `offset` must be 32-bit aligned and >= COMMON_HEADER_END.
-    fn write_capabilities(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
+    fn write_capabilities(
+        &mut self,
+        offset: u16,
+        val: ByteEnabledDwordWrite,
+    ) -> CommonHeaderResult {
         if (COMMON_HEADER_END..EXT_CAP_START).contains(&offset) {
             if let Some((cap_index, cap_offset)) =
                 self.get_capability_index_and_offset(offset - COMMON_HEADER_END)
             {
-                self.capabilities[cap_index].write_u32(cap_offset, val);
+                self.capabilities[cap_index].write(cap_offset, val);
                 CommonHeaderResult::Handled
             } else {
                 // Writes to unimplemented registers in a present function are
@@ -717,13 +747,18 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     }
 
     /// Read from extended capabilities space (EXT_CAP_START-EXT_CAP_END). `offset` must be 32-bit aligned.
-    fn read_extended_capabilities(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
+    fn read_extended_capabilities(
+        &self,
+        offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> CommonHeaderResult {
         if (EXT_CAP_START..EXT_CAP_END).contains(&offset) {
-            *value = if self.is_pcie_device() {
+            if self.is_pcie_device() {
                 if let Some((cap_index, cap_offset, cap_base)) =
                     self.get_extended_capability_index_and_offset(offset)
                 {
-                    let mut result = self.extended_capabilities[cap_index].read_u32(cap_offset);
+                    self.extended_capabilities[cap_index].read(cap_offset, value.reborrow());
+
                     if cap_offset == 0 {
                         let next = if cap_index < self.extended_capabilities.len() - 1 {
                             let cap_size = Self::validated_extended_cap_len_bytes(
@@ -733,19 +768,23 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                         } else {
                             0
                         };
-                        assert!(result & 0xfff0_0000 == 0);
-                        result |= u32::from(next) << 20;
+
+                        let mut cap_result = value.extract();
+                        if let Some(mut v) = value.restrict(PciConfigByteEnable::HIGH_WORD) {
+                            assert!(cap_result & 0xfff0_0000 == 0);
+                            cap_result |= u32::from(next) << 20;
+                            v.set(cap_result);
+                        }
                     }
-                    result
                 } else {
                     // No more extended capabilities; the terminating header
                     // reads as 0.
-                    0
+                    value.set(0);
                 }
             } else {
                 // A conventional (non-PCIe) function has no extended
                 // configuration space; the region reads as 0.
-                0
+                value.set(0);
             };
             CommonHeaderResult::Handled
         } else {
@@ -754,13 +793,17 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     }
 
     /// Write to extended capabilities space (EXT_CAP_START-EXT_CAP_END). `offset` must be 32-bit aligned.
-    fn write_extended_capabilities(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
+    fn write_extended_capabilities(
+        &mut self,
+        offset: u16,
+        val: ByteEnabledDwordWrite,
+    ) -> CommonHeaderResult {
         if (EXT_CAP_START..EXT_CAP_END).contains(&offset) {
             if self.is_pcie_device() {
                 if let Some((cap_index, cap_offset, _)) =
                     self.get_extended_capability_index_and_offset(offset)
                 {
-                    self.extended_capabilities[cap_index].write_u32(cap_offset, val);
+                    self.extended_capabilities[cap_index].write(cap_offset, val);
                 }
             } else {
                 // No extended configuration space on a conventional function;
@@ -1001,12 +1044,13 @@ impl ConfigSpaceType0Emulator {
         self.state = ConfigSpaceType0EmulatorState::new();
     }
 
-    /// Read from the config space. `offset` must be 32-bit aligned.
-    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
+    /// Read from the config space.
+    pub fn read(&self, address: PciConfigAddress, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         use cfg_space::HeaderType00;
+        let offset = address.byte_offset();
 
         // First try to handle with common header emulator
-        match self.common.read_u32(offset, value) {
+        match self.common.read(address, value.reborrow()) {
             CommonHeaderResult::Handled => return IoResult::Ok,
             CommonHeaderResult::Failed(err) => return IoResult::Err(err),
             CommonHeaderResult::Unhandled => {
@@ -1015,27 +1059,31 @@ impl ConfigSpaceType0Emulator {
         }
 
         // Handle Type 0 specific registers
-        *value = match HeaderType00(offset) {
+        match HeaderType00(offset) {
             HeaderType00::BIST_HEADER => {
                 let mut v = (self.state.latency_timer as u32) << 8;
                 if self.common.multi_function_bit() {
                     // enable top-most bit of the header register
                     v |= 0x80 << 16;
                 }
-                v
+                value.set(v);
             }
-            HeaderType00::CARDBUS_CIS_PTR => 0,
+            HeaderType00::CARDBUS_CIS_PTR => value.set(0),
             HeaderType00::SUBSYSTEM_ID => {
-                (self.common.hardware_ids().type0_sub_system_id as u32) << 16
-                    | self.common.hardware_ids().type0_sub_vendor_id as u32
+                value.set_low_high(
+                    self.common.hardware_ids().type0_sub_vendor_id,
+                    self.common.hardware_ids().type0_sub_system_id,
+                );
             }
-            HeaderType00::EXPANSION_ROM_BASE => 0,
-            HeaderType00::RESERVED => 0,
+            HeaderType00::EXPANSION_ROM_BASE => value.set(0),
+            HeaderType00::RESERVED => value.set(0),
             HeaderType00::LATENCY_INTERRUPT => {
                 // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin, Bits 31-16: Latency Timer
-                (self.state.latency_timer as u32) << 16
-                    | (self.common.interrupt_pin() as u32) << 8
-                    | self.common.interrupt_line() as u32
+                value.set(
+                    (self.state.latency_timer as u32) << 16
+                        | (self.common.interrupt_pin() as u32) << 8
+                        | self.common.interrupt_line() as u32,
+                );
             }
             _ => {
                 tracelimit::warn_ratelimited!(offset, "unexpected config space read");
@@ -1046,12 +1094,26 @@ impl ConfigSpaceType0Emulator {
         IoResult::Ok
     }
 
-    /// Write to the config space. `offset` must be 32-bit aligned.
-    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
+    /// Read a full DWORD from the config space. `offset` must be 32-bit aligned.
+    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
+    }
+
+    /// Write to the config space.
+    pub fn write(&mut self, address: PciConfigAddress, val: ByteEnabledDwordWrite) -> IoResult {
         use cfg_space::HeaderType00;
+        let offset = address.byte_offset();
 
         // First try to handle with common header emulator
-        match self.common.write_u32(offset, val) {
+        match self.common.write(address, val) {
             CommonHeaderResult::Handled => return IoResult::Ok,
             CommonHeaderResult::Failed(err) => return IoResult::Err(err),
             CommonHeaderResult::Unhandled => {
@@ -1069,18 +1131,34 @@ impl ConfigSpaceType0Emulator {
                 // Bits 7-0: Interrupt Line (read/write)
                 // Bits 15-8: Interrupt Pin (read-only, ignore writes)
                 // Bits 31-16: Latency Timer (read/write)
-                self.common.set_interrupt_line((val & 0xff) as u8);
-                self.state.latency_timer = (val >> 16) as u8;
+                let low = val.merge_low(
+                    (self.common.interrupt_pin() as u16) << 8 | self.common.interrupt_line() as u16,
+                );
+                self.common.set_interrupt_line(low as u8);
+                self.state.latency_timer = val.merge_high(self.state.latency_timer as u16) as u8;
             }
             // all other base regs are noops
             _ if offset < COMMON_HEADER_END && offset.is_multiple_of(4) => (),
             _ => {
-                tracelimit::warn_ratelimited!(offset, value = val, "unexpected config space write");
+                tracelimit::warn_ratelimited!(offset, ?val, "unexpected config space write");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         }
 
         IoResult::Ok
+    }
+
+    /// Write a full DWORD to the config space. `offset` must be 32-bit aligned.
+    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Finds a BAR + offset by address.
@@ -1310,12 +1388,13 @@ impl ConfigSpaceType1Emulator {
         }
     }
 
-    /// Read from the config space. `offset` must be 32-bit aligned.
-    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
+    /// Read from the config space.
+    pub fn read(&self, address: PciConfigAddress, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         use cfg_space::HeaderType01;
+        let offset = address.byte_offset();
 
         // First try to handle with common header emulator
-        match self.common.read_u32(offset, value) {
+        match self.common.read(address, value.reborrow()) {
             CommonHeaderResult::Handled => return IoResult::Ok,
             CommonHeaderResult::Failed(err) => return IoResult::Err(err),
             CommonHeaderResult::Unhandled => {
@@ -1324,40 +1403,46 @@ impl ConfigSpaceType1Emulator {
         }
 
         // Handle Type 1 specific registers
-        *value = match HeaderType01(offset) {
+        match HeaderType01(offset) {
             HeaderType01::BIST_HEADER => {
                 // Header type 01 with optional multi-function bit
-                if self.common.multi_function_bit() {
+                value.set(if self.common.multi_function_bit() {
                     0x00810000 // Header type 01 with multi-function bit (bit 23)
                 } else {
                     0x00010000 // Header type 01 without multi-function bit
-                }
+                });
             }
             HeaderType01::LATENCY_BUS_NUMBERS => {
-                (self.state.subordinate_bus_number as u32) << 16
-                    | (self.state.secondary_bus_number as u32) << 8
-                    | self.state.primary_bus_number as u32
+                value.set_bytes(
+                    self.state.primary_bus_number,
+                    self.state.secondary_bus_number,
+                    self.state.subordinate_bus_number,
+                    0,
+                );
             }
-            HeaderType01::SEC_STATUS_IO_RANGE => 0,
+            HeaderType01::SEC_STATUS_IO_RANGE => value.set(0),
             HeaderType01::MEMORY_RANGE => {
-                from_low_high(self.state.memory_base, self.state.memory_limit)
+                value.set_low_high(self.state.memory_base, self.state.memory_limit)
             }
             HeaderType01::PREFETCH_RANGE => {
                 // Set the low bit in both the limit and base registers to indicate
                 // support for 64-bit addressing.
-                from_low_high(
+                value.set_low_high(
                     self.state.prefetch_base | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT,
                     self.state.prefetch_limit | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT,
                 )
             }
-            HeaderType01::PREFETCH_BASE_UPPER => self.state.prefetch_base_upper,
-            HeaderType01::PREFETCH_LIMIT_UPPER => self.state.prefetch_limit_upper,
-            HeaderType01::IO_RANGE_UPPER => 0,
-            HeaderType01::EXPANSION_ROM_BASE => 0,
+            HeaderType01::PREFETCH_BASE_UPPER => value.set(self.state.prefetch_base_upper),
+            HeaderType01::PREFETCH_LIMIT_UPPER => value.set(self.state.prefetch_limit_upper),
+            HeaderType01::IO_RANGE_UPPER => value.set(0),
+            HeaderType01::EXPANSION_ROM_BASE => value.set(0),
             HeaderType01::BRDIGE_CTRL_INTERRUPT => {
                 // Read interrupt line from common header and bridge control from state
                 // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin (0), Bits 31-16: Bridge Control
-                (self.state.bridge_control as u32) << 16 | self.common.interrupt_line() as u32
+                value.set_low_high(
+                    self.common.interrupt_line() as u16,
+                    self.state.bridge_control,
+                )
             }
             _ => {
                 tracelimit::warn_ratelimited!(offset, "unexpected config space read");
@@ -1368,12 +1453,26 @@ impl ConfigSpaceType1Emulator {
         IoResult::Ok
     }
 
-    /// Write to the config space. `offset` must be 32-bit aligned.
-    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
+    /// Read a full DWORD from the config space. `offset` must be 32-bit aligned.
+    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
+    }
+
+    /// Write to the config space.
+    pub fn write(&mut self, address: PciConfigAddress, val: ByteEnabledDwordWrite) -> IoResult {
         use cfg_space::HeaderType01;
+        let offset = address.byte_offset();
 
         // First try to handle with common header emulator
-        match self.common.write_u32(offset, val) {
+        match self.common.write(address, val) {
             CommonHeaderResult::Handled => return IoResult::Ok,
             CommonHeaderResult::Failed(err) => return IoResult::Err(err),
             CommonHeaderResult::Unhandled => {
@@ -1388,42 +1487,62 @@ impl ConfigSpaceType1Emulator {
                 // For now, just ignore these writes (latency timer would go here if supported)
             }
             HeaderType01::LATENCY_BUS_NUMBERS => {
+                let current = (self.state.subordinate_bus_number as u32) << 16
+                    | (self.state.secondary_bus_number as u32) << 8
+                    | self.state.primary_bus_number as u32;
+                let val = val.merge(current);
                 self.state.subordinate_bus_number = (val >> 16) as u8;
                 self.state.secondary_bus_number = (val >> 8) as u8;
                 self.state.primary_bus_number = val as u8;
                 self.sync_bus_range();
             }
             HeaderType01::MEMORY_RANGE => {
-                let (base, limit) = to_low_high(val);
-                self.state.memory_base = base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
-                self.state.memory_limit = limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.memory_base = val.merge_low(self.state.memory_base)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.memory_limit = val.merge_high(self.state.memory_limit)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_RANGE => {
-                let (base, limit) = to_low_high(val);
-                self.state.prefetch_base = base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
-                self.state.prefetch_limit = limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.prefetch_base = val.merge_low(self.state.prefetch_base)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.prefetch_limit = val.merge_high(self.state.prefetch_limit)
+                    & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_BASE_UPPER => {
-                self.state.prefetch_base_upper = val;
+                val.merge_into(&mut self.state.prefetch_base_upper);
             }
             HeaderType01::PREFETCH_LIMIT_UPPER => {
-                self.state.prefetch_limit_upper = val;
+                val.merge_into(&mut self.state.prefetch_limit_upper);
             }
             HeaderType01::BRDIGE_CTRL_INTERRUPT => {
                 // Delegate interrupt line writes to common header and store bridge control
                 // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin (ignored), Bits 31-16: Bridge Control
-                self.common.set_interrupt_line((val & 0xff) as u8);
-                self.state.bridge_control = (val >> 16) as u16;
+                self.common
+                    .set_interrupt_line(val.merge_low(self.common.interrupt_line() as u16) as u8);
+                self.state.bridge_control = val.merge_high(self.state.bridge_control);
             }
             // all other base regs are noops
             _ if offset < COMMON_HEADER_END && offset.is_multiple_of(4) => (),
             _ => {
-                tracelimit::warn_ratelimited!(offset, value = val, "unexpected config space write");
+                tracelimit::warn_ratelimited!(offset, ?val, "unexpected config space write");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         }
 
         IoResult::Ok
+    }
+
+    /// Write a full DWORD to the config space. `offset` must be 32-bit aligned.
+    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.
@@ -1470,14 +1589,6 @@ impl ConfigSpaceType1Emulator {
     pub fn bar_address(&self, bar: u8) -> Option<u64> {
         self.common.bar_address(bar)
     }
-}
-
-fn from_low_high(low: u16, high: u16) -> u32 {
-    (u32::from(high) << 16) | u32::from(low)
-}
-
-fn to_low_high(value: u32) -> (u16, u16) {
-    (value as u16, (value >> 16) as u16)
 }
 
 mod save_restore {
@@ -1839,6 +1950,9 @@ mod tests {
     use crate::spec::hwid::ClassCode;
     use crate::spec::hwid::ProgrammingInterface;
     use crate::spec::hwid::Subclass;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigByteEnable;
 
     fn create_type0_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType0Emulator {
         ConfigSpaceType0Emulator::new(
@@ -1929,6 +2043,55 @@ mod tests {
         // ... but it cannot be less, that's a confused guest OS.
         emu.write_u32(0x18, 0x0087_8800).unwrap();
         assert_eq!(emu.assigned_bus_range(), 0..=0);
+    }
+
+    #[test]
+    fn test_type1_bus_number_byte_writes() {
+        let mut emu = create_type1_emulator(vec![]);
+
+        emu.write(
+            PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
+            ByteEnabledDwordWrite::new(
+                0x0000_0011,
+                PciConfigByteEnable::from_offset_len(0x18, 1).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0000_0011);
+        assert_eq!(emu.assigned_bus_range(), 0..=0);
+
+        emu.write(
+            PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
+            ByteEnabledDwordWrite::new(
+                0x0000_2200,
+                PciConfigByteEnable::from_offset_len(0x19, 1).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0000_2211);
+        assert_eq!(emu.assigned_bus_range(), 0..=0);
+
+        emu.write(
+            PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
+            ByteEnabledDwordWrite::new(
+                0x0033_0000,
+                PciConfigByteEnable::from_offset_len(0x1a, 1).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0033_2211);
+        assert_eq!(emu.assigned_bus_range(), 0x22..=0x33);
+
+        emu.write(
+            PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
+            ByteEnabledDwordWrite::new(
+                0xff00_0000,
+                PciConfigByteEnable::from_offset_len(0x1b, 1).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0033_2211);
+        assert_eq!(emu.assigned_bus_range(), 0x22..=0x33);
     }
 
     #[test]
@@ -2370,16 +2533,22 @@ mod tests {
         // not all-ones.
         let mut value = 0xdead_beef;
         assert!(matches!(
-            common_emu_no_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
+            common_emu_no_pcie.read_extended_capabilities(
+                EXT_CAP_START,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value, 0);
 
         // A PCIe device with no extended capabilities returns an all-zero
         // header, terminating the list.
-        let mut value = 0;
+        let mut value = 0xdead_beef;
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                EXT_CAP_START,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value, 0);
@@ -2387,24 +2556,36 @@ mod tests {
         // Writes to the (unimplemented) extended region on a non-PCIe device
         // are dropped silently rather than faulting.
         assert!(matches!(
-            common_emu_no_pcie.write_extended_capabilities(EXT_CAP_START, 0x1234),
+            common_emu_no_pcie.write_extended_capabilities(
+                EXT_CAP_START,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x1234)
+            ),
             CommonHeaderResult::Handled
         ));
 
         // Test writing extended capabilities - PCIe device should accept writes
         assert!(matches!(
-            common_emu_pcie.write_extended_capabilities(EXT_CAP_START, 0x1234),
+            common_emu_pcie.write_extended_capabilities(
+                EXT_CAP_START,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x1234)
+            ),
             CommonHeaderResult::Handled
         ));
 
         // Test invalid offset ranges
         let mut value = 0;
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(0x99, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                0x99,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         ));
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(EXT_CAP_END, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                EXT_CAP_END,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         ));
     }
@@ -2434,14 +2615,18 @@ mod tests {
         // An offset well past the implemented capability reads as 0.
         let mut value = 0xdead_beef;
         assert!(matches!(
-            common_emu.read_capabilities(0x90, &mut value),
+            common_emu.read_capabilities(
+                0x90,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value, 0);
 
         // Writes to the unimplemented region are dropped silently.
         assert!(matches!(
-            common_emu.write_capabilities(0x90, 0x1234),
+            common_emu
+                .write_capabilities(0x90, ByteEnabledDwordWrite::with_all_bytes_enabled(0x1234)),
             CommonHeaderResult::Handled
         ));
     }
@@ -2469,24 +2654,36 @@ mod tests {
 
         let mut value = 0;
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                EXT_CAP_START,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value, 0x0001_000d);
 
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(0x104, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                0x104,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!(value as u16, 0x005f);
         assert_eq!((value >> 16) as u16, 0x0000);
 
         assert!(matches!(
-            common_emu_pcie.write_extended_capabilities(0x104, 0xffff_0000),
+            common_emu_pcie.write_extended_capabilities(
+                0x104,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xffff_0000),
+            ),
             CommonHeaderResult::Handled
         ));
         assert!(matches!(
-            common_emu_pcie.read_extended_capabilities(0x104, &mut value),
+            common_emu_pcie.read_extended_capabilities(
+                0x104,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
+            ),
             CommonHeaderResult::Handled
         ));
         assert_eq!((value >> 16) as u16, 0x005f);

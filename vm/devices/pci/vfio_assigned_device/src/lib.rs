@@ -21,6 +21,9 @@ use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::MappableGuestMemory;
 use guestmem::MemoryMapper;
@@ -1160,11 +1163,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             // capability chain remains intact.
             offset if self.msix.as_ref().is_some_and(|m| offset.0 == m.cap_offset) => {
                 let msix = self.msix.as_ref().unwrap();
-                let hw = self.read_phys_config(offset.0);
-                let emu = msix.capability.read_u32(0);
-                // Low 16 bits from hardware (cap ID + next ptr),
-                // high 16 bits from emulator (message control).
-                (hw & 0xFFFF) | (emu & 0xFFFF0000)
+                // Read the full DWORD from hardware.
+                let mut emu = self.read_phys_config(offset.0);
+                // Overwrite the high word with the emulator.
+                msix.capability.read(
+                    0,
+                    ByteEnabledDwordRead::new(&mut emu, PciConfigByteEnable::HIGH_WORD),
+                );
+                emu
             }
             // Everything else: read from physical device, applying any
             // config space patches.
@@ -1284,7 +1290,8 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     match self.msix_enable() {
                         Ok(()) => {
                             let msix = self.msix.as_mut().unwrap();
-                            msix.capability.write_u32(0, value);
+                            msix.capability
+                                .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
                             msix.enabled = true;
                         }
                         Err(e) => {
@@ -1298,12 +1305,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 } else if was_enabled && !new_enabled {
                     // Write capability first to disable vectors,
                     // then tear down VFIO mapping.
-                    msix.capability.write_u32(0, value);
+                    msix.capability
+                        .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
                     self.msix_disable();
                     self.msix.as_mut().unwrap().enabled = false;
                 } else {
                     // No enable/disable transition — just forward.
-                    msix.capability.write_u32(0, value);
+                    msix.capability
+                        .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
                 }
                 // Skip write_phys_config for MSI-X control register.
                 return IoResult::Ok;
