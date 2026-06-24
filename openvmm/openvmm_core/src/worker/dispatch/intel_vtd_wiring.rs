@@ -150,10 +150,7 @@ pub(super) fn setup_intel_vtd(
             pci_segment: hb.segment,
             start_bus: hb.start_bus,
             device_scopes: res.device_scopes.clone(),
-            ioapic: ioapic_rid.map(|_| vmm_core::acpi_builder::IntelVtdIoapicScope {
-                enumeration_id: 0,
-                devfn: super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN,
-            }),
+            ioapic_rid,
         });
 
         if let Some(ioapic_rid) = ioapic_rid {

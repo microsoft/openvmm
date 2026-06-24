@@ -161,18 +161,11 @@ pub struct IntelVtdAcpiConfig {
     /// on the root bus (bridges for root ports, endpoints for RCiEPs).
     /// The DMAR builder emits one DMAR device scope entry per element.
     pub device_scopes: Vec<IntelVtdDeviceScope>,
-    /// Optional IOAPIC device scope for the DRHD that covers the southbridge
-    /// IOAPIC's source ID.
-    pub ioapic: Option<IntelVtdIoapicScope>,
-}
-
-/// IOAPIC device scope entry for a VT-d DRHD.
-#[derive(Clone, Debug)]
-pub struct IntelVtdIoapicScope {
-    /// IOAPIC enumeration ID, matching the MADT IOAPIC ID.
-    pub enumeration_id: u8,
-    /// PCI device/function used as the IOAPIC source ID on the DRHD start bus.
-    pub devfn: u8,
+    /// IOAPIC PCIe Requester ID (RID) for the DMAR IOAPIC device scope.
+    ///
+    /// When set, a DEVICE_SCOPE_IOAPIC entry is added to this DRHD so the
+    /// guest can locate the IOAPIC's source ID for interrupt remapping.
+    pub ioapic_rid: Option<u16>,
 }
 
 /// A single device scope entry for the DMAR table's DRHD structure.
@@ -349,6 +342,9 @@ pub trait AcpiTopology: ArchTopology + Inspect + Sized {
 ///
 /// This isn't 0xff because that's the broadcast ID.
 const MAX_LEGACY_APIC_ID: u32 = 0xfe;
+
+/// IOAPIC ID emitted in the x86 MADT and referenced by DMAR IOAPIC scopes.
+const X86_IOAPIC_ID: u8 = 0;
 
 impl AcpiTopology for X86Topology {
     fn extend_srat(topology: &ProcessorTopology<Self>, srat: &mut Vec<u8>) {
@@ -555,7 +551,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             if with_ioapic {
                 madt_extra.extend_from_slice(
                     acpi_spec::madt::MadtIoApic {
-                        io_apic_id: 0,
+                        io_apic_id: X86_IOAPIC_ID,
                         io_apic_address: ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS as u32,
                         ..acpi_spec::madt::MadtIoApic::new()
                     }
@@ -878,7 +874,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // Each device scope entry is a DmarDeviceScope header (6 bytes)
             // plus one DmarDevicePath (2 bytes).
             let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
-            let ioapic_scope_count = if config.ioapic.is_some() { 1 } else { 0 };
+            let ioapic_devfn = config.ioapic_rid.and_then(|ioapic_rid| {
+                let ioapic_bus = (ioapic_rid >> 8) as u8;
+                (config.pci_segment == 0 && config.start_bus == ioapic_bus)
+                    .then_some(ioapic_rid as u8)
+            });
+            let ioapic_scope_count = if ioapic_devfn.is_some() { 1 } else { 0 };
             let total_scope_size =
                 per_scope_size * (config.device_scopes.len() + ioapic_scope_count);
             let drhd_total = size_of::<dmar::DmarDrhd>() + total_scope_size;
@@ -910,15 +911,15 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 );
             }
 
-            if let Some(ioapic) = &config.ioapic {
+            if let Some(ioapic_devfn) = ioapic_devfn {
                 let mut scope =
                     dmar::DmarDeviceScope::new(dmar::DEVICE_SCOPE_IOAPIC, config.start_bus);
-                scope.enumeration_id = ioapic.enumeration_id;
+                scope.enumeration_id = X86_IOAPIC_ID;
                 dmar_extra.extend_from_slice(scope.as_bytes());
                 dmar_extra.extend_from_slice(
                     DmarDevicePath {
-                        device: ioapic.devfn >> 3,
-                        function: ioapic.devfn & 0x7,
+                        device: ioapic_devfn >> 3,
+                        function: ioapic_devfn & 0x7,
                     }
                     .as_bytes(),
                 );
@@ -2319,7 +2320,7 @@ mod test {
                         is_bridge: true,
                     },
                 ],
-                ioapic: None,
+                ioapic_rid: None,
             }],
         );
 
@@ -2389,10 +2390,7 @@ mod test {
                     devfn: 0x00,
                     is_bridge: true,
                 }],
-                ioapic: Some(IntelVtdIoapicScope {
-                    enumeration_id: 0,
-                    devfn: 0xA0,
-                }),
+                ioapic_rid: Some(0x00A0),
             }],
         );
 
@@ -2444,7 +2442,7 @@ mod test {
                     devfn: 0x00,
                     is_bridge: true,
                 }],
-                ioapic: None,
+                ioapic_rid: None,
             }],
         );
 
@@ -2469,7 +2467,7 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
-                    ioapic: None,
+                    ioapic_rid: None,
                 },
                 IntelVtdAcpiConfig {
                     mmio_base: 0xFED9_1000,
@@ -2479,7 +2477,7 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
-                    ioapic: None,
+                    ioapic_rid: None,
                 },
             ],
         );

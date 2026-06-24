@@ -630,57 +630,11 @@ async fn amd_iommu_mixed_topology(
     );
 
     // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
-    //     Linux reports this path as "IR-IO-APIC" in /proc/interrupts.
-    tracing::info!(
-        ir_dmesg = %dmesg
-            .lines()
-            .filter(|l| {
-                let l = l.to_ascii_lowercase();
-                l.contains("remap") || l.contains("amd-vi")
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        "AMD-Vi / interrupt remapping dmesg lines"
-    );
-
-    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
-    tracing::info!(%interrupts, "/proc/interrupts");
-
-    // The serial port IRQ must be routed through the IR-aware IOAPIC chip,
-    // proving IOAPIC interrupts pass through the IOMMU's IRTEs.
-    let serial_irq = interrupts
-        .lines()
-        .find(|l| l.contains("ttyS0"))
-        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
-    assert!(
-        serial_irq.contains("IR-IO-APIC"),
-        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
-         remapping is enabled, got: {serial_irq}"
-    );
-
-    // Confirm an IOAPIC interrupt actually arrives through the IR path:
-    // capture the serial interrupt count, generate serial traffic, then
-    // confirm the count increased.
-    let count_before = sum_irq_count(serial_irq);
-    cmd!(
-        sh,
-        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
-    )
-    .run()
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "AMD-Vi", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("amd-vi")
+    })
     .await?;
-    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
-    let serial_irq_after = interrupts_after
-        .lines()
-        .find(|l| l.contains("ttyS0"))
-        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
-    let count_after = sum_irq_count(serial_irq_after);
-    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
-    assert!(
-        count_after > count_before,
-        "serial (IOAPIC) interrupt count should increase after generating \
-         serial traffic with interrupt remapping enabled: \
-         before={count_before} after={count_after}"
-    );
 
     // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
@@ -766,52 +720,11 @@ async fn intel_vtd_mixed_topology(
     );
 
     // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
-    //     Linux reports this path as "IR-IO-APIC" in /proc/interrupts.
-    tracing::info!(
-        ir_dmesg = %dmesg
-            .lines()
-            .filter(|l| {
-                let l = l.to_ascii_lowercase();
-                l.contains("remap") || l.contains("dmar") || l.contains("intel-iommu")
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        "Intel VT-d / interrupt remapping dmesg lines"
-    );
-
-    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
-    tracing::info!(%interrupts, "/proc/interrupts");
-
-    let serial_irq = interrupts
-        .lines()
-        .find(|l| l.contains("ttyS0"))
-        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
-    assert!(
-        serial_irq.contains("IR-IO-APIC"),
-        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
-         remapping is enabled, got: {serial_irq}"
-    );
-
-    let count_before = sum_irq_count(serial_irq);
-    cmd!(
-        sh,
-        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
-    )
-    .run()
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "Intel VT-d", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("dmar") || l.contains("intel-iommu")
+    })
     .await?;
-    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
-    let serial_irq_after = interrupts_after
-        .lines()
-        .find(|l| l.contains("ttyS0"))
-        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
-    let count_after = sum_irq_count(serial_irq_after);
-    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
-    assert!(
-        count_after > count_before,
-        "serial (IOAPIC) interrupt count should increase after generating \
-         serial traffic with interrupt remapping enabled: \
-         before={count_before} after={count_after}"
-    );
 
     // 3–6. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
@@ -891,6 +804,64 @@ async fn verify_iommu_mixed_topology(
         faults.is_empty(),
         "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
         faults.join("\n")
+    );
+
+    Ok(())
+}
+
+/// Verify that IOAPIC interrupts are routed through interrupt remapping.
+///
+/// Linux reports this path as `IR-IO-APIC` in `/proc/interrupts`. To prove the
+/// route is live, this captures the serial IRQ count, generates serial output,
+/// and confirms the count increases.
+async fn verify_ioapic_interrupt_remapping(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    dmesg: &str,
+    iommu: &str,
+    ir_dmesg_filter: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        iommu,
+        ir_dmesg = %dmesg
+            .lines()
+            .filter(|l| ir_dmesg_filter(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "interrupt remapping dmesg lines"
+    );
+
+    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
+    tracing::info!(%interrupts, "/proc/interrupts");
+
+    let serial_irq = interrupts
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
+    assert!(
+        serial_irq.contains("IR-IO-APIC"),
+        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
+         remapping is enabled, got: {serial_irq}"
+    );
+
+    let count_before = sum_irq_count(serial_irq);
+    cmd!(
+        sh,
+        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
+    )
+    .run()
+    .await?;
+    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
+    let serial_irq_after = interrupts_after
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
+    let count_after = sum_irq_count(serial_irq_after);
+    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
+    assert!(
+        count_after > count_before,
+        "serial (IOAPIC) interrupt count should increase after generating \
+         serial traffic with interrupt remapping enabled: \
+         before={count_before} after={count_after}"
     );
 
     Ok(())

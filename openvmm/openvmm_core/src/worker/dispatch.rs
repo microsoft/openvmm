@@ -68,6 +68,7 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -2075,19 +2076,14 @@ impl InitializedVm {
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
                 #[cfg(guest_arch = "x86_64")]
-                let amd_iommu_on_rc = matches!(
-                    &resolved_iommu,
-                    ResolvedIommu::AmdVi(resources)
-                        if resources.iter().any(|r| r.rc_idx == rc_idx)
-                );
+                let rc_iommu = rc.iommu.as_ref();
                 #[cfg(guest_arch = "x86_64")]
-                let intel_vtd_on_rc = matches!(
-                    &resolved_iommu,
-                    ResolvedIommu::IntelVtd(resources)
-                        if resources.iter().any(|r| r.rc_idx == rc_idx)
-                );
-                #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = if amd_iommu_on_rc { 1 } else { 0 };
+                let root_port_start_device: u8 = if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi))
+                {
+                    1
+                } else {
+                    0
+                };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let root_port_start_device: u8 = 0;
 
@@ -2101,13 +2097,16 @@ impl InitializedVm {
                 // that an overly large port count is rejected rather than
                 // silently shadowing the IOAPIC entry.
                 #[cfg(guest_arch = "x86_64")]
-                let reserved_device_numbers: u32 =
-                    if rc.segment == 0 && rc.start_bus == 0 && (amd_iommu_on_rc || intel_vtd_on_rc)
-                    {
-                        1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
-                    } else {
-                        0
-                    };
+                let reserved_device_numbers: u32 = if rc.segment == 0
+                    && rc.start_bus == 0
+                    && matches!(
+                        rc_iommu,
+                        Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
+                    ) {
+                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                } else {
+                    0
+                };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let reserved_device_numbers: u32 = 0;
 
