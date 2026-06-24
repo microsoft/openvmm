@@ -1357,60 +1357,16 @@ mod x86 {
                 return Err(HvError::VtlAlreadyEnabled);
             }
 
-            let names = &[
-                whp::abi::WHvX64RegisterRip,
-                whp::abi::WHvX64RegisterRsp,
-                whp::abi::WHvX64RegisterRflags,
-                whp::abi::WHvX64RegisterCs,
-                whp::abi::WHvX64RegisterDs,
-                whp::abi::WHvX64RegisterEs,
-                whp::abi::WHvX64RegisterFs,
-                whp::abi::WHvX64RegisterGs,
-                whp::abi::WHvX64RegisterSs,
-                whp::abi::WHvX64RegisterTr,
-                whp::abi::WHvX64RegisterLdtr,
-                whp::abi::WHvX64RegisterIdtr,
-                whp::abi::WHvX64RegisterGdtr,
-                whp::abi::WHvX64RegisterEfer,
-                whp::abi::WHvX64RegisterCr0,
-                whp::abi::WHvX64RegisterCr3,
-                whp::abi::WHvX64RegisterCr4,
-                whp::abi::WHvX64RegisterPat,
-            ];
-            let values: &[HvRegisterValue] = &[
-                vp_context.rip.into(),
-                vp_context.rsp.into(),
-                vp_context.rflags.into(),
-                vp_context.cs.into(),
-                vp_context.ds.into(),
-                vp_context.es.into(),
-                vp_context.fs.into(),
-                vp_context.gs.into(),
-                vp_context.ss.into(),
-                vp_context.tr.into(),
-                vp_context.ldtr.into(),
-                vp_context.idtr.into(),
-                vp_context.gdtr.into(),
-                vp_context.efer.into(),
-                vp_context.cr0.into(),
-                vp_context.cr3.into(),
-                vp_context.cr4.into(),
-                vp_context.msr_cr_pat.into(),
-            ];
-
-            // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-            let values =
-                unsafe { std::mem::transmute::<&[HvRegisterValue], &[WHV_REGISTER_VALUE]>(values) };
-
             tracing::debug!(vp_index = vp_index.index(), ?vtl, "enabling vtl");
 
-            target_vp
-                .whp(vtl)
-                .set_registers(names, values)
-                .map_err(|_| HvError::InvalidParameter)?;
+            let target_vplc = target_vp.vplc(vtl);
+            *target_vplc.start_vp_context.lock() = Some(Box::new(*vp_context));
+            target_vplc.start_vp.store(true, Ordering::Release);
 
-            // Force VTL0 to return now that VTL2 is enabled.
+            // Force the target VP to return from any in-progress run and
+            // wake its async future so it processes the start-VP request.
             target_vp.whp(Vtl::Vtl0).cancel_run().expect("can't fail");
+            target_vp.wake();
             Ok(())
         }
     }
