@@ -429,6 +429,29 @@ fn test_ttrpc_consomme_port_forward(
         anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
         drop(stdout);
 
+        let pid_content = match std::fs::read_to_string(&pidfile_path) {
+            Ok(s) => s,
+            Err(e) => {
+                let wait_result = CancelContext::new()
+                    .with_timeout(Duration::from_secs(10))
+                    .until_cancelled(child.wait())
+                    .await;
+                match wait_result {
+                    Ok(Ok(status)) => {
+                        anyhow::bail!("openvmm exited with {status} before pidfile was created");
+                    }
+                    _ => {
+                        return Err(e).context("failed to read pidfile");
+                    }
+                }
+            }
+        };
+        assert_eq!(
+            pid_content,
+            format!("{}\n", child.get().id()),
+            "pidfile should contain the child PID"
+        );
+
         // Reserve a free host TCP port to forward. The listener is dropped
         // immediately; consomme rebinds the same port number when the forward
         // is configured.
@@ -626,6 +649,12 @@ fn test_ttrpc_consomme_port_forward(
         assert!(
             exit_status.success(),
             "openvmm exited abnormally: {exit_status:?}"
+        );
+
+        // Verify the pidfile was cleaned up on exit.
+        assert!(
+            !pidfile_path.exists(),
+            "pidfile should be removed after exit"
         );
 
         Ok(())
