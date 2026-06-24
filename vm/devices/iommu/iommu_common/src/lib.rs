@@ -367,103 +367,6 @@ where
     pci_core::dma::DmaTarget::with_iommu(bus_range, devfn, iommu, msi)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Identity translator: GPA == IOVA, never faults. Records nothing — the
-    /// `rid` validation happens in `TranslatingMemory` before `translate` is
-    /// ever called.
-    #[derive(Clone)]
-    struct IdentityTranslator;
-
-    #[derive(Debug, thiserror::Error)]
-    #[error("identity translator never faults")]
-    struct NeverFault;
-
-    impl IommuTranslator for IdentityTranslator {
-        type Error = NeverFault;
-
-        fn max_iova(&self) -> u64 {
-            u64::MAX
-        }
-
-        fn translate<R>(
-            &self,
-            _rid: u16,
-            iova: u64,
-            _write: bool,
-            op: impl FnOnce(u64) -> R,
-        ) -> Result<R, TranslationFault<Self::Error>> {
-            Ok(op(iova))
-        }
-    }
-
-    fn bus_range(secondary: u8, subordinate: u8) -> AssignedBusRange {
-        let r = AssignedBusRange::new();
-        r.set_bus_range(secondary, subordinate);
-        r
-    }
-
-    #[test]
-    fn rid_offset_in_range_translates() {
-        let inner = GuestMemory::allocate(0x1000);
-        let gm = TranslatingMemory::new_guest_memory_for_rid_offset(
-            "test",
-            IdentityTranslator,
-            bus_range(5, 10),
-            (2 << 8) | 0x02, // secondary 5 + offset -> bus 7 within [5, 10]
-            inner.clone(),
-        );
-
-        gm.write_at(0x100, &[0xAB, 0xCD]).unwrap();
-        let mut buf = [0u8; 2];
-        gm.read_at(0x100, &mut buf).unwrap();
-        assert_eq!(buf, [0xAB, 0xCD]);
-
-        // Identity mapping wrote through to inner GPA 0x100.
-        let mut inner_buf = [0u8; 2];
-        inner.read_at(0x100, &mut inner_buf).unwrap();
-        assert_eq!(inner_buf, [0xAB, 0xCD]);
-    }
-
-    #[test]
-    fn rid_offset_out_of_range_faults() {
-        let inner = GuestMemory::allocate(0x1000);
-        let mut buf = [0u8; 2];
-
-        // secondary 5 + offset (6 << 8) -> bus 11, above subordinate 10 ->
-        // access faults
-        let gm_above = TranslatingMemory::new_guest_memory_for_rid_offset(
-            "test",
-            IdentityTranslator,
-            bus_range(5, 10),
-            6 << 8,
-            inner.clone(),
-        );
-        assert!(gm_above.read_at(0x100, &mut buf).is_err());
-        assert!(gm_above.write_at(0x100, &[1, 2]).is_err());
-    }
-
-    #[test]
-    fn derived_rid_uses_secondary_bus_in_range() {
-        // No override: the derived RID uses the secondary bus, which is
-        // always within the range, so the access translates.
-        let inner = GuestMemory::allocate(0x1000);
-        let gm = TranslatingMemory::new_guest_memory(
-            "test",
-            IdentityTranslator,
-            bus_range(5, 10),
-            inner.clone(),
-        );
-
-        gm.write_at(0x40, &[0x11]).unwrap();
-        let mut buf = [0u8; 1];
-        gm.read_at(0x40, &mut buf).unwrap();
-        assert_eq!(buf, [0x11]);
-    }
-}
-
 // =============================================================================
 // Interrupt Remapping Infrastructure
 // =============================================================================
@@ -565,5 +468,102 @@ impl RetranslateInterruptsList {
             }
             true
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Identity translator: GPA == IOVA, never faults. Records nothing — the
+    /// `rid` validation happens in `TranslatingMemory` before `translate` is
+    /// ever called.
+    #[derive(Clone)]
+    struct IdentityTranslator;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("identity translator never faults")]
+    struct NeverFault;
+
+    impl IommuTranslator for IdentityTranslator {
+        type Error = NeverFault;
+
+        fn max_iova(&self) -> u64 {
+            u64::MAX
+        }
+
+        fn translate<R>(
+            &self,
+            _rid: u16,
+            iova: u64,
+            _write: bool,
+            op: impl FnOnce(u64) -> R,
+        ) -> Result<R, TranslationFault<Self::Error>> {
+            Ok(op(iova))
+        }
+    }
+
+    fn bus_range(secondary: u8, subordinate: u8) -> AssignedBusRange {
+        let r = AssignedBusRange::new();
+        r.set_bus_range(secondary, subordinate);
+        r
+    }
+
+    #[test]
+    fn rid_offset_in_range_translates() {
+        let inner = GuestMemory::allocate(0x1000);
+        let gm = TranslatingMemory::new_guest_memory_for_rid_offset(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            (2 << 8) | 0x02, // secondary 5 + offset -> bus 7 within [5, 10]
+            inner.clone(),
+        );
+
+        gm.write_at(0x100, &[0xAB, 0xCD]).unwrap();
+        let mut buf = [0u8; 2];
+        gm.read_at(0x100, &mut buf).unwrap();
+        assert_eq!(buf, [0xAB, 0xCD]);
+
+        // Identity mapping wrote through to inner GPA 0x100.
+        let mut inner_buf = [0u8; 2];
+        inner.read_at(0x100, &mut inner_buf).unwrap();
+        assert_eq!(inner_buf, [0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn rid_offset_out_of_range_faults() {
+        let inner = GuestMemory::allocate(0x1000);
+        let mut buf = [0u8; 2];
+
+        // secondary 5 + offset (6 << 8) -> bus 11, above subordinate 10 ->
+        // access faults
+        let gm_above = TranslatingMemory::new_guest_memory_for_rid_offset(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            6 << 8,
+            inner.clone(),
+        );
+        assert!(gm_above.read_at(0x100, &mut buf).is_err());
+        assert!(gm_above.write_at(0x100, &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn derived_rid_uses_secondary_bus_in_range() {
+        // No override: the derived RID uses the secondary bus, which is
+        // always within the range, so the access translates.
+        let inner = GuestMemory::allocate(0x1000);
+        let gm = TranslatingMemory::new_guest_memory(
+            "test",
+            IdentityTranslator,
+            bus_range(5, 10),
+            inner.clone(),
+        );
+
+        gm.write_at(0x40, &[0x11]).unwrap();
+        let mut buf = [0u8; 1];
+        gm.read_at(0x40, &mut buf).unwrap();
+        assert_eq!(buf, [0x11]);
     }
 }
