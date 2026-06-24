@@ -649,10 +649,15 @@ async fn amd_iommu_mixed_topology(
     Ok(())
 }
 
-/// Test Intel VT-d IOMMU emulation with a mixed topology:
+/// Test Intel VT-d IOMMU emulation across a multi-segment topology:
 ///
 /// - Root complex s0rc0 (segment 0): VT-d IOMMU enabled, NVMe + virtio-net
-/// - Root complex s1rc0 (segment 1): no IOMMU, NVMe + virtio-net
+/// - Root complex s1rc0 (segment 1): VT-d IOMMU enabled, NVMe + virtio-net
+///
+/// Every root complex has its own VT-d unit. Unlike AMD-Vi, Intel VT-d cannot
+/// have a device on a segment with no VT-d unit: enabling VT-d forces global
+/// interrupt remapping (x2APIC), under which Linux can't allocate MSIs for a
+/// device outside every DRHD's scope (so OpenVMM rejects that configuration).
 ///
 /// Verifies:
 /// 1. Linux discovers the Intel IOMMU (dmesg shows DMAR/Intel IOMMU init)
@@ -661,13 +666,13 @@ async fn amd_iommu_mixed_topology(
 /// 4. Devices on both RCs enumerate and function (block I/O, network interface)
 /// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
 #[vmm_test_with(openvmm_intel(linux_direct_x64))]
-async fn intel_vtd_mixed_topology(
+async fn intel_vtd_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
-                .with_intel_vtd(&["s0rc0"]) // VT-d only on segment 0's RC
+                .with_intel_vtd(&["s0rc0", "s1rc0"]) // VT-d on every RC
                 .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])

@@ -358,7 +358,7 @@ pub fn new_dma_target<T>(
 where
     T: IommuTranslator + Clone,
 {
-    let iommu = std::sync::Arc::new(TranslatingDmaTarget::new(
+    let iommu = Arc::new(TranslatingDmaTarget::new(
         format!("{label}-translating"),
         translator,
         bus_range.clone(),

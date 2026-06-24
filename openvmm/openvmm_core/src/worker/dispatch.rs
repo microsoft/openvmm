@@ -1182,7 +1182,7 @@ impl InitializedVm {
                 amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
             ),
             ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
-                intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges),
+                intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
             ),
             _ => ResolvedIommu::None,
         };

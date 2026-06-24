@@ -35,11 +35,29 @@ pub(super) struct ResolvedVtdResources {
 
 /// Combines Intel VT-d RC configs with MMIO ranges from the memory layout
 /// engine into resolved per-instance resources.
+///
+/// Intel VT-d forces global interrupt remapping (x2APIC), under which Linux
+/// gives any device not covered by a DRHD a NULL MSI domain and its MSI
+/// allocation fails. Each VT-d unit covers only its own root complex, so
+/// reject mixing VT-d and non-VT-d root complexes.
 pub(super) fn resolve_vtd_resources(
     root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
     mmio_ranges: &[memory_range::MemoryRange],
-) -> Vec<ResolvedVtdResources> {
-    root_complexes
+) -> anyhow::Result<Vec<ResolvedVtdResources>> {
+    for rc in root_complexes {
+        if !matches!(
+            rc.iommu,
+            Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
+        ) {
+            anyhow::bail!(
+                "root complex '{}' has no Intel VT-d unit; with Intel \
+                 VT-d, every root complex must have one",
+                rc.name,
+            );
+        }
+    }
+
+    Ok(root_complexes
         .iter()
         .enumerate()
         .filter(|(_, rc)| {
@@ -70,7 +88,7 @@ pub(super) fn resolve_vtd_resources(
                 device_scopes,
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Result of [`setup_intel_vtd`].
@@ -171,4 +189,54 @@ pub(super) fn setup_intel_vtd(
         shared_states,
         ioapic_iommu,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memory_range::MemoryRange;
+    use openvmm_defs::config::PcieIommuConfig;
+    use openvmm_defs::config::PcieMmioRangeConfig;
+    use openvmm_defs::config::PcieRootComplexConfig;
+
+    fn rc(name: &str, segment: u16, iommu: Option<PcieIommuConfig>) -> PcieRootComplexConfig {
+        PcieRootComplexConfig {
+            index: 0,
+            name: name.to_string(),
+            segment,
+            start_bus: 0,
+            end_bus: 0,
+            low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
+            high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
+            ports: Vec::new(),
+            cxl: None,
+            iommu,
+            vnode: None,
+            preserve_bars: false,
+        }
+    }
+
+    #[test]
+    fn rejects_mixed_vtd_topology() {
+        // A root complex without its own VT-d unit is unreachable by interrupt
+        // remapping once VT-d forces global x2APIC, so the config is rejected.
+        let rcs = [
+            rc("s0rc0", 0, Some(PcieIommuConfig::IntelVtd)),
+            rc("s1rc0", 1, None),
+        ];
+        assert!(resolve_vtd_resources(&rcs, &[]).is_err());
+    }
+
+    #[test]
+    fn accepts_vtd_on_every_rc() {
+        let rcs = [
+            rc("s0rc0", 0, Some(PcieIommuConfig::IntelVtd)),
+            rc("s1rc0", 1, Some(PcieIommuConfig::IntelVtd)),
+        ];
+        let ranges = [
+            MemoryRange::new(0..0x1000),
+            MemoryRange::new(0x1000..0x2000),
+        ];
+        assert_eq!(resolve_vtd_resources(&rcs, &ranges).unwrap().len(), 2);
+    }
 }
