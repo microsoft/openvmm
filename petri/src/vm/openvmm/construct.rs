@@ -251,7 +251,11 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        if !properties.no_vmbus {
+        if !storvsp_ide_handles.is_empty() {
+            anyhow::ensure!(
+                !properties.no_vmbus,
+                "IDE accelerator requires VMBus to be enabled"
+            );
             vmbus_devices.extend(storvsp_ide_handles);
         }
 
@@ -1257,9 +1261,6 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
 
 /// Convert the generic IDE configuration to OpenVMM IDE disks and storvsp
 /// IDE accelerator handles.
-///
-/// Returns the IDE emulator disk configs and storvsp IDE accelerator
-/// VMBus device handles (for hard disks only).
 async fn ide_controllers_to_openvmm(
     ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
 ) -> anyhow::Result<(
