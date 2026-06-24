@@ -196,9 +196,14 @@ fn map_path_list(name: &str, value: &str, path_mapper: &HostPathMapper) -> anyho
         return Ok(String::new());
     }
 
+    // The incubator targets a Linux guest, so path lists always use the
+    // guest's ':' separator regardless of the host OS. Do not use
+    // `std::env::split_paths`, which splits on the host separator (';' on
+    // Windows) and would mis-parse these values on Windows hosts.
     let mut mapped = Vec::new();
-    for path in std::env::split_paths(value) {
-        let guest_path = path_mapper.map_path(&path).with_context(|| {
+    for entry in value.split(':') {
+        let path = Path::new(entry);
+        let guest_path = path_mapper.map_path(path).with_context(|| {
             format!(
                 "path-list entry '{}' in environment variable {name} is not in the host share",
                 path.display()
