@@ -664,7 +664,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!(addr, "unexpected intercept at ECAM address");
             }
             DecodedEcamAccess::Unroutable => {
-                tracing::debug!(addr, "unroutable config space access");
+                tracing::trace!(addr, "unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
@@ -739,7 +739,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!(addr, "unexpected intercept at ECAM address");
             }
             DecodedEcamAccess::Unroutable => {
-                tracing::debug!(addr, "unroutable config space access");
+                tracing::trace!(addr, "unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
