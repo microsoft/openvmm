@@ -794,9 +794,9 @@ struct LoadedVmInner {
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
     iommu_devices: IommuDevices,
-    /// IOAPIC PCIe Requester ID for the IVRS DEV_SPECIAL(IOAPIC) entry,
-    /// when AMD IOMMU interrupt remapping is active. Threaded into the IVRS
-    /// ACPI config at firmware-load time.
+    /// IOAPIC PCIe Requester ID when x86 IOMMU interrupt remapping is active.
+    /// For AMD this is threaded into IVRS at firmware-load time; for Intel
+    /// the matching DMAR device scope is carried by the per-unit ACPI config.
     #[cfg(guest_arch = "x86_64")]
     ioapic_iommu_rid: Option<u16>,
     pcie_host_bridges: Vec<PcieHostBridge>,
@@ -2081,11 +2081,17 @@ impl InitializedVm {
                         if resources.iter().any(|r| r.rc_idx == rc_idx)
                 );
                 #[cfg(guest_arch = "x86_64")]
+                let intel_vtd_on_rc = matches!(
+                    &resolved_iommu,
+                    ResolvedIommu::IntelVtd(resources)
+                        if resources.iter().any(|r| r.rc_idx == rc_idx)
+                );
+                #[cfg(guest_arch = "x86_64")]
                 let root_port_start_device: u8 = if amd_iommu_on_rc { 1 } else { 0 };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let root_port_start_device: u8 = 0;
 
-                // On the segment-0 root complex covered by the AMD IOMMU, the
+                // On the segment-0 root complex covered by an x86 IOMMU, the
                 // phantom southbridge IOAPIC occupies a fixed devfn whose
                 // device number must not be assigned to a root port. The
                 // IOAPIC RID is on bus 0, so only reserve the device number on
@@ -2096,7 +2102,8 @@ impl InitializedVm {
                 // silently shadowing the IOAPIC entry.
                 #[cfg(guest_arch = "x86_64")]
                 let reserved_device_numbers: u32 =
-                    if rc.segment == 0 && rc.start_bus == 0 && amd_iommu_on_rc {
+                    if rc.segment == 0 && rc.start_bus == 0 && (amd_iommu_on_rc || intel_vtd_on_rc)
+                    {
                         1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
                     } else {
                         0
@@ -2413,26 +2420,23 @@ impl InitializedVm {
             ResolvedIommu::None => IommuDevices::None,
         };
 
-        // Set up IOAPIC routing. When an AMD IOMMU covers the southbridge
+        // Set up IOAPIC routing. When an x86 IOMMU covers the southbridge
         // IOAPIC (segment 0, bus 0), wrap the hypervisor's IoApicRouting
         // through that IOMMU's interrupt remapping table so IOAPIC-sourced
         // interrupts are translated via the guest's IRTEs and invalidation
         // commands trigger retranslation. The RID and the remapper come from
-        // the same IOMMU, so the IVRS DEV_SPECIAL(IOAPIC) entry and the
-        // runtime remapping always refer to the same DTE/IRTE context.
+        // the same IOMMU, so ACPI discovery and runtime remapping agree.
         #[cfg(guest_arch = "x86_64")]
-        let ioapic_iommu_rid: Option<u16> = if let IommuDevices::AmdVi(amd_devices) = &iommu_devices
-        {
-            amd_devices.ioapic_iommu.as_ref().map(|sel| {
-                ioapic_routing.connect_remapper(
-                    sel.ioapic_rid,
-                    sel.shared_state.clone() as Arc<dyn iommu_common::InterruptRemapper>,
-                );
-                sel.ioapic_rid
-            })
-        } else {
-            None
+        let ioapic_iommu = match &iommu_devices {
+            IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
+            IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
+            IommuDevices::None => None,
         };
+        #[cfg(guest_arch = "x86_64")]
+        let ioapic_iommu_rid: Option<u16> = ioapic_iommu.map(|sel| {
+            ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
+            sel.ioapic_rid
+        });
 
         // Wire deferred root complex and switch MSI connections now that
         // IOMMU setup is complete. On x86_64, this applies IOMMU

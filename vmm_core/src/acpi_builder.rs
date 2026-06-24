@@ -161,6 +161,18 @@ pub struct IntelVtdAcpiConfig {
     /// on the root bus (bridges for root ports, endpoints for RCiEPs).
     /// The DMAR builder emits one DMAR device scope entry per element.
     pub device_scopes: Vec<IntelVtdDeviceScope>,
+    /// Optional IOAPIC device scope for the DRHD that covers the southbridge
+    /// IOAPIC's source ID.
+    pub ioapic: Option<IntelVtdIoapicScope>,
+}
+
+/// IOAPIC device scope entry for a VT-d DRHD.
+#[derive(Clone, Debug)]
+pub struct IntelVtdIoapicScope {
+    /// IOAPIC enumeration ID, matching the MADT IOAPIC ID.
+    pub enumeration_id: u8,
+    /// PCI device/function used as the IOAPIC source ID on the DRHD start bus.
+    pub devfn: u8,
 }
 
 /// A single device scope entry for the DMAR table's DRHD structure.
@@ -866,7 +878,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // Each device scope entry is a DmarDeviceScope header (6 bytes)
             // plus one DmarDevicePath (2 bytes).
             let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
-            let total_scope_size = per_scope_size * config.device_scopes.len();
+            let ioapic_scope_count = if config.ioapic.is_some() { 1 } else { 0 };
+            let total_scope_size =
+                per_scope_size * (config.device_scopes.len() + ioapic_scope_count);
             let drhd_total = size_of::<dmar::DmarDrhd>() + total_scope_size;
 
             let drhd = dmar::DmarDrhd::new(
@@ -891,6 +905,20 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     DmarDevicePath {
                         device: scope.devfn >> 3,
                         function: scope.devfn & 0x7,
+                    }
+                    .as_bytes(),
+                );
+            }
+
+            if let Some(ioapic) = &config.ioapic {
+                let mut scope =
+                    dmar::DmarDeviceScope::new(dmar::DEVICE_SCOPE_IOAPIC, config.start_bus);
+                scope.enumeration_id = ioapic.enumeration_id;
+                dmar_extra.extend_from_slice(scope.as_bytes());
+                dmar_extra.extend_from_slice(
+                    DmarDevicePath {
+                        device: ioapic.devfn >> 3,
+                        function: ioapic.devfn & 0x7,
                     }
                     .as_bytes(),
                 );
@@ -2291,6 +2319,7 @@ mod test {
                         is_bridge: true,
                     },
                 ],
+                ioapic: None,
             }],
         );
 
@@ -2345,6 +2374,48 @@ mod test {
     }
 
     #[test]
+    fn test_dmar_ioapic_scope() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 0,
+                start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
+                ioapic: Some(IntelVtdIoapicScope {
+                    enumeration_id: 0,
+                    devfn: 0xA0,
+                }),
+            }],
+        );
+
+        let dmar = builder.build_dmar().unwrap();
+        assert_eq!(checksum(&dmar), 0);
+
+        let drhd_offset = 48;
+        let drhd_len =
+            u16::from_ne_bytes(dmar[drhd_offset + 2..drhd_offset + 4].try_into().unwrap());
+        assert_eq!(drhd_len, 32);
+
+        let ioapic_scope_offset = drhd_offset + 16 + 8;
+        assert_eq!(
+            dmar[ioapic_scope_offset],
+            acpi_spec::dmar::DEVICE_SCOPE_IOAPIC
+        );
+        assert_eq!(dmar[ioapic_scope_offset + 4], 0);
+        assert_eq!(dmar[ioapic_scope_offset + 5], 0);
+        assert_eq!(dmar[ioapic_scope_offset + 6], 0x14);
+        assert_eq!(dmar[ioapic_scope_offset + 7], 0);
+    }
+
+    #[test]
     fn test_dmar_not_generated_when_disabled() {
         let mem = new_mem();
         let topology = TopologyBuilder::new_x86().build(4).unwrap();
@@ -2373,6 +2444,7 @@ mod test {
                     devfn: 0x00,
                     is_bridge: true,
                 }],
+                ioapic: None,
             }],
         );
 
@@ -2397,6 +2469,7 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
+                    ioapic: None,
                 },
                 IntelVtdAcpiConfig {
                     mmio_base: 0xFED9_1000,
@@ -2406,6 +2479,7 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
+                    ioapic: None,
                 },
             ],
         );

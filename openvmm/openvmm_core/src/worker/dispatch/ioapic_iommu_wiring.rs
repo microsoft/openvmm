@@ -28,6 +28,17 @@ use virt::irqcon::MsiRequest;
 /// lookup.
 pub const IOAPIC_PHANTOM_DEVFN: u8 = 0xA0;
 
+/// The x86 IOMMU selected to host the southbridge IOAPIC's interrupt
+/// remapping context.
+pub(super) struct IoapicIommuSelection {
+    /// Interrupt remapper backing the IOAPIC routes. This is the same IOMMU
+    /// whose ACPI table entry publishes [`ioapic_rid`](Self::ioapic_rid), so
+    /// ACPI discovery and runtime remapping always agree.
+    pub remapper: Arc<dyn InterruptRemapper>,
+    /// IOAPIC PCIe Requester ID (RID) published in the IOMMU ACPI table.
+    pub ioapic_rid: u16,
+}
+
 /// The control side of the IOAPIC interrupt-remapping connection.
 ///
 /// Modeled after [`pci_core::msi::MsiConnection`](pci_core::msi::MsiConnection):
@@ -165,5 +176,111 @@ impl RetranslateInterrupts for IoApicRoutingInner {
     fn retranslate(&self) {
         let mut state = self.state.lock();
         self.set_all_routes(&mut state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    #[derive(Default)]
+    struct RecordingIoApicRouting {
+        routes: Mutex<Vec<(u8, Option<MsiRequest>)>>,
+    }
+
+    impl RecordingIoApicRouting {
+        fn last_route(&self, irq: u8) -> Option<MsiRequest> {
+            self.routes
+                .lock()
+                .iter()
+                .rev()
+                .find(|(route_irq, _)| *route_irq == irq)
+                .and_then(|(_, request)| *request)
+        }
+    }
+
+    impl IoApicRouting for RecordingIoApicRouting {
+        fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
+            self.routes.lock().push((irq, request));
+        }
+
+        fn assert_irq(&self, _irq: u8) {}
+    }
+
+    struct TestRemapper {
+        data_delta: AtomicU32,
+        routes: iommu_common::RetranslateInterruptsList,
+        seen_device_ids: Mutex<Vec<u16>>,
+    }
+
+    impl TestRemapper {
+        fn new(data_delta: u32) -> Self {
+            Self {
+                data_delta: AtomicU32::new(data_delta),
+                routes: iommu_common::RetranslateInterruptsList::new(),
+                seen_device_ids: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl InterruptRemapper for TestRemapper {
+        fn remap_msi(&self, device_id: u16, address: u64, data: u32) -> Option<(u64, u32)> {
+            self.seen_device_ids.lock().push(device_id);
+            Some((
+                address + 0x1000,
+                data + self.data_delta.load(Ordering::SeqCst),
+            ))
+        }
+
+        fn register_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
+            self.routes.register(route);
+        }
+
+        fn unregister_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
+            self.routes.unregister(route);
+        }
+    }
+
+    #[test]
+    fn ioapic_routes_are_remapped_and_retranslated() {
+        let hv_routing = Arc::new(RecordingIoApicRouting::default());
+        let connection = IoApicRoutingConnection::new(hv_routing.clone());
+        let target = connection.target();
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+
+        target.set_irq_route(4, Some(raw));
+        assert_eq!(hv_routing.last_route(4), Some(raw));
+
+        let remapper = Arc::new(TestRemapper::new(1));
+        connection.connect_remapper(0x00A0, remapper.clone());
+        assert_eq!(
+            hv_routing.last_route(4),
+            Some(MsiRequest {
+                address: raw.address + 0x1000,
+                data: raw.data + 1,
+            })
+        );
+
+        remapper.data_delta.store(2, Ordering::SeqCst);
+        remapper.routes.invalidate(None);
+        assert_eq!(
+            hv_routing.last_route(4),
+            Some(MsiRequest {
+                address: raw.address + 0x1000,
+                data: raw.data + 2,
+            })
+        );
+        assert!(
+            remapper
+                .seen_device_ids
+                .lock()
+                .iter()
+                .all(|device_id| *device_id == 0x00A0)
+        );
     }
 }

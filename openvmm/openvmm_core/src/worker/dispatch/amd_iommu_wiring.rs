@@ -8,6 +8,7 @@
 //! This module handles instantiating AMD IOMMU chipset devices on each
 //! requested root complex.
 
+use super::ioapic_iommu_wiring::IoapicIommuSelection;
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
@@ -57,17 +58,6 @@ pub(super) struct IommuDevicesResult {
     /// DEV_SPECIAL(IOAPIC) entry. `None` if no AMD IOMMU covers that
     /// location, in which case IOAPIC interrupt remapping stays disabled.
     pub ioapic_iommu: Option<IoapicIommuSelection>,
-}
-
-/// The AMD IOMMU selected to host the southbridge IOAPIC's interrupt
-/// remapping context.
-pub(super) struct IoapicIommuSelection {
-    /// Interrupt remapper backing the IOAPIC routes. This is the same IOMMU
-    /// whose IVHD carries the DEV_SPECIAL(IOAPIC) entry, so the RID used for
-    /// remapping and the RID published in the IVRS always agree.
-    pub shared_state: Arc<amd_iommu::IommuSharedState>,
-    /// IOAPIC PCIe Requester ID (RID) for the IVRS DEV_SPECIAL(IOAPIC) entry.
-    pub ioapic_rid: u16,
 }
 
 /// Instantiate AMD IOMMU chipset devices.
@@ -145,7 +135,7 @@ pub(super) fn setup_amd_iommu(
             let ioapic_rid = (hb.start_bus as u16) << 8
                 | super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
             ioapic_iommu = Some(IoapicIommuSelection {
-                shared_state: shared,
+                remapper: shared,
                 ioapic_rid,
             });
         }

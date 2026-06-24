@@ -9,6 +9,7 @@
 //! requested root complex. Unlike AMD IOMMU (which is a PCI device), VT-d is a
 //! pure MMIO platform device discovered via the ACPI DMAR table.
 
+use super::ioapic_iommu_wiring::IoapicIommuSelection;
 use anyhow::Context as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
@@ -79,6 +80,10 @@ pub(super) struct VtdDevicesResult {
     /// Per-RC VT-d shared state, indexed parallel to `pcie_host_bridges`.
     /// `None` for root complexes without an Intel VT-d unit.
     pub shared_states: Vec<Option<Arc<intel_vtd::VtdSharedState>>>,
+    /// The VT-d unit that covers the southbridge IOAPIC (segment 0, bus 0),
+    /// if any. Used to wire IOAPIC interrupt remapping and publish the DMAR
+    /// IOAPIC device scope.
+    pub ioapic_iommu: Option<IoapicIommuSelection>,
 }
 
 /// Instantiate Intel VT-d chipset devices.
@@ -97,6 +102,7 @@ pub(super) fn setup_intel_vtd(
     let mut shared_states: Vec<Option<Arc<intel_vtd::VtdSharedState>>> =
         vec![None; pcie_host_bridges.len()];
     let mut acpi_configs: Vec<vmm_core::acpi_builder::IntelVtdAcpiConfig> = Vec::new();
+    let mut ioapic_iommu: Option<IoapicIommuSelection> = None;
 
     for res in resolved_resources {
         let rc_pos = res.rc_idx;
@@ -128,18 +134,45 @@ pub(super) fn setup_intel_vtd(
             device
         })?;
         let shared = vtd_dev.lock().shared_state().clone();
-        shared_states[rc_pos] = Some(shared);
+        shared_states[rc_pos] = Some(shared.clone());
+
+        let ioapic_rid = if hb.segment == 0 && hb.start_bus == 0 {
+            Some(
+                ((hb.start_bus as u16) << 8)
+                    | super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16,
+            )
+        } else {
+            None
+        };
 
         acpi_configs.push(vmm_core::acpi_builder::IntelVtdAcpiConfig {
             mmio_base,
             pci_segment: hb.segment,
             start_bus: hb.start_bus,
             device_scopes: res.device_scopes.clone(),
+            ioapic: ioapic_rid.map(|_| vmm_core::acpi_builder::IntelVtdIoapicScope {
+                enumeration_id: 0,
+                devfn: super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN,
+            }),
         });
+
+        if let Some(ioapic_rid) = ioapic_rid {
+            ioapic_iommu = Some(IoapicIommuSelection {
+                remapper: shared,
+                ioapic_rid,
+            });
+        }
+    }
+
+    if ioapic_iommu.is_none() && !acpi_configs.is_empty() {
+        tracing::warn!(
+            "no Intel VT-d unit covers segment 0 bus 0; IOAPIC interrupt remapping disabled"
+        );
     }
 
     Ok(VtdDevicesResult {
         acpi_configs,
         shared_states,
+        ioapic_iommu,
     })
 }
