@@ -318,6 +318,9 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// Error from a remote operation on the endpoint.
+    #[error(transparent)]
+    Remote(mesh::error::RemoteError),
 }
 
 /// Callback to modify network state dynamically.
@@ -338,14 +341,13 @@ impl From<HostPortProtocol> for IpProtocol {
     }
 }
 
-/// Configuration for unbinding a previously forwarded port.
-struct PortUnbindConfig {
-    /// The protocol that was forwarded.
-    protocol: IpProtocol,
-    /// The IP address family that was forwarded.
-    family: IpVersion,
-    /// The guest port that was forwarded.
-    guest_port: u16,
+impl From<IpProtocol> for HostPortProtocol {
+    fn from(p: IpProtocol) -> Self {
+        match p {
+            IpProtocol::Tcp => HostPortProtocol::Tcp,
+            IpProtocol::Udp => HostPortProtocol::Udp,
+        }
+    }
 }
 
 /// In-proc control request. A superset of the cross-proc `ConsommeRequest` that
@@ -693,7 +695,6 @@ fn process_port_request(
         }
     }
 }
-
 
 impl net_backend::Queue for ConsommeQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
