@@ -198,7 +198,7 @@ And, for further example, to rebuild everything* and run all* the tests
 rustup target add x86_64-unknown-none
 rustup target add x86_64-unknown-uefi
 rustup target add x86_64-pc-windows-msvc
-sudo apt install clang-tools-14 lld-14
+sudo apt install clang-tools lld
 
 cargo install cargo-nextest --locked
 
