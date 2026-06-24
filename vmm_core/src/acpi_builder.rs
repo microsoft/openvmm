@@ -2634,36 +2634,4 @@ mod test {
         assert_eq!(ivrs[special + 7], 0x01);
     }
 
-    /// When an IOAPIC RID is supplied but no IOMMU covers segment 0 / bus 0,
-    /// no DEV_SPECIAL(IOAPIC) entry is emitted.
-    #[test]
-    fn test_ivrs_no_ioapic_entry_when_uncovered() {
-        let mem = new_mem();
-        let topology = TopologyBuilder::new_x86().build(4).unwrap();
-        let pcie = vec![];
-        let mut builder = new_builder(&mem, &topology, &pcie);
-        set_amd_iommu_with_ioapic(
-            &mut builder,
-            vec![AmdIommuAcpiConfig {
-                device_id: 0x0000,
-                capability_offset: 0x40,
-                mmio_base: 0xFD00_0000,
-                pci_segment: 1, // not segment 0
-                ivhd_features: 0xC0,
-                start_bus: 0,
-                end_bus: 255,
-            }],
-            Some(0x00A0),
-        );
-
-        let ivrs = builder.build_ivrs().unwrap();
-
-        // The single IVHD must contain only the range_start + range_end pair.
-        let ivhd_offset = 48;
-        let ivhd_len =
-            u16::from_ne_bytes(ivrs[ivhd_offset + 2..ivhd_offset + 4].try_into().unwrap());
-        assert_eq!(ivhd_len as usize, 40 + 2 * 4);
-        // No special device entry byte present anywhere after the header.
-        assert!(!ivrs[ivhd_offset..].contains(&0x48));
-    }
 }

@@ -455,25 +455,37 @@ impl RetranslateInterruptsList {
     /// Invalidate routes for a specific device, or all routes if
     /// `device_id` is `None`.
     ///
-    /// For each matching route, calls `retranslate` with the provided
-    /// remapper. Dead references are cleaned up lazily.
+    /// For each matching route, calls `retranslate`. Dead references are
+    /// cleaned up lazily.
     pub fn invalidate(&self, device_id: Option<u16>) {
-        let mut routes = self.routes.lock();
-        routes.retain(|weak| {
-            let Some(route) = weak.upgrade() else {
-                return false; // dead, remove
-            };
+        let routes = {
+            let mut routes = self.routes.lock();
+            let mut live_routes = Vec::new();
+
+            routes.retain(|weak| {
+                let Some(route) = weak.upgrade() else {
+                    return false; // dead, remove
+                };
+                live_routes.push(route);
+                true
+            });
+
+            live_routes
+        };
+
+        for route in routes {
             if device_id.is_none() || device_id == Some(route.device_id()) {
                 route.retranslate();
             }
-            true
-        });
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
 
     /// Identity translator: GPA == IOVA, never faults. Records nothing — the
     /// `rid` validation happens in `TranslatingMemory` before `translate` is
@@ -507,6 +519,38 @@ mod tests {
         let r = AssignedBusRange::new();
         r.set_bus_range(secondary, subordinate);
         r
+    }
+
+    struct ReentrantRoute {
+        list: Arc<RetranslateInterruptsList>,
+        retranslates: AtomicU32,
+    }
+
+    impl RetranslateInterrupts for ReentrantRoute {
+        fn device_id(&self) -> u16 {
+            assert!(self.list.routes.try_lock().is_some());
+            7
+        }
+
+        fn retranslate(&self) {
+            self.retranslates.fetch_add(1, Ordering::SeqCst);
+            assert!(self.list.routes.try_lock().is_some());
+        }
+    }
+
+    #[test]
+    fn invalidate_does_not_hold_lock_during_retranslate() {
+        let list = Arc::new(RetranslateInterruptsList::new());
+        let route = Arc::new(ReentrantRoute {
+            list: list.clone(),
+            retranslates: AtomicU32::new(0),
+        });
+        let route_dyn = route.clone() as Arc<dyn RetranslateInterrupts>;
+        list.register(&route_dyn);
+
+        list.invalidate(Some(7));
+
+        assert_eq!(route.retranslates.load(Ordering::SeqCst), 1);
     }
 
     #[test]
