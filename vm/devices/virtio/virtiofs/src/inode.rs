@@ -18,6 +18,10 @@ use std::sync::atomic::Ordering;
 /// Implements inode callbacks for virtio-fs.
 pub struct VirtioFsInode {
     volume: Arc<LxVolume>,
+    /// Identifies which aggregated volume this inode belongs to. Inode numbers
+    /// are only unique within a volume, so this is needed to key the stable
+    /// inode-number map when a single file system exposes multiple roots.
+    volume_id: u32,
     path: RwLock<PathBuf>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
@@ -25,16 +29,26 @@ pub struct VirtioFsInode {
 
 impl VirtioFsInode {
     /// Create a new inode for the specified path.
-    pub fn new(volume: Arc<LxVolume>, path: PathBuf) -> lx::Result<(Self, lx::Stat)> {
+    pub fn new(
+        volume: Arc<LxVolume>,
+        volume_id: u32,
+        path: PathBuf,
+    ) -> lx::Result<(Self, lx::Stat)> {
         let stat = volume.lstat(&path)?;
-        let inode = Self::with_attr(volume, path, &stat);
+        let inode = Self::with_attr(volume, volume_id, path, &stat);
         Ok((inode, stat))
     }
 
     /// Create a new inode for the specified path, with previously retrieved attributes.
-    pub fn with_attr(volume: Arc<LxVolume>, path: PathBuf, stat: &lx::Stat) -> Self {
+    pub fn with_attr(
+        volume: Arc<LxVolume>,
+        volume_id: u32,
+        path: PathBuf,
+        stat: &lx::Stat,
+    ) -> Self {
         Self {
             volume,
+            volume_id,
             path: RwLock::new(path),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
@@ -46,6 +60,11 @@ impl VirtioFsInode {
     /// N.B. This may be different from its FUSE node ID.
     pub fn inode_nr(&self) -> lx::ino_t {
         self.inode_nr
+    }
+
+    /// Return the identifier of the aggregated volume this inode belongs to.
+    pub fn volume_id(&self) -> u32 {
+        self.volume_id
     }
 
     /// Increments the lookup count.
@@ -89,7 +108,7 @@ impl VirtioFsInode {
     /// Performs a lookup for a child of this inode.
     pub fn lookup_child(&self, name: &LxStr) -> lx::Result<(VirtioFsInode, fuse_attr)> {
         let path = self.child_path(name)?;
-        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), path)?;
+        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), self.volume_id, path)?;
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr))
     }
@@ -138,7 +157,7 @@ impl VirtioFsInode {
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
+        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr, file))
     }
@@ -156,7 +175,7 @@ impl VirtioFsInode {
             .volume
             .mkdir_stat(&path, LxCreateOptions::new(mode, uid, gid))?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
+        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr))
     }
@@ -177,7 +196,7 @@ impl VirtioFsInode {
             device_id as usize,
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
+        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr))
     }
@@ -197,7 +216,7 @@ impl VirtioFsInode {
             LxCreateOptions::new(lx::S_IFLNK | 0o777, uid, gid),
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
+        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr))
     }

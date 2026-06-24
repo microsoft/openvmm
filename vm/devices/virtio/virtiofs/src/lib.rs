@@ -30,6 +30,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use zerocopy::FromZeros;
 
 // TODO: Make these configurable.
 // FUSE likes to spam getattr a lot, so having a small timeout on the attributes avoids excessive
@@ -42,11 +43,69 @@ const ATTRIBUTE_TIMEOUT: Duration = Duration::from_millis(1);
 // update the path.
 const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
-/// Implementation of the virtio-fs file system.
-pub struct VirtioFs {
+/// Reserved file handle returned by `open_dir` on the synthetic aggregate root.
+///
+/// `read_dir`/`read_dir_plus`/`release_dir` recognize this sentinel and service
+/// it from the root registry rather than the (real-file) handle map. `u64::MAX`
+/// can never collide with a real handle because `HandleMap` allocates starting
+/// at 1 and only increments.
+const SYNTHETIC_ROOT_FH: u64 = u64::MAX;
+
+/// Linux `DT_DIR` directory-entry type, used for the synthetic root's children.
+const DT_DIR: u32 = 4;
+
+/// A single host folder exposed as a named child of the synthetic aggregate root.
+struct RootEntry {
+    /// Name of the synthetic top-level directory. Chosen by the caller; the guest
+    /// bind-mounts `<aggregate-mount>/<name>` onto the user's target path.
+    name: String,
+    volume: Arc<lxutil::LxVolume>,
+    /// Stable identifier disambiguating per-volume inode numbers.
+    volume_id: u32,
+}
+
+/// Registry of aggregated roots for an aggregate-mode [`VirtioFs`].
+struct RootRegistry {
+    entries: Vec<RootEntry>,
+    next_volume_id: u32,
+}
+
+impl RootRegistry {
+    fn new() -> Self {
+        // Volume id 0 is reserved for a direct-mode single root, so aggregated
+        // roots start at 1.
+        Self {
+            entries: Vec::new(),
+            next_volume_id: 1,
+        }
+    }
+}
+
+/// Shared mutable state behind a [`VirtioFs`] handle.
+struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
+    /// Aggregated roots; empty and unused in direct (single-root) mode.
+    roots: RwLock<RootRegistry>,
     readonly: bool,
+    /// When true, node 1 is a synthetic directory whose children are the entries
+    /// in `roots`. When false, node 1 is a real inode at a single volume root
+    /// (legacy single-share behavior).
+    aggregate: bool,
+    /// When true, child roots are advertised with `FUSE_ATTR_SUBMOUNT` so the
+    /// guest kernel gives each share its own `st_dev`. Only meaningful in
+    /// aggregate mode and only honored once `FUSE_SUBMOUNTS` is negotiated.
+    submounts: bool,
+}
+
+/// Implementation of the virtio-fs file system.
+///
+/// Cheaply clonable: all state lives behind an `Arc`, so a device host can keep
+/// a handle to call [`VirtioFs::add_root`]/[`VirtioFs::remove_root`] after the
+/// device has been constructed and handed to a [`fuse::Session`].
+#[derive(Clone)]
+pub struct VirtioFs {
+    inner: Arc<VirtioFsInner>,
 }
 
 impl Fuse for VirtioFs {
@@ -68,6 +127,12 @@ impl Fuse for VirtioFs {
         if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
+
+        // In aggregate mode, advertise submounts so the guest gives each child
+        // root its own st_dev when crossing into it.
+        if self.inner.submounts && info.capable() & FUSE_SUBMOUNTS != 0 {
+            info.want |= FUSE_SUBMOUNTS;
+        }
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -77,6 +142,8 @@ impl Fuse for VirtioFs {
         let attr = if flags & FUSE_GETATTR_FH != 0 {
             let file = self.get_file(fh)?;
             file.get_attr()?
+        } else if self.is_synthetic_root(node_id) {
+            Self::synthetic_root_attr()
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_attr()?
@@ -91,7 +158,7 @@ impl Fuse for VirtioFs {
         fh: u64,
         getattr_flags: u32,
         flags: StatxFlags,
-        _mask: lx::StatExMask,
+        mask: lx::StatExMask,
     ) -> lx::Result<fuse_statx_out> {
         let node_id = request.node_id();
         // If a file handle is specified, get the attributes from the open file. This is faster on
@@ -99,6 +166,8 @@ impl Fuse for VirtioFs {
         let statx = if getattr_flags & FUSE_GETATTR_FH != 0 {
             let file = self.get_file(fh)?;
             file.get_statx()?
+        } else if self.is_synthetic_root(node_id) {
+            Self::synthetic_root_statx(mask)
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_statx()?
@@ -133,6 +202,9 @@ impl Fuse for VirtioFs {
     }
 
     fn lookup(&self, request: &Request, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return self.lookup_synthetic_root(name);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.lookup_helper(&inode, name)
     }
@@ -140,7 +212,7 @@ impl Fuse for VirtioFs {
     fn forget(&self, node_id: u64, lookup_count: u64) {
         // This must be done under lock so an inode can't be resurrected between the lookup count
         // reaching zero and removing it from the list.
-        let mut inodes = self.inodes.write();
+        let mut inodes = self.inner.inodes.write();
         if let Some(inode) = inodes.get(node_id) {
             if inode.forget(node_id, lookup_count) == 0 {
                 tracing::trace!(node_id, "Removing inode");
@@ -283,21 +355,35 @@ impl Fuse for VirtioFs {
     }
 
     fn open_dir(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            // The synthetic root has no backing handle; hand out a sentinel that
+            // read_dir/read_dir_plus/release_dir recognize.
+            return Ok(fuse_open_out::new(SYNTHETIC_ROOT_FH, 0));
+        }
         // There is no special handling for directories, so just call open.
         self.open(request, flags)
     }
 
     fn read_dir(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if arg.fh == SYNTHETIC_ROOT_FH {
+            return self.read_synthetic_root_dir(arg.offset, arg.size, false);
+        }
         let file = self.get_file(arg.fh)?;
         file.read_dir(self, arg.offset, arg.size, false)
     }
 
     fn read_dir_plus(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if arg.fh == SYNTHETIC_ROOT_FH {
+            return self.read_synthetic_root_dir(arg.offset, arg.size, true);
+        }
         let file = self.get_file(arg.fh)?;
         file.read_dir(self, arg.offset, arg.size, true)
     }
 
     fn release_dir(&self, request: &Request, arg: &fuse_release_in) -> lx::Result<()> {
+        if arg.fh == SYNTHETIC_ROOT_FH {
+            return Ok(());
+        }
         self.release(request, arg)
     }
 
@@ -319,11 +405,18 @@ impl Fuse for VirtioFs {
     ) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
+        // A rename cannot cross aggregated volume boundaries.
+        if inode.volume_id() != new_inode.volume_id() {
+            return Err(lx::Error::EXDEV);
+        }
         self.check_writable()?;
         inode.rename(name, &new_inode, new_name, flags)
     }
 
     fn statfs(&self, request: &Request) -> lx::Result<fuse_kstatfs> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(fuse_kstatfs::new(0, 0, 0, 0, 0, 512, 255, 512));
+        }
         let inode = self.get_inode(request.node_id())?;
         inode.stat_fs()
     }
@@ -388,15 +481,15 @@ impl Fuse for VirtioFs {
 
     fn destroy(&self) {
         // To get the file system ready for re-mount, clean out any open files and leaked inodes.
-        self.files.write().clear();
-        self.inodes.write().clear();
+        self.inner.files.write().clear();
+        self.inner.inodes.write().clear();
     }
 }
 
 impl VirtioFs {
     /// Check if the filesystem is readonly and return EROFS if so.
     fn check_writable(&self) -> lx::Result<()> {
-        if self.readonly {
+        if self.inner.readonly {
             Err(lx::Error::EROFS)
         } else {
             Ok(())
@@ -405,7 +498,7 @@ impl VirtioFs {
 
     /// Check whether the open flags are permitted on a read-only filesystem.
     fn check_open_readonly(&self, inode: &VirtioFsInode, flags: u32) -> lx::Result<()> {
-        if !self.readonly {
+        if !self.inner.readonly {
             return Ok(());
         }
 
@@ -445,14 +538,237 @@ impl VirtioFs {
         } else {
             lxutil::LxVolume::new(root_path)
         }?;
-        let mut inodes = InodeMap::new(volume.supports_stable_file_id());
-        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), PathBuf::new())?;
+        let mut inodes = InodeMap::new(volume.supports_stable_file_id(), false);
+        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), 0, PathBuf::new())?;
         assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
         Ok(Self {
-            inodes: RwLock::new(inodes),
-            files: RwLock::new(HandleMap::new()),
-            readonly,
+            inner: Arc::new(VirtioFsInner {
+                inodes: RwLock::new(inodes),
+                files: RwLock::new(HandleMap::new()),
+                roots: RwLock::new(RootRegistry::new()),
+                readonly,
+                aggregate: false,
+                submounts: false,
+            }),
         })
+    }
+
+    /// Create a new, empty aggregate virtio-fs.
+    ///
+    /// Node 1 is a synthetic, read-only directory; use [`Self::add_root`] to
+    /// expose host folders as named children. When `submounts` is set, each
+    /// child is advertised with `FUSE_ATTR_SUBMOUNT` so the guest kernel gives
+    /// it a distinct `st_dev` (only honored once `FUSE_SUBMOUNTS` is negotiated).
+    pub fn new_aggregate(readonly: bool, submounts: bool) -> Self {
+        Self {
+            inner: Arc::new(VirtioFsInner {
+                // Inode numbers are deduplicated per volume (see `InodeMap`), so
+                // enable the stable-id map and key it by `(volume_id, ino)`.
+                inodes: RwLock::new(InodeMap::new(true, true)),
+                files: RwLock::new(HandleMap::new()),
+                roots: RwLock::new(RootRegistry::new()),
+                readonly,
+                aggregate: true,
+                submounts,
+            }),
+        }
+    }
+
+    /// Expose a host folder as a named child of the synthetic root.
+    ///
+    /// Only valid in aggregate mode. Returns `EEXIST` if a root with the same
+    /// name already exists, or `EINVAL` on a direct-mode file system.
+    pub fn add_root(
+        &self,
+        name: &str,
+        root_path: impl AsRef<Path>,
+        mount_options: Option<&LxVolumeOptions>,
+    ) -> lx::Result<()> {
+        if !self.inner.aggregate {
+            return Err(lx::Error::EINVAL);
+        }
+
+        let mut roots = self.inner.roots.write();
+        if roots.entries.iter().any(|e| e.name == name) {
+            return Err(lx::Error::EEXIST);
+        }
+
+        let volume = if let Some(mount_options) = mount_options {
+            mount_options.new_volume(root_path)
+        } else {
+            lxutil::LxVolume::new(root_path)
+        }?;
+        let volume_id = roots.next_volume_id;
+        roots.next_volume_id += 1;
+        roots.entries.push(RootEntry {
+            name: name.to_string(),
+            volume: Arc::new(volume),
+            volume_id,
+        });
+        Ok(())
+    }
+
+    /// Remove a previously added root by name.
+    ///
+    /// In-flight inodes beneath the root remain valid until the guest forgets
+    /// them (each holds its own volume reference); the name simply stops
+    /// appearing in the synthetic root. Returns `ENOENT` if no such root exists.
+    pub fn remove_root(&self, name: &str) -> lx::Result<()> {
+        if !self.inner.aggregate {
+            return Err(lx::Error::EINVAL);
+        }
+
+        let mut roots = self.inner.roots.write();
+        let before = roots.entries.len();
+        roots.entries.retain(|e| e.name != name);
+        if roots.entries.len() == before {
+            Err(lx::Error::ENOENT)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns true if `node_id` refers to the synthetic aggregate root.
+    fn is_synthetic_root(&self, node_id: u64) -> bool {
+        self.inner.aggregate && node_id == FUSE_ROOT_ID
+    }
+
+    /// Attributes of the synthetic aggregate root directory.
+    fn synthetic_root_attr() -> fuse_attr {
+        let mut attr = fuse_attr::new_zeroed();
+        attr.ino = FUSE_ROOT_ID;
+        attr.mode = lx::S_IFDIR | 0o555;
+        attr.nlink = 2;
+        attr.blksize = 512;
+        attr
+    }
+
+    /// Extended attributes of the synthetic aggregate root directory.
+    fn synthetic_root_statx(mask: lx::StatExMask) -> fuse_statx {
+        let mut sx = fuse_statx::new_zeroed();
+        sx.mask = mask.into_bits();
+        sx.mode = (lx::S_IFDIR | 0o555) as u16;
+        sx.nlink = 2;
+        sx.ino = FUSE_ROOT_ID;
+        sx.blksize = 512;
+        sx
+    }
+
+    /// Looks up a named child of the synthetic root, returning an entry for the
+    /// corresponding volume's real root inode.
+    fn lookup_synthetic_root(&self, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
+        let name_bytes = name.as_bytes();
+        let (volume, volume_id) = {
+            let roots = self.inner.roots.read();
+            let entry = roots
+                .entries
+                .iter()
+                .find(|e| e.name.as_bytes() == name_bytes)
+                .ok_or(lx::Error::ENOENT)?;
+            (Arc::clone(&entry.volume), entry.volume_id)
+        };
+
+        let (inode, stat) = VirtioFsInode::new(volume, volume_id, PathBuf::new())?;
+        let (_, node_id) = self.insert_inode(inode);
+        let mut attr = util::stat_to_fuse_attr(&stat);
+        if self.inner.submounts {
+            attr.flags |= FUSE_ATTR_SUBMOUNT;
+        }
+        Ok(fuse_entry_out::new(
+            node_id,
+            ENTRY_TIMEOUT,
+            ATTRIBUTE_TIMEOUT,
+            attr,
+        ))
+    }
+
+    /// Reads the synthetic root directory, listing `.`, `..`, and each root.
+    fn read_synthetic_root_dir(&self, offset: u64, size: u32, plus: bool) -> lx::Result<Vec<u8>> {
+        let mut buffer = Vec::with_capacity(size as usize);
+        // `offset` is the cookie of the next entry to emit (0 at start of stream).
+        // Entry 0 => ".", 1 => "..", 2.. => roots[index - 2].
+        let mut index = offset;
+        loop {
+            let next = index + 1;
+            let fit = match index {
+                0 => self.write_synthetic_dot(&mut buffer, ".", next, plus),
+                1 => self.write_synthetic_dot(&mut buffer, "..", next, plus),
+                n => {
+                    let root = {
+                        let roots = self.inner.roots.read();
+                        roots.entries.get((n - 2) as usize).map(|e| {
+                            (e.name.clone(), Arc::clone(&e.volume), e.volume_id)
+                        })
+                    };
+                    let Some((name, volume, volume_id)) = root else {
+                        break;
+                    };
+                    self.write_root_entry(&mut buffer, &name, volume, volume_id, next, plus)?
+                }
+            };
+            if !fit {
+                break;
+            }
+            index += 1;
+        }
+        Ok(buffer)
+    }
+
+    /// Writes a synthetic `.`/`..` entry. These never carry a real node ID, so
+    /// the kernel will not issue a forget for them.
+    fn write_synthetic_dot(
+        &self,
+        buffer: &mut Vec<u8>,
+        name: &str,
+        next_off: u64,
+        plus: bool,
+    ) -> bool {
+        if plus {
+            if !buffer.check_dir_entry_plus(name) {
+                return false;
+            }
+            let mut entry = fuse_entry_out::new_zeroed();
+            entry.attr.ino = FUSE_ROOT_ID;
+            entry.attr.mode = lx::S_IFDIR | 0o555;
+            buffer.dir_entry_plus(name, next_off, entry)
+        } else {
+            buffer.dir_entry(name, FUSE_ROOT_ID, next_off, DT_DIR)
+        }
+    }
+
+    /// Writes a directory entry for an aggregated root.
+    fn write_root_entry(
+        &self,
+        buffer: &mut Vec<u8>,
+        name: &str,
+        volume: Arc<lxutil::LxVolume>,
+        volume_id: u32,
+        next_off: u64,
+        plus: bool,
+    ) -> lx::Result<bool> {
+        if plus {
+            if !buffer.check_dir_entry_plus(name) {
+                return Ok(false);
+            }
+            // readdirplus performs a lookup on each entry, incrementing its
+            // lookup count, so create/insert the root inode here.
+            let (inode, stat) = VirtioFsInode::new(volume, volume_id, PathBuf::new())?;
+            let (_, node_id) = self.insert_inode(inode);
+            let mut attr = util::stat_to_fuse_attr(&stat);
+            if self.inner.submounts {
+                attr.flags |= FUSE_ATTR_SUBMOUNT;
+            }
+            let entry = fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr);
+            Ok(buffer.dir_entry_plus(name, next_off, entry))
+        } else {
+            // Plain readdir: report the directory using the volume root's real
+            // inode number, falling back to the volume id if it is inaccessible.
+            let ino = volume
+                .lstat(&PathBuf::new())
+                .map(|s| s.inode_nr)
+                .unwrap_or(volume_id as lx::ino_t);
+            Ok(buffer.dir_entry(name, ino, next_off, DT_DIR))
+        }
     }
 
     /// Perform lookup on a specified directory inode.
@@ -476,7 +792,7 @@ impl VirtioFs {
 
     /// Retrieve the inode with the specified node ID.
     fn get_inode(&self, node_id: u64) -> lx::Result<Arc<VirtioFsInode>> {
-        self.inodes.read().get(node_id).ok_or_else(|| {
+        self.inner.inodes.read().get(node_id).ok_or_else(|| {
             tracing::warn!(node_id, "request for unknown inode");
             lx::Error::EINVAL
         })
@@ -487,12 +803,12 @@ impl VirtioFs {
     /// If the file system supports stable inode numbers and an inode already existed with this
     /// number, the existing inode is returned, not the passed in one.
     fn insert_inode(&self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        self.inodes.write().insert(inode)
+        self.inner.inodes.write().insert(inode)
     }
 
     /// Retrieve the file object with the specified file handle.
     fn get_file(&self, fh: u64) -> lx::Result<Arc<VirtioFsFile>> {
-        let files = self.files.read();
+        let files = self.inner.files.read();
         let file = files.get(fh).ok_or_else(|| {
             tracing::warn!(fh, "Request for unknown file");
             lx::Error::EBADF
@@ -503,12 +819,12 @@ impl VirtioFs {
 
     /// Insert a new file object, and return the assigned file handle.
     fn insert_file(&self, file: VirtioFsFile) -> u64 {
-        self.files.write().insert(Arc::new(file))
+        self.inner.files.write().insert(Arc::new(file))
     }
 
     /// Remove the file with the specified node ID.
     fn remove_file(&self, fh: u64) {
-        self.files.write().remove(fh);
+        self.inner.files.write().remove(fh);
     }
 }
 
@@ -575,21 +891,27 @@ impl<T> HandleMap<T> {
 ///   globally unique, whereas inode numbers are per-volume.
 struct InodeMap {
     inodes_by_node_id: HandleMap<Arc<VirtioFsInode>>,
-    inodes_by_inode_nr: Option<HashMap<lx::ino_t, (Arc<VirtioFsInode>, u64)>>,
+    inodes_by_inode_nr: Option<HashMap<(u32, lx::ino_t), (Arc<VirtioFsInode>, u64)>>,
+    /// When true, node 1 is synthetic and not stored in this map, so node IDs
+    /// are allocated starting at 2 and `clear` does not preserve a real root.
+    aggregate: bool,
 }
 
 impl InodeMap {
     /// Create a new `InodeMap`.
-    pub fn new(supports_stable_file_id: bool) -> Self {
-        // TODO: Once multiple volumes are supported, the inodes_by_inode_nr map should be per
-        // volume.
+    pub fn new(supports_stable_file_id: bool, aggregate: bool) -> Self {
         Self {
-            inodes_by_node_id: HandleMap::new(),
+            inodes_by_node_id: if aggregate {
+                HandleMap::starting_at(FUSE_ROOT_ID + 1)
+            } else {
+                HandleMap::new()
+            },
             inodes_by_inode_nr: if supports_stable_file_id {
                 Some(HashMap::new())
             } else {
                 None
             },
+            aggregate,
         }
     }
 
@@ -603,7 +925,7 @@ impl InodeMap {
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
         // If stable inode numbers are supported, look for the inode by its number.
         if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            match inodes_by_inode_nr.entry(inode.inode_nr()) {
+            match inodes_by_inode_nr.entry((inode.volume_id(), inode.inode_nr())) {
                 Entry::Occupied(entry) => {
                     // Inode found; increment its count and return the existing FUSE node ID.
                     let new_path = inode.clone_path();
@@ -631,12 +953,23 @@ impl InodeMap {
     pub fn remove(&mut self, node_id: u64) {
         let inode = self.inodes_by_node_id.remove(node_id).unwrap();
         if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            inodes_by_inode_nr.remove(&inode.inode_nr());
+            inodes_by_inode_nr.remove(&(inode.volume_id(), inode.inode_nr()));
         }
     }
 
     /// Clears the map, preserving the root inode.
     pub fn clear(&mut self) {
+        if self.aggregate {
+            // Node 1 is synthetic and not stored here; drop everything and resume
+            // allocating node IDs after the reserved root id.
+            self.inodes_by_node_id.clear();
+            self.inodes_by_node_id.next_handle = FUSE_ROOT_ID + 1;
+            if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
+                inodes_by_inode_nr.clear();
+            }
+            return;
+        }
+
         let root_inode = Arc::clone(self.inodes_by_node_id.get(FUSE_ROOT_ID).unwrap());
         self.inodes_by_node_id.clear();
 
@@ -646,7 +979,73 @@ impl InodeMap {
         // Clear the inode number map if it's supported.
         if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
             inodes_by_inode_nr.clear();
-            inodes_by_inode_nr.insert(root_inode.inode_nr(), (root_inode, FUSE_ROOT_ID));
+            inodes_by_inode_nr.insert(
+                (root_inode.volume_id(), root_inode.inode_nr()),
+                (root_inode, FUSE_ROOT_ID),
+            );
         }
     }
 }
+
+#[cfg(test)]
+mod aggregate_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_root_registry() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new_aggregate(false, true);
+
+        fs.add_root("share_a", a.path(), None).unwrap();
+        fs.add_root("share_b", b.path(), None).unwrap();
+
+        // Duplicate names are rejected.
+        assert_eq!(
+            fs.add_root("share_a", a.path(), None).unwrap_err(),
+            lx::Error::EEXIST
+        );
+
+        // Each root gets a distinct, non-zero volume id (0 is reserved for
+        // direct mode).
+        {
+            let roots = fs.inner.roots.read();
+            assert_eq!(roots.entries.len(), 2);
+            assert_ne!(roots.entries[0].volume_id, 0);
+            assert_ne!(roots.entries[0].volume_id, roots.entries[1].volume_id);
+        }
+
+        // Removal drops only the named root.
+        fs.remove_root("share_a").unwrap();
+        assert_eq!(
+            fs.remove_root("share_a").unwrap_err(),
+            lx::Error::ENOENT
+        );
+        assert_eq!(fs.inner.roots.read().entries.len(), 1);
+    }
+
+    #[test]
+    fn add_root_rejected_in_direct_mode() {
+        let a = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(a.path(), None).unwrap();
+        assert_eq!(
+            fs.add_root("x", a.path(), None).unwrap_err(),
+            lx::Error::EINVAL
+        );
+        assert_eq!(fs.remove_root("x").unwrap_err(), lx::Error::EINVAL);
+    }
+
+    #[test]
+    fn synthetic_root_node_ids_start_after_root() {
+        // In aggregate mode the synthetic root occupies FUSE_ROOT_ID, so the
+        // first real inode inserted must be allocated a higher id.
+        let a = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new_aggregate(false, false);
+        fs.add_root("share", a.path(), None).unwrap();
+        let entry = fs
+            .lookup_synthetic_root(lx::LxStr::from_bytes(b"share"))
+            .unwrap();
+        assert!(entry.nodeid > FUSE_ROOT_ID);
+    }
+}
+
