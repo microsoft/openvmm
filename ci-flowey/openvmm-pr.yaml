@@ -4145,7 +4145,7 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::run_cargo_nextest_run 1
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
-    displayName: write incubator target runner
+    displayName: compute incubator target runner env
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
   - bash: |-

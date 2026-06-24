@@ -109,7 +109,7 @@ impl SimpleFlowNode for Node {
             pipette_bin: Some(pipette_bin),
             copy_incubator_bin: true,
             qemu_binary: Some(qemu_binary),
-            target_runner: v,
+            runner_info: v,
         });
 
         ctx.emit_rust_step("incubator target runner ready", |ctx| {

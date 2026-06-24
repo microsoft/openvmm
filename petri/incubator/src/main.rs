@@ -10,44 +10,52 @@ use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Standalone CLI for testing the incubator launcher.
+/// Standalone CLI for launching the incubator.
+///
+/// Every option can also be supplied via its `INCUBATOR_*` environment
+/// variable, which is how flowey drives this binary as a cargo-nextest target
+/// runner: cargo invokes `incubator <test-binary> <args>` with no flags, and
+/// the configuration is read from the environment.
 #[derive(Parser)]
 struct Args {
     /// Path to a TOML profile file.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_PROFILE")]
     profile: String,
     /// Path to the kernel image (auto-detected if omitted).
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_KERNEL")]
     kernel: Option<PathBuf>,
     /// Path to the initrd (auto-detected if omitted).
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_INITRD")]
     initrd: Option<PathBuf>,
     /// Directory to share with the guest.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_SHARE")]
     share: String,
     /// Host directory for logs and captured output.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_OUTPUT_DIR")]
     output_dir: Option<PathBuf>,
     /// Guest path to the pipette binary.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_GUEST_PIPETTE")]
     guest_pipette: Option<String>,
     /// Environment variable to set for the guest command, as KEY=VALUE.
     #[clap(long = "guest-env", value_name = "KEY=VALUE")]
     guest_env: Vec<GuestEnv>,
     /// Map the command path from the host share to the guest share.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_MAP_COMMAND_PATH")]
     map_command_path: bool,
     /// Working directory for the guest command.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_GUEST_CURRENT_DIR")]
     guest_current_dir: Option<String>,
     /// Override the QEMU binary path from the profile.
-    #[clap(long)]
+    #[clap(long, env = "INCUBATOR_QEMU_BINARY")]
     qemu_binary: Option<PathBuf>,
     /// Timeout in seconds.
-    #[clap(long, default_value_t = 1800)]
+    #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 1800)]
     timeout: u64,
-    /// Command to run in the guest.
-    #[clap(last = true, required = true)]
+    /// Command to run in the guest: the program followed by its arguments.
+    ///
+    /// May be preceded by `--`, but it is not required, so that cargo-nextest
+    /// can invoke us as `incubator <test-binary> <args>`.
+    #[clap(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     command: Vec<String>,
 }
 

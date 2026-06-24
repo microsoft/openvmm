@@ -6075,7 +6075,7 @@ jobs:
         flowey e 27 flowey_lib_hvlite::resolve_openvmm_qemu 0
         flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
-    - name: write incubator target runner
+    - name: compute incubator target runner env
       run: |-
         flowey e 27 flowey_lib_hvlite::write_incubator_target_runner 0
         flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5

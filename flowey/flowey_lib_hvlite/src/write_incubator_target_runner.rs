@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Write a cargo-nextest target runner script that launches tests in an incubator.
+//! Compute the environment that runs cargo-nextest tests in an incubator.
+//!
+//! Rather than generating a wrapper script, the incubator binary is itself used
+//! as the cargo-nextest target runner, and all per-run configuration is plumbed
+//! in via `INCUBATOR_*` environment variables (see the `incubator` crate's CLI,
+//! whose options each have a matching `env =` fallback).
 
-use anyhow::Context;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::path::Path;
 
 const INCUBATOR_ENV_POLICY: &[&str] = &[
@@ -31,6 +34,24 @@ const INCUBATOR_ENV_POLICY: &[&str] = &[
 const NEXTEST_ARCHIVE_TMP_DIR: &str = "nextest-archive-tmp";
 const DEFAULT_INCUBATOR_RUST_LOG: &str = "info";
 
+/// Name of the JSON file (written into the test content directory) that
+/// captures the resolved incubator runner binary and its environment. This
+/// lets a parent process that drives nextest out-of-band (e.g. the local
+/// `vmm-tests-run` bootstrap) pick up the configuration produced by a flowey
+/// sub-pipeline.
+pub const RUNNER_INFO_FILE: &str = "incubator-runner-env.json";
+
+/// The resolved incubator target runner: the binary cargo-nextest should invoke
+/// and the `INCUBATOR_*` environment that configures it for this run.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IncubatorRunnerInfo {
+    /// Path to the incubator binary, used directly as the cargo-nextest target
+    /// runner (cargo invokes it as `incubator <test-binary> <args>`).
+    pub runner_bin: PathBuf,
+    /// Per-run `INCUBATOR_*` (and `TMPDIR`) configuration.
+    pub env: BTreeMap<String, String>,
+}
+
 pub fn cargo_target_runner_env_var(target: &target_lexicon::Triple) -> String {
     format!(
         "CARGO_TARGET_{}_RUNNER",
@@ -38,47 +59,44 @@ pub fn cargo_target_runner_env_var(target: &target_lexicon::Triple) -> String {
     )
 }
 
+/// Merge the policy/runtime environment that the parent (xflowey) owns into
+/// `env`: the cargo target-runner pointer, a default `RUST_LOG`, and the
+/// `INCUBATOR_ENV` forwarding policy. The per-run config (`INCUBATOR_PROFILE`,
+/// `INCUBATOR_SHARE`, …, `TMPDIR`) is expected to already be present (see
+/// [`incubator_runner_env`]).
 pub fn add_incubator_target_runner_env(
     env: &mut BTreeMap<String, String>,
     target: &target_lexicon::Triple,
-    target_runner: &Path,
+    runner_bin: &Path,
 ) {
     env.insert(
         cargo_target_runner_env_var(target),
-        target_runner.display().to_string(),
+        runner_bin.display().to_string(),
     );
-    if let Some(target_runner_dir) = target_runner.parent() {
-        env.insert(
-            "TMPDIR".into(),
-            target_runner_dir
-                .join(NEXTEST_ARCHIVE_TMP_DIR)
-                .display()
-                .to_string(),
-        );
-    }
     env.entry("RUST_LOG".into()).or_insert_with(|| {
         std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_INCUBATOR_RUST_LOG.into())
     });
     env.insert("INCUBATOR_ENV".into(), INCUBATOR_ENV_POLICY.join(":"));
 }
 
+/// Request the incubator runner configuration and fold it into `extra_env` so
+/// that cargo-nextest runs the matching tests inside an incubator.
 pub fn add_incubator_target_runner(
     ctx: &mut NodeCtx<'_>,
     target: target_lexicon::Triple,
     extra_env: ReadVar<BTreeMap<String, String>>,
-    request: impl FnOnce(WriteVar<PathBuf>) -> Request,
+    request: impl FnOnce(WriteVar<IncubatorRunnerInfo>) -> Request,
 ) -> (ReadVar<BTreeMap<String, String>>, ReadVar<SideEffect>) {
-    let target_runner = ctx.reqv(request);
-    let target_runner_for_env = target_runner.clone();
-    let extra_env =
-        extra_env
-            .zip(ctx, target_runner_for_env)
-            .map(ctx, move |(mut env, target_runner)| {
-                add_incubator_target_runner_env(&mut env, &target, &target_runner);
-                env
-            });
+    let runner_info = ctx.reqv(request);
+    let extra_env = extra_env
+        .zip(ctx, runner_info.clone())
+        .map(ctx, move |(mut env, info)| {
+            env.extend(info.env);
+            add_incubator_target_runner_env(&mut env, &target, &info.runner_bin);
+            env
+        });
 
-    (extra_env, target_runner.into_side_effect())
+    (extra_env, runner_info.into_side_effect())
 }
 
 flowey_request! {
@@ -105,14 +123,14 @@ flowey_request! {
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Optional pipette binary to copy into the shared test content directory.
         pub pipette_bin: Option<ReadVar<PathBuf>>,
-        /// Copy the incubator binary into the shared test content directory before
-        /// generating the runner script, so the script remains valid after
-        /// temporary build outputs are cleaned up.
+        /// Copy the incubator binary into the shared test content directory, so
+        /// it remains valid as the target runner after temporary build outputs
+        /// are cleaned up.
         pub copy_incubator_bin: bool,
         /// Path to the QEMU binary (overrides the profile's binary setting).
         pub qemu_binary: Option<ReadVar<PathBuf>>,
-        /// Path to the generated target runner script.
-        pub target_runner: WriteVar<PathBuf>,
+        /// The resolved incubator runner binary and its environment.
+        pub runner_info: WriteVar<IncubatorRunnerInfo>,
     }
 }
 
@@ -136,10 +154,10 @@ impl SimpleFlowNode for Node {
             pipette_bin,
             copy_incubator_bin,
             qemu_binary,
-            target_runner,
+            runner_info,
         } = request;
 
-        ctx.emit_rust_step("write incubator target runner", |ctx| {
+        ctx.emit_rust_step("compute incubator target runner env", |ctx| {
             let incubator_bin = incubator_bin.claim(ctx);
             let profile_path = profile_path.claim(ctx);
             let kernel = kernel.claim(ctx);
@@ -150,7 +168,7 @@ impl SimpleFlowNode for Node {
             let extra_env = extra_env.claim(ctx);
             let pipette_bin = pipette_bin.claim(ctx);
             let qemu_binary = qemu_binary.claim(ctx);
-            let target_runner = target_runner.claim(ctx);
+            let runner_info = runner_info.claim(ctx);
 
             move |rt| {
                 let mut incubator_bin = rt.read(incubator_bin).absolute()?;
@@ -178,8 +196,9 @@ impl SimpleFlowNode for Node {
 
                 let guest_test_content_dir = guest_path(&share_root, &test_content_dir)?;
                 let output_dir = test_content_dir.join("test_results");
+                let tmp_dir = test_content_dir.join(NEXTEST_ARCHIVE_TMP_DIR);
                 fs_err::create_dir_all(&output_dir)?;
-                fs_err::create_dir_all(test_content_dir.join(NEXTEST_ARCHIVE_TMP_DIR))?;
+                fs_err::create_dir_all(&tmp_dir)?;
                 if copy_incubator_bin {
                     let dst = test_content_dir.join("incubator");
                     fs_err::copy(&incubator_bin, &dst)?;
@@ -192,9 +211,12 @@ impl SimpleFlowNode for Node {
                     dst.make_executable()?;
                 }
 
-                let runner_path = test_content_dir.join("incubator-target-runner.sh");
-                let script = target_runner_script(TargetRunnerScript {
-                    incubator_bin: &incubator_bin,
+                incubator_bin.make_executable()?;
+                if let Some(qemu_binary) = &qemu_binary {
+                    qemu_binary.make_executable()?;
+                }
+
+                let env = incubator_runner_env(IncubatorRunnerConfig {
                     profile_path: &profile_path,
                     kernel: kernel.as_deref(),
                     initrd: initrd.as_deref(),
@@ -203,16 +225,22 @@ impl SimpleFlowNode for Node {
                     guest_pipette: &format!("{guest_test_content_dir}/pipette"),
                     guest_current_dir: &guest_test_content_dir,
                     qemu_binary: qemu_binary.as_deref(),
+                    tmp_dir: &tmp_dir,
                 });
 
-                fs_err::write(&runner_path, script)?;
-                runner_path.make_executable()?;
-                incubator_bin.make_executable()?;
-                if let Some(qemu_binary) = &qemu_binary {
-                    qemu_binary.make_executable()?;
-                }
+                let info = IncubatorRunnerInfo {
+                    runner_bin: incubator_bin,
+                    env,
+                };
 
-                rt.write(target_runner, &runner_path);
+                // Persist alongside the test content so an out-of-band driver
+                // (e.g. the local vmm-tests-run bootstrap) can read it back.
+                fs_err::write(
+                    test_content_dir.join(RUNNER_INFO_FILE),
+                    serde_json::to_string_pretty(&info)?,
+                )?;
+
+                rt.write(runner_info, &info);
 
                 Ok(())
             }
@@ -222,8 +250,8 @@ impl SimpleFlowNode for Node {
     }
 }
 
-pub struct TargetRunnerScript<'a> {
-    pub incubator_bin: &'a Path,
+/// Inputs to [`incubator_runner_env`].
+pub struct IncubatorRunnerConfig<'a> {
     pub profile_path: &'a Path,
     pub kernel: Option<&'a Path>,
     pub initrd: Option<&'a Path>,
@@ -232,11 +260,14 @@ pub struct TargetRunnerScript<'a> {
     pub guest_pipette: &'a str,
     pub guest_current_dir: &'a str,
     pub qemu_binary: Option<&'a Path>,
+    pub tmp_dir: &'a Path,
 }
 
-pub fn target_runner_script(config: TargetRunnerScript<'_>) -> String {
-    let TargetRunnerScript {
-        incubator_bin,
+/// Build the per-run `INCUBATOR_*` (and `TMPDIR`) environment that configures
+/// the incubator when it runs as a cargo-nextest target runner. Each variable
+/// mirrors an option on the `incubator` CLI.
+pub fn incubator_runner_env(config: IncubatorRunnerConfig<'_>) -> BTreeMap<String, String> {
+    let IncubatorRunnerConfig {
         profile_path,
         kernel,
         initrd,
@@ -245,60 +276,41 @@ pub fn target_runner_script(config: TargetRunnerScript<'_>) -> String {
         guest_pipette,
         guest_current_dir,
         qemu_binary,
+        tmp_dir,
     } = config;
 
-    let continuation = "\\";
-    let mut args = vec![format!(
-        "    --profile {} {continuation}",
-        sh_quote(profile_path)
-    )];
-
+    let mut env = BTreeMap::new();
+    env.insert(
+        "INCUBATOR_PROFILE".into(),
+        profile_path.display().to_string(),
+    );
+    env.insert("INCUBATOR_SHARE".into(), share_root.display().to_string());
+    env.insert(
+        "INCUBATOR_OUTPUT_DIR".into(),
+        output_dir.display().to_string(),
+    );
+    env.insert("INCUBATOR_GUEST_PIPETTE".into(), guest_pipette.to_string());
+    env.insert(
+        "INCUBATOR_GUEST_CURRENT_DIR".into(),
+        guest_current_dir.to_string(),
+    );
+    // The runner always receives a host command path that must be translated
+    // into the guest share.
+    env.insert("INCUBATOR_MAP_COMMAND_PATH".into(), "true".into());
+    env.insert("TMPDIR".into(), tmp_dir.display().to_string());
     if let Some(kernel) = kernel {
-        args.push(format!("    --kernel {} {continuation}", sh_quote(kernel)));
+        env.insert("INCUBATOR_KERNEL".into(), kernel.display().to_string());
     }
-
     if let Some(initrd) = initrd {
-        args.push(format!("    --initrd {} {continuation}", sh_quote(initrd)));
+        env.insert("INCUBATOR_INITRD".into(), initrd.display().to_string());
     }
-
-    args.extend([
-        format!("    --share {} {continuation}", sh_quote(share_root)),
-        format!("    --output-dir {} {continuation}", sh_quote(output_dir)),
-        format!(
-            "    --guest-pipette {} {continuation}",
-            sh_quote(guest_pipette)
-        ),
-        format!(
-            "    --guest-current-dir {} {continuation}",
-            sh_quote(guest_current_dir)
-        ),
-    ]);
-
     if let Some(qemu_binary) = qemu_binary {
-        args.push(format!(
-            "    --qemu-binary {} {continuation}",
-            sh_quote(qemu_binary)
-        ));
+        env.insert(
+            "INCUBATOR_QEMU_BINARY".into(),
+            qemu_binary.display().to_string(),
+        );
     }
-
-    args.push(format!("    --map-command-path {continuation}"));
-    args.push("    -- \"$@\"".to_string());
-
-    let command = args.join("\n");
-    format!(
-        "#!/bin/sh\nif [ -t 0 ]; then\nexec {} < /dev/null {continuation}\n{}\nelse\ncat | exec {} {continuation}\n{}\nfi\n",
-        sh_quote(incubator_bin),
-        command,
-        sh_quote(incubator_bin),
-        command,
-    )
-}
-
-fn sh_quote(value: impl AsRef<OsStr>) -> String {
-    format!(
-        "'{}'",
-        value.as_ref().to_string_lossy().replace('\'', "'\"'\"'")
-    )
+    env
 }
 
 fn guest_path(share_root: &Path, path: &Path) -> anyhow::Result<String> {
@@ -339,13 +351,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quotes_shell_arguments() {
-        assert_eq!(sh_quote("plain"), "'plain'");
-        assert_eq!(sh_quote("with space"), "'with space'");
-        assert_eq!(sh_quote("it's ok"), "'it'\"'\"'s ok'");
-    }
-
-    #[test]
     fn maps_guest_share_paths() {
         assert_eq!(
             guest_path(Path::new("/tmp/share"), Path::new("/tmp/share/bin/test")).unwrap(),
@@ -358,9 +363,8 @@ mod tests {
     }
 
     #[test]
-    fn writes_incubator_target_runner_script() {
-        let script = target_runner_script(TargetRunnerScript {
-            incubator_bin: Path::new("/tmp/tools/incubator"),
+    fn builds_incubator_runner_env() {
+        let env = incubator_runner_env(IncubatorRunnerConfig {
             profile_path: Path::new("/tmp/profiles/aarch64-tcg.toml"),
             kernel: Some(Path::new("/tmp/kernel Image")),
             initrd: Some(Path::new("/tmp/initrd.gz")),
@@ -369,40 +373,53 @@ mod tests {
             guest_pipette: "/share/pipette",
             guest_current_dir: "/share",
             qemu_binary: Some(Path::new("/tmp/qemu/system-aarch64")),
+            tmp_dir: Path::new("/tmp/test content/nextest-archive-tmp"),
         });
 
-        assert_eq!(script, expected_target_runner_script());
+        assert_eq!(
+            env.get("INCUBATOR_PROFILE").unwrap(),
+            "/tmp/profiles/aarch64-tcg.toml"
+        );
+        assert_eq!(env.get("INCUBATOR_KERNEL").unwrap(), "/tmp/kernel Image");
+        assert_eq!(env.get("INCUBATOR_INITRD").unwrap(), "/tmp/initrd.gz");
+        assert_eq!(env.get("INCUBATOR_SHARE").unwrap(), "/tmp/test content");
+        assert_eq!(
+            env.get("INCUBATOR_OUTPUT_DIR").unwrap(),
+            "/tmp/test content/test_results"
+        );
+        assert_eq!(
+            env.get("INCUBATOR_GUEST_PIPETTE").unwrap(),
+            "/share/pipette"
+        );
+        assert_eq!(env.get("INCUBATOR_GUEST_CURRENT_DIR").unwrap(), "/share");
+        assert_eq!(env.get("INCUBATOR_MAP_COMMAND_PATH").unwrap(), "true");
+        assert_eq!(
+            env.get("INCUBATOR_QEMU_BINARY").unwrap(),
+            "/tmp/qemu/system-aarch64"
+        );
+        assert_eq!(
+            env.get("TMPDIR").unwrap(),
+            "/tmp/test content/nextest-archive-tmp"
+        );
     }
 
-    fn expected_target_runner_script() -> &'static str {
-        concat!(
-            "#!/bin/sh\n",
-            "if [ -t 0 ]; then\n",
-            "exec '/tmp/tools/incubator' < /dev/null \\\n",
-            "    --profile '/tmp/profiles/aarch64-tcg.toml' \\\n",
-            "    --kernel '/tmp/kernel Image' \\\n",
-            "    --initrd '/tmp/initrd.gz' \\\n",
-            "    --share '/tmp/test content' \\\n",
-            "    --output-dir '/tmp/test content/test_results' \\\n",
-            "    --guest-pipette '/share/pipette' \\\n",
-            "    --guest-current-dir '/share' \\\n",
-            "    --qemu-binary '/tmp/qemu/system-aarch64' \\\n",
-            "    --map-command-path \\\n",
-            "    -- \"$@\"\n",
-            "else\n",
-            "cat | exec '/tmp/tools/incubator' \\\n",
-            "    --profile '/tmp/profiles/aarch64-tcg.toml' \\\n",
-            "    --kernel '/tmp/kernel Image' \\\n",
-            "    --initrd '/tmp/initrd.gz' \\\n",
-            "    --share '/tmp/test content' \\\n",
-            "    --output-dir '/tmp/test content/test_results' \\\n",
-            "    --guest-pipette '/share/pipette' \\\n",
-            "    --guest-current-dir '/share' \\\n",
-            "    --qemu-binary '/tmp/qemu/system-aarch64' \\\n",
-            "    --map-command-path \\\n",
-            "    -- \"$@\"\n",
-            "fi\n",
-        )
+    #[test]
+    fn omits_optional_incubator_env() {
+        let env = incubator_runner_env(IncubatorRunnerConfig {
+            profile_path: Path::new("/tmp/profile.toml"),
+            kernel: None,
+            initrd: None,
+            share_root: Path::new("/tmp/share"),
+            output_dir: Path::new("/tmp/share/test_results"),
+            guest_pipette: "/share/pipette",
+            guest_current_dir: "/share",
+            qemu_binary: None,
+            tmp_dir: Path::new("/tmp/share/nextest-archive-tmp"),
+        });
+
+        assert!(!env.contains_key("INCUBATOR_KERNEL"));
+        assert!(!env.contains_key("INCUBATOR_INITRD"));
+        assert!(!env.contains_key("INCUBATOR_QEMU_BINARY"));
     }
 
     #[test]
@@ -416,7 +433,7 @@ mod tests {
     #[test]
     fn adds_incubator_target_runner_env() {
         let mut env = BTreeMap::new();
-        let runner = Path::new("tmp").join("runner.sh");
+        let runner = Path::new("tmp").join("incubator");
         add_incubator_target_runner_env(
             &mut env,
             &target_lexicon::triple!("aarch64-unknown-linux-musl"),
@@ -427,13 +444,6 @@ mod tests {
             env.get("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER")
                 .unwrap(),
             &runner.display().to_string()
-        );
-        assert_eq!(
-            env.get("TMPDIR").unwrap(),
-            &Path::new("tmp")
-                .join(NEXTEST_ARCHIVE_TMP_DIR)
-                .display()
-                .to_string()
         );
         assert_eq!(
             env.get("RUST_LOG").unwrap(),
@@ -456,7 +466,7 @@ mod tests {
         add_incubator_target_runner_env(
             &mut env,
             &target_lexicon::triple!("aarch64-unknown-linux-musl"),
-            Path::new("/tmp/runner.sh"),
+            Path::new("/tmp/incubator"),
         );
 
         assert_eq!(env.get("RUST_LOG").unwrap(), "warn,mesh=off");

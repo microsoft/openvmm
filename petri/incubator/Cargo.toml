@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 crossterm = { workspace = true, features = ["windows"] }
 futures.workspace = true
 futures-concurrency.workspace = true

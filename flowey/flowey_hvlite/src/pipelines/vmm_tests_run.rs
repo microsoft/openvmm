@@ -221,7 +221,7 @@ impl IntoPipeline for VmmTestsRunCli {
             )?),
         };
 
-        let target_runner = if let Some(incubator_profile) = incubator_profile.as_deref() {
+        let runner_info = if let Some(incubator_profile) = incubator_profile.as_deref() {
             Some(bootstrap_incubator_target_runner(
                 IncubatorTargetRunnerBootstrap {
                     repo_root: &repo_root,
@@ -236,12 +236,15 @@ impl IntoPipeline for VmmTestsRunCli {
         } else {
             None
         };
-        let target_runner_env = target_runner.as_ref().map(|target_runner| {
-            let mut env = BTreeMap::new();
+        // The incubator binary is itself the cargo-nextest target runner;
+        // configuration is supplied via the INCUBATOR_* environment.
+        let target_runner = runner_info.as_ref().map(|info| info.runner_bin.clone());
+        let target_runner_env = runner_info.as_ref().map(|info| {
+            let mut env = info.env.clone();
             flowey_lib_hvlite::write_incubator_target_runner::add_incubator_target_runner_env(
                 &mut env,
                 &target.as_triple(),
-                target_runner,
+                &info.runner_bin,
             );
             env
         });
@@ -458,7 +461,7 @@ struct IncubatorTargetRunnerBootstrap<'a> {
 
 fn bootstrap_incubator_target_runner(
     req: IncubatorTargetRunnerBootstrap<'_>,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<flowey_lib_hvlite::write_incubator_target_runner::IncubatorRunnerInfo> {
     let IncubatorTargetRunnerBootstrap {
         repo_root,
         test_content_dir,
@@ -469,10 +472,11 @@ fn bootstrap_incubator_target_runner(
         verbose,
     } = req;
 
-    let target_runner = test_content_dir.join("incubator-target-runner.sh");
+    let runner_info_path =
+        test_content_dir.join(flowey_lib_hvlite::write_incubator_target_runner::RUNNER_INFO_FILE);
     log::info!(
         "Preparing incubator target runner for discovery: {}",
-        target_runner.display()
+        runner_info_path.display()
     );
 
     let pipeline = incubator_target_runner_bootstrap_pipeline(IncubatorTargetRunnerBootstrap {
@@ -493,12 +497,17 @@ fn bootstrap_incubator_target_runner(
     .context("failed to run incubator target-runner bootstrap")?;
 
     anyhow::ensure!(
-        target_runner.exists(),
+        runner_info_path.exists(),
         "incubator target-runner bootstrap did not create {}",
-        target_runner.display()
+        runner_info_path.display()
     );
 
-    Ok(target_runner)
+    let runner_info = serde_json::from_slice(
+        &std::fs::read(&runner_info_path).context("failed to read incubator runner info")?,
+    )
+    .context("failed to parse incubator runner info")?;
+
+    Ok(runner_info)
 }
 
 fn incubator_target_runner_bootstrap_pipeline(

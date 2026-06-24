@@ -911,7 +911,7 @@ impl SimpleFlowNode for Node {
                             pipette_bin: None,
                             copy_incubator_bin: false,
                             qemu_binary: Some(qemu_binary),
-                            target_runner: v,
+                            runner_info: v,
                         },
                     );
 
