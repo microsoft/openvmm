@@ -1791,7 +1791,7 @@ jobs:
     name: clippy [x64-windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v6
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -2087,7 +2087,7 @@ jobs:
     name: clippy [macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -2396,7 +2396,7 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job17-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -5406,7 +5406,7 @@ jobs:
     name: run vmm-tests [x64-linux-amd-kvm]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus2-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job26-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -6386,7 +6386,7 @@ jobs:
     name: build artifacts (shared VMM tests) [linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
