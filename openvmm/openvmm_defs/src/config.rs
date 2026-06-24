@@ -217,7 +217,7 @@ pub struct PcieRootComplexConfig {
     pub end_bus: u8,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
-    pub ports: Vec<PcieRootPortConfig>,
+    pub ports: Vec<PciePortConfig>,
     /// Optional CXL configuration for root-complex CXL mode.
     pub cxl: Option<RootComplexCxlConfig>,
     /// Optional IOMMU for this root complex.
@@ -231,15 +231,26 @@ pub struct PcieRootComplexConfig {
     pub preserve_bars: bool,
 }
 
+/// Configuration for a single PCIe port — either a root-complex root port or a
+/// switch downstream port.
 #[derive(Debug, MeshPayload)]
-pub struct PcieRootPortConfig {
-    /// Root-port name used for topology wiring and lookup.
+pub struct PciePortConfig {
+    /// Port name used for topology wiring and lookup.
     pub name: String,
-    /// Enables PCIe hotplug capabilities for this root port.
+    /// The device/function (`device << 3 | function`) to place this port at on
+    /// its bus.
+    ///
+    /// When `None`, the port is assigned the lowest available devfn. Ports are
+    /// assigned in order, so an explicit devfn that collides with a
+    /// previously-assigned port (including one assigned automatically) is an
+    /// error. Honored for both root-complex root ports and switch downstream
+    /// ports.
+    pub devfn: Option<u8>,
+    /// Enables PCIe hotplug capabilities for this port.
     pub hotplug: bool,
-    /// Optional ACS capability bitmask to expose on this root port.
+    /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
-    /// Marks this root port as CXL-capable.
+    /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
@@ -249,10 +260,9 @@ pub struct PcieRootPortConfig {
 #[derive(Debug, MeshPayload)]
 pub struct PcieSwitchConfig {
     pub name: String,
-    pub num_downstream_ports: u8,
     pub parent_port: String,
-    pub hotplug: bool,
-    pub acs_capabilities_supported: Option<u16>,
+    /// The downstream ports of this switch.
+    pub ports: Vec<PciePortConfig>,
 }
 
 /// Declares that the device directly behind a named PCIe port (a root port or

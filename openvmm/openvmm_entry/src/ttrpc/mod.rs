@@ -32,6 +32,10 @@ use mesh_rpc::service::Status;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
+use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPort;
+use net_backend_resources::consomme::HostPortConfig;
+use net_backend_resources::consomme::HostPortProtocol;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
@@ -322,6 +326,7 @@ impl VmService {
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
+    consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
 struct VmService {
@@ -631,6 +636,7 @@ impl VmService {
         };
 
         let mut scsi_rpc = None;
+        let mut consomme_rpc = None;
         if let Some(devices_config) = req_config.devices_config {
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
@@ -654,7 +660,21 @@ impl VmService {
             }
 
             for nic in devices_config.nic_config {
-                config.vmbus_devices.push(parse_nic_config(nic)?);
+                let is_consomme = matches!(
+                    &nic.backend,
+                    Some(vmservice::nic_config::Backend::Consomme(_))
+                );
+                // Only wire the bind/unbind RPC channel to the first consomme
+                // NIC. Additional consomme NICs work but cannot be targeted by
+                // runtime bind/unbind commands.
+                let recv = if is_consomme && consomme_rpc.is_none() {
+                    let (send, recv) = mesh::channel();
+                    consomme_rpc = Some(send);
+                    Some(recv)
+                } else {
+                    None
+                };
+                config.vmbus_devices.push(parse_nic_config(nic, recv)?);
             }
 
             for virtiofs in devices_config.virtiofs_config {
@@ -778,6 +798,7 @@ impl VmService {
         self.controller_task = Some(controller_task);
         self.vm = Some(Arc::new(Vm {
             scsi_rpc,
+            consomme_rpc,
             worker_rpc: send,
         }));
         Ok(())
@@ -889,12 +910,64 @@ impl VmService {
                 }
             }
             Resource::NicConfig(nic) => {
-                if request.r#type != vmservice::ModifyType::Add as i32 {
-                    anyhow::bail!("not supported yet");
+                if request.r#type == vmservice::ModifyType::Add as i32 {
+                    if matches!(
+                        &nic.backend,
+                        Some(vmservice::nic_config::Backend::Consomme(_))
+                    ) {
+                        anyhow::bail!(
+                            "adding a consomme NIC via ModifyResource is not supported; \
+                             configure it at VM creation time"
+                        );
+                    }
+                    let config = parse_nic_config(nic, None)?;
+                    let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
+                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                } else if request.r#type == vmservice::ModifyType::Update as i32 {
+                    let consomme = match nic.backend.context("missing backend")? {
+                        vmservice::nic_config::Backend::Consomme(c) => c,
+                        _ => anyhow::bail!("port update only supported for consomme backend"),
+                    };
+                    let consomme_rpc = vm
+                        .consomme_rpc
+                        .as_ref()
+                        .context("no consomme port channel")?
+                        .clone();
+                    Ok(async move {
+                        for port in consomme.ports {
+                            let cfg = parse_port_config(port)?;
+                            consomme_rpc
+                                .call_failable(ConsommeRequest::Bind, cfg)
+                                .await
+                                .map_err(anyhow::Error::from)?;
+                        }
+                        Ok(())
+                    }
+                    .boxed())
+                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
+                    let consomme = match nic.backend.context("missing backend")? {
+                        vmservice::nic_config::Backend::Consomme(c) => c,
+                        _ => anyhow::bail!("port remove only supported for consomme backend"),
+                    };
+                    let consomme_rpc = vm
+                        .consomme_rpc
+                        .as_ref()
+                        .context("no consomme port channel")?
+                        .clone();
+                    Ok(async move {
+                        for port in consomme.ports {
+                            let cfg = parse_port_config(port)?;
+                            consomme_rpc
+                                .call_failable(ConsommeRequest::Unbind, cfg)
+                                .await
+                                .map_err(anyhow::Error::from)?;
+                        }
+                        Ok(())
+                    }
+                    .boxed())
+                } else {
+                    anyhow::bail!("unsupported NIC modify type {}", request.r#type);
                 }
-                let config = parse_nic_config(nic)?;
-                let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
-                Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
             }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
             Resource::WindowsDevice(_) => anyhow::bail!("device assignment not supported"),
@@ -921,11 +994,37 @@ fn open_socket_backend(
     }
 }
 
+/// Convert a ttrpc `PortConfig` (untrusted input) into a `HostPortConfig`,
+/// validating the protocol and port ranges. The host port is always treated as
+/// a fixed port; the unbind path ignores it.
+fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConfig> {
+    let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+        HostPortProtocol::Tcp
+    } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
+        HostPortProtocol::Udp
+    } else {
+        anyhow::bail!("invalid protocol {}", port.protocol);
+    };
+    Ok(HostPortConfig {
+        protocol,
+        host_address: None,
+        host_port: HostPort::Fixed(
+            port.host_port
+                .try_into()
+                .context("host port out of range")?,
+        ),
+        guest_port: port
+            .guest_port
+            .try_into()
+            .context("guest port out of range")?,
+    })
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
+    recv: Option<mesh::Receiver<ConsommeRequest>>,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
     use self::vmservice::nic_config::Backend;
-
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -955,7 +1054,12 @@ fn parse_nic_config(
             } else {
                 Some(consomme.cidr)
             },
-            ports: Vec::new(),
+            ports: consomme
+                .ports
+                .into_iter()
+                .map(parse_port_config)
+                .collect::<anyhow::Result<_>>()?,
+            recv,
         }
         .into_resource(),
         _ => anyhow::bail!("unsupported backend"),

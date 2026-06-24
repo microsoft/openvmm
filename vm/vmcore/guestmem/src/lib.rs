@@ -1841,35 +1841,6 @@ impl GuestMemory {
         )
     }
 
-    /// Probes whether a write to guest memory at address `gpa` would succeed.
-    fn probe_write_inner(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
-        self.run_on_mapping(
-            AccessType::Write,
-            gpa,
-            1,
-            (),
-            |(), dest| {
-                // SAFETY: dest is guaranteed to point to a reserved VA range.
-                // We perform a volatile read followed by write of the same value
-                // to check write accessibility without modifying the actual data.
-                unsafe {
-                    let value = trycopy::try_read_volatile(dest)?;
-                    trycopy::try_write_volatile(dest, &value)
-                }
-            },
-            |()| {
-                // Fallback: use compare_exchange_fallback to probe write access
-                let mut current = 0u8;
-                self.inner.imp.compare_exchange_fallback(
-                    gpa,
-                    std::slice::from_mut(&mut current),
-                    &[0u8],
-                )?;
-                Ok(())
-            },
-        )
-    }
-
     /// Writes an object to guest memory at address `gpa`.
     ///
     /// If the object is 1, 2, 4, or 8 bytes and the address is naturally
@@ -2056,20 +2027,6 @@ impl GuestMemory {
                 )?;
             }
             Ok(())
-        })
-    }
-
-    /// Check if a given PagedRange is readable or not.
-    pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
-        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            self.read_plain_inner::<u8>(addr).map(|_| ())
-        })
-    }
-
-    /// Check if a given PagedRange is writable or not.
-    pub fn probe_gpn_writable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
-        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            self.probe_write_inner(addr)
         })
     }
 
@@ -2638,7 +2595,7 @@ mod tests {
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
     use crate::PageFaultError;
-    use crate::ranges::PagedRange;
+
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;
@@ -2789,39 +2746,6 @@ mod tests {
         gm.read_plain::<[u8; PAGE_SIZE * 2]>(0).unwrap_err();
     }
 
-    #[cfg(feature = "bitmap")]
-    #[test]
-    fn test_probe_readable_range_bitmap() {
-        // `probe_gpn_readable_range` must consult the access bitmap for every
-        // page in the range.
-        let len = PAGE_SIZE * 4;
-        let mapping = SparseMapping::new(len).unwrap();
-        mapping.alloc(0, len).unwrap();
-        // Bit i corresponds to page i: pages 0 and 2 are readable, 1 and 3 not.
-        let bitmap = vec![0b0101];
-        let mapping = Arc::new(GuestMemoryMapping {
-            mapping,
-            bitmap: Some(bitmap),
-        });
-        let gm = GuestMemory::new("test", mapping);
-
-        let probe = |offset: usize, len: usize, gpns: &[u64]| {
-            let range = PagedRange::new(offset, len, gpns).unwrap();
-            gm.probe_gpn_readable_range(&range)
-        };
-
-        // Readable pages succeed, including a range starting at GPN 0.
-        probe(0, PAGE_SIZE, &[0]).unwrap();
-        probe(0, PAGE_SIZE, &[2]).unwrap();
-        probe(0, PAGE_SIZE * 2, &[0, 2]).unwrap();
-        probe(100, 500, &[0]).unwrap(); // partial page within a readable page
-
-        // Any unreadable page in the range fails.
-        probe(0, PAGE_SIZE, &[1]).unwrap_err();
-        probe(0, PAGE_SIZE * 2, &[0, 1]).unwrap_err();
-        probe(0, PAGE_SIZE * 2, &[2, 3]).unwrap_err();
-    }
-
     struct FaultingMapping {
         mapping: SparseMapping,
     }
@@ -2885,108 +2809,6 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
-
-        // Test probe_gpn_writable_range with FaultingMapping
-        // FaultingMapping layout (page_fault fails the first and last quarters
-        // of the mapping; for this 4-page mapping each quarter is one page):
-        // - Page 0 (address 0 to PAGE_SIZE): unmapped, fails on access
-        // - Page 1 (address PAGE_SIZE to 2*PAGE_SIZE): writable
-        // - Page 2 (address 2*PAGE_SIZE to 3*PAGE_SIZE): read-only
-        // - Page 3 (address 3*PAGE_SIZE to 4*PAGE_SIZE): unmapped, fails on access
-        // - Page 4 and beyond: out of range (the mapping is only 4 pages)
-
-        // Test 1: Probe unmapped page - should fail
-        let gpns = vec![0];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 2: Probe writable page - should succeed
-        let gpns = vec![1];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test 3: Probe read-only pages - should fail
-        let gpns = vec![2, 3];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 4: Probe mixed access (writable + read-only) - should fail
-        let gpns = vec![1, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 5: Compare readable vs writable on read-only pages
-        let gpns = vec![2];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // Should succeed
-        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Should fail
-
-        // Test 6: Partial page range
-        let gpns = vec![1];
-        let range = PagedRange::new(100, 500, &gpns).unwrap();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test 7: Empty range - should succeed
-        let range = PagedRange::empty();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test probe_gpn_readable_range with FaultingMapping
-
-        // Test 8: Probe unmapped page for read - should fail
-        let gpns = vec![5];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err());
-
-        // Test 9: Probe writable page for read - should succeed
-        let gpns = vec![1];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 10: Probe mixed access (writable + read-only) for read - should succeed
-        let gpns = vec![1, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // Both pages are readable
-
-        // Test 11: Probe mixed access (unmapped + writable) for read - should fail
-        let gpns = vec![5, 1];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
-
-        // Test 12: Probe mixed access (unmapped + read-only) for read - should fail
-        let gpns = vec![5, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
-
-        // Test 13: Partial page range for read on read-only pages
-        let gpns = vec![2];
-        let range = PagedRange::new(100, 500, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 14: Partial page range for read on writable pages
-        let gpns = vec![1];
-        let range = PagedRange::new(200, 1000, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 15: Empty range for read - should succeed
-        let range = PagedRange::empty();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 16: Single byte read on read-only page
-        let gpns = vec![2];
-        let range = PagedRange::new(0, 1, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 17: Single byte read on unmapped page
-        let gpns = vec![5];
-        let range = PagedRange::new(0, 1, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err());
-
-        // Test 18: Cross-boundary range spanning writable, read-only, and
-        // unmapped pages
-        let gpns = vec![1, 2, 3];
-        let range = PagedRange::new(PAGE_SIZE / 2, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 3 is unmapped
-        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Pages 2-3 not writable
     }
 
     #[cfg(feature = "bitmap")]

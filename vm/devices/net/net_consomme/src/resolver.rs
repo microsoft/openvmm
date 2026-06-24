@@ -96,7 +96,11 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 })
             })
             .collect::<Result<Vec<_>, ResolveConsommeError>>()?;
-        let endpoint = ConsommeEndpoint::new_with_ports(state, port_forwards);
+        let endpoint = if let Some(port_recv) = resource.recv {
+            ConsommeEndpoint::new_dynamic(state, port_forwards, port_recv)
+        } else {
+            ConsommeEndpoint::new_with_ports(state, port_forwards)
+        };
         Ok(endpoint.into())
     }
 }

@@ -1168,6 +1168,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "mesh",
+ "open_enum",
  "pci_core",
  "pci_resources",
  "thiserror 2.0.16",

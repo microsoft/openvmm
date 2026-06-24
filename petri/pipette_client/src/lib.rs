@@ -22,6 +22,7 @@ use futures::FutureExt as _;
 use futures::StreamExt;
 use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
+use mesh::CancelContext;
 use mesh::error::RemoteError;
 use mesh::payload::Timestamp;
 use mesh::rpc::RpcError;
@@ -37,6 +38,7 @@ use shell::UnixShell;
 use shell::WindowsShell;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// A client to a running `pipette` instance inside a VM.
 pub struct PipetteClient {
@@ -47,6 +49,10 @@ pub struct PipetteClient {
     _diag_task: Task<()>,
 }
 
+/// Maximum time to wait for a single pipette connection attempt — the mesh
+/// handshake plus the liveness ping — to complete.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl PipetteClient {
     /// Connects to a `pipette` instance inside a VM.
     ///
@@ -56,10 +62,29 @@ impl PipetteClient {
         spawner: impl Spawn,
         conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
         output_dir: &Path,
-    ) -> Result<Self, mesh::RecvError> {
+    ) -> anyhow::Result<Self> {
+        let mut ctx = CancelContext::new().with_timeout(CONNECT_TIMEOUT);
+        match ctx
+            .until_cancelled(Self::connect(spawner, conn, output_dir))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "timed out establishing pipette connection after {CONNECT_TIMEOUT:?}"
+            )),
+        }
+    }
+
+    async fn connect(
+        spawner: impl Spawn,
+        conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
+        output_dir: &Path,
+    ) -> anyhow::Result<Self> {
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
         let mesh = PointToPointMesh::new(&spawner, conn, bootstrap_send.into());
-        let bootstrap = bootstrap_recv.await?;
+        let bootstrap = bootstrap_recv
+            .await
+            .context("failed to receive pipette bootstrap")?;
 
         let PipetteBootstrap {
             requests,
@@ -74,13 +99,27 @@ impl PipetteClient {
             recv_diag_files(output_dir.to_owned(), diag_file_recv),
         );
 
-        Ok(Self {
+        let client = Self {
             send: PipetteSender::new(requests),
             watch,
             _mesh: mesh,
             _log_task: log_task,
             _diag_task: diag_task,
-        })
+        };
+
+        // A successful mesh handshake is not, on its own, proof of a usable
+        // connection: a byte stream can deliver the guest's bootstrap to the host
+        // and then be torn down moments later — for example by the reset in a
+        // save/restore pulse, or by a TCP forward that silently drops the
+        // guest's traffic — leaving a client whose requests would never be
+        // answered. To guard against this, we confirm the agent is actually
+        // reachable with a ping, bounded by the timeout in `new`.
+        client
+            .ping()
+            .await
+            .context("pipette liveness ping failed")?;
+
+        Ok(client)
     }
 
     /// Pings the agent to check if it's alive.

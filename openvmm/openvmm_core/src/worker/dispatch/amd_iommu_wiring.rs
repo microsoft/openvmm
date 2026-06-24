@@ -104,9 +104,13 @@ pub(super) fn setup_amd_iommu(
 
         let iommu_bus_range = pci_core::bus_range::AssignedBusRange::new();
         iommu_bus_range.set_bus_range(hb.start_bus, hb.start_bus);
-        let iommu_msi_conn = pci_core::msi::MsiConnection::new(iommu_bus_range, 0);
+        let iommu_msi_conn = pci_core::msi::MsiConnection::new();
         let iommu_dev = builder.add(|_services| {
-            amd_iommu::AmdIommuDevice::new(gm.clone(), iommu_config, iommu_msi_conn.target())
+            amd_iommu::AmdIommuDevice::new(
+                gm.clone(),
+                iommu_config,
+                &iommu_msi_conn.msi_target(iommu_bus_range, 0),
+            )
         })?;
         if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
             iommu_msi_conn.connect(signal_msi);
