@@ -161,11 +161,6 @@ pub struct IntelVtdAcpiConfig {
     /// on the root bus (bridges for root ports, endpoints for RCiEPs).
     /// The DMAR builder emits one DMAR device scope entry per element.
     pub device_scopes: Vec<IntelVtdDeviceScope>,
-    /// IOAPIC PCIe Requester ID (RID) for the DMAR IOAPIC device scope.
-    ///
-    /// When set, a DEVICE_SCOPE_IOAPIC entry is added to this DRHD so the
-    /// guest can locate the IOAPIC's source ID for interrupt remapping.
-    pub ioapic_rid: Option<u16>,
 }
 
 /// A single device scope entry for the DMAR table's DRHD structure.
@@ -190,6 +185,12 @@ pub struct IntelVtdDmarConfig {
     pub host_address_width: u8,
     /// Per-unit configurations, one per root complex with an Intel VT-d unit.
     pub units: Vec<IntelVtdAcpiConfig>,
+    /// IOAPIC PCIe Requester ID (RID) for the DMAR IOAPIC device scope.
+    ///
+    /// When set, a DEVICE_SCOPE_IOAPIC entry is added to the DRHD whose
+    /// segment (0) and start bus cover this RID, so the guest can locate the
+    /// IOAPIC's source ID for interrupt remapping.
+    pub ioapic_rid: Option<u16>,
 }
 
 /// x86 IOMMU ACPI table configuration.
@@ -869,12 +870,24 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         use acpi_spec::dmar::DmarDevicePath;
 
         let mut dmar_extra: Vec<u8> = Vec::new();
+        if let Some(ioapic_rid) = dmar_config.ioapic_rid {
+            let ioapic_bus = (ioapic_rid >> 8) as u8;
+            let matching_units = dmar_config
+                .units
+                .iter()
+                .filter(|config| config.pci_segment == 0 && config.start_bus == ioapic_bus)
+                .count();
+            assert_eq!(
+                matching_units, 1,
+                "VT-d IOAPIC RID {ioapic_rid:#06x} must be covered by exactly one segment-0 DRHD"
+            );
+        }
 
         for config in &dmar_config.units {
             // Each device scope entry is a DmarDeviceScope header (6 bytes)
             // plus one DmarDevicePath (2 bytes).
             let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
-            let ioapic_devfn = config.ioapic_rid.and_then(|ioapic_rid| {
+            let ioapic_devfn = dmar_config.ioapic_rid.and_then(|ioapic_rid| {
                 let ioapic_bus = (ioapic_rid >> 8) as u8;
                 (config.pci_segment == 0 && config.start_bus == ioapic_bus)
                     .then_some(ioapic_rid as u8)
@@ -2288,10 +2301,19 @@ mod test {
         builder: &mut AcpiTablesBuilder<'_, X86Topology>,
         configs: Vec<IntelVtdAcpiConfig>,
     ) {
+        set_intel_vtd_with_ioapic(builder, configs, None);
+    }
+
+    fn set_intel_vtd_with_ioapic(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<IntelVtdAcpiConfig>,
+        ioapic_rid: Option<u16>,
+    ) {
         if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
             *iommu = Some(X86IommuAcpiConfig::IntelVtd(IntelVtdDmarConfig {
                 host_address_width: 48,
                 units: configs,
+                ioapic_rid,
             }));
         } else {
             panic!("expected X86 arch config");
@@ -2320,7 +2342,6 @@ mod test {
                         is_bridge: true,
                     },
                 ],
-                ioapic_rid: None,
             }],
         );
 
@@ -2380,7 +2401,7 @@ mod test {
         let topology = TopologyBuilder::new_x86().build(4).unwrap();
         let pcie = vec![];
         let mut builder = new_builder(&mem, &topology, &pcie);
-        set_intel_vtd(
+        set_intel_vtd_with_ioapic(
             &mut builder,
             vec![IntelVtdAcpiConfig {
                 mmio_base: 0xFED9_0000,
@@ -2390,8 +2411,8 @@ mod test {
                     devfn: 0x00,
                     is_bridge: true,
                 }],
-                ioapic_rid: Some(0x00A0),
             }],
+            Some(0x00A0),
         );
 
         let dmar = builder.build_dmar().unwrap();
@@ -2411,6 +2432,30 @@ mod test {
         assert_eq!(dmar[ioapic_scope_offset + 5], 0);
         assert_eq!(dmar[ioapic_scope_offset + 6], 0x14);
         assert_eq!(dmar[ioapic_scope_offset + 7], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be covered by exactly one segment-0 DRHD")]
+    fn test_dmar_ioapic_rid_must_be_covered() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd_with_ioapic(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 1,
+                start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
+            }],
+            Some(0x00A0),
+        );
+
+        let _ = builder.build_dmar();
     }
 
     #[test]
@@ -2442,7 +2487,6 @@ mod test {
                     devfn: 0x00,
                     is_bridge: true,
                 }],
-                ioapic_rid: None,
             }],
         );
 
@@ -2467,7 +2511,6 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
-                    ioapic_rid: None,
                 },
                 IntelVtdAcpiConfig {
                     mmio_base: 0xFED9_1000,
@@ -2477,7 +2520,6 @@ mod test {
                         devfn: 0x00,
                         is_bridge: true,
                     }],
-                    ioapic_rid: None,
                 },
             ],
         );

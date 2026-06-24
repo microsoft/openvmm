@@ -824,10 +824,7 @@ impl PetriVmConfigSetupCore<'_> {
         Ok(match (self.arch, &self.firmware) {
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
-                    // Explicit port: the guest has no SPCR table, so a bare
-                    // `earlycon` can't autodetect on x86. The early console
-                    // flushes boot traces immediately rather than buffering.
-                    MachineArch::X86_64 => "console=ttyS0 earlycon=uart8250,io,0x3f8",
+                    MachineArch::X86_64 => "console=ttyS0",
                     MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
                 };
                 let kernel = File::open(kernel.clone())

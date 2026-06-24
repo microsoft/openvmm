@@ -3127,6 +3127,7 @@ impl LoadedVmInner {
                             vmm_core::acpi_builder::IntelVtdDmarConfig {
                                 host_address_width: 48,
                                 units: devices.acpi_configs.clone(),
+                                ioapic_rid: self.ioapic_iommu_rid,
                             },
                         ))
                     }

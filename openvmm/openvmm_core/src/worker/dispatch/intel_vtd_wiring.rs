@@ -150,7 +150,6 @@ pub(super) fn setup_intel_vtd(
             pci_segment: hb.segment,
             start_bus: hb.start_bus,
             device_scopes: res.device_scopes.clone(),
-            ioapic_rid,
         });
 
         if let Some(ioapic_rid) = ioapic_rid {
