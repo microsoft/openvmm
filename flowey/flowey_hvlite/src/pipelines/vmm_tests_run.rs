@@ -707,11 +707,14 @@ impl ResolvedArtifactSelections {
             }
 
             // vmfirmwareigvm test DLL (used by copy-igvmfile tests)
-            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_STANDARD_VMFW_DLL_AARCH64::GLOBAL_UNIQUE_ID => {
+            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64::GLOBAL_UNIQUE_ID => {
                 self.build.vmfirmwareigvm_test_dll = true;
-                // The DLL depends on an OpenHCL IGVM payload.
+                // The x64 test DLL wraps the CVM IGVM.
                 self.build.openhcl_cvm = true;
+            }
+            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_STANDARD_VMFW_DLL_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmfirmwareigvm_test_dll = true;
+                // The aarch64 test DLL wraps the standard IGVM.
                 self.build.openhcl_standard = true;
             }
 
