@@ -34,37 +34,17 @@ const INCUBATOR_ENV_POLICY: &[&str] = &[
 const NEXTEST_ARCHIVE_TMP_DIR: &str = "nextest-archive-tmp";
 const DEFAULT_INCUBATOR_RUST_LOG: &str = "info";
 
-/// Name of the JSON file (written into the test content directory) that
-/// captures the resolved incubator runner binary and its environment. This
-/// lets a parent process that drives nextest out-of-band (e.g. the local
-/// `vmm-tests-run` bootstrap) pick up the configuration produced by a flowey
-/// sub-pipeline.
-pub const RUNNER_INFO_FILE: &str = "incubator-runner-env.json";
-
-/// The resolved incubator target runner: the binary cargo-nextest should invoke
-/// and the `INCUBATOR_*` environment that configures it for this run.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct IncubatorRunnerInfo {
-    /// Path to the incubator binary, used directly as the cargo-nextest target
-    /// runner (cargo invokes it as `incubator <test-binary> <args>`).
-    pub runner_bin: PathBuf,
-    /// Per-run `INCUBATOR_*` (and `TMPDIR`) configuration.
-    pub env: BTreeMap<String, String>,
-}
-
-pub fn cargo_target_runner_env_var(target: &target_lexicon::Triple) -> String {
+fn cargo_target_runner_env_var(target: &target_lexicon::Triple) -> String {
     format!(
         "CARGO_TARGET_{}_RUNNER",
         target.to_string().replace('-', "_").to_ascii_uppercase()
     )
 }
 
-/// Merge the policy/runtime environment that the parent (xflowey) owns into
-/// `env`: the cargo target-runner pointer, a default `RUST_LOG`, and the
-/// `INCUBATOR_ENV` forwarding policy. The per-run config (`INCUBATOR_PROFILE`,
-/// `INCUBATOR_SHARE`, …, `TMPDIR`) is expected to already be present (see
-/// [`incubator_runner_env`]).
-pub fn add_incubator_target_runner_env(
+/// Merge the policy/runtime environment that xflowey owns into `env`: the cargo
+/// target-runner pointer (the incubator binary itself), a default `RUST_LOG`,
+/// and the `INCUBATOR_ENV` forwarding policy.
+fn add_incubator_target_runner_env(
     env: &mut BTreeMap<String, String>,
     target: &target_lexicon::Triple,
     runner_bin: &Path,
@@ -77,26 +57,6 @@ pub fn add_incubator_target_runner_env(
         std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_INCUBATOR_RUST_LOG.into())
     });
     env.insert("INCUBATOR_ENV".into(), INCUBATOR_ENV_POLICY.join(":"));
-}
-
-/// Request the incubator runner configuration and fold it into `extra_env` so
-/// that cargo-nextest runs the matching tests inside an incubator.
-pub fn add_incubator_target_runner(
-    ctx: &mut NodeCtx<'_>,
-    target: target_lexicon::Triple,
-    extra_env: ReadVar<BTreeMap<String, String>>,
-    request: impl FnOnce(WriteVar<IncubatorRunnerInfo>) -> Request,
-) -> (ReadVar<BTreeMap<String, String>>, ReadVar<SideEffect>) {
-    let runner_info = ctx.reqv(request);
-    let extra_env = extra_env
-        .zip(ctx, runner_info.clone())
-        .map(ctx, move |(mut env, info)| {
-            env.extend(info.env);
-            add_incubator_target_runner_env(&mut env, &target, &info.runner_bin);
-            env
-        });
-
-    (extra_env, runner_info.into_side_effect())
 }
 
 flowey_request! {
@@ -129,8 +89,13 @@ flowey_request! {
         pub copy_incubator_bin: bool,
         /// Path to the QEMU binary (overrides the profile's binary setting).
         pub qemu_binary: Option<ReadVar<PathBuf>>,
-        /// The resolved incubator runner binary and its environment.
-        pub runner_info: WriteVar<IncubatorRunnerInfo>,
+        /// The test target triple, used to name the `CARGO_TARGET_*_RUNNER`
+        /// environment variable.
+        pub target: target_lexicon::Triple,
+        /// The complete cargo-nextest environment: the input `extra_env` plus
+        /// the `INCUBATOR_*` configuration, `TMPDIR`, the
+        /// `CARGO_TARGET_*_RUNNER` pointer, and the `INCUBATOR_ENV` policy.
+        pub nextest_env: WriteVar<BTreeMap<String, String>>,
     }
 }
 
@@ -154,7 +119,8 @@ impl SimpleFlowNode for Node {
             pipette_bin,
             copy_incubator_bin,
             qemu_binary,
-            runner_info,
+            target,
+            nextest_env,
         } = request;
 
         ctx.emit_rust_step("compute incubator target runner env", |ctx| {
@@ -168,7 +134,7 @@ impl SimpleFlowNode for Node {
             let extra_env = extra_env.claim(ctx);
             let pipette_bin = pipette_bin.claim(ctx);
             let qemu_binary = qemu_binary.claim(ctx);
-            let runner_info = runner_info.claim(ctx);
+            let nextest_env = nextest_env.claim(ctx);
 
             move |rt| {
                 let mut incubator_bin = rt.read(incubator_bin).absolute()?;
@@ -216,7 +182,8 @@ impl SimpleFlowNode for Node {
                     qemu_binary.make_executable()?;
                 }
 
-                let env = incubator_runner_env(IncubatorRunnerConfig {
+                let mut nextest = extra_env;
+                nextest.extend(incubator_runner_env(IncubatorRunnerConfig {
                     profile_path: &profile_path,
                     kernel: kernel.as_deref(),
                     initrd: initrd.as_deref(),
@@ -226,21 +193,10 @@ impl SimpleFlowNode for Node {
                     guest_current_dir: &guest_test_content_dir,
                     qemu_binary: qemu_binary.as_deref(),
                     tmp_dir: &tmp_dir,
-                });
+                }));
+                add_incubator_target_runner_env(&mut nextest, &target, &incubator_bin);
 
-                let info = IncubatorRunnerInfo {
-                    runner_bin: incubator_bin,
-                    env,
-                };
-
-                // Persist alongside the test content so an out-of-band driver
-                // (e.g. the local vmm-tests-run bootstrap) can read it back.
-                fs_err::write(
-                    test_content_dir.join(RUNNER_INFO_FILE),
-                    serde_json::to_string_pretty(&info)?,
-                )?;
-
-                rt.write(runner_info, &info);
+                rt.write(nextest_env, &nextest);
 
                 Ok(())
             }
@@ -251,7 +207,7 @@ impl SimpleFlowNode for Node {
 }
 
 /// Inputs to [`incubator_runner_env`].
-pub struct IncubatorRunnerConfig<'a> {
+struct IncubatorRunnerConfig<'a> {
     pub profile_path: &'a Path,
     pub kernel: Option<&'a Path>,
     pub initrd: Option<&'a Path>,
@@ -266,7 +222,7 @@ pub struct IncubatorRunnerConfig<'a> {
 /// Build the per-run `INCUBATOR_*` (and `TMPDIR`) environment that configures
 /// the incubator when it runs as a cargo-nextest target runner. Each variable
 /// mirrors an option on the `incubator` CLI.
-pub fn incubator_runner_env(config: IncubatorRunnerConfig<'_>) -> BTreeMap<String, String> {
+fn incubator_runner_env(config: IncubatorRunnerConfig<'_>) -> BTreeMap<String, String> {
     let IncubatorRunnerConfig {
         profile_path,
         kernel,
