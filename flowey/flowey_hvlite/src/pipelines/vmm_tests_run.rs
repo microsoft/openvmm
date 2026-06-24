@@ -112,17 +112,21 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     pub disable_secure_avic: bool,
 
-    /// Run tests inside an emulated incubator using the given profile.
+    /// Run tests inside an emulated incubator.
     ///
-    /// The profile is a TOML file describing the emulated platform
-    /// (e.g., AArch64 with SMMUv3). When set, `--target` is required and
-    /// must match the profile's architecture; artifacts are cross-compiled
-    /// for that target and tests run inside the incubator.
+    /// Pass `--incubator` on its own to use the default profile for the
+    /// selected `--target`, or `--incubator <PATH>` to point at a specific
+    /// profile TOML describing the emulated platform (e.g., AArch64 with
+    /// SMMUv3).
     ///
-    /// Example: `--incubator petri/incubator/profiles/aarch64-tcg-pcie.toml
-    /// --target linux-aarch64-musl`
-    #[clap(long)]
-    incubator: Option<PathBuf>,
+    /// When set, `--target` is required and must match the profile's
+    /// architecture; artifacts are cross-compiled for that target and tests
+    /// run inside the incubator.
+    ///
+    /// Example: `--incubator --target linux-aarch64-musl`
+    #[clap(long, num_args = 0..=1)]
+    #[expect(clippy::option_option)]
+    incubator: Option<Option<PathBuf>>,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -202,7 +206,22 @@ impl IntoPipeline for VmmTestsRunCli {
         let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
         std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
 
-        let target_runner = if let Some(incubator_profile) = incubator.as_deref() {
+        // Resolve the incubator profile path. `--incubator` with no value uses
+        // the default profile for the target; `--incubator <PATH>` overrides.
+        let incubator_profile = match incubator {
+            None => None,
+            Some(Some(path)) => Some(path),
+            Some(None) => Some(default_incubator_profile(&repo_root, &target).ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "no default incubator profile for target {target_str}; \
+                     pass an explicit path with --incubator <PATH>"
+                    )
+                },
+            )?),
+        };
+
+        let target_runner = if let Some(incubator_profile) = incubator_profile.as_deref() {
             Some(bootstrap_incubator_target_runner(
                 IncubatorTargetRunnerBootstrap {
                     repo_root: &repo_root,
@@ -416,7 +435,7 @@ impl IntoPipeline for VmmTestsRunCli {
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
                     disable_secure_avic,
-                    incubator_profile: incubator,
+                    incubator_profile,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -759,6 +778,21 @@ fn resolve_target(
         VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
         VmmTestTargetCli::LinuxAarch64Musl => CommonTriple::AARCH64_LINUX_MUSL,
     })
+}
+
+/// Default incubator profile path for a target, used when `--incubator` is
+/// passed without an explicit profile path. Returns `None` for targets that
+/// have no incubator profile.
+fn default_incubator_profile(repo_root: &Path, target: &CommonTriple) -> Option<PathBuf> {
+    let name = match *target {
+        CommonTriple::AARCH64_LINUX_MUSL => "aarch64-tcg-pcie",
+        _ => return None,
+    };
+    Some(
+        repo_root
+            .join("petri/incubator/profiles")
+            .join(format!("{name}.toml")),
+    )
 }
 
 /// Validate the output directory path based on the current platform.
