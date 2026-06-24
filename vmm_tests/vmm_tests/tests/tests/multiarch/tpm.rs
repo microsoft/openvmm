@@ -190,6 +190,45 @@ impl<'a> TpmGuestTests<'a> {
             _ => unreachable!(),
         }
     }
+
+    /// Read the vTPM Attestation Key public modulus (`HCLAkPub.n`) from the
+    /// attestation report's runtime claims.
+    ///
+    /// The modulus uniquely identifies the AK, so comparing it across reboots
+    /// detects whether the AK was regenerated.
+    #[cfg(windows)]
+    async fn read_ak_pub_modulus(&self) -> anyhow::Result<String> {
+        let output = self.read_report().await?;
+
+        // The report binary prints preamble lines followed by:
+        //   Runtime claims JSON:
+        //   { ...pretty-printed JSON... }
+        const MARKER: &str = "Runtime claims JSON:";
+        let json_start = output
+            .find(MARKER)
+            .map(|i| i + MARKER.len())
+            .with_context(|| format!("report output missing runtime claims JSON: {output}"))?;
+
+        // Parse the first JSON value, ignoring any trailing output.
+        let claims = serde_json::Deserializer::from_str(output[json_start..].trim_start())
+            .into_iter::<serde_json::Value>()
+            .next()
+            .context("no JSON value found after runtime claims marker")?
+            .context("failed to parse runtime claims JSON")?;
+
+        let modulus = claims
+            .get("keys")
+            .and_then(|keys| keys.as_array())
+            .context("runtime claims missing keys array")?
+            .iter()
+            .find(|key| key.get("kid").and_then(|v| v.as_str()) == Some("HCLAkPub"))
+            .context("runtime claims missing HCLAkPub key")?
+            .get("n")
+            .and_then(|n| n.as_str())
+            .context("HCLAkPub missing modulus")?;
+
+        Ok(modulus.to_string())
+    }
 }
 
 /// Basic boot tests with TPM enabled.
@@ -624,6 +663,19 @@ async fn tpm_test_platform_hierarchy_disabled(
 
 /// CVM with guest tpm tests on Hyper-V.
 ///
+/// Exercises the CVM vTPM end-to-end against the test IGVM agent RPC server:
+/// verifies the AK certificate and attestation report runtime claims, and
+/// that the vTPM Attestation Key (AK) public key is stable across a reboot.
+///
+/// AK stability: the AK is derived deterministically from the TPM
+/// endorsement-hierarchy seed. With a correct OSS ms-tpm-20-ref crypto
+/// backend (prebuilt `tpm-oss-openssl/libtpm.a` from openvmm-deps),
+/// re-deriving the AK on the next boot must produce the same public key. A
+/// previous `DfStart` (`CryptRand.c`) out-of-bounds read made the
+/// 64-bit-radix derivation non-deterministic; this guards the fix shipped via
+/// openvmm-deps. (See `ak_pub_refresh` for the contrasting case where a
+/// host-requested state refresh deliberately rotates the AK.)
+///
 /// The test requires the test_igvm_agent_rpc_server to be running.
 /// In CI, the server is started by flowey before tests run.
 /// For local development, either start the server manually or set
@@ -653,7 +705,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
-    let (vm, agent) = config.run().await?;
+    let (mut vm, agent) = config.run().await?;
 
     let guest_binary_path = match os_flavor {
         OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
@@ -688,6 +740,112 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     ensure!(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
+    );
+
+    // Capture the AK public modulus on this (first) boot for the stability
+    // check below.
+    let ak_pub_first = tpm_guest_tests.read_ak_pub_modulus().await?;
+    ensure!(
+        !ak_pub_first.is_empty(),
+        "AK pub modulus should not be empty on first boot"
+    );
+
+    // Reboot. With no state refresh requested, the AK must be re-derived
+    // identically.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Second boot: re-send the binary and capture the AK public modulus again.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let ak_pub_second = tpm_guest_tests.read_ak_pub_modulus().await?;
+
+    ensure!(
+        ak_pub_first == ak_pub_second,
+        "AK pub must remain stable across reboot, but it changed \
+         (first={ak_pub_first}, second={ak_pub_second})"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Verify that a host/agent-requested TPM state refresh regenerates the vTPM
+/// Attestation Key (AK) across a reboot for a normal stateful CVM.
+///
+/// The `test_igvm_agent_rpc_server` is configured (via the `StateRefresh`
+/// config, resolved by VM name in its `KNOWN_TEST_CONFIGS`) to report
+/// `state_refresh_request` in its GSP RPC response. OpenHCL propagates this
+/// into `refresh_tpm_seeds`, which regenerates the vTPM seeds (and therefore
+/// the AK) on the next boot. The test reads the AK public modulus
+/// (`HCLAkPub.n`) before and after the reboot and asserts it CHANGED.
+///
+/// This is the counterpart to the AK-stability check in `cvm_tpm_guest_tests`:
+/// together they prove the AK is deterministic across reboots by default, yet
+/// a state refresh deliberately rotates it.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn ak_pub_refresh<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+
+    // First boot: capture the AK public modulus.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let ak_pub_first = tpm_guest_tests.read_ak_pub_modulus().await?;
+    ensure!(
+        !ak_pub_first.is_empty(),
+        "AK pub modulus should not be empty on first boot"
+    );
+
+    // Reboot. The agent requests a TPM state refresh via the GSP RPC, so the
+    // vTPM seeds (and the AK) must be regenerated.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Second boot: capture the AK public modulus again.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let ak_pub_second = tpm_guest_tests.read_ak_pub_modulus().await?;
+
+    ensure!(
+        ak_pub_first != ak_pub_second,
+        "AK pub must change across reboot when a state refresh is requested, \
+         but it stayed the same (value={ak_pub_first})"
     );
 
     agent.power_off().await?;

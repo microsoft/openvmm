@@ -32,6 +32,8 @@ enum TestConfig {
     KeyReleaseFailureSkipHwUnsealing,
     /// Test key release failure without skip_hw_unsealing signal
     KeyReleaseFailure,
+    /// Test a host/agent-requested TPM state refresh (via the GSP RPC).
+    StateRefresh,
 }
 
 impl From<TestConfig> for IgvmAttestTestConfig {
@@ -47,6 +49,7 @@ impl From<TestConfig> for IgvmAttestTestConfig {
                 IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing
             }
             TestConfig::KeyReleaseFailure => IgvmAttestTestConfig::KeyReleaseFailure,
+            TestConfig::StateRefresh => IgvmAttestTestConfig::StateRefresh,
         }
     }
 }
