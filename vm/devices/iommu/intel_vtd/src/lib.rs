@@ -956,6 +956,7 @@ fn bdf(bus: u8, devfn: u8) -> u16 {
 ///
 /// Implements [`iommu_common::IommuTranslator`] using the closure-based API
 /// that holds the read lock across translation and the memory access operation.
+#[derive(Clone)]
 pub struct VtdTranslator {
     shared: Arc<VtdSharedState>,
 }
