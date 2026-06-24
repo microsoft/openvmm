@@ -27,7 +27,6 @@ use chipset_device::io::IoResult;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::PendingRpc;
@@ -36,7 +35,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::MsiTarget;
+use pci_core::dma::DmaTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -65,17 +64,15 @@ pub(crate) struct NvmeSecondaryController {
 }
 
 /// Parameters for constructing a [`NvmeSecondaryController`].
-pub(crate) struct NvmeSecondaryControllerParams<'a> {
+pub(crate) struct NvmeSecondaryControllerParams {
     /// Number of MSI-X vectors for the VF.
     pub msix_count: u16,
     /// Fixed maximum number of IO queues for the VF.
     pub max_io_queues: u16,
-    /// MSI target for this VF's interrupts.
-    pub msi_target: &'a MsiTarget,
+    /// DMA target for this VF's requester ID.
+    pub dma_target: DmaTarget,
     /// Driver source for creating VF worker tasks.
     pub driver_source: VmTaskDriverSource,
-    /// Guest memory for VF DMA.
-    pub guest_memory: GuestMemory,
     /// Subsystem ID for VF NVMe identity.
     pub subsystem_id: Guid,
     /// 0-based VF index.
@@ -90,19 +87,18 @@ impl NvmeSecondaryController {
     /// The VF's coordinator is created here (in the `Disabled` state) and
     /// lives until the VF is destroyed. The VF starts disabled (CC.EN=0);
     /// the guest driver enables it by writing to the CC register via BAR0.
-    pub fn new(params: NvmeSecondaryControllerParams<'_>) -> Self {
+    pub fn new(params: NvmeSecondaryControllerParams) -> Self {
         let NvmeSecondaryControllerParams {
             msix_count,
             max_io_queues,
-            msi_target,
+            dma_target,
             driver_source,
-            guest_memory,
             subsystem_id,
             vf_index,
             cntlid,
         } = params;
 
-        let (msix, msix_cap) = MsixEmulator::new(4, msix_count, msi_target);
+        let (msix, msix_cap) = MsixEmulator::new(4, msix_count, dma_target.msi_target());
 
         // VF queue limits are fixed at construction time (CRT=0).
         let max_sqs = max_io_queues;
@@ -121,7 +117,7 @@ impl NvmeSecondaryController {
         // enables it. VFs don't manage other VFs.
         let workers = NvmeWorkers::new(
             &driver_source,
-            guest_memory,
+            dma_target.guest_memory().clone(),
             interrupts,
             max_sqs,
             max_cqs,

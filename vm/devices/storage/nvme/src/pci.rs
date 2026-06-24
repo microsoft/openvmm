@@ -34,7 +34,6 @@ use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -388,16 +387,13 @@ impl NvmeController {
             let config = &sriov.config;
             (0..config.total_vfs)
                 .map(|vf_index| {
-                    // VF function number: first_vf_offset + index * vf_stride,
-                    // with offset=1, stride=1 → functions 1, 2, 3, ...
-                    let vf_devfn = 1 + vf_index as u8;
+                    let vf_dma_target = dma_target.with_rid_offset(1 + vf_index);
                     let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
                     NvmeSecondaryController::new(secondary::NvmeSecondaryControllerParams {
                         msix_count: config.vf_msix_count,
                         max_io_queues: config.vf_max_io_queues,
-                        msi_target: &msi_target.with_devfn(vf_devfn),
+                        dma_target: vf_dma_target,
                         driver_source: driver_source.clone(),
-                        guest_memory: guest_memory.clone(),
                         subsystem_id: caps.subsystem_id,
                         vf_index,
                         cntlid,

@@ -12,6 +12,8 @@ use crate::spec::caps::sriov::SriovControl;
 use crate::spec::caps::sriov::SriovExtendedCapabilityHeader;
 use crate::spec::caps::sriov::SriovStatus;
 use crate::spec::cfg_space::BarEncodingBits;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -405,6 +407,154 @@ impl SriovExtendedCapability {
             }
         }
     }
+
+    fn read_u32(&self, offset: u16) -> u32 {
+        match SriovExtendedCapabilityHeader(offset) {
+            SriovExtendedCapabilityHeader::HEADER => {
+                u32::from(self.extended_capability_id())
+                    | (u32::from(self.capability_version()) << 16)
+            }
+            SriovExtendedCapabilityHeader::CAPABILITIES => self.capabilities.into_bits(),
+            SriovExtendedCapabilityHeader::CONTROL_STATUS => {
+                self.control.into_bits() as u32 | ((self.status.into_bits() as u32) << 16)
+            }
+            SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS => {
+                self.initial_vfs as u32 | ((self.total_vfs as u32) << 16)
+            }
+            SriovExtendedCapabilityHeader::NUM_VFS_DEP_LINK => self.num_vfs as u32,
+            SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE => {
+                self.first_vf_offset as u32 | ((self.vf_stride as u32) << 16)
+            }
+            SriovExtendedCapabilityHeader::VF_DEVICE_ID => (self.vf_device_id as u32) << 16,
+            SriovExtendedCapabilityHeader::SUPPORTED_PAGE_SIZE => self.supported_page_sizes,
+            SriovExtendedCapabilityHeader::SYSTEM_PAGE_SIZE => self.system_page_size,
+            SriovExtendedCapabilityHeader::VF_BAR0 => self.read_vf_bar(0),
+            SriovExtendedCapabilityHeader::VF_BAR1 => self.read_vf_bar(1),
+            SriovExtendedCapabilityHeader::VF_BAR2 => self.read_vf_bar(2),
+            SriovExtendedCapabilityHeader::VF_BAR3 => self.read_vf_bar(3),
+            SriovExtendedCapabilityHeader::VF_BAR4 => self.read_vf_bar(4),
+            SriovExtendedCapabilityHeader::VF_BAR5 => self.read_vf_bar(5),
+            SriovExtendedCapabilityHeader::RESERVED_PADDING => 0,
+            _ => {
+                tracelimit::warn_ratelimited!(offset, "unexpected SR-IOV extended capability read");
+                0
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn write_u32(&mut self, offset: u16, val: u32) {
+        self.write_byte_enabled(offset, ByteEnabledDwordWrite::with_all_bytes_enabled(val));
+    }
+
+    fn write_byte_enabled(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
+        match SriovExtendedCapabilityHeader(offset) {
+            SriovExtendedCapabilityHeader::HEADER
+            | SriovExtendedCapabilityHeader::CAPABILITIES
+            | SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS
+            | SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE
+            | SriovExtendedCapabilityHeader::VF_DEVICE_ID
+            | SriovExtendedCapabilityHeader::SUPPORTED_PAGE_SIZE => {
+                tracelimit::warn_ratelimited!(
+                    offset,
+                    ?val,
+                    "write to read-only SR-IOV extended capability register"
+                );
+            }
+            SriovExtendedCapabilityHeader::CONTROL_STATUS => {
+                let new_control = SriovControl::from_bits(val.merge_low(self.control.into_bits()));
+                let old_vf_enable = self.control.vf_enable();
+                let new_vf_enable = new_control.vf_enable();
+
+                // Migration bits are deprecated, force to 0.
+                self.control = new_control
+                    .with_vf_migration_enable(false)
+                    .with_vf_migration_interrupt_enable(false);
+
+                if old_vf_enable != new_vf_enable {
+                    self.vf_mmio.decode.inner.lock().pending_vf_change = Some(SriovVfChange {
+                        enabled: new_vf_enable,
+                        num_vfs: self.num_vfs,
+                    });
+                }
+
+                // Status (upper 16) is read-only / RW1C — writes to
+                // vf_migration_status clear it. Only consider byte lanes the
+                // guest actually wrote.
+                if SriovStatus::from_bits(val.extract_high()).vf_migration_status() {
+                    self.status = self.status.with_vf_migration_status(false);
+                }
+
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::NUM_VFS_DEP_LINK => {
+                // NumVFs is writable only when VF Enable is 0 per spec.
+                if !self.control.vf_enable() {
+                    let requested = val.merge_low(self.num_vfs);
+                    self.num_vfs = requested.min(self.total_vfs);
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        ?val,
+                        "write to NumVFs while VF Enable is set; ignoring"
+                    );
+                }
+            }
+            SriovExtendedCapabilityHeader::SYSTEM_PAGE_SIZE => {
+                // Only writable when VF Enable is 0.
+                if !self.control.vf_enable() {
+                    let requested = val.merge(self.system_page_size);
+                    // Must be a single bit set and within supported range.
+                    let masked = requested & self.supported_page_sizes;
+                    if masked.count_ones() == 1 {
+                        self.system_page_size = masked;
+                    } else {
+                        tracelimit::warn_ratelimited!(
+                            value = requested,
+                            supported = self.supported_page_sizes,
+                            "invalid System Page Size write; must set exactly one supported bit"
+                        );
+                    }
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        ?val,
+                        "write to System Page Size while VF Enable is set; ignoring"
+                    );
+                }
+            }
+            SriovExtendedCapabilityHeader::VF_BAR0 => {
+                self.write_vf_bar(0, val.merge(self.read_vf_bar(0)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::VF_BAR1 => {
+                self.write_vf_bar(1, val.merge(self.read_vf_bar(1)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::VF_BAR2 => {
+                self.write_vf_bar(2, val.merge(self.read_vf_bar(2)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::VF_BAR3 => {
+                self.write_vf_bar(3, val.merge(self.read_vf_bar(3)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::VF_BAR4 => {
+                self.write_vf_bar(4, val.merge(self.read_vf_bar(4)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::VF_BAR5 => {
+                self.write_vf_bar(5, val.merge(self.read_vf_bar(5)));
+                self.sync_vf_mmio();
+            }
+            SriovExtendedCapabilityHeader::RESERVED_PADDING => {}
+            _ => {
+                tracelimit::warn_ratelimited!(
+                    offset,
+                    ?val,
+                    "unexpected SR-IOV extended capability write"
+                );
+            }
+        }
+    }
 }
 
 impl PciExtendedCapability for SriovExtendedCapability {
@@ -424,152 +574,12 @@ impl PciExtendedCapability for SriovExtendedCapability {
         SRIOV_CAP_LEN
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
-        match SriovExtendedCapabilityHeader(offset) {
-            SriovExtendedCapabilityHeader::HEADER => {
-                u32::from(self.extended_capability_id())
-                    | (u32::from(self.capability_version()) << 16)
-            }
-            SriovExtendedCapabilityHeader::CAPABILITIES => self.capabilities.into_bits(),
-            SriovExtendedCapabilityHeader::CONTROL_STATUS => {
-                self.control.into_bits() as u32 | ((self.status.into_bits() as u32) << 16)
-            }
-            SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS => {
-                self.initial_vfs as u32 | ((self.total_vfs as u32) << 16)
-            }
-            SriovExtendedCapabilityHeader::NUM_VFS_DEP_LINK => {
-                // NumVFs in low 16, Function Dependency Link in high 16.
-                // Dependency link = 0 (all VFs depend on function 0).
-                self.num_vfs as u32
-            }
-            SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE => {
-                self.first_vf_offset as u32 | ((self.vf_stride as u32) << 16)
-            }
-            SriovExtendedCapabilityHeader::VF_DEVICE_ID => {
-                // Low 16 = reserved (0), high 16 = VF Device ID.
-                (self.vf_device_id as u32) << 16
-            }
-            SriovExtendedCapabilityHeader::SUPPORTED_PAGE_SIZE => self.supported_page_sizes,
-            SriovExtendedCapabilityHeader::SYSTEM_PAGE_SIZE => self.system_page_size,
-            SriovExtendedCapabilityHeader::VF_BAR0 => self.read_vf_bar(0),
-            SriovExtendedCapabilityHeader::VF_BAR1 => self.read_vf_bar(1),
-            SriovExtendedCapabilityHeader::VF_BAR2 => self.read_vf_bar(2),
-            SriovExtendedCapabilityHeader::VF_BAR3 => self.read_vf_bar(3),
-            SriovExtendedCapabilityHeader::VF_BAR4 => self.read_vf_bar(4),
-            SriovExtendedCapabilityHeader::VF_BAR5 => self.read_vf_bar(5),
-            SriovExtendedCapabilityHeader::RESERVED_PADDING => 0,
-            _ => {
-                tracelimit::warn_ratelimited!(offset, "unexpected SR-IOV extended capability read");
-                0
-            }
-        }
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        value.set(self.read_u32(offset));
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
-        match SriovExtendedCapabilityHeader(offset) {
-            SriovExtendedCapabilityHeader::HEADER
-            | SriovExtendedCapabilityHeader::CAPABILITIES
-            | SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS
-            | SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE
-            | SriovExtendedCapabilityHeader::VF_DEVICE_ID
-            | SriovExtendedCapabilityHeader::SUPPORTED_PAGE_SIZE => {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    value = val,
-                    "write to read-only SR-IOV extended capability register"
-                );
-            }
-            SriovExtendedCapabilityHeader::CONTROL_STATUS => {
-                let new_control = SriovControl::from_bits(val as u16);
-                let old_vf_enable = self.control.vf_enable();
-                let new_vf_enable = new_control.vf_enable();
-
-                // Migration bits are deprecated, force to 0.
-                self.control = new_control
-                    .with_vf_migration_enable(false)
-                    .with_vf_migration_interrupt_enable(false);
-
-                if old_vf_enable != new_vf_enable {
-                    self.vf_mmio.decode.inner.lock().pending_vf_change = Some(SriovVfChange {
-                        enabled: new_vf_enable,
-                        num_vfs: self.num_vfs,
-                    });
-                }
-
-                // Status (upper 16) is read-only / RW1C — writes to
-                // vf_migration_status clear it.
-                if SriovStatus::from_bits((val >> 16) as u16).vf_migration_status() {
-                    self.status = self.status.with_vf_migration_status(false);
-                }
-
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::NUM_VFS_DEP_LINK => {
-                // NumVFs is writable only when VF Enable is 0 per spec.
-                if !self.control.vf_enable() {
-                    let requested = val as u16;
-                    self.num_vfs = requested.min(self.total_vfs);
-                } else {
-                    tracelimit::warn_ratelimited!(
-                        value = val,
-                        "write to NumVFs while VF Enable is set; ignoring"
-                    );
-                }
-            }
-            SriovExtendedCapabilityHeader::SYSTEM_PAGE_SIZE => {
-                // Only writable when VF Enable is 0.
-                if !self.control.vf_enable() {
-                    // Must be a single bit set and within supported range.
-                    let masked = val & self.supported_page_sizes;
-                    if masked.count_ones() == 1 {
-                        self.system_page_size = masked;
-                    } else {
-                        tracelimit::warn_ratelimited!(
-                            value = val,
-                            supported = self.supported_page_sizes,
-                            "invalid System Page Size write; must set exactly one supported bit"
-                        );
-                    }
-                } else {
-                    tracelimit::warn_ratelimited!(
-                        value = val,
-                        "write to System Page Size while VF Enable is set; ignoring"
-                    );
-                }
-            }
-            SriovExtendedCapabilityHeader::VF_BAR0 => {
-                self.write_vf_bar(0, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::VF_BAR1 => {
-                self.write_vf_bar(1, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::VF_BAR2 => {
-                self.write_vf_bar(2, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::VF_BAR3 => {
-                self.write_vf_bar(3, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::VF_BAR4 => {
-                self.write_vf_bar(4, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::VF_BAR5 => {
-                self.write_vf_bar(5, val);
-                self.sync_vf_mmio();
-            }
-            SriovExtendedCapabilityHeader::RESERVED_PADDING => {}
-            _ => {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    value = val,
-                    "unexpected SR-IOV extended capability write"
-                );
-            }
-        }
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
+        self.write_byte_enabled(offset, val);
     }
 
     fn reset(&mut self) {
