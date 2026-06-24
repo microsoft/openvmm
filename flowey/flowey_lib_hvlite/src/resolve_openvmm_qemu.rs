@@ -174,14 +174,7 @@ impl FlowNodeWithConfig for Node {
                         );
                     }
                     // Ensure the binary is executable
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let metadata = std::fs::metadata(&path)?;
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(perms.mode() | 0o111);
-                        std::fs::set_permissions(&path, perms)?;
-                    }
+                    path.make_executable()?;
                     rt.write_all(vars, &path)
                 }
 
