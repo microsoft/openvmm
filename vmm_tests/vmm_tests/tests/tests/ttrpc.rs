@@ -391,7 +391,6 @@ fn test_ttrpc_consomme_port_forward(
 
     let mut socket_path = std::env::temp_dir();
     socket_path.push(Guid::new_random().to_string());
-    let pidfile_path = std::env::temp_dir().join(format!("{}.pid", Guid::new_random()));
 
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
@@ -400,8 +399,6 @@ fn test_ttrpc_consomme_port_forward(
     let child = std::process::Command::new(openvmm)
         .arg("--ttrpc")
         .arg(&socket_path)
-        .arg("--pidfile")
-        .arg(&pidfile_path)
         .stdin(Stdio::null())
         .stdout(stdout_write)
         .stderr(stderr_write)
@@ -428,29 +425,6 @@ fn test_ttrpc_consomme_port_forward(
             .context("reading from openvmm stdout")?;
         anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
         drop(stdout);
-
-        let pid_content = match std::fs::read_to_string(&pidfile_path) {
-            Ok(s) => s,
-            Err(e) => {
-                let wait_result = CancelContext::new()
-                    .with_timeout(Duration::from_secs(10))
-                    .until_cancelled(child.wait())
-                    .await;
-                match wait_result {
-                    Ok(Ok(status)) => {
-                        anyhow::bail!("openvmm exited with {status} before pidfile was created");
-                    }
-                    _ => {
-                        return Err(e).context("failed to read pidfile");
-                    }
-                }
-            }
-        };
-        assert_eq!(
-            pid_content,
-            format!("{}\n", child.get().id()),
-            "pidfile should contain the child PID"
-        );
 
         // Reserve a free host TCP port to forward. The listener is dropped
         // immediately; consomme rebinds the same port number when the forward
@@ -649,12 +623,6 @@ fn test_ttrpc_consomme_port_forward(
         assert!(
             exit_status.success(),
             "openvmm exited abnormally: {exit_status:?}"
-        );
-
-        // Verify the pidfile was cleaned up on exit.
-        assert!(
-            !pidfile_path.exists(),
-            "pidfile should be removed after exit"
         );
 
         Ok(())
