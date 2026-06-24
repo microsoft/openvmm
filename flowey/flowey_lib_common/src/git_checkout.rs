@@ -430,7 +430,7 @@ impl Node {
 
                     let path = match repo_src {
                         RepoSource::AdoResource(_) => {
-                            workspace.join(format!("repo{idx}"))                          
+                            workspace.join(format!("repo{idx}"))
                         },
                         RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf => anyhow::bail!("repo source for ADO backend must be an `AdoResource` or `ExistingClone`"),
                         RepoSource::ExistingClone(path) => {

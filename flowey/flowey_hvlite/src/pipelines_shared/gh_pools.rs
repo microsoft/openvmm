@@ -8,7 +8,7 @@ use flowey::pipeline::prelude::*;
 // Constants in this file may be added, renamed or deleted, but the values
 // of these constants should not be changed to avoid changing the image to one
 // that may not be present in all of the pools where the constant is used
-// (in both Github and ADO).
+// (in both GitHub and ADO).
 pub const WINDOWS_IMAGE_AMD64_V2: &str = "win-amd64-v2";
 pub const WINDOWS_IMAGE_ARM64_V2: &str = "win-arm64-v2";
 pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
