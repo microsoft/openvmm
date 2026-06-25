@@ -60,7 +60,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                 anyhow::bail!("section fs not supported on this platform")
             }
             VirtioFsBackend::Aggregate { children } => {
-                let fs = VirtioFs::new_aggregate(false, true);
+                let fs = VirtioFs::new_aggregate(true);
                 for child in children {
                     fs.add_child(
                         &child.name,

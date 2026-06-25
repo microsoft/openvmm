@@ -53,6 +53,10 @@ pub struct VirtioFsInode {
     /// ([`Self::inode_nr`]) folded into its volume's namespace (see
     /// [`namespace_ino`]).
     namespaced_inode_nr: lx::ino_t,
+    /// Whether this inode's volume is read-only. Carried per inode so write
+    /// permission can be enforced per share in an aggregate device (each child
+    /// volume may differ). Inherited by descendants from their parent.
+    readonly: bool,
 }
 
 impl VirtioFsInode {
@@ -60,10 +64,11 @@ impl VirtioFsInode {
     pub fn new(
         volume: Arc<LxVolume>,
         volume_id: u32,
+        readonly: bool,
         path: PathBuf,
     ) -> lx::Result<(Self, lx::Stat)> {
         let stat = volume.lstat(&path)?;
-        let inode = Self::with_attr(volume, volume_id, path, &stat);
+        let inode = Self::with_attr(volume, volume_id, readonly, path, &stat);
         Ok((inode, stat))
     }
 
@@ -71,6 +76,7 @@ impl VirtioFsInode {
     pub fn with_attr(
         volume: Arc<LxVolume>,
         volume_id: u32,
+        readonly: bool,
         path: PathBuf,
         stat: &lx::Stat,
     ) -> Self {
@@ -81,6 +87,7 @@ impl VirtioFsInode {
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
             namespaced_inode_nr: namespace_ino(volume_id, stat.inode_nr),
+            readonly,
         }
     }
 
@@ -94,6 +101,11 @@ impl VirtioFsInode {
     /// Return the identifier of the aggregated volume this inode belongs to.
     pub fn volume_id(&self) -> u32 {
         self.volume_id
+    }
+
+    /// Whether this inode's volume is read-only.
+    pub fn readonly(&self) -> bool {
+        self.readonly
     }
 
     /// This inode's own number as reported to the guest: its host inode number
@@ -171,7 +183,8 @@ impl VirtioFsInode {
     /// Performs a lookup for a child of this inode.
     pub fn lookup_child(&self, name: &LxStr) -> lx::Result<(VirtioFsInode, fuse_attr)> {
         let path = self.child_path(name)?;
-        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), self.volume_id, path)?;
+        let (inode, stat) =
+            VirtioFsInode::new(Arc::clone(&self.volume), self.volume_id, self.readonly, path)?;
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -220,7 +233,8 @@ impl VirtioFsInode {
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
-        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
+        let inode =
+            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr, file))
     }
@@ -238,7 +252,8 @@ impl VirtioFsInode {
             .volume
             .mkdir_stat(&path, LxCreateOptions::new(mode, uid, gid))?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
+        let inode =
+            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -259,7 +274,8 @@ impl VirtioFsInode {
             device_id as usize,
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
+        let inode =
+            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -279,7 +295,8 @@ impl VirtioFsInode {
             LxCreateOptions::new(lx::S_IFLNK | 0o777, uid, gid),
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
+        let inode =
+            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }

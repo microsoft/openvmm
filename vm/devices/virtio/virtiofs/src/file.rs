@@ -28,6 +28,11 @@ impl VirtioFsFile {
         }
     }
 
+    /// The inode backing this open file.
+    pub fn inode(&self) -> &VirtioFsInode {
+        &self.inode
+    }
+
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         let stat = self.file.read().fstat()?.into();

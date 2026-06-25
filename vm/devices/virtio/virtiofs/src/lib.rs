@@ -49,10 +49,30 @@ const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
-    readonly: bool,
-    /// `None` in direct (single-root) mode; `Some` only for aggregate devices,
-    /// carrying the synthetic root's registry and lifecycle state.
-    aggregate: Option<AggregateState>,
+    mode: VirtioFsMode,
+}
+
+/// Distinguishes a single-share device from a multi-share aggregate.
+///
+/// The read-only setting is not tracked here: in direct mode it is baked into
+/// the inodes (each carries its volume's setting), and in aggregate mode each
+/// child carries its own (see [`AggregateState`]).
+enum VirtioFsMode {
+    /// Single share: node 1 is a real inode at the volume root.
+    Direct,
+    /// Multi-share: node 1 is a synthetic directory whose children are
+    /// independent host folders.
+    Aggregate(AggregateState),
+}
+
+impl VirtioFsInner {
+    /// The aggregate state, or `None` for a direct (single-share) device.
+    fn aggregate(&self) -> Option<&AggregateState> {
+        match &self.mode {
+            VirtioFsMode::Aggregate(state) => Some(state),
+            VirtioFsMode::Direct => None,
+        }
+    }
 }
 
 /// Implementation of the virtio-fs file system.
@@ -140,7 +160,7 @@ impl Fuse for VirtioFs {
             let file = self.get_file(arg.fh)?;
             // Block truncation and other modifications on readonly filesystems
             if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
-                self.check_writable()?;
+                self.check_writable(file.inode())?;
             }
             file.set_attr(arg, request.uid())?;
             file.get_attr()?
@@ -148,7 +168,7 @@ impl Fuse for VirtioFs {
             let inode = self.get_inode(node_id)?;
             // Block truncation and other modifications on readonly filesystems
             if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
-                self.check_writable()?;
+                self.check_writable(&inode)?;
             }
             inode.set_attr(arg, request.uid())?
         };
@@ -193,7 +213,7 @@ impl Fuse for VirtioFs {
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let (new_inode, attr, file) =
             inode.create(name, arg.flags, arg.mode, request.uid(), request.gid())?;
 
@@ -216,7 +236,7 @@ impl Fuse for VirtioFs {
         arg: &fuse_mkdir_in,
     ) -> lx::Result<fuse_entry_out> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
         let (_, node_id) = self.insert_inode(new_inode);
         Ok(fuse_entry_out::new(
@@ -234,7 +254,7 @@ impl Fuse for VirtioFs {
         arg: &fuse_mknod_in,
     ) -> lx::Result<fuse_entry_out> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
 
@@ -254,7 +274,7 @@ impl Fuse for VirtioFs {
         target: &lx::LxStr,
     ) -> lx::Result<fuse_entry_out> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
         let (_, node_id) = self.insert_inode(new_inode);
@@ -269,7 +289,7 @@ impl Fuse for VirtioFs {
     fn link(&self, request: &Request, name: &lx::LxStr, target: u64) -> lx::Result<fuse_entry_out> {
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let attr = inode.link(name, &target_inode)?;
 
         // Increment the lookup count since we're returning an entry for this inode.
@@ -300,7 +320,7 @@ impl Fuse for VirtioFs {
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
         let file = self.get_file(arg.fh)?;
-        self.check_writable()?;
+        self.check_writable(file.inode())?;
         file.write(data, arg.offset, request.uid())
     }
 
@@ -364,7 +384,7 @@ impl Fuse for VirtioFs {
         if inode.volume_id() != new_inode.volume_id() {
             return Err(lx::Error::EXDEV);
         }
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.rename(name, &new_inode, new_name, flags)
     }
 
@@ -409,7 +429,7 @@ impl Fuse for VirtioFs {
         flags: u32,
     ) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.set_xattr(name, value, flags)
     }
 
@@ -430,7 +450,7 @@ impl Fuse for VirtioFs {
 
     fn remove_xattr(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.remove_xattr(name)
     }
 
@@ -442,9 +462,9 @@ impl Fuse for VirtioFs {
 }
 
 impl VirtioFs {
-    /// Check if the filesystem is readonly and return EROFS if so.
-    fn check_writable(&self) -> lx::Result<()> {
-        if self.inner.readonly {
+    /// Check if the inode's volume is readonly and return EROFS if so.
+    fn check_writable(&self, inode: &VirtioFsInode) -> lx::Result<()> {
+        if inode.readonly() {
             Err(lx::Error::EROFS)
         } else {
             Ok(())
@@ -453,7 +473,7 @@ impl VirtioFs {
 
     /// Check whether the open flags are permitted on a read-only filesystem.
     fn check_open_readonly(&self, inode: &VirtioFsInode, flags: u32) -> lx::Result<()> {
-        if !self.inner.readonly {
+        if !inode.readonly() {
             return Ok(());
         }
 
@@ -494,33 +514,32 @@ impl VirtioFs {
             lxutil::LxVolume::new(root_path)
         }?;
         let mut inodes = InodeMap::new(volume.supports_stable_file_id(), false);
-        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), 0, PathBuf::new())?;
+        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), 0, readonly, PathBuf::new())?;
         assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
         Ok(Self {
             inner: Arc::new(VirtioFsInner {
                 inodes: RwLock::new(inodes),
                 files: RwLock::new(HandleMap::new()),
-                readonly,
-                aggregate: None,
+                mode: VirtioFsMode::Direct,
             }),
         })
     }
 
     /// Create a new, empty aggregate virtio-fs.
     ///
-    /// Node 1 is a synthetic, read-only directory; use [`Self::add_root`] to
-    /// expose host folders as named children. When `submounts` is set, each
-    /// child is advertised with `FUSE_ATTR_SUBMOUNT` so the guest kernel gives
-    /// it a distinct `st_dev` (only honored once `FUSE_SUBMOUNTS` is negotiated).
-    pub fn new_aggregate(readonly: bool, submounts: bool) -> Self {
+    /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
+    /// expose host folders as named children, each with its own read-only
+    /// setting. When `submounts` is set, each child is advertised with
+    /// `FUSE_ATTR_SUBMOUNT` so the guest kernel gives it a distinct `st_dev`
+    /// (only honored once `FUSE_SUBMOUNTS` is negotiated).
+    pub fn new_aggregate(submounts: bool) -> Self {
         Self {
             inner: Arc::new(VirtioFsInner {
                 // Inode numbers are deduplicated per volume (see `InodeMap`), so
                 // enable the stable-id map and key it by `(volume_id, ino)`.
                 inodes: RwLock::new(InodeMap::new(true, true)),
                 files: RwLock::new(HandleMap::new()),
-                readonly,
-                aggregate: Some(AggregateState::new(submounts)),
+                mode: VirtioFsMode::Aggregate(AggregateState::new(submounts)),
             }),
         }
     }
@@ -539,7 +558,7 @@ impl VirtioFs {
     /// Removes a file or directory.
     fn unlink_helper(&self, request: &Request, name: &lx::LxStr, flags: i32) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.unlink(name, flags)
     }
 
