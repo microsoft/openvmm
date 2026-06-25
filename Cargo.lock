@@ -3893,6 +3893,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_vtd"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "iommu_common",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "x86defs",
+ "zerocopy",
+]
+
+[[package]]
 name = "io-uring"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5553,6 +5573,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "intel_vtd",
  "iommu_common",
  "loader",
  "membacking",

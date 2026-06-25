@@ -226,6 +226,7 @@ aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
 amd_iommu = { path = "vm/devices/iommu/amd_iommu" }
+intel_vtd = { path = "vm/devices/iommu/intel_vtd" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }

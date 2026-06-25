@@ -11,7 +11,7 @@
 //! [`PcieMsiPlatform::wrap_msi`] → [`PcieMsiRouting`].
 //!
 //! [`build_device_wiring`] extends this with IOMMU DMA translation
-//! (SMMU on aarch64, AMD IOMMU on x86_64) → [`PcieDeviceWiring`].
+//! (SMMU on aarch64, AMD/Intel IOMMU on x86_64) → [`PcieDeviceWiring`].
 
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
@@ -37,10 +37,17 @@ pub(super) struct PcieMsiPlatform<'a> {
     /// Processor topology (determines ITS wrapping on aarch64).
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
     pub processor_topology: &'a ProcessorTopology,
-    /// AMD IOMMU shared state for interrupt remapping, or `None` if this
-    /// entity is not behind an AMD IOMMU.
+    /// x86 IOMMU shared state for interrupt remapping, or `None` if this
+    /// entity is not behind an IOMMU.
     #[cfg(guest_arch = "x86_64")]
-    pub iommu: Option<&'a Arc<amd_iommu::IommuSharedState>>,
+    pub iommu: Option<X86IommuSharedState<'a>>,
+}
+
+/// Enum dispatching between AMD IOMMU and Intel VT-d shared state on x86_64.
+#[cfg(guest_arch = "x86_64")]
+pub(super) enum X86IommuSharedState<'a> {
+    AmdVi(&'a Arc<amd_iommu::IommuSharedState>),
+    IntelVtd(&'a Arc<intel_vtd::VtdSharedState>),
 }
 
 /// Wrapped `SignalMsi` and `IrqFd` for a PCIe entity.
@@ -97,7 +104,7 @@ impl PcieMsiPlatform<'_> {
             irqfd = irqfd.map(|fd| Arc::new(pcie::its::ItsIrqFd::new(fd, self.segment)) as _);
         }
 
-        // x86_64 AMD IOMMU: wrap with interrupt remapping.
+        // x86_64 IOMMU: wrap with interrupt remapping.
         //
         // TODO: irqfd is disabled because kernel-mediated MSI routes
         // bypass our emulated interrupt remapping. We could support
@@ -105,8 +112,15 @@ impl PcieMsiPlatform<'_> {
         // and push the remapped address/data to the kernel, then
         // re-pushing on INVALIDATE_INTERRUPT_TABLE commands.
         #[cfg(guest_arch = "x86_64")]
-        if let Some(shared) = &self.iommu {
-            signal_msi = signal_msi.map(|s| shared.wrap_signal_msi(s) as _);
+        if let Some(iommu_state) = &self.iommu {
+            match iommu_state {
+                X86IommuSharedState::AmdVi(shared) => {
+                    signal_msi = signal_msi.map(|s| shared.wrap_signal_msi(s) as _);
+                }
+                X86IommuSharedState::IntelVtd(shared) => {
+                    signal_msi = signal_msi.map(|s| shared.wrap_signal_msi(s) as _);
+                }
+            }
             irqfd = None;
         }
 
@@ -151,7 +165,7 @@ impl PcieDeviceWiring {
 /// Build the layered DMA target and MSI routing for a PCIe device.
 ///
 /// Calls [`PcieMsiPlatform::wrap_msi`] for MSI/IrqFd wrapping, then
-/// adds IOMMU DMA translation (SMMU on aarch64, AMD IOMMU on x86_64)
+/// adds IOMMU DMA translation (SMMU on aarch64, AMD/Intel IOMMU on x86_64)
 /// to produce the device's [`DmaTarget`].
 pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDeviceWiring {
     let msi = params.msi_platform.wrap_msi();
@@ -189,12 +203,12 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
         };
     }
 
-    // x86_64 AMD IOMMU: wrap GuestMemory with DMA translation.
+    // x86_64 IOMMU: wrap GuestMemory with DMA translation.
     // MSI interrupt remapping was already applied by wrap_msi().
     #[cfg(guest_arch = "x86_64")]
-    if let Some(shared) = params.msi_platform.iommu {
-        return PcieDeviceWiring {
-            dma_target: iommu_common::new_dma_target(
+    if let Some(iommu_state) = &params.msi_platform.iommu {
+        let dma_target = match iommu_state {
+            X86IommuSharedState::AmdVi(shared) => iommu_common::new_dma_target(
                 "amd-iommu",
                 shared.translator(),
                 params.bus_range.clone(),
@@ -202,8 +216,16 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
                 params.guest_memory.clone(),
                 params.msi,
             ),
-            msi,
+            X86IommuSharedState::IntelVtd(shared) => iommu_common::new_dma_target(
+                "intel-vtd",
+                shared.translator(),
+                params.bus_range.clone(),
+                0,
+                params.guest_memory.clone(),
+                params.msi,
+            ),
         };
+        return PcieDeviceWiring { dma_target, msi };
     }
 
     PcieDeviceWiring {

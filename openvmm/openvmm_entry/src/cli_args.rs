@@ -1023,6 +1023,15 @@ options:
     #[clap(long)]
     pub amd_iommu: Vec<String>,
 
+    /// Enable Intel VT-d IOMMU emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --intel-vtd rc0 --intel-vtd rc1
+    /// Mutually exclusive with --amd-iommu within the same VM.
+    /// Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub intel_vtd: Vec<String>,
+
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.

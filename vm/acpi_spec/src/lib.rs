@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod aspt;
+pub mod dmar;
 pub mod fadt;
 pub mod gtdt;
 pub mod iort;
