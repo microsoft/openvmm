@@ -29,7 +29,7 @@ jobs:
     name: quick check [fmt, clippy x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -407,7 +407,7 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -532,11 +532,13 @@ jobs:
       run: |-
         flowey e 10 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 10 flowey_lib_hvlite::init_cross_build 1
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 10 flowey_lib_common::run_cargo_build 2
-        flowey e 10 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 10 flowey_lib_hvlite::run_cargo_build 8
         flowey e 10 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
       shell: bash
@@ -658,7 +660,7 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -795,11 +797,13 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 3
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_build 2
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 8
         flowey e 11 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
       shell: bash
@@ -817,18 +821,18 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 2
         flowey e 11 flowey_lib_hvlite::init_cross_build 0
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build sidecar
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_build 3
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 11
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 10
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 12
         flowey e 11 flowey_lib_hvlite::build_sidecar 0
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 11 flowey_lib_hvlite::init_cross_build 1
@@ -1064,7 +1068,7 @@ jobs:
     name: build openhcl (mi-secure) [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1193,11 +1197,13 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 3
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: cargo build openvmm_hcl
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_build 2
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 6
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
         flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
       shell: bash
@@ -1215,18 +1221,18 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 0
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build sidecar
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_build 3
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 11
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 10
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 12
         flowey e 12 flowey_lib_hvlite::build_sidecar 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 12 flowey_lib_hvlite::init_cross_build 1
@@ -1380,8 +1386,8 @@ jobs:
     name: clippy [x64-windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1674,7 +1680,7 @@ jobs:
     name: clippy [macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1978,7 +1984,7 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -2324,8 +2330,8 @@ jobs:
     name: clippy [aarch64-windows], unit tests [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-arm-westus2
-    - 1ES.ImageOverride=win-arm64
+    - 1ES.Pool=openvmm-gh-arm-westus3
+    - 1ES.ImageOverride=win-arm64-v2
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3364,8 +3370,8 @@ jobs:
     name: run vmm-tests [x64-windows-intel]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job19-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3647,8 +3653,8 @@ jobs:
     name: build artifacts (shared VMM tests) [windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3835,8 +3841,8 @@ jobs:
     name: run vmm-tests [x64-windows-intel-mi-secure]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4397,8 +4403,8 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job22-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4964,7 +4970,7 @@ jobs:
     name: run vmm-tests [x64-linux-amd-kvm]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job24-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -5866,7 +5872,7 @@ jobs:
     name: run vmm-tests [aarch64-linux-tcg]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job27-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -6212,7 +6218,7 @@ jobs:
     name: build artifacts (shared VMM tests) [linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -6571,8 +6577,8 @@ jobs:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6792,8 +6798,8 @@ jobs:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -7116,8 +7122,8 @@ jobs:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -7341,8 +7347,8 @@ jobs:
     name: build artifacts (for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -7673,7 +7679,7 @@ jobs:
     name: build artifacts (for VMM tests) [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -8056,7 +8062,7 @@ jobs:
     name: build artifacts (for VMM tests) [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
