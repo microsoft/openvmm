@@ -433,9 +433,17 @@ pub async fn setup_vfio_devices(
 
     // Advertise all provisioned capabilities to the guest command via
     // PETRI_CAPABILITIES (comma-separated), which petri's requirement
-    // evaluation reads.
+    // evaluation reads. Augment any capabilities already present in the
+    // incubator's environment rather than overwriting them, so that
+    // host-provided capabilities are preserved.
     if !capabilities.is_empty() {
-        env.insert("PETRI_CAPABILITIES".to_string(), capabilities.join(","));
+        let mut value = capabilities.join(",");
+        if let Ok(existing) = std::env::var("PETRI_CAPABILITIES") {
+            if !existing.is_empty() {
+                value = format!("{existing},{value}");
+            }
+        }
+        env.insert("PETRI_CAPABILITIES".to_string(), value);
     }
 
     Ok(env)
