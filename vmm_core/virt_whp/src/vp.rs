@@ -1682,7 +1682,6 @@ mod x86 {
 
 #[cfg(guest_arch = "aarch64")]
 mod aarch64 {
-    use crate::InitialVpContext;
     use crate::WhpProcessor;
     use aarch64defs::EsrEl2;
     use aarch64defs::ExceptionClass;

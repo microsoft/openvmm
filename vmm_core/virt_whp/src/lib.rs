@@ -374,6 +374,7 @@ type InitialVpContext = hvdef::hypercall::InitialVpContextArm64;
 
 /// Which hypercall is requesting that a VP's initial VTL context be set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 enum VpStartOperation {
     /// `HvCallEnableVpVtl`: install the VTL's initial register context, but do
     /// not change the active VTL (i.e. do not start the VP running the VTL).
@@ -387,6 +388,7 @@ enum VpStartOperation {
 /// A pending `HvCallEnableVpVtl` / `HvCallStartVirtualProcessor` request for a
 /// VTL on a VP, set by the issuing VP and consumed by the target VP's run loop.
 #[derive(Debug)]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 struct VpStartRequest {
     operation: VpStartOperation,
     context: Box<InitialVpContext>,
