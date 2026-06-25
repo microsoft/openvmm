@@ -1502,19 +1502,22 @@ impl InitializedVm {
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
+        // The UEFI device's platform resolvers (logger, watchdog) are needed
+        // whenever the device is present, including on a snapshot restore where
+        // the load mode is None because firmware is not reloaded.
+        if cfg.chipset_devices.iter().any(|d| d.name == "uefi") {
+            use emuplat::uefi::*;
+            resolver.add_resolver(emuplat::firmware::MeshLoggerResolver::new(
+                cfg.firmware_event_send.clone(),
+            ));
+            resolver.add_async_resolver(OpenvmmUefiWatchdogPlatformResolver::new(
+                partition.clone(),
+                halt_vps.clone(),
+            ));
+        }
+
         match &cfg.load_mode {
-            LoadMode::Uefi { .. } => {
-                use emuplat::uefi::*;
-                // Register the platform-specific resolvers used by the UEFI
-                // device.
-                resolver.add_resolver(emuplat::firmware::MeshLoggerResolver::new(
-                    cfg.firmware_event_send.clone(),
-                ));
-                resolver.add_async_resolver(OpenvmmUefiWatchdogPlatformResolver::new(
-                    partition.clone(),
-                    halt_vps.clone(),
-                ));
-            }
+            LoadMode::Uefi { .. } => {}
             #[cfg(guest_arch = "x86_64")]
             LoadMode::Pcat {
                 firmware,

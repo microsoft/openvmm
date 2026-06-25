@@ -655,10 +655,17 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(KvmError::NotSupported)
+        // Empty only on a host without KVM_CAP_NESTED_STATE; otherwise the
+        // kernel returns the current nested state, which is a minimal header
+        // when no L2 is active.
+        let data = self.kvm().get_nested_state()?;
+        Ok(vp::NestedState { data })
     }
 
-    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(KvmError::NotSupported)
+    fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
+        // An empty blob (the at-reset value, or a host without the capability)
+        // is a no-op in set_nested_state.
+        self.kvm().set_nested_state(&value.data)?;
+        Ok(())
     }
 }
