@@ -121,7 +121,7 @@ pub mod hyperv {
                     r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#
                 )
             }
-            ComPortAccessInfo::PortPipePath(_) => unreachable!(),
+            ComPortAccessInfo::PortPipePath(path) => return Ok(path.to_owned()),
         };
 
         let output = Command::new("powershell.exe")
@@ -149,10 +149,7 @@ pub mod hyperv {
         driver: &(impl Driver + ?Sized),
         port: ComPortAccessInfo<'_>,
     ) -> anyhow::Result<File> {
-        let path = match port {
-            ComPortAccessInfo::PortPipePath(path) => path.to_owned(),
-            port => query_vm_com_port(port)?,
-        };
+        let path = query_vm_com_port(port)?;
 
         let path = path.trim();
         if path.is_empty() {
