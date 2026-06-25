@@ -425,7 +425,7 @@ pub async fn setup_vfio_devices(
 
         // Advertise the capability this device provides, now that it has been
         // successfully provisioned. Tests gate on this via
-        // `requires_capability(...)`.
+        // `requires(...)`.
         if let Some(capability) = &cfg.provides {
             capabilities.push(capability.clone());
         }

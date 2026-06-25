@@ -277,14 +277,17 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
     Ok(())
 }
 
-#[vmm_test_with(vpci(
-    // TODO: virt_whp is missing VPCI LPI interrupt support, used by Windows (but not Linux)
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // TODO: Linux image is missing VPCI driver in its initrd
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+#[vmm_test_with(
+    (requires(vpci)),
+    (
+        // TODO: virt_whp is missing VPCI LPI interrupt support, used by Windows (but not Linux)
+        // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        // TODO: Linux image is missing VPCI driver in its initrd
+        // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
+    )
+)]
 async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::Nvme)
@@ -296,14 +299,17 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 }
 
 /// Tests NVMe boot with OpenHCL VPCI relaying enabled.
-#[vmm_test_with(vpci(
+#[vmm_test_with(
+    (requires(vpci)),
+    (
     // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
     // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
     // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+    )
+)]
 async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::Nvme)
@@ -568,7 +574,10 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
 ///
 /// Boots OpenHCL UEFI with an NVMe device attached, then verifies
 /// whether IoMmuDxe will force bounce buffering on all DMA operations.
-#[vmm_test_with(vpci(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))))]
+#[vmm_test_with(
+    (requires(vpci)),
+    (openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+)]
 async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {

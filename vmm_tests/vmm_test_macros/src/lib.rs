@@ -4,6 +4,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use petri_artifacts_common::capabilities;
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
 use petri_artifacts_common::tags::MachineArch;
@@ -36,9 +37,8 @@ struct ResolvedConfig {
     arch: MachineArch,
     extra_deps: Vec<Path>,
     unstable: bool,
-    requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
-    requires_capabilities: Vec<String>,
+    requires_capabilities: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,7 +97,6 @@ struct ImageInfo {
 
 struct Args {
     configs: Vec<Config>,
-    requires_capabilities: Vec<String>,
 }
 
 struct ArgsWithOverrides {
@@ -105,8 +104,8 @@ struct ArgsWithOverrides {
     vmm: Option<Vmm>,
     unstable: bool,
     with_vtl0_pipette: bool,
-    requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: Vec<&'static str>,
 }
 
 struct ResolvedArgs {
@@ -269,94 +268,203 @@ impl ToTokens for FirmwareAndArch {
 
 impl Parse for ArgsWithOverrides {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut unstable = None;
-        let mut with_vtl0_pipette = None;
-        let mut vmm = None;
-        let mut requires_vpci = None;
-        let mut requires_host_vendor = None;
+        if input.peek(syn::token::Paren) {
+            parse_tuple_args_with_overrides(input)
+        } else {
+            parse_legacy_args_with_overrides(input)
+        }
+    }
+}
 
-        let word = input.parse::<Ident>()?;
-        let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
-        for subword in word.to_string().split('_') {
-            match subword {
-                "unstable" => {
-                    if unstable.is_some() {
-                        return conflict_err();
-                    }
-                    unstable = Some(true);
+struct ParsedOverrides {
+    vmm: Option<Vmm>,
+    unstable: Option<bool>,
+    with_vtl0_pipette: Option<bool>,
+    requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: Vec<&'static str>,
+}
+
+impl ParsedOverrides {
+    fn new() -> Self {
+        Self {
+            vmm: None,
+            unstable: None,
+            with_vtl0_pipette: None,
+            requires_host_vendor: None,
+            requires_capabilities: Vec::new(),
+        }
+    }
+
+    fn apply_ident(&mut self, ident: &Ident) -> syn::Result<()> {
+        let ident_string = ident.to_string();
+        let conflict_err = || Err(Error::new(ident.span(), "conflicting override"));
+        match ident_string.as_str() {
+            "unstable" => {
+                if self.unstable.is_some() {
+                    return conflict_err();
                 }
-                "noagent" => {
-                    if with_vtl0_pipette.is_some() {
-                        return conflict_err();
-                    }
-                    with_vtl0_pipette = Some(false);
+                self.unstable = Some(true);
+            }
+            "noagent" => {
+                if self.with_vtl0_pipette.is_some() {
+                    return conflict_err();
                 }
-                "vpci" => {
-                    if requires_vpci.is_some() {
-                        return conflict_err();
-                    }
-                    requires_vpci = Some(true);
+                self.with_vtl0_pipette = Some(false);
+            }
+            "amd" => {
+                if self.requires_host_vendor.is_some() {
+                    return conflict_err();
                 }
-                "amd" => {
-                    if requires_host_vendor.is_some() {
-                        return conflict_err();
-                    }
-                    requires_host_vendor = Some(HostVendor::Amd);
+                self.requires_host_vendor = Some(HostVendor::Amd);
+            }
+            "intel" => {
+                if self.requires_host_vendor.is_some() {
+                    return conflict_err();
                 }
-                "intel" => {
-                    if requires_host_vendor.is_some() {
-                        return conflict_err();
-                    }
-                    requires_host_vendor = Some(HostVendor::Intel);
+                self.requires_host_vendor = Some(HostVendor::Intel);
+            }
+            "hyperv" => {
+                if self.vmm.is_some() {
+                    return conflict_err();
                 }
-                "hyperv" => {
-                    if vmm.is_some() {
-                        return conflict_err();
-                    }
-                    vmm = Some(Vmm::HyperV);
+                self.vmm = Some(Vmm::HyperV);
+            }
+            "openvmm" => {
+                if self.vmm.is_some() {
+                    return conflict_err();
                 }
-                "openvmm" => {
-                    if vmm.is_some() {
-                        return conflict_err();
-                    }
-                    vmm = Some(Vmm::OpenVmm);
+                self.vmm = Some(Vmm::OpenVmm);
+            }
+            _ => return Err(Error::new(ident.span(), "unrecognized vmm test override")),
+        }
+        Ok(())
+    }
+
+    fn add_capability(&mut self, span: Span, capability: &'static str) -> syn::Result<()> {
+        if self.requires_capabilities.contains(&capability) {
+            return Err(Error::new(span, "duplicate required capability"));
+        }
+        self.requires_capabilities.push(capability);
+        Ok(())
+    }
+
+    fn finish(self, args: Args) -> ArgsWithOverrides {
+        ArgsWithOverrides {
+            args,
+            vmm: self.vmm,
+            with_vtl0_pipette: self.with_vtl0_pipette.unwrap_or(true),
+            unstable: self.unstable.unwrap_or(false),
+            requires_host_vendor: self.requires_host_vendor,
+            requires_capabilities: self.requires_capabilities,
+        }
+    }
+}
+
+struct RequiredCapability {
+    span: Span,
+    name: &'static str,
+}
+
+enum OverrideItem {
+    Ident(Ident),
+    Requires(Vec<RequiredCapability>),
+}
+
+impl Parse for OverrideItem {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.parse::<Ident>()?;
+        if ident == "requires" {
+            let capabilities;
+            syn::parenthesized!(capabilities in input);
+            Ok(OverrideItem::Requires(parse_required_capabilities(
+                &capabilities,
+            )?))
+        } else {
+            Ok(OverrideItem::Ident(ident))
+        }
+    }
+}
+
+fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<RequiredCapability>> {
+    let idents = input.parse_terminated(Ident::parse, Token![,])?;
+    if idents.is_empty() {
+        return Err(input.error("requires expects at least one capability"));
+    }
+
+    idents
+        .into_iter()
+        .map(|ident| {
+            let name = ident.to_string();
+            let name = capabilities::known(&name).ok_or_else(|| {
+                Error::new(ident.span(), format!("unknown test capability `{name}`"))
+            })?;
+            Ok(RequiredCapability {
+                span: ident.span(),
+                name,
+            })
+        })
+        .collect()
+}
+
+fn parse_override_group(input: ParseStream<'_>) -> syn::Result<ParsedOverrides> {
+    let items = input.parse_terminated(OverrideItem::parse, Token![,])?;
+    let mut overrides = ParsedOverrides::new();
+    for item in items {
+        match item {
+            OverrideItem::Ident(ident) => overrides.apply_ident(&ident)?,
+            OverrideItem::Requires(capabilities) => {
+                for capability in capabilities {
+                    overrides.add_capability(capability.span, capability.name)?;
                 }
-                _ => return Err(Error::new(word.span(), "unrecognized vmm test override")),
             }
         }
-
-        let unstable = unstable.unwrap_or(false);
-        let with_vtl0_pipette = with_vtl0_pipette.unwrap_or(true);
-        let requires_vpci = requires_vpci.unwrap_or(false);
-
-        let parens;
-        syn::parenthesized!(parens in input);
-        let args = parens.parse::<Args>()?;
-
-        Ok(ArgsWithOverrides {
-            args,
-            vmm,
-            with_vtl0_pipette,
-            unstable,
-            requires_vpci,
-            requires_host_vendor,
-        })
     }
+    Ok(overrides)
+}
+
+fn parse_tuple_args_with_overrides(input: ParseStream<'_>) -> syn::Result<ArgsWithOverrides> {
+    let overrides;
+    syn::parenthesized!(overrides in input);
+    let overrides = parse_override_group(&overrides)?;
+
+    input.parse::<Token![,]>()?;
+
+    let args;
+    syn::parenthesized!(args in input);
+    let args = args.parse::<Args>()?;
+
+    if !input.is_empty() {
+        return Err(input.error("unexpected extra vmm_test_with arguments"));
+    }
+
+    Ok(overrides.finish(args))
+}
+
+fn parse_legacy_args_with_overrides(input: ParseStream<'_>) -> syn::Result<ArgsWithOverrides> {
+    let word = input.parse::<Ident>()?;
+    let mut overrides = ParsedOverrides::new();
+    overrides.apply_ident(&word)?;
+
+    let parens;
+    syn::parenthesized!(parens in input);
+    let args = parens.parse::<Args>()?;
+
+    if !input.is_empty() {
+        return Err(input.error("unexpected extra vmm_test_with arguments"));
+    }
+
+    Ok(overrides.finish(args))
 }
 
 impl ArgsWithOverrides {
     fn resolve(self) -> syn::Result<ResolvedArgs> {
         let ArgsWithOverrides {
-            args:
-                Args {
-                    configs,
-                    requires_capabilities,
-                },
+            args: Args { configs },
             vmm,
             unstable,
             with_vtl0_pipette,
-            requires_vpci,
             requires_host_vendor,
+            requires_capabilities,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -377,7 +485,6 @@ impl ArgsWithOverrides {
                 arch: config.arch,
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
-                requires_vpci,
                 requires_host_vendor,
                 requires_capabilities: requires_capabilities.clone(),
             });
@@ -390,56 +497,16 @@ impl ArgsWithOverrides {
     }
 }
 
-enum ArgItem {
-    Config(Config),
-    RequiresCapability(String),
-}
-
-impl Parse for ArgItem {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let fork = input.fork();
-        let ident: Ident = fork.parse()?;
-        if ident == "requires_capability" {
-            let _: Ident = input.parse()?;
-            let content;
-            syn::parenthesized!(content in input);
-            let lit: syn::LitStr = content.parse()?;
-            if !content.is_empty() {
-                return Err(content.error("requires_capability expects a single string literal"));
-            }
-            let value = lit.value();
-            if value.is_empty() {
-                return Err(Error::new(
-                    lit.span(),
-                    "requires_capability name must not be empty",
-                ));
-            }
-            Ok(ArgItem::RequiresCapability(value))
-        } else {
-            Ok(ArgItem::Config(input.parse()?))
-        }
-    }
-}
-
 impl Parse for Args {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Err(input.error("expected at least one firmware entry"));
         }
 
-        let items: Vec<_> = input
-            .parse_terminated(ArgItem::parse, Token![,])?
+        let configs: Vec<_> = input
+            .parse_terminated(Config::parse, Token![,])?
             .into_iter()
             .collect();
-
-        let mut configs = Vec::new();
-        let mut requires_capabilities = Vec::new();
-        for item in items {
-            match item {
-                ArgItem::Config(c) => configs.push(c),
-                ArgItem::RequiresCapability(v) => requires_capabilities.push(v),
-            }
-        }
 
         if configs.is_empty() {
             return Err(input.error("expected at least one firmware entry"));
@@ -460,10 +527,7 @@ impl Parse for Args {
             }
         }
 
-        Ok(Args {
-            configs,
-            requires_capabilities,
-        })
+        Ok(Args { configs })
     }
 }
 
@@ -835,12 +899,6 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
 ///
-/// Additionally, `requires_capability("NAME")` can be included (comma-separated
-/// alongside the firmware entries) to mark the test as requiring a named
-/// capability advertised by the execution environment (via the
-/// `PETRI_CAPABILITIES` environment variable). When the capability is not
-/// advertised, the test is skipped, so it self-excludes on any host that
-/// cannot provide it. Multiple `requires_capability` entries are supported.
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -851,8 +909,8 @@ pub fn vmm_test(
         vmm: None,
         unstable: false,
         with_vtl0_pipette: true,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -861,17 +919,25 @@ pub fn vmm_test(
 }
 
 /// Same options as `vmm_test`, but specify the following attributes to apply
-/// to all tests, separated by underscores:
+/// to all tests. The legacy form accepts a single attribute:
 /// - unstable: all variants of this test are unstable
 /// - noagent: don't use pipette in vtl0 for this test
-/// - vpci: this test requires a hypervisor backend that supports VPCI
-///   (virtual PCI) device emulation
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
 /// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
 ///
-/// example: #[vmm_test_with(unstable_noagent_openvmm(linux_direct_x64, ...))]
+/// example: #[vmm_test_with(noagent(linux_direct_x64, ...))]
+///
+/// The preferred form separates attributes from firmware entries and supports
+/// `requires(...)` for capabilities. Petri auto-detects some capabilities, such
+/// as `vpci`, and execution environments can advertise capabilities via the
+/// `PETRI_CAPABILITIES` environment variable. When a required capability is not
+/// available, the test is skipped, so it self-excludes on any host that cannot
+/// provide it.
+///
+/// example: #[vmm_test_with((openvmm, requires(test_disk_vfio)), (linux_direct_aarch64))]
+/// example: #[vmm_test_with((openvmm, amd), (linux_direct_x64))]
 #[proc_macro_attribute]
 pub fn vmm_test_with(
     attr: proc_macro::TokenStream,
@@ -896,8 +962,8 @@ pub fn openvmm_test(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: true,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -917,8 +983,8 @@ pub fn openvmm_test_no_agent(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: false,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -953,7 +1019,6 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let requirements = build_requirements(
             &config.firmware,
             config.vmm,
-            config.requires_vpci,
             config.requires_host_vendor,
             &config.requires_capabilities,
         );
@@ -1024,9 +1089,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 fn build_requirements(
     firmware: &Firmware,
     resolved_vmm: Vmm,
-    requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
-    requires_capabilities: &[String],
+    requires_capabilities: &[&'static str],
 ) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
@@ -1066,11 +1130,6 @@ fn build_requirements(
         ));
     }
 
-    if requires_vpci {
-        requirement_expr =
-            quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
-    }
-
     if let Some(vendor) = requires_host_vendor {
         let vendor_tokens = match vendor {
             HostVendor::Amd => quote!(::petri::requirements::Vendor::Amd),
@@ -1083,7 +1142,7 @@ fn build_requirements(
 
     for capability in requires_capabilities {
         requirement_expr = quote!(#requirement_expr.and(
-            ::petri::requirements::TestRequirement::Capability(#capability.to_string())
+            ::petri::requirements::TestRequirement::RequiresCapability(#capability)
         ));
     }
 

@@ -6,6 +6,30 @@
 
 #![forbid(unsafe_code)]
 
+/// Runtime capabilities that VMM tests can require.
+pub mod capabilities {
+    /// Software VPCI device emulation support.
+    pub const VPCI: &str = "vpci";
+    /// VFIO-bound test disk provisioned by the incubator.
+    pub const TEST_DISK_VFIO: &str = "test_disk_vfio";
+
+    /// All capability names known to petri.
+    pub const KNOWN_CAPABILITIES: &[&str] = &[VPCI, TEST_DISK_VFIO];
+
+    /// Returns `name` if it is a known capability name.
+    pub fn known(name: &str) -> Option<&'static str> {
+        KNOWN_CAPABILITIES
+            .iter()
+            .copied()
+            .find(|capability| *capability == name)
+    }
+
+    /// Returns whether `name` is a known capability name.
+    pub fn is_known_name(name: &str) -> bool {
+        known(name).is_some()
+    }
+}
+
 /// Artifact declarations
 pub mod artifacts {
     use petri_artifacts_core::declare_artifacts;

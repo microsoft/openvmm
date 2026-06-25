@@ -9,8 +9,8 @@ use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use vm_resource::IntoResource;
-use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
+use vmm_test_macros::vmm_test_with;
 
 /// Boot Linux and verify the PMU interrupt is available.
 ///
@@ -92,13 +92,21 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
 /// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
-#[openvmm_test(linux_direct_aarch64, requires_capability("test-disk-vfio"))]
+#[vmm_test_with(
+    (
+        openvmm,
+        requires(test_disk_vfio)
+    ),
+    (
+        linux_direct_aarch64
+    )
+)]
 async fn boot_no_vmbus_pcie_aarch64_tcg(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     // Read the VFIO BDF from the environment. This is set by the incubator
     // when it binds a device to vfio-pci before running the test.
-    // The "test-disk-vfio" capability requirement ensures this is set before
+    // The "test_disk_vfio" capability requirement ensures this is set before
     // the test runs.
     let vfio_bdf = std::env::var("INCUBATOR_VFIO_BDF_TEST_DISK").unwrap();
 

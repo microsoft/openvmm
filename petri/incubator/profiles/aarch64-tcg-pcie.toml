@@ -23,4 +23,4 @@ type = "virtio-blk"
 name = "test-disk"
 size = "64M"
 vfio = true
-provides = "test-disk-vfio"
+provides = "test_disk_vfio"

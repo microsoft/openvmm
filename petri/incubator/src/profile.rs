@@ -76,8 +76,8 @@ pub struct VirtioBlkDeviceConfig {
     #[serde(default)]
     pub vfio: bool,
     /// Capability advertised once this device has been successfully
-    /// provisioned. Tests declare a matching `requires_capability("...")` so
-    /// they only run where the device is available. The capability is added to
+    /// provisioned. Tests declare a matching `requires(...)` so they only run
+    /// where the device is available. The capability is added to
     /// `PETRI_CAPABILITIES` alongside the device's BDF env var.
     #[serde(default)]
     pub provides: Option<String>,
