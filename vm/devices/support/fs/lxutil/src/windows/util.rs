@@ -155,32 +155,29 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
     let mut client_token_raw = Foundation::HANDLE::default();
     let mut duplicate_token_raw = Foundation::HANDLE::default();
     // SAFETY: Calling Win32 API as documented.
-    //
-    // N.B. The raw NTSTATUS is inspected directly (rather than going through
-    //      `check_status`) so that `STATUS_NO_TOKEN` can be distinguished from
-    //      other failures. `check_status` maps the NTSTATUS to an `lx::Error`
-    //      errno, which cannot be compared against an NTSTATUS constant.
-    let status = unsafe {
-        FileSystem::NtOpenThreadToken(
+    let result = unsafe {
+        check_status(FileSystem::NtOpenThreadToken(
             Threading::GetCurrentThread(),
             Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
             true,
             &mut client_token_raw,
-        )
+        ))
     };
 
-    if status == Foundation::STATUS_NO_TOKEN {
-        // The thread is not impersonating, so use the process token instead.
-        // SAFETY: Calling Win32 API as documented.
-        unsafe {
-            let _ = check_status(FileSystem::NtOpenProcessToken(
-                Threading::GetCurrentProcess(),
-                Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
-                &mut client_token_raw,
-            ))?;
+    if let Err(e) = result {
+        // Use the process token if there's no token.
+        if e.value() == Foundation::STATUS_NO_TOKEN.0 {
+            // SAFETY: Calling Win32 API as documented.
+            unsafe {
+                let _ = check_status(FileSystem::NtOpenProcessToken(
+                    Threading::GetCurrentProcess(),
+                    Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
+                    &mut client_token_raw,
+                ))?;
+            }
+        } else {
+            return Err(e);
         }
-    } else {
-        let _ = check_status(status)?;
     }
 
     // Create the RAII handle now so it gets closed on drop if we need
@@ -216,10 +213,7 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
             },
             EffectiveOnly: false,
         };
-        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES {
-            Length: size_of::<Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
-            ..Default::default()
-        };
+        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES::default();
         object_attributes.SecurityQualityOfService =
             ptr::from_ref::<W32Sec::SECURITY_QUALITY_OF_SERVICE>(&security_qos).cast();
 
@@ -737,14 +731,13 @@ pub fn set_information_file<T: FileInformationClass>(
 
     // SAFETY: Calling NtSetInformationFile as documented.
     unsafe {
-        let status = FileSystem::NtSetInformationFile(
+        let _ = check_status(FileSystem::NtSetInformationFile(
             Foundation::HANDLE(handle.as_raw_handle()),
             &mut iosb,
             buf.cast(),
             len.try_into().unwrap(),
             info.file_information_class(),
-        );
-        let _ = check_status(status)?;
+        ))?;
 
         Ok(())
     }
