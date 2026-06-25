@@ -5,9 +5,6 @@
 
 use bitvec::prelude::*;
 
-/// 16x16 pixel tiles balance precision vs overhead for dirty tracking.
-pub(crate) const TILE_SIZE: u16 = 16;
-
 /// A rectangle in pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
@@ -21,11 +18,12 @@ pub struct Rect {
     pub h: u16,
 }
 
-/// Bitmap that tracks which 16x16 pixel tiles of the framebuffer are dirty
-/// (need sending to a VNC client). At 1920x1080, this is 120x68 = 8160 tiles,
-/// fitting in ~1KB of bitmap data.
+/// Bitmap that tracks which square tiles of the framebuffer are dirty (need
+/// sending to a VNC client). The tile edge length is fixed for the life of the
+/// bitmap and chosen by the caller (`--vnc-tile-size`, default 8).
 pub struct DirtyBitmap {
     bits: BitVec<u64, Lsb0>,
+    tile_size: u16,
     tiles_per_row: u16,
     tiles_per_col: u16,
     width: u16,
@@ -33,17 +31,18 @@ pub struct DirtyBitmap {
 }
 
 impl DirtyBitmap {
-    /// Create a new bitmap for the given framebuffer dimensions. All tiles
-    /// start dirty so the first update sends the full screen.
-    pub fn new(width: u16, height: u16) -> Self {
-        let tiles_per_row = width.div_ceil(TILE_SIZE);
-        let tiles_per_col = height.div_ceil(TILE_SIZE);
+    /// Create a new bitmap for the given framebuffer dimensions and tile edge
+    /// length in pixels. All tiles start dirty so the first update sends the
+    /// full screen.
+    pub fn new(width: u16, height: u16, tile_size: u16) -> Self {
+        let tiles_per_row = width.div_ceil(tile_size);
+        let tiles_per_col = height.div_ceil(tile_size);
         let total_tiles = tiles_per_row as usize * tiles_per_col as usize;
-        // BitVec is sized to exactly `total_tiles`, so there are no padding
-        // bits to mask off after setting everything dirty.
+        // Sized to exactly `total_tiles`, so there are no padding bits to mask.
         let bits = bitvec![u64, Lsb0; 1; total_tiles];
         Self {
             bits,
+            tile_size,
             tiles_per_row,
             tiles_per_col,
             width,
@@ -51,18 +50,34 @@ impl DirtyBitmap {
         }
     }
 
-    /// Resize the bitmap for a new framebuffer resolution. Marks everything
-    /// dirty since the client needs a full refresh after a resolution change.
+    /// Resize the bitmap for a new framebuffer resolution, keeping the tile
+    /// size. Marks everything dirty since the client needs a full refresh after
+    /// a resolution change.
     pub fn resize(&mut self, width: u16, height: u16) {
-        *self = Self::new(width, height);
+        *self = Self::new(width, height, self.tile_size);
     }
 
-    /// Mark the tiles overlapping a pixel rectangle as dirty. Coordinates use
-    /// i32 because the synthetic video protocol::Rectangle uses i32. Values
-    /// outside the framebuffer are clamped.
+    /// Change the tile size, rebuilding the grid at the current dimensions and
+    /// marking everything dirty (so the next frame is a full refresh). A no-op
+    /// if the size is unchanged. Used by the `cycle` measurement mode.
+    pub fn set_tile_size(&mut self, tile_size: u16) {
+        if tile_size != self.tile_size {
+            *self = Self::new(self.width, self.height, tile_size);
+        }
+    }
+
+    /// The framebuffer dimensions (width, height) in pixels this bitmap is
+    /// sized for.
+    pub fn dimensions(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    /// Mark the tiles overlapping a pixel rectangle as dirty. Coordinates are
+    /// i32 to match the synthetic video `protocol::Rectangle`. Values outside
+    /// the framebuffer are clamped.
     pub fn mark_rect(&mut self, left: i32, top: i32, right: i32, bottom: i32) {
-        // Clamp to framebuffer bounds. Clamp to u16 range before cast to
-        // avoid wrapping (e.g. i32 70000 would wrap to 4464 as u16).
+        // Clamp to the u16 framebuffer bounds before the cast, so the i32
+        // values can't wrap.
         let left = left.clamp(0, self.width as i32) as u16;
         let top = top.clamp(0, self.height as i32) as u16;
         let right = right.clamp(0, self.width as i32) as u16;
@@ -72,12 +87,12 @@ impl DirtyBitmap {
             return;
         }
 
-        let tile_left = left / TILE_SIZE;
-        // Subtract 1 before dividing so that a rect ending exactly on a tile
-        // boundary doesn't spill into the next tile row/column.
-        let tile_right = (right - 1) / TILE_SIZE;
-        let tile_top = top / TILE_SIZE;
-        let tile_bottom = (bottom - 1) / TILE_SIZE;
+        let tile_left = left / self.tile_size;
+        // Subtract 1 before dividing: a rect ending exactly on a tile boundary
+        // must not spill into the next tile row/column.
+        let tile_right = (right - 1) / self.tile_size;
+        let tile_top = top / self.tile_size;
+        let tile_bottom = (bottom - 1) / self.tile_size;
 
         for ty in tile_top..=tile_bottom {
             let row_start = ty as usize * self.tiles_per_row as usize;
@@ -88,8 +103,6 @@ impl DirtyBitmap {
     }
 
     /// Set a single tile's dirty bit directly by tile coordinates.
-    /// Skips the clamping and division in `mark_rect` — use when the
-    /// caller already knows the tile index (e.g., tile_diff).
     pub fn set_tile(&mut self, tile_x: u16, tile_y: u16) {
         debug_assert!(
             tile_x < self.tiles_per_row && tile_y < self.tiles_per_col,
@@ -137,22 +150,30 @@ impl DirtyBitmap {
     }
 
     /// Iterate over individual dirty tiles, yielding `(x, y, w, h)` in pixel
-    /// coordinates. Width/height may be smaller than TILE_SIZE at the right
+    /// coordinates. Width/height may be smaller than the tile size at the right
     /// and bottom edges of the framebuffer.
     pub fn iter_dirty_tiles(&self) -> impl Iterator<Item = Rect> + '_ {
+        let tile_size = self.tile_size;
         let tiles_per_row = self.tiles_per_row;
         let width = self.width;
         let height = self.height;
         self.bits.iter_ones().map(move |idx| {
             let tx = (idx % tiles_per_row as usize) as u16;
             let ty = (idx / tiles_per_row as usize) as u16;
-            let x = tx * TILE_SIZE;
-            let y = ty * TILE_SIZE;
-            // Edge tiles may be narrower/shorter than TILE_SIZE.
-            let w = TILE_SIZE.min(width - x);
-            let h = TILE_SIZE.min(height - y);
+            let x = tx * tile_size;
+            let y = ty * tile_size;
+            // Edge tiles may be narrower/shorter than the tile size.
+            let w = tile_size.min(width - x);
+            let h = tile_size.min(height - y);
             Rect { x, y, w, h }
         })
+    }
+
+    /// List every dirty tile into `out` (cleared first) as pixel rects, without
+    /// merging.
+    pub fn dirty_tiles_into(&self, out: &mut Vec<Rect>) {
+        out.clear();
+        out.extend(self.iter_dirty_tiles());
     }
 
     /// Merges adjacent dirty tiles into larger rectangles. Returns a new
@@ -164,24 +185,18 @@ impl DirtyBitmap {
         out
     }
 
-    /// Like `merge_dirty_rects` but appends into a caller-provided Vec,
-    /// reusing its allocation across update cycles. Clears `out` first.
+    /// Like `merge_dirty_rects` but appends into a caller-provided Vec.
+    /// Clears `out` first.
     ///
-    /// Algorithm: QEMU-style single-pass greedy merge. Walk the bitmap
-    /// row-by-row, left-to-right; when a dirty tile is found, extend right
-    /// to the end of its horizontal run, then extend down as long as every
-    /// column in the run stays dirty in the next row. Emit one rectangle
-    /// covering the full area, clear those tiles in a scratch copy so they
-    /// aren't re-emitted, and continue.
-    ///
-    /// Compared with a two-pass row-then-column merge this produces fewer
-    /// rectangles for shapes where a wide row is bracketed by narrower
-    /// rows of the same horizontal extent (the vertical scan absorbs the
-    /// bracket into the wider rect), at the cost of cloning the bitmap
-    /// once per call (~1KB for a 1080p framebuffer).
+    /// Single-pass greedy merge: walk the bitmap row-by-row, left-to-right;
+    /// when a dirty tile is found, extend right to the end of its horizontal
+    /// run, then extend down as long as every column in the run stays dirty in
+    /// the next row. Emit one rectangle covering the full area, clear those
+    /// tiles in a scratch copy so they aren't re-emitted, and continue.
     pub fn merge_into(&self, out: &mut Vec<Rect>) {
         out.clear();
         let mut scratch = self.bits.clone();
+        let tile_size = self.tile_size as u32;
         let tiles_per_row = self.tiles_per_row as usize;
         let tiles_per_col = self.tiles_per_col as usize;
 
@@ -211,12 +226,12 @@ impl DirtyBitmap {
                     h_tiles += 1;
                 }
                 // Emit in pixel coordinates. Compute in u32 so multiplying
-                // a full-width tile index by TILE_SIZE can't overflow u16
+                // a full-width tile index by the tile size can't overflow u16
                 // before we clamp to `self.width` / `self.height`.
-                let x_u32 = run_start as u32 * TILE_SIZE as u32;
-                let y_u32 = ty as u32 * TILE_SIZE as u32;
-                let right_u32 = (run_end as u32 * TILE_SIZE as u32).min(self.width as u32);
-                let bottom_u32 = ((ty + h_tiles) as u32 * TILE_SIZE as u32).min(self.height as u32);
+                let x_u32 = run_start as u32 * tile_size;
+                let y_u32 = ty as u32 * tile_size;
+                let right_u32 = (run_end as u32 * tile_size).min(self.width as u32);
+                let bottom_u32 = ((ty + h_tiles) as u32 * tile_size).min(self.height as u32);
                 out.push(Rect {
                     x: x_u32 as u16,
                     y: y_u32 as u16,
@@ -238,9 +253,13 @@ impl DirtyBitmap {
 mod tests {
     use super::*;
 
+    /// The default tile size; the existing tests run at this size to show the
+    /// behaviour is byte-identical to the previous fixed constant.
+    const T: u16 = 16;
+
     #[test]
     fn test_new_marks_all_dirty() {
-        let bm = DirtyBitmap::new(320, 240);
+        let bm = DirtyBitmap::new(320, 240, T);
         // 320/16=20 cols, 240/16=15 rows = 300 tiles, all dirty
         assert!(!bm.is_empty());
         let count = bm.iter_dirty_tiles().count();
@@ -249,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_clear_makes_empty() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         assert!(bm.is_empty());
         assert_eq!(bm.iter_dirty_tiles().count(), 0);
@@ -257,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_mark_single_pixel_dirties_one_tile() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Mark a single pixel in the middle of the framebuffer.
         bm.mark_rect(100, 100, 101, 101);
@@ -272,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_mark_rect_spanning_multiple_tiles() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Rect from pixel (0,0) to (33,33) should span tiles (0,0)..(2,2) = 9 tiles.
         // tile cols: 0..32 and 32..33 => cols 0,1,2
@@ -285,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_mark_rect_clamps_to_bounds() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Negative and out-of-bounds coordinates should be clamped.
         bm.mark_rect(-10, -10, 500, 500);
@@ -296,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_merge_adjacent_tiles_horizontally() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Dirty three adjacent tiles in row 0: columns 1, 2, 3
         bm.mark_rect(16, 0, 17, 1); // tile (1,0)
@@ -318,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_resize_marks_all_dirty() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         assert!(bm.is_empty());
         bm.resize(640, 480);
@@ -329,11 +348,11 @@ mod tests {
 
     #[test]
     fn test_take_from_clears_source() {
-        let mut src = DirtyBitmap::new(320, 240);
+        let mut src = DirtyBitmap::new(320, 240, T);
         src.clear();
         src.mark_rect(0, 0, 16, 16); // dirty tile (0,0)
 
-        let mut dst = DirtyBitmap::new(320, 240);
+        let mut dst = DirtyBitmap::new(320, 240, T);
         dst.clear();
 
         dst.take_from(&mut src);
@@ -346,11 +365,11 @@ mod tests {
 
     #[test]
     fn test_or_from_accumulates() {
-        let mut a = DirtyBitmap::new(320, 240);
+        let mut a = DirtyBitmap::new(320, 240, T);
         a.clear();
         a.mark_rect(0, 0, 16, 16); // tile (0,0)
 
-        let mut b = DirtyBitmap::new(320, 240);
+        let mut b = DirtyBitmap::new(320, 240, T);
         b.clear();
         b.mark_rect(16, 0, 32, 16); // tile (1,0)
 
@@ -364,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_merge_adjacent_tiles_vertically() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Dirty a 2x3 block of tiles starting at tile (1,1).
         bm.mark_rect(16, 16, 48, 64);
@@ -385,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_merge_does_not_merge_different_widths() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Row 0: tiles 0,1 (32px wide)
         bm.mark_rect(0, 0, 32, 16);
@@ -397,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_merge_empty_bitmap() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         let rects = bm.merge_dirty_rects();
         assert!(rects.is_empty());
@@ -405,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_mark_zero_area_rect_is_noop() {
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // left == right: zero width
         bm.mark_rect(10, 10, 10, 20);
@@ -420,7 +439,7 @@ mod tests {
         // Two dirty tile stacks at the same (x, w) separated by a clean row
         // must produce two rects. This guards against the Pass-2 (x, w)
         // index incorrectly extending a closed rect across the gap.
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         // Row 0 dirty at tile (1, 0).
         bm.mark_rect(16, 0, 32, 16);
@@ -462,7 +481,7 @@ mod tests {
         // all three rows and leaves the bump as its own 1x1 rect: 2 rects.
         // A two-pass row-then-column merge would produce 3 (each row a
         // separate span with different width, no vertical merge possible).
-        let mut bm = DirtyBitmap::new(320, 240);
+        let mut bm = DirtyBitmap::new(320, 240, T);
         bm.clear();
         bm.mark_rect(0, 0, 32, 16); // row 0: tiles (0,0), (1,0)
         bm.mark_rect(0, 16, 48, 32); // row 1: tiles (0,1), (1,1), (2,1)
@@ -495,11 +514,11 @@ mod tests {
 
     #[test]
     fn test_merge_checkerboard_produces_one_rect_per_tile() {
-        // Checkerboard of single dirty tiles — the pathological input for
+        // Checkerboard of single dirty tiles, the pathological input for
         // the old reverse-linear Pass 2. Every dirty tile is isolated, so
         // no horizontal or vertical merging can happen; output must have
         // exactly one rect per dirty tile.
-        let mut bm = DirtyBitmap::new(320, 240); // 20x15 tile grid
+        let mut bm = DirtyBitmap::new(320, 240, T); // 20x15 tile grid
         bm.clear();
         let mut expected = 0;
         for ty in 0..15u16 {
@@ -525,7 +544,7 @@ mod tests {
     fn test_edge_tiles_have_correct_size() {
         // 17x17 framebuffer: 2x2 tiles, but the rightmost column and bottom
         // row tiles are only 1 pixel wide/tall.
-        let bm = DirtyBitmap::new(17, 17);
+        let bm = DirtyBitmap::new(17, 17, T);
         let tiles: Vec<_> = bm.iter_dirty_tiles().collect();
         assert_eq!(tiles.len(), 4);
         // Sort by (y, x) for deterministic order.
@@ -567,5 +586,81 @@ mod tests {
                 h: 1
             }
         );
+    }
+
+    // --- Non-default tile sizes: these catch a `tile_size` substitution that
+    // was missed in any single method (a stray hardcoded 16). ---
+
+    #[test]
+    fn test_tile_to_pixel_reconstruction_at_8_and_32() {
+        for &t in &[8u16, 32u16] {
+            let mut bm = DirtyBitmap::new(256, 256, t);
+            bm.clear();
+            // A single interior pixel at (100, 100): tile (100/t, 100/t).
+            bm.mark_rect(100, 100, 101, 101);
+            let tiles: Vec<_> = bm.iter_dirty_tiles().collect();
+            assert_eq!(tiles.len(), 1, "tile_size {t}");
+            let tx = 100 / t;
+            let ty = 100 / t;
+            assert_eq!(
+                tiles[0],
+                Rect {
+                    x: tx * t,
+                    y: ty * t,
+                    w: t,
+                    h: t,
+                },
+                "tile_size {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_tile_clamp_at_non_multiple_size() {
+        // 33x33 with tile_size 8: 5 tiles per axis (33/8 -> 5), the last tile
+        // column/row is 33 - 4*8 = 1 pixel wide/tall.
+        let bm = DirtyBitmap::new(33, 33, 8);
+        let mut tiles: Vec<_> = bm.iter_dirty_tiles().collect();
+        assert_eq!(tiles.len(), 5 * 5);
+        tiles.sort_by_key(|r| (r.y, r.x));
+        // Bottom-right tile is the 1x1 remainder.
+        let last = tiles.last().unwrap();
+        assert_eq!(
+            *last,
+            Rect {
+                x: 32,
+                y: 32,
+                w: 1,
+                h: 1
+            }
+        );
+    }
+
+    #[test]
+    fn test_merge_at_tile_size_32() {
+        let mut bm = DirtyBitmap::new(256, 256, 32);
+        bm.clear();
+        // Dirty a 2x2 block of 32px tiles starting at the origin.
+        bm.mark_rect(0, 0, 64, 64);
+        let rects = bm.merge_dirty_rects();
+        assert_eq!(rects.len(), 1);
+        assert_eq!(
+            rects[0],
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 64
+            }
+        );
+    }
+
+    #[test]
+    fn test_resize_keeps_tile_size() {
+        let mut bm = DirtyBitmap::new(32, 32, 8);
+        bm.resize(64, 64);
+        // Must use the retained tile size of 8, giving (64/8)^2 tiles, not
+        // (64/16)^2.
+        assert_eq!(bm.iter_dirty_tiles().count(), (64 / 8) * (64 / 8));
     }
 }
