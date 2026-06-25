@@ -817,7 +817,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     && (config.start_bus..=config.end_bus).contains(&ioapic_bus))
                 .then(|| {
                     dev_entries_size += size_of::<ivrs::IvhdSpecialDeviceEntry8>();
-                    ivrs::IvhdSpecialDeviceEntry8::ioapic(ioapic_rid, 0)
+                    ivrs::IvhdSpecialDeviceEntry8::ioapic(ioapic_rid, X86_IOAPIC_ID)
                 })
             });
 

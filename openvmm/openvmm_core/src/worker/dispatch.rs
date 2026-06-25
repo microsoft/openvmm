@@ -1048,7 +1048,7 @@ impl InitializedVm {
             let smmu_count = cfg
                 .pcie_root_complexes
                 .iter()
-                .filter(|rc| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::Smmu)))
+                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
                 .count();
             let result =
                 build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
