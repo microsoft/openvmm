@@ -674,9 +674,13 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 let val = val.merge(self.state.base_addresses[bar_index]);
                 let mut bar_value = val & self.bar_masks[bar_index];
 
-                // Preserve in-band BAR attribute bits for any BAR whose mask
-                // encodes them.
-                if self.bar_masks[bar_index] != 0 {
+                // Preserve in-band BAR attribute bits only on the lower dword
+                // of a 64-bit BAR (i.e. a mapped BAR whose mask has the 64-bit
+                // type bit set).
+                let is_64bit_bar_lower = self.mapped_memory[bar_index].is_some()
+                    && cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index])
+                        .type_64_bit();
+                if is_64bit_bar_lower {
                     let attrs = cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index]);
                     bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
                         .with_type_64_bit(attrs.type_64_bit())
@@ -3012,5 +3016,48 @@ mod tests {
             .expect("address should resolve to BAR 0");
         assert_eq!(found_bar, 0);
         assert_eq!(offset, expected_offset);
+    }
+
+    #[test]
+    fn test_odd_index_64bit_bar_preserves_attrs_only_on_lower_dword() {
+        let mut bars = DeviceBars::new();
+        bars.bars[1] = Some((4096, BarMemoryKind::Dummy));
+
+        let mut common_emu = ConfigSpaceCommonHeaderEmulatorType0::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            vec![],
+            bars,
+        );
+
+        // BAR1 is the lower dword of a 64-bit BAR and should preserve
+        // encoding bits (type + prefetchable).
+        assert!(matches!(
+            common_emu.write(
+                PciConfigAddress::new(0, 0, 0x14 / 4).unwrap(),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x1234_5000),
+            ),
+            CommonHeaderResult::Handled
+        ));
+        assert_eq!(common_emu.base_addresses()[1] & 0xF, 0xC);
+
+        // BAR2 is the upper dword and must not be treated as encoding bits.
+        assert!(matches!(
+            common_emu.write(
+                PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x89ab_cde0),
+            ),
+            CommonHeaderResult::Handled
+        ));
+        assert_eq!(common_emu.base_addresses()[2] & 0xF, 0);
     }
 }
