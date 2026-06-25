@@ -25,7 +25,6 @@ use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TdConfigFlags;
-use x86defs::tdx::TdgVmRdResult;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
@@ -134,11 +133,18 @@ pub fn accept_pages(range: MemoryRange) -> Result<(), AcceptPagesError> {
 /// visible and are now private, must be reaccepted.
 pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
     // If TDX Connect is present, then TDG.MEM.PAGE.RELEASE must be called before making pages host-visible.
-    if host_visible && get_td_config_flags().tdx_connect() {
-        assert!(get_td_config_flags().page_release());
 
-        if let Err(err) = tdcall::release_pages(&mut TdcallInstruction, range) {
-            panic!("failed to release pages in {range}: {err:?}");
+    if host_visible {
+        let flags = get_td_config_flags();
+        if flags.tdx_connect() {
+            assert!(
+                get_td_config_flags().page_release(),
+                "TDX Connect enabled but CONFIG_FLAGS.page_release is not set"
+            );
+
+            if let Err(err) = tdcall::release_pages(&mut TdcallInstruction, range) {
+                panic!("failed to release pages in {range}: {err:?}");
+            }
         }
     }
 
@@ -235,11 +241,6 @@ fn get_td_config_flags() -> TdConfigFlags {
         let res = tdcall_vm_rd(&mut TdcallInstruction, TDX_FIELD_CODE_CONFIG_FLAGS)
             .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
 
-        if let TdgVmRdResult::ConfigFlags(f) = res {
-            TDX_TD_CONFIG_FLAGS.set(Some(f));
-            f
-        } else {
-            unreachable!();
-        }
+        TdConfigFlags::from_bits(res)
     }
 }

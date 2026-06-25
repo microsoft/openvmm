@@ -241,10 +241,13 @@ impl MemoryAcceptor {
             // Check if TDX Connect is enabled on this TD. If so, page release is required when
             // unaccepting pages.
             let config_flags = mshv_vtl.tdx_get_config_flags();
+            if config_flags.tdx_connect() {
                 assert!(
                     config_flags.page_release(),
                     "TDX Connect enabled but CONFIG_FLAGS.page_release is not set",
                 );
+
+                flags.tdx_page_release_required = true;
             }
         }
 

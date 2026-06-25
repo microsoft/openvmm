@@ -37,7 +37,6 @@ use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
-use x86defs::tdx::TdgVmRdResult;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
@@ -93,11 +92,7 @@ impl MshvVtl {
         let res = tdcall_vm_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_CONFIG_FLAGS)
             .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
 
-        if let TdgVmRdResult::ConfigFlags(f) = res {
-            f
-        } else {
-            unreachable!();
-        }
+        TdConfigFlags::from_bits(res)
     }
 }
 

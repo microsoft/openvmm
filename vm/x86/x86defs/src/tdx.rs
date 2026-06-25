@@ -57,10 +57,8 @@ pub struct TdConfigFlags {
     #[bits(56)]
     pub reserved: u64,
 }
-pub enum TdgVmRdResult {
-    ConfigFlags(TdConfigFlags),
-    Unknown(u64),
-}
+
+pub type TdgVmRdResult = u64;
 
 /// Level used in various TDG.MEM.PAGE calls for GPA_MAPPING types.
 #[repr(u8)]
@@ -173,7 +171,7 @@ pub struct TdgMemPageReleaseRcx {
     pub level: TdgMemPageLevel,
     #[bits(9)]
     pub reserved: u64,
-    /// The page number for this accept call.
+    /// The page number for this release call.
     #[bits(40)]
     pub gpa_page_number: u64,
     #[bits(12)]
@@ -186,7 +184,7 @@ pub struct TdgMemPageReleaseRcxResult {
     pub level: TdgMemPageLevel,
     #[bits(9)]
     pub reserved: u64,
-    /// The page number for this accept call.
+    /// The page number for this release call.
     #[bits(40)]
     pub gpa_page_number: u64,
     #[bits(9)]

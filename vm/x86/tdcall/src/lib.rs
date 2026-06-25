@@ -11,12 +11,10 @@ use hvdef::hypercall::HypercallOutput;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use thiserror::Error;
-use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
-use x86defs::tdx::TdConfigFlags;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
@@ -887,12 +885,7 @@ pub fn tdcall_vm_rd(
         return Err(output.rax);
     }
 
-    match field_id {
-        TDX_FIELD_CODE_CONFIG_FLAGS => Ok(TdgVmRdResult::ConfigFlags(TdConfigFlags::from_bits(
-            output.r8,
-        ))),
-        _ => Ok(TdgVmRdResult::Unknown(output.r8)),
-    }
+    Ok(output.r8)
 }
 
 /// Outcome of a per-page TDCall operation.
