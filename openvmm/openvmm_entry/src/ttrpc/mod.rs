@@ -138,7 +138,6 @@ impl Worker for TtrpcWorker {
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
-            let (paused_send, paused_recv) = mesh::channel();
             let mut service = VmService {
                 driver,
                 vm: None,
@@ -146,10 +145,7 @@ impl Worker for TtrpcWorker {
                 vm_controller_events: None,
                 controller_task: None,
                 wait_vm_response: None,
-                halt_reason: None,
-                paused: false,
-                paused_send,
-                paused_recv,
+                lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
@@ -333,6 +329,15 @@ struct Vm {
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
+/// The VM's lifecycle state, as reported by `PropertiesVm`. The halt reason
+/// travels in the `Halted` variant so it can't disagree with the state.
+enum VmLifecycle {
+    Uninitialized,
+    Running,
+    Paused,
+    Halted(String),
+}
+
 struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
@@ -340,14 +345,7 @@ struct VmService {
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
     controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
-    /// Reason the guest halted, or `None` if it hasn't.
-    halt_reason: Option<String>,
-    /// Whether the VM is currently paused. Only changed once a Pause/Resume RPC
-    /// confirms (via `paused_recv`), so it never reflects a failed transition.
-    paused: bool,
-    /// Confirmed Pause/Resume results are enqueued here and drained into `paused`.
-    paused_send: mesh::Sender<bool>,
-    paused_recv: mesh::Receiver<bool>,
+    lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
@@ -382,12 +380,6 @@ enum HandleAction {
 
 impl VmService {
     async fn handle(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
-        // Apply confirmed Pause/Resume results before answering, so a
-        // sequential caller sees fresh state right after a transition completes.
-        // Best-effort for callers that pipeline requests.
-        while let Ok(paused) = self.paused_recv.try_recv() {
-            self.paused = paused;
-        }
         tracing::debug!(?request, "request");
         match request {
             vmservice::Vm::CreateVm(request, response) => {
@@ -428,17 +420,24 @@ impl VmService {
                 };
                 match request {
                     vmservice::Vm::PauseVm((), response) => {
-                        let r = Ok(self.pause_vm(&vm));
-                        self.start_rpc(response, r);
+                        let r = self.pause_vm(&vm).await;
+                        // A halt takes precedence; don't overwrite it.
+                        if r.is_ok() && !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                            self.lifecycle = VmLifecycle::Paused;
+                        }
+                        response.send(map_grpc(r));
                     }
                     vmservice::Vm::ResumeVm((), response) => {
-                        let r = Ok(self.resume_vm(&vm));
-                        self.start_rpc(response, r);
+                        let r = self.resume_vm(&vm).await;
+                        if r.is_ok() && !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                            self.lifecycle = VmLifecycle::Running;
+                        }
+                        response.send(map_grpc(r));
                     }
                     vmservice::Vm::WaitVm((), response) => {
                         if self.wait_vm_response.is_some() {
                             response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
-                        } else if self.halt_reason.is_some() {
+                        } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
                             // Guest already halted before WaitVm was called;
                             // complete immediately.
                             response.send(Ok(()));
@@ -526,13 +525,6 @@ impl VmService {
         if self.vm.is_some() {
             bail!("VM already created");
         }
-
-        // Reset lifecycle state; the VM starts paused. Recreate the pause
-        // channel so a late Pause/Resume task from a prior VM (holding the old
-        // sender) can't apply a stale state to this one.
-        self.halt_reason = None;
-        self.paused = true;
-        (self.paused_send, self.paused_recv) = mesh::channel();
 
         let load_mode = match req_config
             .boot_config
@@ -823,6 +815,9 @@ impl VmService {
             consomme_rpc,
             worker_rpc: send,
         }));
+        // Only now that the VM exists does it become observable as paused; if
+        // any step above failed, lifecycle stays Uninitialized.
+        self.lifecycle = VmLifecycle::Paused;
         Ok(())
     }
 
@@ -835,36 +830,35 @@ impl VmService {
         }
         self.vm.take();
         self.vm_controller_events.take();
-        self.halt_reason = None;
-        self.paused = false;
+        self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
         }
         Ok(())
     }
 
-    /// Derive the reported lifecycle state. A halt takes precedence over the
-    /// paused/running distinction.
+    /// Map the internal lifecycle to the wire `VmState`.
     fn current_state(&self) -> vmservice::VmState {
-        if self.vm.is_none() {
-            vmservice::VmState::Uninitialized
-        } else if self.halt_reason.is_some() {
-            vmservice::VmState::Halted
-        } else if self.paused {
-            vmservice::VmState::Paused
-        } else {
-            vmservice::VmState::Running
+        match &self.lifecycle {
+            VmLifecycle::Uninitialized => vmservice::VmState::Uninitialized,
+            VmLifecycle::Running => vmservice::VmState::Running,
+            VmLifecycle::Paused => vmservice::VmState::Paused,
+            VmLifecycle::Halted(_) => vmservice::VmState::Halted,
         }
     }
 
     fn build_properties(&self) -> vmservice::PropertiesVmResponse {
         // Memory/processor stats require a worker query that isn't wired up
         // yet; leave them unset rather than reporting fabricated zeros.
+        let halt_reason = match &self.lifecycle {
+            VmLifecycle::Halted(reason) => Some(reason.clone()),
+            _ => None,
+        };
         vmservice::PropertiesVmResponse {
             memory_stats: None,
             processor_stats: None,
             state: self.current_state() as i32,
-            halt_reason: self.halt_reason.clone(),
+            halt_reason,
         }
     }
 
@@ -885,8 +879,10 @@ impl VmService {
                 SupportedResource {
                     resource: Resource::VmNic as i32,
                     add: true,
-                    remove: false,
-                    update: false,
+                    // update/remove drive Consomme port bind/unbind in
+                    // modify_resource() (Consomme backend only).
+                    remove: true,
+                    update: true,
                 },
             ],
             supported_guest_os: vec![
@@ -898,30 +894,19 @@ impl VmService {
 
     fn pause_vm(&self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let recv = vm.worker_rpc.call(VmRpc::Pause, ());
-        let paused = self.paused_send.clone();
-        async move {
-            recv.await.map(drop).context("pause failed")?;
-            // Record the pause only after the worker confirms it.
-            paused.send(true);
-            Ok(())
-        }
+        async move { recv.await.map(drop).context("pause failed") }
     }
 
     fn resume_vm(&self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let recv = vm.worker_rpc.call(VmRpc::Resume, ());
-        let paused = self.paused_send.clone();
-        async move {
-            recv.await.map(drop).context("resume failed")?;
-            paused.send(false);
-            Ok(())
-        }
+        async move { recv.await.map(drop).context("resume failed") }
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
-                self.halt_reason = Some(reason);
+                self.lifecycle = VmLifecycle::Halted(reason);
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
@@ -950,6 +935,7 @@ impl VmService {
                 // task will be awaited during final cleanup.
                 self.vm.take();
                 self.vm_controller.take();
+                self.lifecycle = VmLifecycle::Uninitialized;
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {

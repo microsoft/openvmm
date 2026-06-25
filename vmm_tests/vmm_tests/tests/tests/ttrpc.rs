@@ -146,6 +146,27 @@ fn test_ttrpc_interface(
             "no VM created yet, expected UNINITIALIZED"
         );
 
+        // A CreateVm that fails partway (here: config present but no
+        // boot_config) must not leave a stale state behind; with no VM
+        // created, the reported state stays UNINITIALIZED.
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig::default()),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        let props = query_props().await.unwrap();
+        assert_eq!(
+            props.state,
+            vmservice::VmState::Uninitialized as i32,
+            "a failed CreateVm must leave state UNINITIALIZED"
+        );
+
         for i in 0..3 {
             let mut com1_path = std::env::temp_dir();
             com1_path.push(Guid::new_random().to_string());
@@ -347,6 +368,15 @@ fn test_ttrpc_interface(
                         .await
                         .unwrap();
 
+                    // Resume is confirmed before the guest has booted far enough
+                    // to power off, so the reported state reflects RUNNING.
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "after ResumeVm, expected RUNNING"
+                    );
+
                     waiter.await.unwrap();
 
                     let props = query_props().await.unwrap();
@@ -366,6 +396,19 @@ fn test_ttrpc_interface(
                             .start(vmservice::Vm::TeardownVm, ())
                             .await
                             .unwrap();
+
+                        // Tearing down the VM returns state to UNINITIALIZED and
+                        // clears the halt_reason carried by the prior HALTED state.
+                        let props = query_props().await.unwrap();
+                        assert_eq!(
+                            props.state,
+                            vmservice::VmState::Uninitialized as i32,
+                            "after TeardownVm, expected UNINITIALIZED"
+                        );
+                        assert!(
+                            props.halt_reason.is_none(),
+                            "after TeardownVm, halt_reason should be cleared"
+                        );
 
                         client
                             .call()
