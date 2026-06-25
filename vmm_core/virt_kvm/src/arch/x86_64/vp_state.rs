@@ -655,10 +655,18 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(KvmError::NotSupported)
+        // KVM tracks nested VMX/SVM state with the vCPU; this backend does not
+        // yet surface it through the state-access path. Return an empty state so
+        // reset and save do not fail (returning an error here aborts a
+        // guest-initiated reset, which wedges a nested guest mid-boot). Note
+        // this means a snapshot does not capture nested state, so saving and
+        // restoring a guest while it is in nested operation is not supported.
+        Ok(vp::NestedState::default())
     }
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(KvmError::NotSupported)
+        // No-op: KVM resets the vCPU's nested state along with the vCPU. See
+        // nested_state() above for why this must not error.
+        Ok(())
     }
 }
