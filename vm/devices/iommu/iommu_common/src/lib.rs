@@ -147,7 +147,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     /// tracks the bus assignment. This is the primitive for SR-IOV virtual
     /// functions, which are constructed before the PF's bus is programmed.
     pub fn new_guest_memory_for_rid_offset(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         rid_offset: u16,
@@ -294,7 +294,7 @@ unsafe impl<T: IommuTranslator> guestmem::GuestMemoryAccess for TranslatingMemor
 /// construction generically.
 pub struct TranslatingDmaTarget<T: IommuTranslator + Clone> {
     /// Debug label applied to each VF's `GuestMemory`.
-    label: std::sync::Arc<str>,
+    label: Arc<str>,
     /// The IOMMU's arch-specific translator, cloned per derived VF.
     translator: T,
     /// The device's assigned bus range; the requester ID is derived as
@@ -313,7 +313,7 @@ impl<T: IommuTranslator + Clone> TranslatingDmaTarget<T> {
     ///   default function-0 RID
     /// - `inner_gm`: the raw (untranslated) guest memory
     pub fn new(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         inner_gm: GuestMemory,

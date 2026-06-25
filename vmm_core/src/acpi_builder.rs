@@ -2633,5 +2633,4 @@ mod test {
         // variety at +7 must be IOAPIC (0x01).
         assert_eq!(ivrs[special + 7], 0x01);
     }
-
 }
