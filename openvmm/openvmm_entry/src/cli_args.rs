@@ -863,6 +863,28 @@ flags:
     ///   nested_virt          - expose VMX/SVM to the guest so it can run
     ///                          its own hypervisor (requires host KVM
     ///                          nested-virt support)
+    ///   `hv=<spec>`          - which Hyper-V enlightenments to advertise and
+    ///                          enable, `+`-separated. The first token may be a
+    ///                          preset (default, windows, none); each later
+    ///                          token enables a flag by name or disables it
+    ///                          with a `no_` prefix. Flags: time, frequencies,
+    ///                          hypercall, vpindex, runtime, synic, stimer,
+    ///                          stimer_direct, vapic, relaxed, tlbflush, ipi,
+    ///                          evmcs, reenlightenment, enforce_cpuid, and
+    ///                          `spinlocks=<n>`. With nested_virt and no hv=,
+    ///                          the windows preset is used. `evmcs` and
+    ///                          `reenlightenment` require `nested_virt`.
+    ///   `cpu=<model>`        - present a CPU model by masking the guest CPUID
+    ///                          down to that model's feature set (guest =
+    ///                          host & model). `host` or `max` (the default)
+    ///                          pass the host features through. Available
+    ///                          models: kvm64, Conroe, Penryn,
+    ///                          Nehalem, Westmere, SandyBridge, IvyBridge,
+    ///                          Haswell, Broadwell, Skylake-Client,
+    ///                          Skylake-Server, Cascadelake-Server,
+    ///                          Icelake-Server, SapphireRapids, Opteron_G1
+    ///                          through Opteron_G5, EPYC, EPYC-Rome,
+    ///                          EPYC-Milan, EPYC-Genoa, and more.
     ///
     /// Examples:
     ///   --hypervisor whp
@@ -871,6 +893,10 @@ flags:
     ///   --hypervisor whp:nested_virt
     ///   --hypervisor kvm
     ///   --hypervisor kvm:nested_virt
+    ///   --hypervisor kvm:nested_virt,hv=windows+no_evmcs
+    ///   --hypervisor kvm:hv=default+stimer_direct
+    ///   --hypervisor kvm:cpu=Skylake-Client
+    ///   --hypervisor kvm:cpu=EPYC-Milan
     #[clap(long)]
     pub hypervisor: Option<String>,
 

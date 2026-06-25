@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
+mod cpu_models;
 mod regs;
 mod vm_state;
 mod vp_state;
@@ -32,6 +33,7 @@ use hvdef::HvSynicSimpSiefp;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
 use hvdef::hypercall::Control;
+use hypervisor_resources::HvEnlightenments;
 use inspect::Inspect;
 use inspect::InspectMut;
 use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
@@ -101,6 +103,13 @@ pub struct Kvm {
     kvm: kvm::Kvm,
     /// Enable nested virtualization (VMX/SVM) for the guest.
     pub nested_virt: bool,
+    /// Which Hyper-V enlightenments to advertise to the guest and enable in
+    /// KVM.
+    pub hv_enlightenments: HvEnlightenments,
+    /// Guest CPU model to present. `None` or `"host"`/`"max"` passes the host
+    /// features through; any other name masks the guest CPUID down to that
+    /// model's feature set (see the `cpu_models` table).
+    pub cpu_model: Option<String>,
 }
 
 impl Kvm {
@@ -109,6 +118,8 @@ impl Kvm {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
             nested_virt: false,
+            hv_enlightenments: HvEnlightenments::default(),
+            cpu_model: None,
         })
     }
 
@@ -118,6 +129,8 @@ impl Kvm {
         Ok(Self {
             kvm,
             nested_virt: false,
+            hv_enlightenments: HvEnlightenments::default(),
+            cpu_model: None,
         })
     }
 }
@@ -254,15 +267,21 @@ impl virt::Hypervisor for Kvm {
             };
 
             use hvdef::*;
+            // Build the synthetic-hypervisor CPUID leaves from the configured
+            // enlightenment set (see `HvEnlightenments`) so the guest sees the
+            // requested combination instead of a fixed one.
+            let hv = self.hv_enlightenments;
             let privileges = HvPartitionPrivilege::new()
-                .with_access_partition_reference_counter(true)
-                .with_access_hypercall_msrs(true)
-                .with_access_vp_index(true)
-                .with_access_frequency_msrs(true)
-                .with_access_synic_msrs(true)
-                .with_access_synthetic_timer_msrs(true)
-                .with_access_vp_runtime_msr(true)
-                .with_access_apic_msrs(true);
+                .with_access_partition_reference_counter(hv.time)
+                .with_access_partition_reference_tsc(hv.time)
+                .with_access_hypercall_msrs(hv.hypercall)
+                .with_access_vp_index(hv.vp_index)
+                .with_access_frequency_msrs(hv.frequencies)
+                .with_access_synic_msrs(hv.synic)
+                .with_access_synthetic_timer_msrs(hv.stimer)
+                .with_access_vp_runtime_msr(hv.vp_runtime)
+                .with_access_apic_msrs(hv.vapic)
+                .with_access_reenlightenment_ctrls(hv.reenlightenment);
 
             // Query KVM's supported Hyper-V CPUID leaves to find the
             // nested virtualization features leaf (0x4000000A), but only
@@ -302,7 +321,8 @@ impl virt::Hypervisor for Kvm {
                     split_u128(u128::from(
                         HvFeatures::new()
                             .with_privileges(privileges)
-                            .with_frequency_regs_available(true),
+                            .with_frequency_regs_available(hv.frequencies)
+                            .with_direct_synthetic_timers(hv.stimer_direct),
                     )),
                 ),
                 CpuidLeaf::new(
@@ -310,7 +330,14 @@ impl virt::Hypervisor for Kvm {
                     split_u128(
                         HvEnlightenmentInformation::new()
                             .with_deprecate_auto_eoi(true)
-                            .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
+                            .with_use_relaxed_timing(hv.relaxed)
+                            .with_use_apic_msrs(hv.vapic)
+                            .with_use_hypercall_for_remote_flush_and_local_flush_entire(hv.tlbflush)
+                            .with_use_ex_processor_masks(hv.tlbflush)
+                            .with_use_synthetic_cluster_ipi(hv.ipi)
+                            .with_use_vmcs_enlightenments(hv.evmcs)
+                            .with_nested(self.nested_virt)
+                            .with_long_spin_wait_count(hv.spinlock_retries)
                             .into(),
                     ),
                 ),
@@ -325,6 +352,82 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES,
                     [leaf.eax, leaf.ebx, leaf.ecx, leaf.edx],
                 ));
+            }
+        }
+
+        // Apply a selected guest CPU model by masking the host feature leaves
+        // down to the model's feature set (guest features = host & model), and
+        // by reporting the model's vendor and family/model/stepping. `host` and
+        // `max` (and no selection) pass the host CPUID through unchanged.
+        if let Some(model_name) = self.cpu_model.as_deref() {
+            if model_name != "host" && model_name != "max" {
+                let def = cpu_models::X86_CPU_MODELS
+                    .iter()
+                    .find(|m| m.name == model_name)
+                    .ok_or_else(|| KvmError::UnknownCpuModel(model_name.to_owned()))?;
+
+                for l in def.leaves {
+                    // Force every feature bit not in the model to 0, but keep
+                    // the OSXSAVE (27) and hypervisor-present (31) bits in leaf 1
+                    // ECX: neither is a model feature. OSXSAVE reflects guest
+                    // CR4.OSXSAVE at CPUID-read time, and hypervisor-present is
+                    // always set for a guest. X2APIC (bit 21) is deliberately not
+                    // preserved here: it is a per-model feature, so it must come
+                    // from the model mask like any other bit. The partition APIC
+                    // mode is reconciled to the model below (a model without
+                    // x2apic runs the guest in xAPIC mode) rather than forcing
+                    // x2apic on.
+                    let preserve = if l.leaf == CpuidFunction::VersionAndFeatures.0 && l.reg == 2 {
+                        (1 << 27) | (1 << 31)
+                    } else {
+                        0
+                    };
+                    let mut mask = [0u32; 4];
+                    let Some(slot) = mask.get_mut(l.reg) else {
+                        debug_assert!(false, "cpu model leaf reg {} out of range", l.reg);
+                        continue;
+                    };
+                    *slot = !l.allowed & !preserve;
+                    let mut leaf = CpuidLeaf::new(l.leaf, [0; 4]).masked(mask);
+                    if let Some(sub) = l.subleaf {
+                        leaf = leaf.indexed(sub);
+                    }
+                    cpuid_entries.push(leaf);
+                }
+
+                // Report the model's family/model/stepping in leaf 1 EAX.
+                let base_family = def.family.min(0xf);
+                let ext_family = def.family.saturating_sub(0xf);
+                let eax = (ext_family << 20)
+                    | ((def.model >> 4) << 16)
+                    | (base_family << 8)
+                    | ((def.model & 0xf) << 4)
+                    | (def.stepping & 0xf);
+                cpuid_entries.push(
+                    CpuidLeaf::new(CpuidFunction::VersionAndFeatures.0, [eax, 0, 0, 0]).masked([
+                        0x0fff_3fff,
+                        0,
+                        0,
+                        0,
+                    ]),
+                );
+
+                // Report the model's vendor string in leaf 0 (ebx/edx/ecx). The
+                // generated table always carries a 12-byte vendor; assert it so a
+                // malformed entry is caught, and skip the override otherwise
+                // rather than write a truncated vendor.
+                debug_assert_eq!(def.vendor.len(), 12, "CPU model vendor must be 12 bytes");
+                if def.vendor.len() == 12 {
+                    let v = def.vendor.as_bytes();
+                    let word = |i: usize| u32::from_le_bytes([v[i], v[i + 1], v[i + 2], v[i + 3]]);
+                    cpuid_entries.push(
+                        CpuidLeaf::new(
+                            CpuidFunction::VendorAndMaxFunction.0,
+                            [0, word(0), word(8), word(4)],
+                        )
+                        .masked([0, !0, !0, !0]),
+                    );
+                }
             }
         }
 
@@ -360,6 +463,7 @@ impl virt::Hypervisor for Kvm {
             config,
             cpuid: cpuid_entries,
             nested_virt: self.nested_virt,
+            hv_enlightenments: self.hv_enlightenments,
         })
     }
 }
@@ -370,6 +474,7 @@ pub struct KvmProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
+    hv_enlightenments: HvEnlightenments,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -484,6 +589,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
+            hv_enlightenments: self.hv_enlightenments,
             synic_ports: Default::default(),
         });
 
@@ -700,17 +806,41 @@ impl virt::BindProcessor for KvmProcessorBinder {
 
         // Enable synic and set initial MSRs.
         if self.partition.hv1_enabled {
-            kvm.enable_synic()?;
+            // Enable the KVM capabilities for the advertised enlightenments;
+            // the CPUID bits alone do not wire up the backend state.
+            let hv = self.partition.hv_enlightenments;
+            if hv.synic {
+                kvm.enable_synic()?;
+            }
+            if hv.evmcs {
+                kvm.enable_hyperv_evmcs()?;
+            }
+            if hv.enforce_cpuid {
+                kvm.enable_hyperv_enforce_cpuid()?;
+            }
 
-            // Set the VP index. Also, KVM incorrectly initializes
-            // SCONTROL to 0. Set it to 1 on each processor.
-            kvm.set_msrs(&[
-                (
+            // Collect the per-enlightenment initial MSRs and set them in one
+            // ioctl. The VP index MSR is set only when that enlightenment is
+            // advertised; SCONTROL is set with the synic, because KVM
+            // incorrectly initializes it to 0 and it must read as 1 on each
+            // processor. At most two MSRs, so use a stack buffer rather than
+            // heap-allocating a Vec on every VP bind.
+            let mut msrs = [(0u32, 0u64); 2];
+            let mut count = 0;
+            if hv.vp_index {
+                msrs[count] = (
                     hvdef::HV_X64_MSR_VP_INDEX,
                     vp_info.base.vp_index.index().into(),
-                ),
-                (hvdef::HV_X64_MSR_SCONTROL, 1),
-            ])?;
+                );
+                count += 1;
+            }
+            if hv.synic {
+                msrs[count] = (hvdef::HV_X64_MSR_SCONTROL, 1);
+                count += 1;
+            }
+            if count > 0 {
+                kvm.set_msrs(&msrs[..count])?;
+            }
         }
 
         // Unlike the Microsoft hypervisor, KVM allows this MSR to be

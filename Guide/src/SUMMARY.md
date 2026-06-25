@@ -75,6 +75,8 @@
     - [CLI](./reference/openvmm/management/cli.md)
     - [Interactive Console](./reference/openvmm/management/interactive_console.md)
     - [gRPC / ttrpc](./reference/openvmm/management/grpc.md)
+  - [Hyper-V enlightenments](./reference/openvmm/hyperv_enlightenments.md)
+  - [Guest CPU models](./reference/openvmm/cpu_models.md)
   - [Graphical Console](./reference/openvmm/graphical_console.md)
   - [Logging](./reference/openvmm/logging.md)
 - [OpenHCL Features](./reference/openhcl.md)

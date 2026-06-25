@@ -1219,6 +1219,52 @@ impl<'a> Processor<'a> {
         Ok(())
     }
 
+    /// Enables the enlightened VMCS for a nested hypervisor on this vCPU.
+    #[cfg(target_arch = "x86_64")]
+    pub fn enable_hyperv_evmcs(&self) -> Result<()> {
+        // `args[0]` is an output-only pointer: KVM writes the supported eVMCS
+        // version range into it; the initial value is not an input (a null
+        // pointer there faults the ioctl with EFAULT). We deliberately do not
+        // read it back. The eVMCS version the guest sees comes from the
+        // HV_NESTED_FEATURES leaf (0x4000000A) passed through from
+        // KVM_GET_SUPPORTED_HV_CPUID, so there is no separate version to
+        // validate or echo here.
+        let mut evmcs_version: u32 = 0;
+        // SAFETY: the ioctl is synchronous and writes only the version range
+        // into `evmcs_version`, which outlives the call.
+        unsafe {
+            ioctl::kvm_enable_cap(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_enable_cap {
+                    cap: KVM_CAP_HYPERV_ENLIGHTENED_VMCS,
+                    args: [std::ptr::from_mut(&mut evmcs_version) as u64, 0, 0, 0],
+                    ..Default::default()
+                },
+            )
+            .map_err(|err| Error::EnableCap("hyperv_enlightened_vmcs", err))?;
+        }
+        Ok(())
+    }
+
+    /// Makes KVM enforce that the guest may only use Hyper-V enlightenments
+    /// advertised in its CPUID.
+    #[cfg(target_arch = "x86_64")]
+    pub fn enable_hyperv_enforce_cpuid(&self) -> Result<()> {
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        unsafe {
+            ioctl::kvm_enable_cap(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_enable_cap {
+                    cap: KVM_CAP_HYPERV_ENFORCE_CPUID,
+                    args: [1, 0, 0, 0],
+                    ..Default::default()
+                },
+            )
+            .map_err(|err| Error::EnableCap("hyperv_enforce_cpuid", err))?;
+        }
+        Ok(())
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub fn set_cpuid(&self, entries: &[kvm_cpuid_entry2]) -> Result<()> {
         const MAX_CPUID_ENTRIES: usize = 256;
