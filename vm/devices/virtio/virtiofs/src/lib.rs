@@ -56,10 +56,6 @@ struct VirtioFsInner {
 }
 
 /// Implementation of the virtio-fs file system.
-///
-/// Cheaply clonable: all state lives behind an `Arc`, so a device host can keep
-/// a handle to call [`VirtioFs::add_root`]/[`VirtioFs::remove_root`] after the
-/// device has been constructed and handed to a [`fuse::Session`].
 #[derive(Clone)]
 pub struct VirtioFs {
     inner: Arc<VirtioFsInner>,
@@ -95,8 +91,9 @@ impl Fuse for VirtioFs {
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
         let node_id = request.node_id();
         // If a file handle is specified, get the attributes from the open file. This is faster on
-        // Windows and works if the file was deleted.
-        let attr = if flags & FUSE_GETATTR_FH != 0 {
+        // Windows and works if the file was deleted. The synthetic root's directory handle has no
+        // backing file, so fall through to the node-based branch for it.
+        let attr = if flags & FUSE_GETATTR_FH != 0 && fh != SYNTHETIC_ROOT_FH {
             let file = self.get_file(fh)?;
             file.get_attr()?
         } else if self.is_synthetic_root(node_id) {
@@ -119,8 +116,9 @@ impl Fuse for VirtioFs {
     ) -> lx::Result<fuse_statx_out> {
         let node_id = request.node_id();
         // If a file handle is specified, get the attributes from the open file. This is faster on
-        // Windows and works if the file was deleted.
-        let statx = if getattr_flags & FUSE_GETATTR_FH != 0 {
+        // Windows and works if the file was deleted. The synthetic root's directory handle has no
+        // backing file, so fall through to the node-based branch for it.
+        let statx = if getattr_flags & FUSE_GETATTR_FH != 0 && fh != SYNTHETIC_ROOT_FH {
             let file = self.get_file(fh)?;
             file.get_statx()?
         } else if self.is_synthetic_root(node_id) {
@@ -646,6 +644,8 @@ impl<T> HandleMap<T> {
 ///   globally unique, whereas inode numbers are per-volume.
 struct InodeMap {
     inodes_by_node_id: HandleMap<Arc<VirtioFsInode>>,
+    // If stable inode numbers are supported, this maps `(volume_id, inode_nr)` to the
+    // corresponding inode and its FUSE node ID.
     inodes_by_inode_nr: Option<HashMap<(u32, lx::ino_t), (Arc<VirtioFsInode>, u64)>>,
     /// When true, node 1 is synthetic and not stored in this map, so node IDs
     /// are allocated starting at 2 and `clear` does not preserve a real root.
