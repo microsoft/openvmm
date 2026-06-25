@@ -10,11 +10,10 @@
 pub mod capabilities {
     /// Software VPCI device emulation support.
     pub const VPCI: &str = "vpci";
-    /// VFIO-bound test disk provisioned by the incubator.
-    pub const TEST_DISK_VFIO: &str = "test_disk_vfio";
 
-    /// All capability names known to petri.
-    pub const KNOWN_CAPABILITIES: &[&str] = &[VPCI, TEST_DISK_VFIO];
+    /// All capability names known to petri, including those defined by
+    /// incubators.
+    pub const KNOWN_CAPABILITIES: &[&str] = &[VPCI, "test_disk_vfio"];
 
     /// Returns `name` if it is a known capability name.
     pub fn known(name: &str) -> Option<&'static str> {
