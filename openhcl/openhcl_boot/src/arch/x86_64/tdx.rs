@@ -138,7 +138,7 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
         let flags = get_td_config_flags();
         if flags.tdx_connect() {
             assert!(
-                get_td_config_flags().page_release(),
+                flags.page_release(),
                 "TDX Connect enabled but CONFIG_FLAGS.page_release is not set"
             );
 
