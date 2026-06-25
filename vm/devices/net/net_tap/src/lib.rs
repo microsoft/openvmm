@@ -333,8 +333,17 @@ impl Queue for TapQueue {
                 if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
                     fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
                 }
-                if meta.flags.offload_tcp_segmentation() && meta.flags.is_ipv6() {
+                if (meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation())
+                    && meta.flags.is_ipv6()
+                {
                     fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
+                }
+
+                // Convert the LSO length-less pseudo-header seed to the convention the
+                // kernel's GSO path expects (pseudo-header with the full L4 length) so
+                // segmentation produces correct per-segment checksums.
+                if meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation() {
+                    fixup_gso_pseudo_header(&mut packet, meta.l2_len as usize);
                 }
 
                 let bufs = [
@@ -454,6 +463,112 @@ fn fixup_ipv6_payload_length(packet: &mut [u8], l2_len: usize) {
     }
     let payload_len = u16::try_from(packet.len() - l2_len - IPV6_HEADER_LEN).unwrap_or(0);
     packet[l2_len + 4..l2_len + 6].copy_from_slice(&payload_len.to_be_bytes());
+}
+
+/// Rewrite the L4 checksum field of a segmentation-offload (GSO) frame to the
+/// pseudo-header checksum that includes the full L4 segment length.
+///
+/// NDIS/netvsp LSO hands us a length-less pseudo-header seed: the guest cannot know
+/// the per-segment length, so it leaves it out. The kernel's GSO path expects the
+/// opposite. The stack's own `__tcp_v4_send_check` writes `th->check =
+/// ~tcp_v4_check(skb->len, ...)`, the pseudo-header computed over the full skb L4
+/// length, and `tcp_gso_segment` (and the hardware TSO drivers) then adjust it down
+/// per segment. Passing the length-less seed straight through leaves that adjustment
+/// off by the segment length, so every emitted segment carries a wrong checksum and
+/// the far end drops it. Recompute the seed here from the addresses and protocol in
+/// the packet's IP header plus the L4 length taken from the frame size, so it does
+/// not depend on the value the guest supplied; the data is untouched, the
+/// kernel or NIC still completes the per-segment checksum.
+///
+/// For IPv6 the extension-header chain (hop-by-hop, routing, destination-options,
+/// fragment) is walked to find the upper-layer header. If it ends in an
+/// Authentication/ESP header or an unrecognized next-header the L4 offset cannot be
+/// determined and the seed is left unchanged.
+fn fixup_gso_pseudo_header(packet: &mut [u8], l2_len: usize) {
+    if packet.len() < l2_len + 1 {
+        return;
+    }
+    let (l4_off, proto, mut sum) = match packet[l2_len] >> 4 {
+        4 => {
+            if packet.len() < l2_len + 20 {
+                return;
+            }
+            let ihl = ((packet[l2_len] & 0x0f) as usize) * 4;
+            if !(20..=60).contains(&ihl) || packet.len() < l2_len + ihl {
+                return;
+            }
+            let proto = packet[l2_len + 9];
+            let mut sum: u32 = 0;
+            for chunk in packet[l2_len + 12..l2_len + 20].chunks_exact(2) {
+                sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+            }
+            (l2_len + ihl, proto, sum)
+        }
+        6 => {
+            const IPV6_HEADER_LEN: usize = 40;
+            if packet.len() < l2_len + IPV6_HEADER_LEN {
+                return;
+            }
+            // The 16-byte source and destination addresses (bytes 8..40) are in the
+            // fixed header regardless of any extension headers.
+            let mut sum: u32 = 0;
+            for chunk in packet[l2_len + 8..l2_len + IPV6_HEADER_LEN].chunks_exact(2) {
+                sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+            }
+            // Walk the extension-header chain to the upper-layer header. The base
+            // header's Next Header may name a hop-by-hop, routing, destination-options
+            // or fragment extension header rather than TCP/UDP directly.
+            let mut proto = packet[l2_len + 6];
+            let mut off = l2_len + IPV6_HEADER_LEN;
+            loop {
+                match proto {
+                    6 | 17 => break,
+                    // Length-prefixed extension headers: Hdr Ext Len counts 8-octet
+                    // units beyond the first 8, and the first byte is the next header.
+                    0 | 43 | 60 => {
+                        if packet.len() < off + 2 {
+                            return;
+                        }
+                        let ext_len = (packet[off + 1] as usize + 1) * 8;
+                        if packet.len() < off + ext_len {
+                            return;
+                        }
+                        proto = packet[off];
+                        off += ext_len;
+                    }
+                    // Fragment header is a fixed 8 bytes.
+                    44 => {
+                        if packet.len() < off + 8 {
+                            return;
+                        }
+                        proto = packet[off];
+                        off += 8;
+                    }
+                    // Authentication/ESP/no-next-header/unknown: the upper-layer
+                    // header cannot be located, so leave the seed unchanged.
+                    _ => return,
+                }
+            }
+            (off, proto, sum)
+        }
+        _ => return,
+    };
+    let csum_field = match proto {
+        6 => l4_off + 16,
+        17 => l4_off + 6,
+        _ => return,
+    };
+    if packet.len() < csum_field + 2 {
+        return;
+    }
+    // Pseudo-header: src and dst addresses, protocol, and the L4 length (header plus
+    // payload). The folded, non-complemented sum is the CHECKSUM_PARTIAL seed.
+    let l4_len = packet.len() - l4_off;
+    sum += proto as u32 + l4_len as u32;
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    packet[csum_field..csum_field + 2].copy_from_slice(&(sum as u16).to_be_bytes());
 }
 
 /// Build a `VirtioNetHdr` from transmit metadata for the TAP device.
@@ -700,6 +815,94 @@ mod tests {
         assert!(hdr.flags.needs_csum());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 6);
+    }
+
+    #[test]
+    fn gso_pseudo_header_seed_includes_length() {
+        // 14 eth + 20 IPv4 (TCP) + 20 TCP + 100 payload; the seed must be rewritten to
+        // the pseudo-header that includes the full L4 length (header plus payload).
+        let mut pkt = vec![0u8; 14 + 20 + 20 + 100];
+        pkt[14] = 0x45; // IPv4, ihl = 5
+        pkt[14 + 9] = 6; // protocol = TCP
+        pkt[14 + 12..14 + 16].copy_from_slice(&[192, 168, 168, 156]); // src
+        pkt[14 + 16..14 + 20].copy_from_slice(&[192, 168, 168, 17]); // dst
+        fixup_gso_pseudo_header(&mut pkt, 14);
+        let seed = u16::from_be_bytes([pkt[50], pkt[51]]); // TCP checksum field
+        let l4_len: u32 = 20 + 100;
+        let mut want: u32 = 0xc0a8 + 0xa89c + 0xc0a8 + 0xa811 + 6 + l4_len;
+        while want >> 16 != 0 {
+            want = (want & 0xffff) + (want >> 16);
+        }
+        assert_eq!(seed, want as u16);
+    }
+
+    #[test]
+    fn gso_pseudo_header_seed_includes_length_udp() {
+        // 14 eth + 20 IPv4 (UDP) + 8 UDP + 100 payload; the UDP checksum field sits at
+        // a different offset (6) and the L4 length covers the 8-byte UDP header.
+        let mut pkt = vec![0u8; 14 + 20 + 8 + 100];
+        pkt[14] = 0x45; // IPv4, ihl = 5
+        pkt[14 + 9] = 17; // protocol = UDP
+        pkt[14 + 12..14 + 16].copy_from_slice(&[192, 168, 168, 156]); // src
+        pkt[14 + 16..14 + 20].copy_from_slice(&[192, 168, 168, 17]); // dst
+        fixup_gso_pseudo_header(&mut pkt, 14);
+        let seed = u16::from_be_bytes([pkt[40], pkt[41]]); // UDP checksum field (l4 + 6)
+        let l4_len: u32 = 8 + 100;
+        let mut want: u32 = 0xc0a8 + 0xa89c + 0xc0a8 + 0xa811 + 17 + l4_len;
+        while want >> 16 != 0 {
+            want = (want & 0xffff) + (want >> 16);
+        }
+        assert_eq!(seed, want as u16);
+    }
+
+    // Sum the 16-byte IPv6 src + dst (bytes 8..40 of the IPv6 header) plus protocol
+    // and L4 length, folded to 16 bits, the way fixup_gso_pseudo_header does.
+    fn ipv6_pseudo_seed(pkt: &[u8], l2: usize, proto: u32, l4_len: u32) -> u16 {
+        let mut s: u32 = proto + l4_len;
+        for c in pkt[l2 + 8..l2 + 40].chunks_exact(2) {
+            s += u16::from_be_bytes([c[0], c[1]]) as u32;
+        }
+        while s >> 16 != 0 {
+            s = (s & 0xffff) + (s >> 16);
+        }
+        s as u16
+    }
+
+    #[test]
+    fn gso_pseudo_header_seed_ipv6_tcp() {
+        // 14 eth + 40 IPv6 (TCP) + 20 TCP + 100 payload.
+        let mut pkt = vec![0u8; 14 + 40 + 20 + 100];
+        pkt[14] = 0x60; // IPv6
+        pkt[14 + 6] = 6; // next header = TCP
+        pkt[14 + 8..14 + 24]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        pkt[14 + 24..14 + 40]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        fixup_gso_pseudo_header(&mut pkt, 14);
+        let l4_off = 14 + 40;
+        let seed = u16::from_be_bytes([pkt[l4_off + 16], pkt[l4_off + 17]]); // TCP cksum field
+        assert_eq!(seed, ipv6_pseudo_seed(&pkt, 14, 6, 20 + 100));
+    }
+
+    #[test]
+    fn gso_pseudo_header_seed_ipv6_udp_with_extension_header() {
+        // 14 eth + 40 IPv6 + 8 hop-by-hop ext header + 8 UDP + 100 payload. The base
+        // header's Next Header points at the extension header, which in turn points at
+        // UDP, so the fixup must walk past it to find the L4 checksum field.
+        let mut pkt = vec![0u8; 14 + 40 + 8 + 8 + 100];
+        pkt[14] = 0x60; // IPv6
+        pkt[14 + 6] = 0; // next header = hop-by-hop options
+        pkt[14 + 8..14 + 24]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        pkt[14 + 24..14 + 40]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let ext = 14 + 40;
+        pkt[ext] = 17; // ext header next-header = UDP
+        pkt[ext + 1] = 0; // Hdr Ext Len 0 -> 8 bytes total
+        fixup_gso_pseudo_header(&mut pkt, 14);
+        let l4_off = 14 + 40 + 8; // UDP starts after the 8-byte extension header
+        let seed = u16::from_be_bytes([pkt[l4_off + 6], pkt[l4_off + 7]]); // UDP cksum field
+        assert_eq!(seed, ipv6_pseudo_seed(&pkt, 14, 17, 8 + 100));
     }
 
     #[test]
