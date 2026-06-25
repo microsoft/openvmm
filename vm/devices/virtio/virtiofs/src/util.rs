@@ -8,6 +8,13 @@ use std::time::Duration;
 
 /// Convert a Linux stat struct to FUSE attributes.
 pub fn stat_to_fuse_attr(stat: &lx::Stat) -> fuse_attr {
+    stat_to_fuse_attr_with_flags(stat, 0)
+}
+
+/// Convert a Linux stat struct to FUSE attributes, with extra `FUSE_ATTR_*`
+/// flag bits ORed into `fuse_attr.flags` (e.g. `FUSE_ATTR_SUBMOUNT` for the
+/// root of an auto-mounted subdirectory).
+pub fn stat_to_fuse_attr_with_flags(stat: &lx::Stat, attr_flags: u32) -> fuse_attr {
     fuse_attr {
         ino: stat.inode_nr,
         size: stat.file_size,
@@ -26,7 +33,7 @@ pub fn stat_to_fuse_attr(stat: &lx::Stat) -> fuse_attr {
         rdev: stat.device_nr_special as u32,
         // This is `usize` on x64 and `u32` on arm64, avoid a warning.
         blksize: stat.block_size as _,
-        padding: 0,
+        flags: attr_flags,
     }
 }
 

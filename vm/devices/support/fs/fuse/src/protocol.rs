@@ -65,7 +65,7 @@ pub struct fuse_attr {
     pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
-    pub padding: u32,
+    pub flags: u32,
 }
 
 #[repr(C)]
@@ -258,6 +258,17 @@ pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = (1 << 1);
  * Getattr flags
  */
 pub const FUSE_GETATTR_FH: u32 = (1 << 0);
+
+/**
+ * fuse_attr flags
+ *
+ * FUSE_ATTR_SUBMOUNT: directory contains a submount; the kernel will
+ *                     auto-mount it as a separate filesystem (needs
+ *                     FUSE_SUBMOUNTS negotiated in INIT)
+ * FUSE_ATTR_DAX: file supports DAX
+ */
+pub const FUSE_ATTR_SUBMOUNT: u32 = (1 << 1);
+pub const FUSE_ATTR_DAX: u32 = (1 << 0);
 
 /**
  * Lock flags

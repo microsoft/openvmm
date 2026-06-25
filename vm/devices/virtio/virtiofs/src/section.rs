@@ -59,7 +59,7 @@ fn get_attr_with_cur_time() -> fuse::protocol::fuse_attr {
         gid: 0,
         rdev: 0,
         blksize: 0,
-        padding: 0,
+        flags: 0,
     }
 }
 
