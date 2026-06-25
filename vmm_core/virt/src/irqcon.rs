@@ -38,7 +38,7 @@ pub trait ControlGic: Send + Sync {
 // The number of IRQ lines for the interrupt controller.
 pub const IRQ_LINES: usize = 24;
 
-/// An message-signaled interrupt request.
+/// A message-signaled interrupt request.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect)]
 pub struct MsiRequest {
     /// The MSI address.
