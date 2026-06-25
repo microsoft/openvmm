@@ -35,8 +35,6 @@ use igvm::registers::AArch64Register;
 use loader_defs::paravisor::*;
 use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
-use openhcl_product_policy::ProductPolicy;
-use openhcl_product_policy::encode_product_policy;
 use page_table::aarch64::Arm64PageSize;
 use page_table::aarch64::MemoryAttributeEl1;
 use page_table::aarch64::MemoryAttributeIndirectionEl1;
@@ -49,6 +47,8 @@ use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
+use product_policy::ProductPolicy;
+use product_policy::encode_product_policy;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -130,10 +130,13 @@ fn encode_product_policy_bytes(policy: &ProductPolicy) -> Vec<u8> {
 fn validate_product_policy_for_build(policy: &ProductPolicy) {
     match policy {
         ProductPolicy::Sivm(sivm) => {
-            assert!(
-                !sivm.custom_uefi_json.is_empty(),
-                "Sivm product policy requires a non-empty custom_uefi_json"
-            );
+            if sivm.require_secure_boot
+                && (sivm.require_secure_boot_vars || sivm.require_bcd_integrity)
+            {
+                assert!(!sivm.custom_uefi_json.is_empty());
+                sivm.validate_secure_boot_policy_enforcement()
+                    .expect("product policy validations must pass");
+            }
         }
     }
 }
@@ -1550,8 +1553,8 @@ where
 #[cfg(test)]
 mod product_policy_tests {
     use super::*;
-    use openhcl_product_policy::decode_product_policy;
-    use openhcl_product_policy::sivm::SivmPolicy;
+    use product_policy::decode_product_policy;
+    use product_policy::sivm::SivmPolicy;
     use zerocopy::FromBytes;
 
     // ---------------------------------------------------------------
@@ -1589,7 +1592,6 @@ mod product_policy_tests {
             require_secure_boot: true,
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
-            require_secure_avic: false,
             custom_uefi_json: vec![],
         });
         let _ = encode_product_policy_bytes(&policy);

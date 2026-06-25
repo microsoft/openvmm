@@ -169,7 +169,6 @@ mod tests {
             require_secure_boot: true,
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
-            require_secure_avic: false,
             custom_uefi_json: vec![0xDE, 0xAD, 0xBE, 0xEF],
         }
     }
@@ -231,7 +230,6 @@ mod tests {
                     "require_secure_boot": true,
                     "require_secure_boot_vars": true,
                     "require_bcd_integrity": true,
-                    "require_secure_avic": true,
                     "custom_uefi_json": ""
                 }
             }"#;
@@ -242,7 +240,6 @@ mod tests {
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
-                    assert!(p.require_secure_avic);
                     assert!(p.custom_uefi_json.is_empty());
                 }
             }
@@ -256,7 +253,6 @@ mod tests {
                     "require_secure_boot": true,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false
                 }
             }"#;
             let err = from_json(json).unwrap_err();
@@ -278,7 +274,6 @@ mod tests {
                         "require_secure_boot": false,
                         "require_secure_boot_vars": false,
                         "require_bcd_integrity": false,
-                        "require_secure_avic": false,
                         "custom_uefi_json": "{b64}"
                     }}
                 }}"#
@@ -297,7 +292,6 @@ mod tests {
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false,
                     "custom_uefi_json": "***"
                 }
             }"#;
@@ -312,7 +306,6 @@ mod tests {
                 require_secure_boot: true,
                 require_secure_boot_vars: true,
                 require_bcd_integrity: true,
-                require_secure_avic: true,
                 custom_uefi_json: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x00, 0xFF],
             });
             let json = serde_json::to_string(&original).unwrap();
@@ -347,7 +340,6 @@ mod tests {
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false,
                     "extra": 0
                 }}"#,
             );

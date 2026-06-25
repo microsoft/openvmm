@@ -3703,7 +3703,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
- "openhcl_product_policy",
+ "product_policy",
  "range_map_vec",
  "serde",
  "serde_json",
@@ -3720,7 +3720,7 @@ dependencies = [
 name = "igvmfilegen_config"
 version = "0.0.0"
 dependencies = [
- "openhcl_product_policy",
+ "product_policy",
  "serde",
  "serde_json",
 ]
@@ -4120,8 +4120,8 @@ dependencies = [
  "memory_range",
  "object 0.37.3",
  "open_enum",
- "openhcl_product_policy",
  "page_table",
+ "product_policy",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -5269,19 +5269,6 @@ dependencies = [
  "user_driver",
  "virt",
  "vmcore",
-]
-
-[[package]]
-name = "openhcl_product_policy"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "inspect",
- "mesh_protobuf",
- "paste",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -6498,6 +6485,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "product_policy"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "firmware_uefi_custom_vars",
+ "hyperv_uefi_custom_vars_json",
+ "inspect",
+ "mesh_protobuf",
+ "paste",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -8607,11 +8609,11 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
- "openhcl_product_policy",
  "pal",
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "product_policy",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",

@@ -39,7 +39,7 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
-use openhcl_product_policy::ProductPolicy;
+use product_policy::ProductPolicy;
 use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;

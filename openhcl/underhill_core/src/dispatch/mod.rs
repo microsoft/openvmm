@@ -189,8 +189,7 @@ pub(crate) struct LoadedVm {
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
 
     /// Per-VM measured product policy.
-    #[expect(dead_code, reason = "consumers added incrementally")]
-    pub measured_policy: Arc<openhcl_product_policy::MeasuredPolicy>,
+    pub measured_product_policy: product_policy::MeasuredPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
 

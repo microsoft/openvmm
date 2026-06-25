@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "openhcl_product_policy"
+name = "product_policy"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -16,13 +16,15 @@ inspect = ["dep:inspect"]
 # Enables `MeasuredPolicy` and the anyhow-returning closure accessors
 # (e.g. `MeasuredPolicy::sivm(...)`). Only OpenHCL runtime crates
 # enable this.
-std = ["dep:anyhow"]
+std = ["dep:anyhow", "dep:hyperv_uefi_custom_vars_json", "dep:firmware_uefi_custom_vars"]
 
 [dependencies]
 mesh_protobuf.workspace = true
 paste.workspace = true
 
 anyhow = { workspace = true, optional = true }
+hyperv_uefi_custom_vars_json = { workspace = true, optional = true }
+firmware_uefi_custom_vars = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true, features = ["alloc"] }
 inspect = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["alloc", "derive"] }

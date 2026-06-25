@@ -7,7 +7,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-use openhcl_product_policy::ProductPolicy;
+use product_policy::ProductPolicy;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -113,7 +113,7 @@ pub enum Image {
         /// Optional measured product policy. When `Some`, the IGVM
         /// build emits the policy into the measured VTL2 config region.
         /// The manifest schema is the wire schema; see
-        /// [`openhcl_product_policy`].
+        /// [`product_policy`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         product_policy: Option<ProductPolicy>,
     },
@@ -386,7 +386,6 @@ mod test {
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
                         "require_bcd_integrity": true,
-                        "require_secure_avic": false,
                         "custom_uefi_json": "ZGVhZGJlZWY="
                     }
                 }
@@ -403,7 +402,6 @@ mod test {
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
-                    assert!(!p.require_secure_avic);
                     assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
             },

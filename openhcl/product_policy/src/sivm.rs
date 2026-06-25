@@ -35,12 +35,8 @@ pub struct SivmPolicy {
     #[mesh(4)]
     pub require_bcd_integrity: bool,
 
-    /// Refuse to boot unless Secure AVIC is enabled.
-    #[mesh(5)]
-    pub require_secure_avic: bool,
-
     /// Custom UEFI JSON bytes. Base64 in manifest JSON; mandatory.
-    #[mesh(6)]
+    #[mesh(5)]
     #[cfg_attr(feature = "manifest", serde(with = "custom_uefi_json_serde"))]
     #[cfg_attr(feature = "inspect", inspect(with = "Vec::<u8>::len"))]
     pub custom_uefi_json: Vec<u8>,
@@ -86,6 +82,65 @@ impl SivmPolicy {
             anyhow::bail!("Sivm policy requires secure boot to be enabled");
         }
         Ok(())
+    }
+
+    /// Parse , enforce Replace mode, and validate
+    /// secure boot variables and BCD integrity per policy flags.
+    pub fn validate_secure_boot_policy_enforcement(&self) -> anyhow::Result<()> {
+        use firmware_uefi_custom_vars::delta::SignaturesDelta;
+
+        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&self.custom_uefi_json)
+            .map_err(|e| anyhow::anyhow!("failed to parse custom UEFI JSON: {e}"))?;
+
+        let sigs = match delta.signatures {
+            SignaturesDelta::Replace(r) => r,
+            SignaturesDelta::Append(_) => {
+                anyhow::bail!("Sivm policy requires Replace mode for secure boot signatures");
+            }
+        };
+
+        if self.require_secure_boot_vars {
+            use firmware_uefi_custom_vars::delta::SignatureDelta;
+            use firmware_uefi_custom_vars::delta::SignatureDeltaVec;
+
+            // All vars must carry explicit signatures —  relies on
+            // a base template, which is not self-contained.
+            if matches!(sigs.pk, SignatureDelta::Default) {
+                anyhow::bail!("Sivm policy: PK uses Default (not self-contained)");
+            }
+            if matches!(sigs.kek, SignatureDeltaVec::Default) {
+                anyhow::bail!("Sivm policy: KEK uses Default (not self-contained)");
+            }
+            if matches!(sigs.db, SignatureDeltaVec::Default) {
+                anyhow::bail!("Sivm policy: db uses Default (not self-contained)");
+            }
+            if matches!(sigs.dbx, SignatureDeltaVec::Default) {
+                anyhow::bail!("Sivm policy: dbx uses Default (not self-contained)");
+            }
+        }
+
+        if self.require_bcd_integrity {
+            let has_bcd_hash = delta
+                .custom_vars
+                .iter()
+                .any(|(name, _)| name == "BootConfigurationDataHash");
+            if !has_bcd_hash {
+                anyhow::bail!(
+                    "Sivm policy: require_bcd_integrity is set but BootConfigurationDataHash variable is missing from custom UEFI JSON"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Return the custom UEFI JSON bytes after policy validation.
+    pub fn get_validated_uefi_json(&self) -> anyhow::Result<&[u8]> {
+        if self.custom_uefi_json.is_empty() {
+            anyhow::bail!("Sivm policy requires custom UEFI JSON");
+        }
+        self.validate_secure_boot_policy_enforcement()?;
+        Ok(&self.custom_uefi_json)
     }
 }
 

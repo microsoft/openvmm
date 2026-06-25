@@ -63,6 +63,7 @@ use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::vmgs_logger::GetVmgsLogger;
 use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
+use anyhow::Ok;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
@@ -1582,21 +1583,6 @@ async fn new_underhill_vm(
 
         dps
     };
-
-    // Aggressively halt the paravisor if the product policy refuses
-    // this configuration. With `panic = "abort"`, panic! immediately
-    // terminates the process — no further boot side effects occur.
-    if let Err(err) = measured_vtl2_info
-        .measured_policy()
-        .sivm(|p| p.validate_secure_boot_enabled(dps.general.secure_boot_enabled))
-    {
-        tracing::error!(
-            CVM_ALLOWED,
-            error = err.as_ref() as &dyn std::error::Error,
-            "product policy validation failed; aborting",
-        );
-        panic!("product policy violation: {err:#}");
-    }
 
     let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
@@ -3651,7 +3637,7 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
-        measured_policy: measured_vtl2_info.measured_policy().clone(),
+        measured_product_policy: measured_vtl2_info.measured_policy().clone(),
 
         _input_distributor: input_distributor,
 
@@ -3669,7 +3655,26 @@ async fn new_underhill_vm(
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
+    validate_product_policy(&loaded_vm).expect("Failed to validate product policy");
+
     Ok(loaded_vm)
+}
+
+fn validate_product_policy(loaded_vm: &LoadedVm) -> Result<(), anyhow::Error> {
+    // Validate the product policy for the loaded VM
+
+    loaded_vm.measured_product_policy.sivm(|p| {
+        p.validate_secure_boot_enabled(
+            loaded_vm
+                .device_platform_settings
+                .general
+                .secure_boot_enabled,
+        )?;
+        p.validate_secure_boot_policy_enforcement()?;
+        Ok(())
+    })?;
+
+    Ok(())
 }
 
 fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), anyhow::Error> {

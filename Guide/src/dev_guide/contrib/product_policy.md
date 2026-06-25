@@ -36,13 +36,13 @@ manifest JSON  ──serde::Deserialize──▶  ProductPolicy (wire enum)
 ```
 
 The wire enum and the runtime enum are literally the same Rust type
-(`openhcl_product_policy::ProductPolicy`). The mesh oneof tag identifies
+(`product_policy::ProductPolicy`). The mesh oneof tag identifies
 the product on the wire; the compiler enforces that each variant carries
 its strongly-typed body. There is **no separate `product_id` field**, no
 parser trait, and no central dispatch.
 
-The public helper APIs are `openhcl_product_policy::encode_product_policy`
-and `openhcl_product_policy::decode_product_policy`. The loader adds a
+The public helper APIs are `product_policy::encode_product_policy`
+and `product_policy::decode_product_policy`. The loader adds a
 private `encode_product_policy_bytes` wrapper that enforces build-time
 product invariants (see [Required fields and build-time
 invariants](#required-fields-and-build-time-invariants)) and the
@@ -89,7 +89,7 @@ Both the enum and body struct use
 
 ## Adding a new product
 
-The default flow is two edits in `openhcl/openhcl_product_policy/src/wire.rs`:
+The default flow is two edits in `openhcl/product_policy/src/wire.rs`:
 
 ```rust,ignore
 /// 1. Define a body struct (mesh + symmetric serde under the
@@ -223,7 +223,7 @@ PRODUCT_POLICY_INLINE_OFFSET`, i.e. 4072 bytes today),
 `encode_product_policy_bytes` will `panic!` at IGVM-build time with
 a message that names `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`. The
 fix is to bump that constant (e.g. from 1 to 2) in
-`openhcl/openhcl_product_policy/src/wire.rs`. Bumping it is a measurement
+`openhcl/product_policy/src/wire.rs`. Bumping it is a measurement
 change — every IGVM, with or without a configured policy, will have a
 new measurement after the bump — so it must be reviewed against the
 attestation policy for each affected product.
@@ -260,5 +260,5 @@ If you want the new product reachable from `cargo xflowey build-igvm`:
 
 The bundled `X64CvmSivm` recipe shows the complete Sivm pipeline.
 
-[`ParavisorMeasuredVtl2Config`]: https://openvmm.dev/rustdoc/openhcl_product_policy/struct.ParavisorMeasuredVtl2Config.html
-[`ProductPolicy`]: https://openvmm.dev/rustdoc/openhcl_product_policy/enum.ProductPolicy.html
+[`ParavisorMeasuredVtl2Config`]: https://openvmm.dev/rustdoc/product_policy/struct.ParavisorMeasuredVtl2Config.html
+[`ProductPolicy`]: https://openvmm.dev/rustdoc/product_policy/enum.ProductPolicy.html
