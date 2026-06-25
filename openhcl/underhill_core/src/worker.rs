@@ -2215,6 +2215,123 @@ async fn new_underhill_vm(
         }
     };
 
+    // Hibernation firmware compatibility (OpenHCL-only). Determine whether a
+    // firmware image snapshot will be present in VMGS for the next hibernation,
+    // and ensure the firmware region is correct for this boot. Both operations
+    // below happen *before* any dynamic config is written into the firmware
+    // region (that happens later in `load_firmware` via `write_uefi_config`), so
+    // the current dynamic config is layered on top of the pristine/restored
+    // image.
+    //
+    // - Resume boot (a non-NONE hibernate token is present): restore the
+    //   previously stored firmware image back into VTL0 guest memory, so the
+    //   resumed guest sees an identical firmware binary even if the host's
+    //   firmware changed in the meantime, then consume the token. The stored
+    //   image remains valid for the next hibernation.
+    // - Normal boot: snapshot the pristine UEFI firmware image, as deposited
+    //   into VTL0 guest memory, into VMGS so it can be restored later. This only
+    //   succeeds if the VMGS backing store is large enough to hold it.
+    //
+    // `hibernation_firmware_stored` is set to `true` only once we know an image
+    // is actually stored; it drives the hibernate token written at hibernate
+    // time (see `halt_task`).
+    let hibernation_firmware_stored = if dps.general.hibernation_enabled {
+        match (
+            load_kind,
+            measured_vtl0_info
+                .as_ref()
+                .and_then(|info| info.supports_uefi.as_ref()),
+            vmgs_client.as_ref(),
+        ) {
+            (LoadKind::Uefi, Some(uefi_info), Some(vmgs_client)) => {
+                let token = read_hibernate_token(vmgs_client).await;
+                let resuming = matches!(token, Some(token) if token != hibernate_token::NONE);
+                if resuming {
+                    // The token records whether a firmware image was actually
+                    // stored at hibernate time. Only attempt a restore when one
+                    // was stored; otherwise there is nothing in VMGS to restore
+                    // (e.g. the VMGS was too small to hold the image).
+                    let firmware_expected = token == Some(hibernate_token::FIRMWARE_STORED);
+                    let restored = if firmware_expected {
+                        match load_firmware_from_vmgs(
+                            gm.vtl0(),
+                            uefi_info.firmware_memory,
+                            vmgs_client,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    "resuming from hibernation; restored UEFI firmware image from VMGS"
+                                );
+                                // The stored image remains valid for the next
+                                // hibernation.
+                                true
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    CVM_ALLOWED,
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    "failed to restore UEFI firmware image on hibernation resume"
+                                );
+                                false
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "resuming from hibernation but no UEFI firmware image was stored in VMGS"
+                        );
+                        false
+                    };
+                    // Consume the token either way so a later clean boot does
+                    // not restore a stale firmware image.
+                    delete_hibernate_token(vmgs_client).await;
+                    restored
+                } else {
+                    match store_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client)
+                        .await
+                    {
+                        // An image is now stored in VMGS, so the next
+                        // hibernation can rely on it.
+                        Ok(StoreFirmwareOutcome::Stored) => true,
+                        // Not having room for the firmware image is not an
+                        // error; hibernation just won't preserve the firmware.
+                        Ok(StoreFirmwareOutcome::InsufficientSpace {
+                            firmware_size,
+                            device_size,
+                        }) => {
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                firmware_size,
+                                device_size,
+                                minimum_size = VMGS_FIRMWARE_THRESHOLD_BYTES,
+                                "VMGS backing store too small to preserve UEFI firmware across hibernation"
+                            );
+                            false
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "failed to store UEFI firmware image for hibernation"
+                            );
+                            false
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Not a UEFI boot, or no firmware region / VMGS available;
+                // nothing to snapshot or restore.
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
     let cpuid = {
@@ -3609,6 +3726,9 @@ async fn new_underhill_vm(
             fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
+            vmgs_client.clone(),
+            dps.general.hibernation_enabled,
+            hibernation_firmware_stored,
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3847,6 +3967,165 @@ where
     reg_state
 }
 
+/// A VMGS backing store must be at least this large to store a firmware image
+/// snapshot for hibernation. This is a minimum overall size so that the
+/// firmware image fits alongside the other VMGS files, not just a tight fit of
+/// the image itself.
+const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
+/// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
+/// is written on power off and consumed/cleared on resume.
+mod hibernate_token {
+    /// Written on hibernate when a firmware image snapshot is stored in VMGS.
+    pub const FIRMWARE_STORED: u64 = u64::MAX;
+    /// Written on hibernate when no firmware image snapshot is stored.
+    pub const HIBERNATED: u64 = 0x1;
+    /// Written on a clean power off / reset to clear any prior hibernate state.
+    pub const NONE: u64 = 0x0;
+}
+
+/// Best-effort write of an 8-byte hibernate token to the VMGS. Failures are logged
+/// but never block the power transition.
+async fn write_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
+    if let Err(err) = vmgs_client
+        .write_file(
+            vmgs::FileId::HIBERNATION_TOKEN,
+            token.to_le_bytes().to_vec(),
+        )
+        .await
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = &err as &dyn std::error::Error,
+            token,
+            "failed to write hibernate token"
+        );
+    }
+}
+
+/// Best-effort deletion of the hibernate token from the VMGS, used to
+/// consume the token after a firmware image has been restored on resume.
+/// Failures are logged but never block boot.
+async fn delete_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient) {
+    if let Err(err) = vmgs_client
+        .delete_file(vmgs::FileId::HIBERNATION_TOKEN)
+        .await
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = &err as &dyn std::error::Error,
+            "failed to delete hibernate token"
+        );
+    }
+}
+
+/// The result of attempting to store a firmware image into VMGS for hibernation.
+enum StoreFirmwareOutcome {
+    /// The firmware image was stored to VMGS.
+    Stored,
+    /// The VMGS backing store is too small to hold the firmware image. This is
+    /// not an error: hibernation falls back to not preserving the firmware
+    /// image across resume.
+    InsufficientSpace {
+        firmware_size: u64,
+        device_size: u64,
+    },
+}
+
+/// Stores the pristine UEFI firmware image out of VTL0 guest memory and into
+/// `vmgs::FileId::HIBERNATION_FIRMWARE` so it can be restored identically on
+/// resume from hibernation.
+///
+/// This must be called *before* any dynamic configuration is written into the
+/// firmware region (i.e. before `write_uefi_config`), so that the stored image
+/// matches the measured firmware as loaded from the IGVM file.
+///
+/// The image is only stored if the VMGS backing store is large enough to hold
+/// it; otherwise [`StoreFirmwareOutcome::InsufficientSpace`] is returned and the
+/// caller falls back to not preserving the firmware across hibernation. An
+/// `Err` is only returned for an actual failure to query or write VMGS.
+async fn store_firmware_to_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<StoreFirmwareOutcome> {
+    let len = firmware_memory.len();
+
+    // The firmware image can only be stored if the VMGS backing store is large
+    // enough. Require a minimum overall size so there is room for the firmware
+    // image alongside the other VMGS files, and also verify the image fits.
+    // Insufficient space is a normal fallback, not an error.
+    let device_size = vmgs_client
+        .device_size()
+        .await
+        .context("failed to query VMGS size")?;
+    if device_size < VMGS_FIRMWARE_THRESHOLD_BYTES || len > device_size {
+        return Ok(StoreFirmwareOutcome::InsufficientSpace {
+            firmware_size: len,
+            device_size,
+        });
+    }
+
+    let mut firmware = vec![0u8; len as usize];
+    gm.read_at(firmware_memory.start(), &mut firmware)
+        .context("failed to read UEFI firmware image from VTL0 memory")?;
+    vmgs_client
+        .write_file(vmgs::FileId::HIBERNATION_FIRMWARE, firmware)
+        .await
+        .context("failed to write UEFI firmware snapshot to VMGS")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = len,
+        "stored UEFI firmware image to VMGS for hibernation"
+    );
+    Ok(StoreFirmwareOutcome::Stored)
+}
+
+/// Reads the 8-byte little-endian hibernate token from VMGS, returning
+/// `None` if it is absent or cannot be read/parsed (e.g. on a first boot before
+/// any token has been written).
+async fn read_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
+    let buf = vmgs_client
+        .read_file(vmgs::FileId::HIBERNATION_TOKEN)
+        .await
+        .ok()?;
+    let bytes = <[u8; 8]>::try_from(buf.as_slice()).ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
+/// Loads a previously stored UEFI firmware image from VMGS back into VTL0 guest
+/// memory. Used when resuming a hibernated guest so that the firmware binary
+/// matches what was present when the guest hibernated.
+///
+/// This must be called *before* `write_uefi_config`, so that the current
+/// dynamic config is layered on top of the restored firmware image.
+async fn load_firmware_from_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<()> {
+    let firmware = vmgs_client
+        .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
+        .await
+        .context("failed to read UEFI firmware snapshot from VMGS")?;
+    let region_len = firmware_memory.len() as usize;
+    if firmware.len() != region_len {
+        anyhow::bail!(
+            "stored firmware image size {} does not match firmware region size {region_len}",
+            firmware.len(),
+        );
+    }
+    gm.write_at(firmware_memory.start(), &firmware)
+        .context("failed to write UEFI firmware image into VTL0 memory")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = region_len,
+        "restored UEFI firmware image from VMGS for hibernation resume"
+    );
+    Ok(())
+}
+
 /// Waits for halt notifications and handles them by forwarding them to the
 /// host (when appropriate).
 async fn halt_task(
@@ -3854,6 +4133,9 @@ async fn halt_task(
     mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
+    vmgs_client: Option<vmgs_broker::VmgsClient>,
+    hibernation_enabled: bool,
+    hibernation_firmware_stored: bool,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3904,9 +4186,42 @@ async fn halt_task(
 
             // Now we can notify the host about the halt.
             match halt_request {
-                HaltRequest::PowerOff => get_client.send_power_off(),
-                HaltRequest::Reset => get_client.send_reset(),
-                HaltRequest::Hibernate => get_client.send_hibernate(),
+                HaltRequest::PowerOff => {
+                    // Write the NONE hibernate token to clear any stale hibernate
+                    // state on a clean power off. Only relevant when hibernation
+                    // is enabled; otherwise there is no token to clear.
+                    if hibernation_enabled {
+                        if let Some(vmgs_client) = &vmgs_client {
+                            write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                        }
+                    }
+                    get_client.send_power_off()
+                }
+                HaltRequest::Reset => {
+                    // Write the NONE hibernate token to clear any stale hibernate
+                    // state on reset. Only relevant when hibernation is enabled;
+                    // otherwise there is no token to clear.
+                    if hibernation_enabled {
+                        if let Some(vmgs_client) = &vmgs_client {
+                            write_hibernate_token(vmgs_client, hibernate_token::NONE).await;
+                        }
+                    }
+                    get_client.send_reset()
+                }
+                HaltRequest::Hibernate => {
+                    // Write the hibernate token before signaling the host, matching
+                    // the legacy HCL flow. Whether the VMGS is large enough to
+                    // hold a firmware image snapshot was decided at boot.
+                    if let Some(vmgs_client) = &vmgs_client {
+                        let token = if hibernation_firmware_stored {
+                            hibernate_token::FIRMWARE_STORED
+                        } else {
+                            hibernate_token::HIBERNATED
+                        };
+                        write_hibernate_token(vmgs_client, token).await;
+                    }
+                    get_client.send_hibernate()
+                }
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }

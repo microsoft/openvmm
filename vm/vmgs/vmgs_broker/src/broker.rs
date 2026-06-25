@@ -47,10 +47,12 @@ impl From<BrokerFileId> for FileId {
 pub enum VmgsBrokerRpc {
     Inspect(inspect::Deferred),
     GetFileInfo(Rpc<BrokerFileId, Result<VmgsFileInfo, VmgsBrokerError>>),
+    DeviceSize(Rpc<(), u64>),
     ReadFile(Rpc<BrokerFileId, Result<Vec<u8>, VmgsBrokerError>>),
     WriteFile(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     #[cfg(feature = "encryption")]
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
+    DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
 }
 
@@ -80,6 +82,7 @@ impl VmgsBrokerTask {
             }
             VmgsBrokerRpc::GetFileInfo(rpc) => rpc
                 .handle_sync(|file_id| self.vmgs.get_file_info(file_id.into()).map_err(Into::into)),
+            VmgsBrokerRpc::DeviceSize(rpc) => rpc.handle_sync(|()| self.vmgs.device_size()),
             VmgsBrokerRpc::ReadFile(rpc) => {
                 rpc.handle(async |file_id| {
                     self.vmgs
@@ -103,6 +106,15 @@ impl VmgsBrokerTask {
                 rpc.handle(async |(file_id, buf)| {
                     self.vmgs
                         .write_file_encrypted(file_id.into(), &buf)
+                        .await
+                        .map_err(Into::into)
+                })
+                .await
+            }
+            VmgsBrokerRpc::DeleteFile(rpc) => {
+                rpc.handle(async |file_id| {
+                    self.vmgs
+                        .delete_file(file_id.into())
                         .await
                         .map_err(Into::into)
                 })

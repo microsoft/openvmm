@@ -53,11 +53,12 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
-        HIBERNATION_FIRMWARE = 14,
+        HIBERNATION_TOKEN = 14,
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
         TPM_NVRAM_BACKUP = 17,
         PROVISIONING_MARKER = 18,
+        HIBERNATION_FIRMWARE = 19,
 
         EXTENDED_FILE_TABLE = 63,
     }
