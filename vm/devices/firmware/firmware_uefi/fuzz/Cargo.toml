@@ -20,7 +20,7 @@ arbitrary = { workspace = true, features = ["derive"] }
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 firmware_uefi = { workspace = true, features = ["auth-var-verify-crypto", "fuzzing"] }
 libfuzzer-sys.workspace = true
-openssl.workspace = true
+openssl = { workspace = true, features = ["vendored"] }
 
 [package.metadata.xtask.unused-deps]
 # required for the xtask_fuzz macro, but unused_deps doesn't know that
