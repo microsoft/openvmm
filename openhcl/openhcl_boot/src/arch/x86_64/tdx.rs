@@ -241,6 +241,8 @@ fn get_td_config_flags() -> TdConfigFlags {
         let res = tdcall_vm_rd(&mut TdcallInstruction, TDX_FIELD_CODE_CONFIG_FLAGS)
             .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
 
-        TdConfigFlags::from_bits(res)
+        let f = TdConfigFlags::from_bits(res);
+        TDX_TD_CONFIG_FLAGS.set(Some(f));
+        f
     }
 }
