@@ -888,6 +888,7 @@ impl IommuSharedState {
 /// One `AmdTranslator` is shared by all PCI devices behind the same IOMMU.
 /// The requester ID (RID / BDF) is passed at each translation call and
 /// used directly as the AMD IOMMU DeviceID.
+#[derive(Clone)]
 pub struct AmdTranslator {
     /// Reference to the shared IOMMU state.
     shared: Arc<IommuSharedState>,
@@ -1664,6 +1665,7 @@ impl MmioIntercept for AmdIommuDevice {
 mod tests {
     use super::*;
     use guestmem::GuestMemory;
+    use pci_core::bus_range::AssignedBusRange;
     use spec::commands::CommandEntry;
     use spec::dte::IntCtl;
     use spec::events::EventCode;
@@ -1688,9 +1690,8 @@ mod tests {
 
     fn create_test_device() -> AmdIommuDevice {
         let guest_memory = GuestMemory::empty();
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target())
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target())
     }
 
     /// Helper to read a 32-bit PCI config register.
@@ -2126,9 +2127,8 @@ mod tests {
     ///   0x2000..0x2FFF = scratch space (for COMPLETION_WAIT store data)
     fn create_test_device_with_memory() -> AmdIommuDevice {
         let guest_memory = GuestMemory::allocate(0x10000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target())
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target())
     }
 
     /// Configure and enable the IOMMU with command buffer and event log.
@@ -2381,11 +2381,10 @@ mod tests {
         // Create device with a connected MSI controller to verify actual
         // MSI delivery (not just status bit).
         let guest_memory = GuestMemory::allocate(0x10000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let msi_controller = pci_core::test_helpers::TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         // Enable MSI on the IOMMU's PCI config space.
         // The MSI capability is the second capability. Find its offset.
@@ -2649,9 +2648,8 @@ mod tests {
     /// page tables (1MB).
     fn create_test_device_for_translation() -> AmdIommuDevice {
         let guest_memory = GuestMemory::allocate(0x10_0000); // 1MB
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target())
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target())
     }
 
     /// Set up the IOMMU with a device table at a given GPA.
@@ -4513,9 +4511,8 @@ mod tests {
     #[test]
     fn test_remap_msi_iommu_disabled() {
         let guest_memory = GuestMemory::allocate(0x10_0000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         // IOMMU not enabled — MSI should pass through unchanged.
         let (new_addr, new_data) = dev.remap_msi(0x10, 0xFEE0_0000, 0x30).unwrap();
@@ -4619,15 +4616,15 @@ mod tests {
     const WRAPPER_BUS: u8 = 1;
     const WRAPPER_DEVICE_ID: u16 = (WRAPPER_BUS as u16) << 8;
 
-    fn bus_range_for_device_id(device_id: u16) -> pci_core::bus_range::AssignedBusRange {
+    fn bus_range_for_device_id(device_id: u16) -> AssignedBusRange {
         assert_eq!(device_id & 0xFF, 0, "test DeviceID must be dev 0 fn 0");
         let bus = (device_id >> 8) as u8;
-        let bus_range = pci_core::bus_range::AssignedBusRange::new();
+        let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(bus, bus);
         bus_range
     }
 
-    fn wrapper_bus_range() -> pci_core::bus_range::AssignedBusRange {
+    fn wrapper_bus_range() -> AssignedBusRange {
         bus_range_for_device_id(WRAPPER_DEVICE_ID)
     }
 
@@ -4635,9 +4632,8 @@ mod tests {
     /// for testing per-device wrappers. Returns the device and shared state.
     fn setup_iommu_for_wrappers() -> AmdIommuDevice {
         let guest_memory = GuestMemory::allocate(0x10_0000); // 1MB
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1_0000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -4698,7 +4694,7 @@ mod tests {
     /// remapping.
     fn device_context(
         shared: &Arc<IommuSharedState>,
-        bus_range: pci_core::bus_range::AssignedBusRange,
+        bus_range: AssignedBusRange,
         inner_gm: &GuestMemory,
         inner_msi: Arc<dyn SignalMsi>,
     ) -> (GuestMemory, Arc<IommuSignalMsi>) {
@@ -4763,9 +4759,8 @@ mod tests {
     #[test]
     fn test_translating_memory_passthrough() {
         let guest_memory = GuestMemory::allocate(0x10_0000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1_0000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -4814,9 +4809,8 @@ mod tests {
     #[test]
     fn test_translating_memory_disabled_bypass() {
         let guest_memory = GuestMemory::allocate(0x10_0000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
         // IOMMU not enabled — all accesses should pass through.
 
         let shared = dev.shared_state().clone();
@@ -4861,9 +4855,8 @@ mod tests {
     #[test]
     fn test_signal_msi_iommu_disabled() {
         let guest_memory = GuestMemory::allocate(0x10_0000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let shared = dev.shared_state().clone();
         let mock_msi = MockSignalMsi::new();
@@ -4978,9 +4971,8 @@ mod tests {
         // =====================================================================
 
         let guest_memory = GuestMemory::allocate(0x20_0000); // 2MB
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa: u64 = 0x00_0000;
         let cmdbuf_gpa: u64 = 0x00_8000;
@@ -5360,9 +5352,8 @@ mod tests {
     ///              (deliberately non-contiguous GPAs)
     fn setup_iommu_two_pages() -> AmdIommuDevice {
         let guest_memory = GuestMemory::allocate(0x20_0000); // 2MB
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1_0000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -5412,9 +5403,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -5787,9 +5777,8 @@ mod tests {
     #[test]
     fn test_translating_memory_3level_high_iova() {
         let guest_memory = GuestMemory::allocate(0x20_0000); // 2MB
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1_0000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -6020,9 +6009,8 @@ mod tests {
     #[test]
     fn test_translating_memory_iova_overflow() {
         let guest_memory = GuestMemory::allocate(0x10_0000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         let devtab_gpa = 0x1_0000;
         setup_iommu_with_devtab(&mut dev, devtab_gpa, 512);
@@ -6137,11 +6125,10 @@ mod tests {
     #[test]
     fn test_evtlog_overflow_delivers_msi() {
         let guest_memory = GuestMemory::allocate(0x10000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let msi_controller = pci_core::test_helpers::TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         // Enable MSI on PCI config space.
         let iommu_cap_header = pci_read(&mut dev, 0x40);
@@ -6251,9 +6238,8 @@ mod tests {
         // Place the event log within valid memory and the command buffer
         // beyond it so that reading a command entry fails.
         let guest_memory = GuestMemory::allocate(0x10000);
-        let msi_conn =
-            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), &msi_conn.target());
 
         // Event log at valid GPA 0x1000.
         let evt_base = EvtLogBase::new()

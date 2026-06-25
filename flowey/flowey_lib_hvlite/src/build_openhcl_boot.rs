@@ -94,8 +94,7 @@ impl FlowNode for Node {
                 extra_env: Some(ReadVar::from_static(
                     [
                         ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
-                        // TODO: Soon
-                        //("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                        ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
                     ]
                     .into_iter()
                     .collect(),

@@ -123,6 +123,8 @@ fn test_ttrpc_interface(
             let virtiofs_root = std::env::temp_dir().join(Guid::new_random().to_string());
             std::fs::create_dir_all(&virtiofs_root).unwrap();
 
+            let consomme_nic_id = Guid::new_random().to_string();
+
             // On iteration 0, test `connect: true` for both serial and
             // virtio console by pre-creating listeners that the VM will
             // connect to. On other iterations, test the default
@@ -171,11 +173,12 @@ fn test_ttrpc_interface(
                             }),
                             devices_config: Some(vmservice::DevicesConfig {
                                 nic_config: vec![vmservice::NicConfig {
-                                    nic_id: Guid::new_random().to_string(),
+                                    nic_id: consomme_nic_id.clone(),
                                     mac_address: "00-15-5D-12-12-12".to_string(),
                                     backend: Some(vmservice::nic_config::Backend::Consomme(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
+                                            ports: vec![],
                                         },
                                     )),
                                     ..Default::default()
@@ -197,6 +200,51 @@ fn test_ttrpc_interface(
                 )
                 .await
                 .unwrap();
+
+            // Exercise the Consomme port-forwarding modify paths. Sending an
+            // invalid protocol value drives the request through the
+            // `ModifyResource(Update|Remove)` -> `consomme_rpc` wiring and the
+            // protocol validation in `parse_port_config`, returning an error
+            // before touching the device. This guards against regressions in
+            // the bind/unbind routing without depending on guest timing or
+            // host port availability.
+            for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::ModifyResource,
+                        vmservice::ModifyResourceRequest {
+                            r#type: modify_type as i32,
+                            resource: Some(
+                                vmservice::modify_resource_request::Resource::NicConfig(
+                                    vmservice::NicConfig {
+                                        nic_id: consomme_nic_id.clone(),
+                                        mac_address: "00-15-5D-12-12-12".to_string(),
+                                        backend: Some(vmservice::nic_config::Backend::Consomme(
+                                            vmservice::ConsommeBackend {
+                                                cidr: String::new(),
+                                                ports: vec![vmservice::PortConfig {
+                                                    host_port: 8080,
+                                                    guest_port: 80,
+                                                    // Deliberately invalid protocol value.
+                                                    protocol: 99,
+                                                }],
+                                            },
+                                        )),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.message.contains("invalid protocol"),
+                    "expected invalid protocol error, got: {}",
+                    err.message
+                );
+            }
 
             // Get the serial connection - either by accepting on our listener
             // (connect: true) or connecting to the VM's socket (connect: false).

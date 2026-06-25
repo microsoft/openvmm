@@ -435,7 +435,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "build artifacts (shared VMM tests) [linux]",
             )
-            .gh_set_pool(gh_pools::default_linux())
+            .gh_set_pool(gh_pools::linux_intel_v6_1es())
             .ado_set_pool(ado_pools::default_linux());
         for (
             arch,
@@ -1151,7 +1151,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_amd_1es(),
+                gh_pool: gh_pools::windows_intel_v6_1es(),
                 ado_pool: Some(ado_pools::windows_amd_1es()),
                 clippy_targets: Some((
                     "x64-windows",
@@ -1165,7 +1165,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_amd_1es(),
+                gh_pool: gh_pools::linux_intel_v6_1es(),
                 ado_pool: Some(ado_pools::linux_amd_1es()),
                 clippy_targets: if quick_check_job.is_some() {
                     // quick check already ran clippy for x64-linux;
@@ -1185,7 +1185,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_amd_1es(),
+                gh_pool: gh_pools::linux_intel_v6_1es(),
                 ado_pool: Some(ado_pools::linux_amd_1es()),
                 clippy_targets: Some((
                     "x64-linux-musl, misc nostd",
@@ -1196,7 +1196,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: gh_pools::windows_arm_1es(),
+                gh_pool: gh_pools::windows_arm_v6_1es(),
                 ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-windows",
@@ -1210,7 +1210,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: gh_pools::linux_arm_1es(),
+                gh_pool: gh_pools::linux_arm_v5_1es(),
                 ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-linux",
@@ -1224,7 +1224,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: gh_pools::linux_arm_1es(),
+                gh_pool: gh_pools::linux_arm_v5_1es(),
                 ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-linux-musl, misc nostd",
@@ -1492,7 +1492,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_intel_1es(),
+                gh_pool: gh_pools::windows_intel_v6_1es(),
                 ado_pool: Some(ado_pools::windows_intel_1es()),
                 label: "x64-windows-intel",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
@@ -1505,7 +1505,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_intel_1es(),
+                gh_pool: gh_pools::windows_intel_v6_1es(),
                 ado_pool: Some(ado_pools::windows_intel_1es()),
                 label: "x64-windows-intel-mi-secure",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
@@ -1532,7 +1532,9 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_amd_1es(),
+                // a Windows hypervisor bug causes VMM tests to crash
+                // when running on v7, so use v6
+                gh_pool: gh_pools::windows_amd_v6_1es(),
                 ado_pool: Some(ado_pools::windows_amd_1es()),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
@@ -1558,7 +1560,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_amd_1es(),
+                gh_pool: gh_pools::linux_amd_v7_1es(),
                 ado_pool: Some(ado_pools::linux_amd_1es()),
                 label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
@@ -1572,7 +1574,8 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_mshv_1es(),
+                // mshv image needs to be updated to use nvme for v6+ skus
+                gh_pool: gh_pools::linux_mshv_intel_v5_1es(),
                 ado_pool: None,
                 label: "x64-linux-intel-mshv",
                 target: CommonTriple::X86_64_LINUX_MUSL,

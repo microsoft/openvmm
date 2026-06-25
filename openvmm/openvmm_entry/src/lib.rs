@@ -79,8 +79,8 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
@@ -189,6 +189,7 @@ struct VmResources {
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
+    consomme_rpc: Option<mesh::Sender<net_backend_resources::consomme::ConsommeRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     /// Receives dirty rectangles from the synthetic video device for the VNC worker.
@@ -211,10 +212,16 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .iter()
         .map(|switch_cli| PcieSwitchConfig {
             name: switch_cli.name.clone(),
-            num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
-            hotplug: switch_cli.hotplug,
-            acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+            ports: (0..switch_cli.num_downstream_ports)
+                .map(|i| PciePortConfig {
+                    name: format!("{}-downstream-{}", switch_cli.name, i),
+                    devfn: None,
+                    hotplug: switch_cli.hotplug,
+                    acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+                    cxl: false,
+                })
+                .collect(),
         })
         .collect()
 }
@@ -829,14 +836,31 @@ async fn vm_config_from_command_line(
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
 
+    #[cfg(guest_arch = "x86_64")]
+    anyhow::ensure!(
+        opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
+        "--amd-iommu and --intel-vtd cannot both be used in the same VM"
+    );
+
+    #[cfg(guest_arch = "aarch64")]
+    let mut smmu_names: std::collections::HashSet<&str> =
+        opt.smmu.iter().map(|s| s.as_str()).collect();
+    #[cfg(guest_arch = "x86_64")]
+    let mut amd_iommu_names: std::collections::HashSet<&str> =
+        opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+    #[cfg(guest_arch = "x86_64")]
+    let mut vtd_names: std::collections::HashSet<&str> =
+        opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports: Vec<PcieRootPortConfig> = opt
+        let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
-            .map(|port_cli| PcieRootPortConfig {
+            .map(|port_cli| PciePortConfig {
                 name: port_cli.name.clone(),
+                devfn: port_cli.devfn,
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
                 cxl: port_cli.cxl,
@@ -891,36 +915,33 @@ async fn vm_config_from_command_line(
             cxl,
             ports,
             #[cfg(guest_arch = "aarch64")]
-            iommu: opt
-                .smmu
-                .iter()
-                .any(|s| s == &rc_cli.name)
+            iommu: smmu_names
+                .remove(rc_cli.name.as_str())
                 .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
             #[cfg(guest_arch = "x86_64")]
-            iommu: opt
-                .amd_iommu
-                .iter()
-                .any(|s| s == &rc_cli.name)
-                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            iommu: if amd_iommu_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::AmdVi)
+            } else if vtd_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
+            } else {
+                None
+            },
             vnode: rc_cli.vnode,
             preserve_bars: rc_cli.preserve_bars,
         });
     }
 
-    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
     #[cfg(guest_arch = "aarch64")]
-    for name in &opt.smmu {
-        anyhow::ensure!(
-            pcie_root_complexes.iter().any(|rc| rc.name == *name),
-            "--smmu refers to unknown root complex '{name}'"
-        );
+    if let Some(name) = smmu_names.into_iter().next() {
+        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
     }
     #[cfg(guest_arch = "x86_64")]
-    for name in &opt.amd_iommu {
-        anyhow::ensure!(
-            pcie_root_complexes.iter().any(|rc| rc.name == *name),
-            "--amd-iommu refers to unknown root complex '{name}'"
-        );
+    if let Some(name) = amd_iommu_names.into_iter().next() {
+        anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
+    }
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(name) = vtd_names.into_iter().next() {
+        anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -2064,9 +2085,20 @@ fn parse_endpoint(
                     }
                 })
                 .collect();
+            // Only wire the bind/unbind RPC channel to the first consomme
+            // endpoint. Additional consomme NICs work normally but cannot be
+            // targeted by runtime bind/unbind commands.
+            let recv = if resources.consomme_rpc.is_none() {
+                let (send, recv) = mesh::channel();
+                resources.consomme_rpc = Some(send);
+                Some(recv)
+            } else {
+                None
+            };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
                 ports,
+                recv,
             }
             .into_resource()
         }
@@ -2724,6 +2756,7 @@ async fn run_control_inner(
             vm_controller_events: vm_controller_event_recv,
             scsi_rpc: resources.scsi_rpc,
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
+            consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,

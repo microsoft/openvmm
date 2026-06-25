@@ -67,7 +67,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             bar_pt,
         } = resource;
 
-        if input.software_iommu {
+        if input.dma_target.software_iommu() {
             anyhow::bail!(
                 "VFIO device {pci_id} is behind a software IOMMU that cannot \
                  program the host IOMMU for passthrough DMA. Place the device \
@@ -95,7 +95,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             pci_id,
             input.driver_source,
             input.register_mmio,
-            input.msi_target,
+            input.dma_target.msi_target(),
             memory_mapper,
             bar_pt,
         )
@@ -179,7 +179,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             cdev_binding,
             pci_id,
             input.register_mmio,
-            input.msi_target,
+            input.dma_target.msi_target(),
             memory_mapper,
             bar_pt,
         )

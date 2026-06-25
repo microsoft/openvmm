@@ -178,40 +178,40 @@ pub mod cxl_device_dvsec {
         }
     }
 
-    /// Dword offsets in the CXL DVSEC register block.
-    ///
-    /// The PCIe Extended Capability Header at offset `0x00` is managed by the
-    /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
-    /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
-    ///
-    /// This table starts at the first CXL-specific packed dword (`0x0C`).
-    pub struct CxlDeviceDvsecRegisterOffset;
-
-    impl CxlDeviceDvsecRegisterOffset {
-        /// Packed CXL Control + CXL Status dword offset.
-        pub const DVSEC_CONTROL_STATUS: u16 = 0x0c;
-        /// Packed CXL Control2 + CXL Status2 dword offset.
-        pub const DVSEC_CONTROL2_STATUS2: u16 = 0x10;
-        /// Packed CXL Lock + CXL Capability2 dword offset.
-        pub const DVSEC_LOCK_CAPABILITY2: u16 = 0x14;
-        /// CXL Range1 Size High dword offset.
-        pub const DVSEC_RANGE1_SIZE_HIGH: u16 = 0x18;
-        /// CXL Range1 Size Low dword offset.
-        pub const DVSEC_RANGE1_SIZE_LOW: u16 = 0x1c;
-        /// CXL Range1 Base High dword offset.
-        pub const DVSEC_RANGE1_BASE_HIGH: u16 = 0x20;
-        /// CXL Range1 Base Low dword offset.
-        pub const DVSEC_RANGE1_BASE_LOW: u16 = 0x24;
-        /// CXL Range2 Size High dword offset.
-        pub const DVSEC_RANGE2_SIZE_HIGH: u16 = 0x28;
-        /// CXL Range2 Size Low dword offset.
-        pub const DVSEC_RANGE2_SIZE_LOW: u16 = 0x2c;
-        /// CXL Range2 Base High dword offset.
-        pub const DVSEC_RANGE2_BASE_HIGH: u16 = 0x30;
-        /// CXL Range2 Base Low dword offset.
-        pub const DVSEC_RANGE2_BASE_LOW: u16 = 0x34;
-        /// CXL Capability3 dword offset.
-        pub const DVSEC_CAPABILITY3: u16 = 0x38;
+    open_enum::open_enum! {
+        /// Dword offsets in the CXL DVSEC register block.
+        ///
+        /// The PCIe Extended Capability Header at offset `0x00` is managed by the
+        /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
+        /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
+        ///
+        /// This table starts at the first CXL-specific packed dword (`0x0C`).
+        pub enum CxlDeviceDvsecRegisterOffset: u16 {
+            /// Packed CXL Control + CXL Status dword offset.
+            DVSEC_CONTROL_STATUS = 0x0c,
+            /// Packed CXL Control2 + CXL Status2 dword offset.
+            DVSEC_CONTROL2_STATUS2 = 0x10,
+            /// Packed CXL Lock + CXL Capability2 dword offset.
+            DVSEC_LOCK_CAPABILITY2 = 0x14,
+            /// CXL Range1 Size High dword offset.
+            DVSEC_RANGE1_SIZE_HIGH = 0x18,
+            /// CXL Range1 Size Low dword offset.
+            DVSEC_RANGE1_SIZE_LOW = 0x1c,
+            /// CXL Range1 Base High dword offset.
+            DVSEC_RANGE1_BASE_HIGH = 0x20,
+            /// CXL Range1 Base Low dword offset.
+            DVSEC_RANGE1_BASE_LOW = 0x24,
+            /// CXL Range2 Size High dword offset.
+            DVSEC_RANGE2_SIZE_HIGH = 0x28,
+            /// CXL Range2 Size Low dword offset.
+            DVSEC_RANGE2_SIZE_LOW = 0x2c,
+            /// CXL Range2 Base High dword offset.
+            DVSEC_RANGE2_BASE_HIGH = 0x30,
+            /// CXL Range2 Base Low dword offset.
+            DVSEC_RANGE2_BASE_LOW = 0x34,
+            /// CXL Capability3 dword offset.
+            DVSEC_CAPABILITY3 = 0x38,
+        }
     }
 
     /// CXL DVSEC revision.
@@ -461,30 +461,30 @@ pub mod cxl_port_dvsec {
     use bitfield_struct::bitfield;
     use inspect::Inspect;
 
-    /// Dword offsets in the CXL Port DVSEC register block.
-    ///
-    /// The PCIe Extended Capability Header at offset `0x00` is managed by the
-    /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
-    /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
-    pub struct CxlPortDvsecRegisterOffset;
-
-    impl CxlPortDvsecRegisterOffset {
-        /// Packed DVSEC Header2 + CXL Port Extension Status dword offset.
-        pub const DVSEC_HEADER2_PORT_EXTENSION_STATUS: u16 = 0x08;
-        /// Packed CXL Port Control Extensions + Alternate Bus Base/Limit dword offset.
-        pub const DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT: u16 = 0x0c;
-        /// Packed Alternate Memory Base + Alternate Memory Limit dword offset.
-        pub const DVSEC_ALT_MEMORY_BASE_LIMIT: u16 = 0x10;
-        /// Packed Alternate Prefetchable Memory Base + Limit dword offset.
-        pub const DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT: u16 = 0x14;
-        /// Alternate Prefetchable Memory Base High dword offset.
-        pub const DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH: u16 = 0x18;
-        /// Alternate Prefetchable Memory Limit High dword offset.
-        pub const DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH: u16 = 0x1c;
-        /// CXL RCRB Base dword offset.
-        pub const DVSEC_CXL_RCRB_BASE: u16 = 0x20;
-        /// CXL RCRB Base High dword offset.
-        pub const DVSEC_CXL_RCRB_BASE_HIGH: u16 = 0x24;
+    open_enum::open_enum! {
+        /// Dword offsets in the CXL Port DVSEC register block.
+        ///
+        /// The PCIe Extended Capability Header at offset `0x00` is managed by the
+        /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
+        /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
+        pub enum CxlPortDvsecRegisterOffset : u16 {
+            /// Packed DVSEC Header2 + CXL Port Extension Status dword offset.
+            DVSEC_HEADER2_PORT_EXTENSION_STATUS = 0x08,
+            /// Packed CXL Port Control Extensions + Alternate Bus Base/Limit dword offset.
+            DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT = 0x0c,
+            /// Packed Alternate Memory Base + Alternate Memory Limit dword offset.
+            DVSEC_ALT_MEMORY_BASE_LIMIT = 0x10,
+            /// Packed Alternate Prefetchable Memory Base + Limit dword offset.
+            DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT = 0x14,
+            /// Alternate Prefetchable Memory Base High dword offset.
+            DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH = 0x18,
+            /// Alternate Prefetchable Memory Limit High dword offset.
+            DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH = 0x1c,
+            /// CXL RCRB Base dword offset.
+            DVSEC_CXL_RCRB_BASE = 0x20,
+            /// CXL RCRB Base High dword offset.
+            DVSEC_CXL_RCRB_BASE_HIGH = 0x24,
+        }
     }
 
     /// CXL Port DVSEC revision.
@@ -629,26 +629,26 @@ pub mod flex_bus_port_dvsec {
     use bitfield_struct::bitfield;
     use inspect::Inspect;
 
-    /// Dword offsets in the CXL Flex Bus Port DVSEC register block.
-    ///
-    /// The PCIe Extended Capability Header at offset `0x00` is managed by the
-    /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
-    /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
-    pub struct CxlFlexBusPortDvsecRegisterOffset;
-
-    impl CxlFlexBusPortDvsecRegisterOffset {
-        /// Packed DVSEC Header2 + Flex Bus Port Capability dword offset.
-        pub const DVSEC_HEADER2_CAPABILITY: u16 = 0x08;
-        /// Packed Flex Bus Port Control + Flex Bus Port Status dword offset.
-        pub const DVSEC_CONTROL_STATUS: u16 = 0x0c;
-        /// Flex Bus Port Received Modified TS Data Phase1 dword offset.
-        pub const DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1: u16 = 0x10;
-        /// Flex Bus Port Capability2 dword offset.
-        pub const DVSEC_CAPABILITY2: u16 = 0x14;
-        /// Flex Bus Port Control2 dword offset.
-        pub const DVSEC_CONTROL2: u16 = 0x18;
-        /// Flex Bus Port Status2 dword offset.
-        pub const DVSEC_STATUS2: u16 = 0x1c;
+    open_enum::open_enum! {
+        /// Dword offsets in the CXL Flex Bus Port DVSEC register block.
+        ///
+        /// The PCIe Extended Capability Header at offset `0x00` is managed by the
+        /// caller. DVSEC Header1 (`0x04`) and DVSEC Header2 (`0x08`) are defined in
+        /// `pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader`.
+        pub enum CxlFlexBusPortDvsecRegisterOffset : u16 {
+            /// Packed DVSEC Header2 + Flex Bus Port Capability dword offset.
+            DVSEC_HEADER2_CAPABILITY = 0x08,
+            /// Packed Flex Bus Port Control + Flex Bus Port Status dword offset.
+            DVSEC_CONTROL_STATUS = 0x0c,
+            /// Flex Bus Port Received Modified TS Data Phase1 dword offset.
+            DVSEC_RECEIVED_MODIFIED_TS_DATA_PHASE1 = 0x10,
+            /// Flex Bus Port Capability2 dword offset.
+            DVSEC_CAPABILITY2 = 0x14,
+            /// Flex Bus Port Control2 dword offset.
+            DVSEC_CONTROL2 = 0x18,
+            /// Flex Bus Port Status2 dword offset.
+            DVSEC_STATUS2 = 0x1c,
+        }
     }
 
     /// CXL Flex Bus Port DVSEC revision.

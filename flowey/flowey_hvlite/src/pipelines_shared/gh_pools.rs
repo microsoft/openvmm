@@ -5,12 +5,15 @@
 
 use flowey::pipeline::prelude::*;
 
-pub const AMD_POOL_1ES: &str = "openvmm-gh-amd-westus3";
-pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
-pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
+pub const AMD_V6_POOL_1ES: &str = "openvmm-gh-amd-westus3-v6";
+pub const AMD_V7_POOL_1ES: &str = "openvmm-gh-amd-westus3-v7";
+pub const INTEL_V5_POOL_1ES: &str = "openvmm-gh-intel-westus3";
+pub const INTEL_V6_POOL_1ES: &str = "openvmm-gh-intel-westus3-v6";
+pub const ARM_V5_POOL_1ES: &str = "openvmm-gh-arm-westus2";
+pub const ARM_V6_POOL_1ES: &str = "openvmm-gh-arm-westus3";
 
-pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64";
-pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64";
+pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64-v2";
+pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64-v2";
 pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
 pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
 pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0";
@@ -23,28 +26,32 @@ fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
     ])
 }
 
-pub fn windows_amd_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64)
+pub fn windows_arm_v6_1es() -> GhRunner {
+    gh_pool_with_image_1es(ARM_V6_POOL_1ES, WINDOWS_IMAGE_ARM64)
 }
 
-pub fn windows_intel_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_POOL_1ES, WINDOWS_IMAGE_AMD64)
+pub fn windows_amd_v6_1es() -> GhRunner {
+    gh_pool_with_image_1es(AMD_V6_POOL_1ES, WINDOWS_IMAGE_AMD64)
 }
 
-pub fn windows_arm_1es() -> GhRunner {
-    gh_pool_with_image_1es(ARM_POOL_1ES, WINDOWS_IMAGE_ARM64)
+pub fn windows_intel_v6_1es() -> GhRunner {
+    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, WINDOWS_IMAGE_AMD64)
 }
 
-pub fn linux_arm_1es() -> GhRunner {
-    gh_pool_with_image_1es(ARM_POOL_1ES, LINUX_IMAGE_ARM64)
+pub fn linux_arm_v5_1es() -> GhRunner {
+    gh_pool_with_image_1es(ARM_V5_POOL_1ES, LINUX_IMAGE_ARM64)
 }
 
-pub fn linux_amd_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_POOL_1ES, LINUX_IMAGE_AMD64)
+pub fn linux_intel_v6_1es() -> GhRunner {
+    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, LINUX_IMAGE_AMD64)
 }
 
-pub fn linux_mshv_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_POOL_1ES, MSHV_IMAGE_AMD64)
+pub fn linux_amd_v7_1es() -> GhRunner {
+    gh_pool_with_image_1es(AMD_V7_POOL_1ES, LINUX_IMAGE_AMD64)
+}
+
+pub fn linux_mshv_intel_v5_1es() -> GhRunner {
+    gh_pool_with_image_1es(INTEL_V5_POOL_1ES, MSHV_IMAGE_AMD64)
 }
 
 pub fn windows_x64_gh() -> GhRunner {
@@ -93,9 +100,9 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
 }
 
 pub fn default_windows() -> GhRunner {
-    windows_amd_1es()
+    windows_intel_v6_1es()
 }
 
 pub fn default_linux() -> GhRunner {
-    linux_amd_1es()
+    linux_amd_v7_1es()
 }

@@ -283,6 +283,11 @@ name:
 --pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
 ```
 
+- `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
+  its bus. `dev` is 0-31 and the optional `fn` is 0-7 (both decimal or
+  `0x`-prefixed hex). When omitted, the port is assigned the lowest
+  available devfn. Ports are assigned in order, so an explicit `addr` that
+  collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
@@ -412,3 +417,36 @@ software IOVA→GPA translation for DMA and MSI addresses.
 
 VFIO devices cannot currently be placed behind an SMMU-covered root
 complex because iommufd nested translation is not yet available.
+
+### AMD IOMMU (x86_64 only)
+
+`--amd-iommu <RC_NAME>` enables an emulated AMD-Vi IOMMU for the named
+root complex. The flag is repeatable — use one `--amd-iommu` per root
+complex that should have an IOMMU. Devices behind a covered root complex
+get software IOVA→GPA translation for DMA and interrupt remapping.
+
+```sh
+# Enable AMD IOMMU on root complex rc0
+--amd-iommu rc0
+```
+
+Mutually exclusive with `--intel-vtd` within the same VM (only one x86
+IOMMU type can be active).
+
+### Intel VT-d (x86_64 only)
+
+`--intel-vtd <RC_NAME>` enables an emulated Intel VT-d IOMMU for the
+named root complex. The flag is repeatable — use one `--intel-vtd` per
+root complex that should have an IOMMU. The guest discovers VT-d units
+via the ACPI DMAR table (not PCI config space).
+
+```sh
+# Enable Intel VT-d on root complex rc0
+--intel-vtd rc0
+
+# Multiple root complexes
+--intel-vtd rc0 --intel-vtd rc1
+```
+
+Mutually exclusive with `--amd-iommu` within the same VM (only one x86
+IOMMU type can be active).

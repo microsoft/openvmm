@@ -141,6 +141,57 @@ pub struct AmdIommuIvrsConfig {
     pub iommus: Vec<AmdIommuAcpiConfig>,
 }
 
+/// Configuration for a single Intel VT-d remapping unit in the DMAR table.
+#[derive(Clone, Debug)]
+pub struct IntelVtdAcpiConfig {
+    /// MMIO base address of the VT-d register region.
+    pub mmio_base: u64,
+    /// PCI segment group number (typically 0).
+    pub pci_segment: u16,
+    /// Start bus number of the root complex covered by this VT-d unit.
+    pub start_bus: u8,
+    /// Device scope entries for this DRHD. Each entry identifies a device
+    /// on the root bus (bridges for root ports, endpoints for RCiEPs).
+    /// The DMAR builder emits one DMAR device scope entry per element.
+    pub device_scopes: Vec<IntelVtdDeviceScope>,
+}
+
+/// A single device scope entry for the DMAR table's DRHD structure.
+///
+/// Identifies a device on the root complex's start bus by its PCI
+/// devfn and scope type.
+#[derive(Clone, Debug)]
+pub struct IntelVtdDeviceScope {
+    /// PCI device/function on the root bus, encoded as `(device << 3) | function`.
+    pub devfn: u8,
+    /// Whether this is a PCI bridge (root port, type 0x02) or an
+    /// endpoint (RCiEP, type 0x01).
+    pub is_bridge: bool,
+}
+
+/// DMAR-level configuration for Intel VT-d ACPI table generation.
+///
+/// Groups the DMAR header fields with the per-unit configs.
+#[derive(Clone, Debug)]
+pub struct IntelVtdDmarConfig {
+    /// Host address width in bits (e.g. 48). DMAR HAW field = width - 1.
+    pub host_address_width: u8,
+    /// Per-unit configurations, one per root complex with an Intel VT-d unit.
+    pub units: Vec<IntelVtdAcpiConfig>,
+}
+
+/// x86 IOMMU ACPI table configuration.
+///
+/// At most one x86 IOMMU type can be active per VM. This enum selects
+/// which IOMMU ACPI table (IVRS or DMAR) to generate.
+#[derive(Clone, Debug)]
+pub enum X86IommuAcpiConfig {
+    /// AMD IOMMU (AMD-Vi): generates an IVRS table.
+    AmdVi(AmdIommuIvrsConfig),
+    /// Intel VT-d: generates a DMAR table.
+    IntelVtd(IntelVtdDmarConfig),
+}
+
 /// Architecture-specific ACPI configuration carried by [`AcpiTablesBuilder`].
 pub enum AcpiArchConfig {
     /// x86-specific settings (IOAPIC, PIC, PIT, PSP, PM base, SCI IRQ).
@@ -157,9 +208,10 @@ pub enum AcpiArchConfig {
         pm_base: u16,
         /// ACPI IRQ number.
         acpi_irq: u32,
-        /// AMD IOMMU IVRS table configuration. If `Some`, an IVRS table is
-        /// generated with one IVHD block per IOMMU instance.
-        amd_iommu: Option<AmdIommuIvrsConfig>,
+        /// x86 IOMMU ACPI table configuration. Generates an IVRS (AMD) or
+        /// DMAR (Intel VT-d) table when set. At most one x86 IOMMU type
+        /// is active per VM.
+        iommu: Option<X86IommuAcpiConfig>,
     },
     /// ARM64-specific settings (HW_REDUCED_ACPI FADT).
     Aarch64 {
@@ -775,6 +827,61 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         ))
     }
 
+    fn with_dmar<F, R>(&self, dmar_config: &IntelVtdDmarConfig, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        use acpi_spec::dmar;
+        use acpi_spec::dmar::DmarDevicePath;
+
+        let mut dmar_extra: Vec<u8> = Vec::new();
+
+        for config in &dmar_config.units {
+            // Each device scope entry is a DmarDeviceScope header (6 bytes)
+            // plus one DmarDevicePath (2 bytes).
+            let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
+            let total_scope_size = per_scope_size * config.device_scopes.len();
+            let drhd_total = size_of::<dmar::DmarDrhd>() + total_scope_size;
+
+            let drhd = dmar::DmarDrhd::new(
+                0, // no INCLUDE_PCI_ALL
+                config.pci_segment,
+                config.mmio_base,
+            )
+            .with_length(drhd_total as u16);
+
+            dmar_extra.extend_from_slice(drhd.as_bytes());
+
+            for scope in &config.device_scopes {
+                let scope_type = if scope.is_bridge {
+                    dmar::DEVICE_SCOPE_PCI_SUB_HIERARCHY
+                } else {
+                    dmar::DEVICE_SCOPE_PCI_ENDPOINT
+                };
+                dmar_extra.extend_from_slice(
+                    dmar::DmarDeviceScope::new(scope_type, config.start_bus).as_bytes(),
+                );
+                dmar_extra.extend_from_slice(
+                    DmarDevicePath {
+                        device: scope.devfn >> 3,
+                        function: scope.devfn & 0x7,
+                    }
+                    .as_bytes(),
+                );
+            }
+        }
+
+        // HAW field is width - 1 (e.g. 48-bit → 0x2F).
+        let haw = dmar_config.host_address_width - 1;
+
+        (f)(&acpi::builder::Table::new_dyn(
+            dmar::DMAR_REVISION,
+            None,
+            &dmar::Dmar::new(haw, dmar::DMAR_FLAGS_INTR_REMAP),
+            &[dmar_extra.as_slice()],
+        ))
+    }
+
     fn with_pptt<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
@@ -1129,11 +1236,19 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         }
 
         if let AcpiArchConfig::X86 {
-            amd_iommu: Some(ivrs_config),
+            iommu: Some(X86IommuAcpiConfig::AmdVi(ivrs_config)),
             ..
         } = &self.arch
         {
             self.with_ivrs(ivrs_config, |t| b.append(t));
+        }
+
+        if let AcpiArchConfig::X86 {
+            iommu: Some(X86IommuAcpiConfig::IntelVtd(dmar_config)),
+            ..
+        } = &self.arch
+        {
+            self.with_dmar(dmar_config, |t| b.append(t));
         }
 
         if matches!(self.arch, AcpiArchConfig::Aarch64 { .. }) {
@@ -1181,11 +1296,24 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// ACPI tables. Returns `None` if AMD IOMMU is not configured.
     pub fn build_ivrs(&self) -> Option<Vec<u8>> {
         if let AcpiArchConfig::X86 {
-            amd_iommu: Some(ivrs_config),
+            iommu: Some(X86IommuAcpiConfig::AmdVi(ivrs_config)),
             ..
         } = &self.arch
         {
             return Some(self.with_ivrs(ivrs_config, |t| t.to_vec(&OEM_INFO)));
+        }
+        None
+    }
+
+    /// Helper method to construct a DMAR without constructing the rest of the
+    /// ACPI tables. Returns `None` if Intel VT-d is not configured.
+    pub fn build_dmar(&self) -> Option<Vec<u8>> {
+        if let AcpiArchConfig::X86 {
+            iommu: Some(X86IommuAcpiConfig::IntelVtd(dmar_config)),
+            ..
+        } = &self.arch
+        {
+            return Some(self.with_dmar(dmar_config, |t| t.to_vec(&OEM_INFO)));
         }
         None
     }
@@ -1267,7 +1395,7 @@ mod test {
                 with_psp: false,
                 pm_base: 1234,
                 acpi_irq: 2,
-                amd_iommu: None,
+                iommu: None,
             },
         }
     }
@@ -1860,12 +1988,12 @@ mod test {
         builder: &mut AcpiTablesBuilder<'_, X86Topology>,
         configs: Vec<AmdIommuAcpiConfig>,
     ) {
-        if let AcpiArchConfig::X86 { amd_iommu, .. } = &mut builder.arch {
-            *amd_iommu = Some(AmdIommuIvrsConfig {
+        if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
+            *iommu = Some(X86IommuAcpiConfig::AmdVi(AmdIommuIvrsConfig {
                 pa_size: 48,
                 va_size: 48,
                 iommus: configs,
-            });
+            }));
         } else {
             panic!("expected X86 arch config");
         }
@@ -2081,5 +2209,194 @@ mod test {
                 .unwrap(),
         );
         assert_eq!(seg1, 1);
+    }
+
+    fn set_intel_vtd(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<IntelVtdAcpiConfig>,
+    ) {
+        if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
+            *iommu = Some(X86IommuAcpiConfig::IntelVtd(IntelVtdDmarConfig {
+                host_address_width: 48,
+                units: configs,
+            }));
+        } else {
+            panic!("expected X86 arch config");
+        }
+    }
+
+    #[test]
+    fn test_dmar_basic() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 0,
+                start_bus: 0,
+                device_scopes: vec![
+                    IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    },
+                    IntelVtdDeviceScope {
+                        devfn: 0x01,
+                        is_bridge: true,
+                    },
+                ],
+            }],
+        );
+
+        let dmar = builder.build_dmar().unwrap();
+
+        // Verify DMAR signature
+        assert_eq!(&dmar[0..4], b"DMAR");
+        // Verify checksum
+        assert_eq!(checksum(&dmar), 0);
+
+        // After 36-byte ACPI header: 12-byte DMAR body starts at offset 36
+        let body_offset = 36;
+        // HAW = 47 (48-1)
+        assert_eq!(dmar[body_offset], 47);
+        // Flags: INTR_REMAP = 0x01
+        assert_eq!(dmar[body_offset + 1], 0x01);
+
+        // DRHD structure starts at offset 48 (36 header + 12 body)
+        let drhd_offset = 48;
+        // Structure type = 0x0000 (DRHD)
+        let struct_type =
+            u16::from_ne_bytes(dmar[drhd_offset..drhd_offset + 2].try_into().unwrap());
+        assert_eq!(struct_type, 0x0000);
+
+        // Flags = 0 (no INCLUDE_PCI_ALL)
+        assert_eq!(dmar[drhd_offset + 4], 0);
+
+        // Register base address at offset +8 (u64)
+        let reg_base =
+            u64::from_ne_bytes(dmar[drhd_offset + 8..drhd_offset + 16].try_into().unwrap());
+        assert_eq!(reg_base, 0xFED9_0000);
+
+        // Device scope 0 at offset +16
+        let scope0_offset = drhd_offset + 16;
+        // Type = 2 (PCI sub-hierarchy)
+        assert_eq!(dmar[scope0_offset], 2);
+        // Start bus number = 0
+        assert_eq!(dmar[scope0_offset + 5], 0);
+        // Path: device 0, function 0
+        assert_eq!(dmar[scope0_offset + 6], 0);
+        assert_eq!(dmar[scope0_offset + 7], 0);
+
+        // Device scope 1 at offset +24 (6 header + 2 path = 8 per scope)
+        let scope1_offset = scope0_offset + 8;
+        // Type = 2 (PCI sub-hierarchy)
+        assert_eq!(dmar[scope1_offset], 2);
+        // Start bus number = 0
+        assert_eq!(dmar[scope1_offset + 5], 0);
+        // Path: device 0, function 1
+        assert_eq!(dmar[scope1_offset + 6], 0);
+        assert_eq!(dmar[scope1_offset + 7], 1);
+    }
+
+    #[test]
+    fn test_dmar_not_generated_when_disabled() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let builder = new_builder(&mem, &topology, &pcie);
+
+        assert!(builder.build_dmar().is_none());
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(!contains_signature(&tables.tables, b"DMAR"));
+    }
+
+    #[test]
+    fn test_dmar_in_acpi_tables() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 0,
+                start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
+            }],
+        );
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(contains_signature(&tables.tables, b"DMAR"));
+    }
+
+    #[test]
+    fn test_dmar_multiple_units() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd(
+            &mut builder,
+            vec![
+                IntelVtdAcpiConfig {
+                    mmio_base: 0xFED9_0000,
+                    pci_segment: 0,
+                    start_bus: 0,
+                    device_scopes: vec![IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    }],
+                },
+                IntelVtdAcpiConfig {
+                    mmio_base: 0xFED9_1000,
+                    pci_segment: 1,
+                    start_bus: 128,
+                    device_scopes: vec![IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    }],
+                },
+            ],
+        );
+
+        let dmar = builder.build_dmar().unwrap();
+
+        assert_eq!(&dmar[0..4], b"DMAR");
+        assert_eq!(checksum(&dmar), 0);
+
+        // First DRHD at offset 48
+        let drhd0_offset = 48;
+        let drhd0_len =
+            u16::from_ne_bytes(dmar[drhd0_offset + 2..drhd0_offset + 4].try_into().unwrap());
+        let reg_base0 = u64::from_ne_bytes(
+            dmar[drhd0_offset + 8..drhd0_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(reg_base0, 0xFED9_0000);
+        let seg0 = u16::from_ne_bytes(dmar[drhd0_offset + 6..drhd0_offset + 8].try_into().unwrap());
+        assert_eq!(seg0, 0);
+
+        // Second DRHD follows first
+        let drhd1_offset = drhd0_offset + drhd0_len as usize;
+        let reg_base1 = u64::from_ne_bytes(
+            dmar[drhd1_offset + 8..drhd1_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(reg_base1, 0xFED9_1000);
+        let seg1 = u16::from_ne_bytes(dmar[drhd1_offset + 6..drhd1_offset + 8].try_into().unwrap());
+        assert_eq!(seg1, 1);
+
+        // Second DRHD's device scope start_bus = 128
+        let scope1_offset = drhd1_offset + 16;
+        assert_eq!(dmar[scope1_offset + 5], 128);
     }
 }
