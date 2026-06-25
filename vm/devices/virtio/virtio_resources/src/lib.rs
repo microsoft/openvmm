@@ -64,15 +64,16 @@ pub mod fs {
         /// child of a synthetic root. Lets one virtio-fs device (one tag, one
         /// PCI/MMIO footprint) serve many shares.
         Aggregate {
-            roots: Vec<VirtioFsAggregateRoot>,
+            children: Vec<VirtioFsAggregateChild>,
         },
     }
 
     /// A single host folder exposed as a named child of a [`VirtioFsBackend::Aggregate`].
     #[derive(MeshPayload)]
-    pub struct VirtioFsAggregateRoot {
-        /// Synthetic top-level directory name; the guest bind-mounts
-        /// `<aggregate-mount>/<name>` onto the user's target path.
+    pub struct VirtioFsAggregateChild {
+        /// Name of this child's directory under the aggregate's synthetic root;
+        /// the guest bind-mounts `<aggregate-mount>/<name>` onto the user's
+        /// target path.
         pub name: String,
         pub root_path: String,
         pub mount_options: String,

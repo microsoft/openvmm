@@ -65,9 +65,6 @@ pub struct fuse_attr {
     pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
-    /// Attribute flags (`FUSE_ATTR_*`). Named `padding` in older kernels; valid
-    /// for `FUSE_ATTR_SUBMOUNT` only once the `FUSE_SUBMOUNTS` capability has
-    /// been negotiated at init time.
     pub flags: u32,
 }
 
