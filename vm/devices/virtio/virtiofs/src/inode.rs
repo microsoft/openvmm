@@ -49,6 +49,10 @@ pub struct VirtioFsInode {
     path: RwLock<PathBuf>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
+    /// This inode's number as reported to the guest: its host inode number
+    /// ([`Self::inode_nr`]) folded into its volume's namespace (see
+    /// [`namespace_ino`]).
+    namespaced_inode_nr: lx::ino_t,
 }
 
 impl VirtioFsInode {
@@ -76,6 +80,7 @@ impl VirtioFsInode {
             path: RwLock::new(path),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
+            namespaced_inode_nr: namespace_ino(volume_id, stat.inode_nr),
         }
     }
 
@@ -91,25 +96,37 @@ impl VirtioFsInode {
         self.volume_id
     }
 
-    /// Applies this inode's volume namespace to a raw host inode number (see
-    /// [`namespace_ino`]).
+    /// This inode's own number as reported to the guest: its host inode number
+    /// folded into its volume's namespace (see [`namespace_ino`]). Fixed for
+    /// the inode's lifetime.
+    pub(crate) fn namespaced_inode_nr(&self) -> lx::ino_t {
+        self.namespaced_inode_nr
+    }
+
+    /// Namespaces a raw host inode number from this inode's volume (see
+    /// [`namespace_ino`]). For numbers belonging to *other* inodes in the same
+    /// volume (e.g. readdir child entries); for this inode's own number use
+    /// [`Self::namespaced_inode_nr`].
     pub(crate) fn namespaced_ino(&self, raw: lx::ino_t) -> lx::ino_t {
         namespace_ino(self.volume_id, raw)
     }
 
-    /// Builds a `fuse_attr` from a stat, namespacing the reported inode number
-    /// to this inode's volume so that aggregated siblings never alias.
+    /// Builds a `fuse_attr` from a stat *of this inode*, reporting its cached
+    /// namespaced inode number so that aggregated siblings never alias.
+    ///
+    /// `stat` must describe this inode; to report a different inode's
+    /// attributes (e.g. a hard-link target) call this on that inode.
     pub(crate) fn attr_from_stat(&self, stat: &lx::Stat) -> fuse_attr {
         let mut attr = util::stat_to_fuse_attr(stat);
-        attr.ino = self.namespaced_ino(attr.ino);
+        attr.ino = self.namespaced_inode_nr;
         attr
     }
 
-    /// Builds a `fuse_statx` from a statx, namespacing the reported inode
-    /// number to this inode's volume.
+    /// Builds a `fuse_statx` from a statx *of this inode*, reporting its cached
+    /// namespaced inode number.
     pub(crate) fn statx_from(&self, statx: &lx::StatEx) -> fuse_statx {
         let mut sx = util::statx_to_fuse_statx(statx);
-        sx.ino = self.namespaced_ino(sx.ino);
+        sx.ino = self.namespaced_inode_nr;
         sx
     }
 
@@ -271,7 +288,9 @@ impl VirtioFsInode {
     pub fn link(&self, name: &LxStr, target: &VirtioFsInode) -> lx::Result<fuse_attr> {
         let path = self.child_path(name)?;
         let stat = self.volume.link_stat(&*target.get_path(), path)?;
-        Ok(self.attr_from_stat(&stat))
+        // The reply describes the shared (target) inode, so namespace via the
+        // target rather than this directory inode.
+        Ok(target.attr_from_stat(&stat))
     }
 
     /// Reads the target of the symbolic link, if this inode is a symbolic link.

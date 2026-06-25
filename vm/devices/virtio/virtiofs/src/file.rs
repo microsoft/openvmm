@@ -76,7 +76,7 @@ impl VirtioFsFile {
         let mut entry_count: u32 = 0;
         // Report the directory's own inode number namespaced to its volume, so
         // `.`/`..` agree with the number reported by lookup/getattr.
-        let self_inode_nr = self.inode.namespaced_ino(self.inode.inode_nr());
+        let self_inode_nr = self.inode.namespaced_inode_nr();
         let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
