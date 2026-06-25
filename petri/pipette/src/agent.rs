@@ -173,6 +173,7 @@ async fn connect_server_tcp(
 ) -> anyhow::Result<PolledSocket<std::net::TcpStream>> {
     let listener = std::net::TcpListener::bind(("0.0.0.0", pipette_protocol::PIPETTE_PORT as u16))
         .context("failed to bind TCP listener")?;
+    eprintln!("{}", pipette_protocol::PIPETTE_READY_MARKER);
     listener
         .set_nonblocking(true)
         .context("failed to set nonblocking")?;

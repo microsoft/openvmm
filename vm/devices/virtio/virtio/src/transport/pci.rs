@@ -855,17 +855,17 @@ pub(crate) mod capabilities {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use pci_core::capabilities::PciCapability;
         use pci_core::capabilities::ReadOnlyCapability;
+        use pci_core::test_helpers::read_cap_u32;
 
         #[test]
         fn common_check() {
             let common =
                 ReadOnlyCapability::new("common", VirtioCapability::new(0x13, 2, 0, 0x100, 0x200));
-            assert_eq!(common.read_u32(0), 0x13100009);
-            assert_eq!(common.read_u32(4), 2);
-            assert_eq!(common.read_u32(8), 0x100);
-            assert_eq!(common.read_u32(12), 0x200);
+            assert_eq!(read_cap_u32(&common, 0), 0x13100009);
+            assert_eq!(read_cap_u32(&common, 4), 2);
+            assert_eq!(read_cap_u32(&common, 8), 0x100);
+            assert_eq!(read_cap_u32(&common, 12), 0x200);
         }
 
         #[test]
@@ -874,10 +874,10 @@ pub(crate) mod capabilities {
                 "notify",
                 VirtioNotifyCapability::new(0x123, 2, 0x100, 0x200),
             );
-            assert_eq!(notify.read_u32(0), 0x2140009);
-            assert_eq!(notify.read_u32(4), 2);
-            assert_eq!(notify.read_u32(8), 0x100);
-            assert_eq!(notify.read_u32(12), 0x200);
+            assert_eq!(read_cap_u32(&notify, 0), 0x2140009);
+            assert_eq!(read_cap_u32(&notify, 4), 2);
+            assert_eq!(read_cap_u32(&notify, 8), 0x100);
+            assert_eq!(read_cap_u32(&notify, 12), 0x200);
         }
     }
 }

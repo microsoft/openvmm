@@ -8,9 +8,11 @@ use std::collections::BTreeSet;
 
 use crate::build_openhcl_boot::OpenhclBootOutput;
 use crate::build_openhcl_igvm_from_recipe::IgvmManifestPath;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmEndorsements;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetails;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeType;
 use crate::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
 use crate::build_openhcl_igvm_from_recipe::Vtl0KernelType;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
@@ -20,7 +22,6 @@ use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::build_openvmm_hcl::OpenvmmHclOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use crate::run_igvmfilegen::IgvmOutput;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Customizations {
@@ -222,9 +223,7 @@ impl SimpleFlowNode for Node {
             label
         } else {
             let base = match &recipe_details.igvm_manifest {
-                IgvmManifestPath::InTree(_) => {
-                    non_production_build_igvm_tool_out_name(&base_recipe).to_string()
-                }
+                IgvmManifestPath::InTree(_) => base_recipe.non_production_tag(),
                 IgvmManifestPath::LocalOnlyCustom(path) => path
                     .file_name()
                     .unwrap()
@@ -242,34 +241,27 @@ impl SimpleFlowNode for Node {
             }
         };
 
-        let (built_openvmm_hcl, write_built_openvmm_hcl) = ctx.new_var();
-        let (built_openhcl_boot, write_built_openhcl_boot) = ctx.new_var();
-        let (built_openhcl_igvm, write_built_openhcl_igvm) = ctx.new_var();
-        let (built_sidecar, write_built_sidecar) = ctx.new_var();
+        let (openhcl_igvm, write_openhcl_igvm) = ctx.new_var();
+        let (openhcl_igvm_extras, write_openhcl_igvm_extras) = ctx.new_var();
 
         ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
             build_profile,
             release_cfg,
-            recipe: OpenhclIgvmRecipe::LocalOnlyCustom(recipe_details),
+            recipe: OpenhclIgvmRecipeType::LocalOnlyCustom(recipe_details),
             custom_target: None,
             extra_features: BTreeSet::new(),
             disable_secure_avic,
-            built_openvmm_hcl: write_built_openvmm_hcl,
-            built_openhcl_boot: write_built_openhcl_boot,
-            built_openhcl_igvm: write_built_openhcl_igvm,
-            built_sidecar: write_built_sidecar,
+            openhcl_igvm: write_openhcl_igvm,
+            openhcl_igvm_extras: write_openhcl_igvm_extras,
         });
 
         ctx.emit_rust_step("copy to output directory", |ctx| {
             done.claim(ctx);
-            let artifact_dir = artifact_dir.claim(ctx);
-            let built_openvmm_hcl = built_openvmm_hcl.claim(ctx);
-            let built_openhcl_boot = built_openhcl_boot.claim(ctx);
-            let built_openhcl_igvm = built_openhcl_igvm.claim(ctx);
-            let built_sidecar = built_sidecar.claim(ctx);
+            claim_vars!(ctx, (artifact_dir, openhcl_igvm, openhcl_igvm_extras));
             move |rt| {
-                let output_dir = rt
-                    .read(artifact_dir)
+                read_vars!(rt, (artifact_dir, openhcl_igvm, openhcl_igvm_extras));
+
+                let output_dir = artifact_dir
                     .join(match build_profile {
                         OpenvmmHclBuildProfile::Debug => "debug",
                         OpenvmmHclBuildProfile::Release => "release",
@@ -278,46 +270,41 @@ impl SimpleFlowNode for Node {
                     .join(&build_label);
                 fs_err::create_dir_all(&output_dir)?;
 
-                let OpenvmmHclOutput { bin, dbg } = rt.read(built_openvmm_hcl);
+                let OpenvmmHclOutput { bin, dbg } = openhcl_igvm_extras.openvmm_hcl;
                 fs_err::copy(bin, output_dir.join("openvmm_hcl"))?;
                 if let Some(dbg) = dbg {
                     fs_err::copy(dbg, output_dir.join("openvmm_hcl.dbg"))?;
                 }
 
-                let OpenhclBootOutput { bin, dbg } = rt.read(built_openhcl_boot);
+                let OpenhclBootOutput { bin, dbg } = openhcl_igvm_extras.openhcl_boot;
                 fs_err::copy(bin, output_dir.join("openhcl_boot"))?;
                 fs_err::copy(dbg, output_dir.join("openhcl_boot.dbg"))?;
 
-                if let Some(built_sidecar) = rt.read(built_sidecar) {
+                if let Some(built_sidecar) = openhcl_igvm_extras.sidecar {
                     let crate::build_sidecar::SidecarOutput { bin, dbg } = built_sidecar;
                     fs_err::copy(bin, output_dir.join("sidecar"))?;
                     fs_err::copy(dbg, output_dir.join("sidecar.dbg"))?;
                 }
 
-                let IgvmOutput {
-                    igvm_bin,
-                    igvm_map,
-                    igvm_tdx_json,
-                    igvm_snp_json,
-                    igvm_vbs_json,
-                } = rt.read(built_openhcl_igvm);
+                let igvm_bin = openhcl_igvm.igvm_bin();
                 fs_err::copy(
                     igvm_bin,
                     output_dir.join(format!("openhcl-{build_label}.bin")),
                 )?;
-                if let Some(igvm_map) = igvm_map {
+                if let Some(igvm_map) = openhcl_igvm_extras.igvm_map {
                     fs_err::copy(
                         igvm_map,
                         output_dir.join(format!("openhcl-{build_label}.bin.map")),
                     )?;
                 }
-                if let Some(igvm_tdx_json) = igvm_tdx_json {
+                if let Some(OpenhclIgvmEndorsements::X64 {
+                    igvm_tdx_json,
+                    igvm_snp_json,
+                    igvm_vbs_json,
+                }) = openhcl_igvm.endorsements()
+                {
                     fs_err::copy(igvm_tdx_json, output_dir.join("openhcl-tdx.json"))?;
-                }
-                if let Some(igvm_snp_json) = igvm_snp_json {
                     fs_err::copy(igvm_snp_json, output_dir.join("openhcl-snp.json"))?;
-                }
-                if let Some(igvm_vbs_json) = igvm_vbs_json {
                     fs_err::copy(igvm_vbs_json, output_dir.join("openhcl-vbs.json"))?;
                 }
                 for e in fs_err::read_dir(output_dir)? {
@@ -330,19 +317,5 @@ impl SimpleFlowNode for Node {
         });
 
         Ok(())
-    }
-}
-
-pub fn non_production_build_igvm_tool_out_name(recipe: &OpenhclIgvmRecipe) -> &'static str {
-    match recipe {
-        OpenhclIgvmRecipe::X64 => "x64",
-        OpenhclIgvmRecipe::X64Devkern => "x64-devkern",
-        OpenhclIgvmRecipe::X64TestLinuxDirect => "x64-test-linux-direct",
-        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "x64-test-linux-direct-devkern",
-        OpenhclIgvmRecipe::X64Cvm => "x64-cvm",
-        OpenhclIgvmRecipe::X64CvmDevkern => "x64-cvm-devkern",
-        OpenhclIgvmRecipe::Aarch64 => "aarch64",
-        OpenhclIgvmRecipe::Aarch64Devkern => "aarch64-devkern",
-        OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),
     }
 }

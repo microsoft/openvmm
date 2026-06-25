@@ -173,13 +173,16 @@ Options:
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
   VP lists use bracket syntax with comma-separated indices and dash
-  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5].
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5]. An empty list, vps=[],
+  declares a CPU-less node (e.g. a generic-initiator target); unlike a
+  non-empty list, it may be combined with nodes that omit vps.
 
 Examples:
     --numa size=2G --numa size=2G
     --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
     --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
-    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]"#
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+    --numa size=2G --numa size=0,vps=[]"#
     )]
     pub numa: Option<Vec<NumaNodeCli>>,
 
@@ -278,7 +281,6 @@ Examples:
             "vmbus_max_version",
             "vmbus_com1_serial",
             "vmbus_com2_serial",
-            "disk",
             "vtl2",
             "get",
             "pcat",
@@ -619,6 +621,10 @@ options:
     /// enable memory protections in UEFI
     #[clap(long, requires("uefi"))]
     pub uefi_enable_memory_protections: bool,
+
+    /// force UEFI to bounce-buffer all DMA traffic
+    #[clap(long, requires("uefi"))]
+    pub uefi_force_dma_bounce: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -1017,6 +1023,15 @@ options:
     #[clap(long)]
     pub amd_iommu: Vec<String>,
 
+    /// Enable Intel VT-d IOMMU emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --intel-vtd rc0 --intel-vtd rc1
+    /// Mutually exclusive with --amd-iommu within the same VM.
+    /// Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub intel_vtd: Vec<String>,
+
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
@@ -1036,9 +1051,13 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `low_mmio_base=<addr>`         pin low MMIO window base address (0x-prefixed hex)
+    `high_mmio_base=<addr>`        pin high MMIO window base address (0x-prefixed hex)
     `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
     `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
                                    default DEVICE_COHERENT (bit 0, value 0x1)
+    `preserve_bars`                keep pinned BARs at their assigned addresses
+    `node=<value>`                 NUMA node the root complex is associated with
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -1054,9 +1073,17 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
+    # Attach root port rc0rp2 at device 5, function 0
+    --pcie-root-port rc0:rc0rp2,addr=5
+
+    # Attach root port rc0rp3 at device 5, function 1
+    --pcie-root-port rc0:rc0rp3,addr=5.1
+
 Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
+    `addr=<dev>[.<fn>]`            device/function to place this port at (default:
+                                   lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
@@ -1096,6 +1123,33 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Declare the device behind a PCIe port as an SRAT generic initiator
+    #[clap(long_help = r#"
+Declare that the device directly behind a PCIe port is a generic initiator
+(GI) for a NUMA node, generating an SRAT Generic Initiator Affinity structure.
+
+The port may be a root port or a switch downstream port, so this works for
+devices that sit behind a switch (e.g. a GPU placed under a switch shared
+with a NIC for peer-to-peer DMA). The port is resolved by name against the
+live topology after switch downstream ports are enumerated.
+
+Examples:
+    # The device behind switch downstream port sw1-downstream-0 is a generic
+    # initiator for NUMA node 1
+    --pcie-generic-initiator port=sw1-downstream-0,node=1
+
+    # Also works for a root port name
+    --pcie-generic-initiator port=rp0,node=2
+
+Syntax: port=<port_name>,node=<node>
+"#)]
+    #[clap(
+        long = "pcie-generic-initiator",
+        value_name = "port=<name>,node=<node>",
+        conflicts_with("pcat")
+    )]
+    pub pcie_generic_initiator: Vec<PcieGenericInitiatorCli>,
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
@@ -1393,6 +1447,15 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+/// Parses an address, which must be a `0x`-prefixed hexadecimal value.
+fn parse_address(s: &str) -> anyhow::Result<u64> {
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .with_context(|| format!("invalid address '{s}', expected a 0x-prefixed hex value"))?;
+    u64::from_str_radix(hex, 16).with_context(|| format!("invalid address '{s}'"))
 }
 
 fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
@@ -2977,13 +3040,14 @@ impl FromStr for PcieRootComplexCli {
                 "low_mmio_base" => {
                     let base_str = s.next().context("expected low MMIO base address")?;
                     low_mmio_base = Some(
-                        parse_memory(base_str).context("failed to parse low MMIO base address")?,
+                        parse_address(base_str).context("failed to parse low MMIO base address")?,
                     );
                 }
                 "high_mmio_base" => {
                     let base_str = s.next().context("expected high MMIO base address")?;
                     high_mmio_base = Some(
-                        parse_memory(base_str).context("failed to parse high MMIO base address")?,
+                        parse_address(base_str)
+                            .context("failed to parse high MMIO base address")?,
                     );
                 }
                 "preserve_bars" => {
@@ -3048,6 +3112,7 @@ fn parse_cxl_cfmws_window_restriction_u16_bitmask(
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub devfn: Option<u8>,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
@@ -3071,6 +3136,7 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
+        let mut devfn = None;
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
         let mut cxl = false;
@@ -3082,6 +3148,13 @@ impl FromStr for PcieRootPortCli {
             let value = kv.next();
 
             match key {
+                "addr" => {
+                    let value = value.context("addr option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("addr option expects a single value")
+                    }
+                    devfn = Some(parse_pcie_addr(value)?);
+                }
                 "hotplug" => {
                     if value.is_some() {
                         anyhow::bail!("hotplug option does not take a value")
@@ -3108,11 +3181,42 @@ impl FromStr for PcieRootPortCli {
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            devfn,
             hotplug,
             acs_capabilities_supported,
             cxl,
         })
     }
+}
+
+/// Parses a PCIe address of the form `XX[.Y]`, where `XX` is the device number
+/// (0-31) and the optional `Y` is the function number (0-7), into a devfn
+/// (`device << 3 | function`).
+fn parse_pcie_addr(s: &str) -> anyhow::Result<u8> {
+    let parse_int = |v: &str| -> anyhow::Result<u8> {
+        if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).context("invalid hex number")
+        } else {
+            v.parse().context("invalid number")
+        }
+    };
+
+    let mut parts = s.split('.');
+    let device = parse_int(parts.next().context("expected device number")?)?;
+    let function = match parts.next() {
+        Some(f) => parse_int(f)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected token in addr '{s}'");
+    }
+    if device > 31 {
+        anyhow::bail!("device number {device} out of range (0-31)");
+    }
+    if function > 7 {
+        anyhow::bail!("function number {function} out of range (0-7)");
+    }
+    Ok((device << 3) | function)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3181,6 +3285,57 @@ impl FromStr for GenericPcieSwitchCli {
             num_downstream_ports,
             hotplug,
             acs_capabilities_supported,
+        })
+    }
+}
+
+/// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieGenericInitiatorCli {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut port_name = None;
+        let mut node = None;
+
+        for opt in s.split(',') {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+            if kv.next().is_some() {
+                anyhow::bail!("option '{key}' expects a single value")
+            }
+
+            match key {
+                "port" => {
+                    let value = value.context("port option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("port option requires a value");
+                    }
+                    port_name = Some(value.to_string());
+                }
+                "node" => {
+                    let value = value.context("node option requires a value")?;
+                    node = Some(
+                        u32::from_str(value)
+                            .context("failed to parse generic initiator NUMA node")?,
+                    );
+                }
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: port_name.context("expected 'port=<name>'")?,
+            node: node.context("expected 'node=<node>'")?,
         })
     }
 }
@@ -4501,6 +4656,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4512,6 +4668,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4524,6 +4681,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: true,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4535,6 +4693,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
@@ -4546,6 +4705,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
@@ -4557,9 +4717,45 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: true,
+            }
+        );
+
+        // Test addr= (device only, and device.function)
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port5,addr=5").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port5".to_string(),
+                devfn: Some(5 << 3),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port6,addr=5.1").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port6".to_string(),
+                devfn: Some((5 << 3) | 1),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port7,addr=0x1f.7").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port7".to_string(),
+                devfn: Some(0xff),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -4570,6 +4766,39 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=32").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr").is_err());
+    }
+
+    #[test]
+    fn test_pcie_generic_initiator_from_str() {
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+            }
+        );
+
+        // Order should not matter.
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("node=2,port=sw0-downstream-1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "sw0-downstream-1".to_string(),
+                node: 2,
+            }
+        );
+
+        // Error cases
+        assert!(PcieGenericInitiatorCli::from_str("").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
     #[test]

@@ -90,13 +90,24 @@ pub mod consomme {
         pub guest_port: u16,
     }
 
+    /// A runtime request to bind or unbind a port on a running Consomme endpoint.
+    #[derive(MeshPayload)]
+    pub enum ConsommeRequest {
+        /// Bind a host port to forward traffic to the guest.
+        Bind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+        /// Unbind a previously forwarded port.
+        Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+    }
+
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
     pub struct ConsommeHandle {
         /// The CIDR of the network to use.
         pub cidr: Option<String>,
-        /// Ports to forward from the host into the guest.
+        /// Ports to forward from the host into the guest at creation time.
         pub ports: Vec<HostPortConfig>,
+        /// Optional channel for runtime port bind/unbind after the endpoint starts.
+        pub recv: Option<mesh::Receiver<ConsommeRequest>>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

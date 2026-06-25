@@ -136,6 +136,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     channel_id_offset: u16,
     max_version: Option<MaxVersionInfo>,
     delay_max_version: bool,
+    max_restore_version: Option<MaxVersionInfo>,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
@@ -307,6 +308,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             channel_id_offset: 0,
             max_version: None,
             delay_max_version: false,
+            max_restore_version: None,
             enable_mnf: false,
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
@@ -399,6 +401,16 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     ///      since that's the oldest version the Uefi client supports.
     pub fn delay_max_version(mut self, delay: bool) -> Self {
         self.delay_max_version = delay;
+        self
+    }
+
+    /// Tells the server to limit the protocol version accepted when restoring from saved state.
+    ///
+    /// This is configured separately from [`Self::max_version`] so that the version limit enforced
+    /// during restore can differ from the limit used for new connections. This allows a feature to
+    /// be available for rollback from a future version that has enabled it by default.
+    pub fn max_restore_version(mut self, max_restore_version: Option<MaxVersionInfo>) -> Self {
+        self.max_restore_version = max_restore_version;
         self
     }
 
@@ -528,6 +540,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         if let Some(version) = self.max_version {
             server.set_compatibility_version(version, self.delay_max_version);
         }
+
+        if let Some(version) = self.max_restore_version {
+            server.set_restore_compatibility_version(version);
+        }
+
         let (relay_request_send, relay_response_recv) =
             if let Some(server_relay) = self.server_relay {
                 let r = server_relay.response_receive.boxed().fuse();

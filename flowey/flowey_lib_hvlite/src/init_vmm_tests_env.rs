@@ -4,7 +4,7 @@
 //! Setup the environment variables and directory structure that the VMM tests
 //! require to run.
 
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::common::CommonArch;
@@ -38,14 +38,7 @@ flowey_request! {
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
-        pub register_openhcl_igvm_files: Option<
-            ReadVar<
-                Vec<(
-                    OpenhclIgvmRecipe,
-                    crate::run_igvmfilegen::IgvmOutput,
-                )>,
-            >,
-        >,
+        pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -424,27 +417,16 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 
-                if let Some(openhcl_igvm_files) = openhcl_igvm_files {
-                    for (recipe, openhcl_igvm) in rt.read(openhcl_igvm_files) {
-                        let crate::run_igvmfilegen::IgvmOutput { igvm_bin, .. } = openhcl_igvm;
-
-                        let filename = match recipe {
-                            OpenhclIgvmRecipe::X64 => "openhcl-x64.bin",
-                            OpenhclIgvmRecipe::X64Devkern => "openhcl-x64-devkern.bin",
-                            OpenhclIgvmRecipe::X64Cvm => "openhcl-x64-cvm.bin",
-                            OpenhclIgvmRecipe::X64TestLinuxDirect => {
-                                "openhcl-x64-test-linux-direct.bin"
-                            }
-                            OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64.bin",
-                            OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-devkern.bin",
-                            _ => {
-                                log::info!("petri doesn't support this OpenHCL recipe: {recipe:?}");
-                                continue;
-                            }
-                        };
-
-                        fs_err::copy(igvm_bin, test_content_dir.join(filename))?;
-                    }
+                for openhcl_igvm in rt.read(openhcl_igvm_files) {
+                    let igvm_bin = openhcl_igvm.igvm_bin();
+                    if let Some(recipe) = openhcl_igvm.recipe() {
+                        fs_err::copy(
+                            igvm_bin,
+                            test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
+                        )?;
+                    } else {
+                        log::warn!("petri doesn't support custom OpenHCL files");
+                    };
                 }
 
                 if let Some(release_igvm_files) = release_igvm_files_dir {

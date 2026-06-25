@@ -81,7 +81,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -230,7 +230,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
@@ -255,7 +255,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 /// Basic boot test with a single VP.
 #[vmm_test(
-    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -335,7 +335,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
@@ -562,6 +562,46 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     }
 
     anyhow::bail!("Did not find expected INFO-level UEFI diagnostics entry ({MARKER:?}) in kmsg");
+}
+
+/// Smoke test for the `force_dma_bounce` UEFI config flag.
+///
+/// Boots OpenHCL UEFI with an NVMe device attached, then verifies
+/// whether IoMmuDxe will force bounce buffering on all DMA operations.
+#[vmm_test_with(vpci(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))))]
+async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_boot_device_type(petri::BootDeviceType::Nvme)
+        .with_uefi_force_dma_bounce(true)
+        .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .with_efi_diagnostics_rate_limit(0)
+        .with_openhcl_command_line("log_buf_len=1M") // allows for more INFO logs to show
+        .run()
+        .await?;
+
+    const MARKER: &str = "Forcing DMA bounce";
+
+    let mut found = false;
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        if msg.message.as_raw().contains(MARKER) {
+            found = true;
+            break;
+        }
+    }
+    drop(kmsg);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    if !found {
+        anyhow::bail!("Did not find {MARKER:?} in kmsg");
+    }
+    Ok(())
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,

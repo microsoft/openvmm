@@ -613,6 +613,7 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -884,6 +885,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            force_dma_bounce,
                             efi_diagnostics_log_level: _, // applied to top-level Config below
                             efi_diagnostics_rate_limit: _, // applied to top-level Config below
                         },
@@ -905,6 +907,7 @@ impl PetriVmConfigSetupCore<'_> {
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
                     enable_vmbus: !self.no_vmbus,
+                    force_dma_bounce: *force_dma_bounce,
                 }
             }
             (
@@ -1063,6 +1066,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                force_dma_bounce,
                 efi_diagnostics_log_level,
                 efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
@@ -1128,7 +1132,7 @@ impl PetriVmConfigSetupCore<'_> {
                     get_resources::ged::EfiDiagnosticsLogLevelType::Full
                 }
             },
-            hv_sint_enabled: false,
+            force_dma_bounce_enabled: *force_dma_bounce,
         };
 
         Ok((ged, guest_request_send))

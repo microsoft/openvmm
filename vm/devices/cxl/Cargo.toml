@@ -12,6 +12,7 @@ bitfield-struct.workspace = true
 chipset_device.workspace = true
 inspect.workspace = true
 mesh.workspace = true
+open_enum.workspace = true
 pci_resources.workspace = true
 pci_core.workspace = true
 thiserror.workspace = true

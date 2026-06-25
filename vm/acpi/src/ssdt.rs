@@ -60,9 +60,11 @@ pub struct PcieHostBridgeEntry {
     pub cxl: bool,
     /// NUMA proximity domain.
     pub vnode: Option<u32>,
-    /// When true, emit a `_DSM` method instructing the OS to preserve
-    /// firmware-assigned BAR values. Used for P2P DMA with GPA = HPA.
-    pub preserve_bars: bool,
+    /// When true, emit a `_DSM` method ("Ignore PCI Boot Configurations", PCI
+    /// Firmware Spec §4.6 function 5) instructing the guest OS to keep the
+    /// firmware-assigned PCI boot configuration (bus numbers and BARs) rather
+    /// than reprogramming it.
+    pub preserve_boot_config: bool,
 }
 
 impl Ssdt {
@@ -151,7 +153,7 @@ impl Ssdt {
             high_mmio,
             cxl,
             vnode,
-            preserve_bars,
+            preserve_boot_config,
         } = entry;
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
         if cxl {
@@ -311,18 +313,19 @@ impl Ssdt {
 
         pcie.add_object(&osc_method);
 
-        // _DSM: Device Specific Method for preserving firmware BAR assignments.
+        // _DSM: Device Specific Method for preserving the firmware PCI boot
+        // configuration (bus numbers and BARs).
         //
         // UUID {E5C937D0-3553-4D7A-9117-EA4D19C3434D} is the PCI/PCIe host
         // bridge _DSM defined in the PCI Firmware Specification §4.6.
         //
         // Function 0: returns a buffer with supported function bitmask
-        // Function 5: returns 0 to indicate firmware-assigned BAR values
-        //             should be preserved by the OS
+        // Function 5 ("Ignore PCI Boot Configurations"): returns 0 to tell the
+        //             OS to preserve the firmware-programmed configuration
         //
-        // When preserve_bars is false, no _DSM is emitted and the guest
-        // OS is free to reprogram BARs.
-        if preserve_bars {
+        // When preserve_boot_config is false, no _DSM is emitted and the guest
+        // OS is free to reprogram bus numbers and BARs.
+        if preserve_boot_config {
             let mut dsm_method = Method::new(b"_DSM");
             dsm_method.set_arg_count(4);
 
@@ -493,7 +496,7 @@ mod tests {
             high_mmio: MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
             cxl: false,
             vnode,
-            preserve_bars: false,
+            preserve_boot_config: false,
         }
     }
 
@@ -566,10 +569,10 @@ mod tests {
     }
 
     #[test]
-    fn pcie_dsm_present_when_preserve_bars() {
+    fn pcie_dsm_present_when_preserve_boot_config() {
         let mut ssdt = Ssdt::new();
         ssdt.add_pcie(PcieHostBridgeEntry {
-            preserve_bars: true,
+            preserve_boot_config: true,
             ..test_pcie_entry(None)
         });
 
@@ -590,10 +593,10 @@ mod tests {
     }
 
     #[test]
-    fn pcie_dsm_absent_without_preserve_bars() {
+    fn pcie_dsm_absent_without_preserve_boot_config() {
         let mut ssdt = Ssdt::new();
         ssdt.add_pcie(PcieHostBridgeEntry {
-            preserve_bars: false,
+            preserve_boot_config: false,
             ..test_pcie_entry(None)
         });
 

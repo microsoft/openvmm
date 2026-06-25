@@ -25,7 +25,7 @@ use vmcore::monitor::MonitorId;
 
 impl super::Server {
     fn restore_one_channel(&mut self, saved_channel: Channel) -> Result<(), RestoreError> {
-        let (info, stub_offer, state) = saved_channel.restore(self.max_version)?;
+        let (info, stub_offer, state) = saved_channel.restore(self.max_restore_version)?;
         if let Some((offer_id, channel)) = self.channels.get_by_key_mut(&saved_channel.key) {
             // There is an existing channel. Restore on top of it.
 
@@ -191,7 +191,7 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
         let saved = SavedStateData::from(saved);
         match saved.state {
             SavedConnectionState::Connected(saved) => {
-                self.inner.state = saved.connection.restore(self.inner.max_version)?;
+                self.inner.state = saved.connection.restore(self.inner.max_restore_version)?;
 
                 // Restore server state, and resend server notifications if needed. If these notifications
                 // were processed before the save, it's harmless as the values will be the same.

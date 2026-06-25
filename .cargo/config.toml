@@ -64,6 +64,24 @@ AARCH64_OPENVMM_LINUX_DIRECT_INITRD = { value = ".packages/underhill-deps-privat
 X86_64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
 AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd", relative = true }
 
+# Hack needed to use the prebuilt libmimalloc.a shipped in openvmm-deps
+# instead of having `libmimalloc-sys`'s build.rs recompile on every run.
+#
+# This is a cargo `links` override: `libmimalloc-sys` declares
+# `links = "mimalloc"`, and the presence of a `[target.<triple>.mimalloc]`
+# table here causes cargo to skip that crate's build script entirely.
+# Skipping it avoids the slow C recompile, but mainly it avoids the
+# `-l static=mimalloc` directive it would otherwise emit. The tables below are
+# therefore intentionally empty stubs.
+[target.x86_64-unknown-linux-musl.mimalloc]
+rustc-link-search = []
+[target.x86_64-underhill-linux-musl.mimalloc]
+rustc-link-search = []
+[target.aarch64-unknown-linux-musl.mimalloc]
+rustc-link-search = []
+[target.aarch64-underhill-linux-musl.mimalloc]
+rustc-link-search = []
+
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [
   # Set up delayloads.

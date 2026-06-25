@@ -1168,6 +1168,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "mesh",
+ "open_enum",
  "pci_core",
  "pci_resources",
  "thiserror 2.0.16",
@@ -1736,6 +1737,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch2"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+dependencies = [
+ "bitflags 2.9.3",
+ "objc2",
+]
+
+[[package]]
 name = "dissimilar"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2224,6 +2235,7 @@ dependencies = [
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",
+ "paste",
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
@@ -2244,6 +2256,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
+ "sysinfo",
  "target-lexicon",
  "tempfile",
  "toml_edit",
@@ -2261,6 +2274,7 @@ dependencies = [
  "flowey_lib_common",
  "igvmfilegen_config",
  "log",
+ "paste",
  "powershell_builder",
  "serde",
  "serde_json",
@@ -2560,6 +2574,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_mesh_protobuf"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "mesh_protobuf",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_mesh_ttrpc"
 version = "0.0.0"
 dependencies = [
@@ -2593,7 +2617,6 @@ dependencies = [
  "nvme_spec",
  "page_pool_alloc",
  "pal_async",
- "parking_lot",
  "pci_core",
  "scsi_buffers",
  "user_driver",
@@ -3758,6 +3781,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "incubator"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "futures",
+ "futures-concurrency",
+ "initrd_cpio",
+ "mesh",
+ "pal_async",
+ "pipette_client",
+ "serde",
+ "toml_edit",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,6 +3808,14 @@ dependencies = [
  "equivalent",
  "hashbrown",
  "serde",
+]
+
+[[package]]
+name = "initrd_cpio"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "flate2",
 ]
 
 [[package]]
@@ -3843,6 +3893,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_vtd"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "iommu_common",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "x86defs",
+ "zerocopy",
+]
+
+[[package]]
 name = "io-uring"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3858,6 +3928,7 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
 ]
@@ -4655,7 +4726,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=e0bba1e46d9cdc8630f3693e5e91f8a3be4fad7b#e0bba1e46d9cdc8630f3693e5e91f8a3be4fad7b"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=07a121e4b46659cdfa8711740c6622728adffd65#07a121e4b46659cdfa8711740c6622728adffd65"
 dependencies = [
  "cc",
  "once_cell",
@@ -5137,6 +5208,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
+dependencies = [
+ "objc2-encode",
+]
+
+[[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags 2.9.3",
+ "dispatch2",
+ "objc2",
+]
+
+[[package]]
+name = "objc2-encode"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+
+[[package]]
+name = "objc2-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
+dependencies = [
+ "bitflags 2.9.3",
+ "objc2",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-open-directory"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb82bed227edf5201dfedf072bba4015a33d3d4a98519837295a90f0a23f676d"
+dependencies = [
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "object"
 version = "0.36.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5335,9 +5463,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-src"
-version = "300.6.0+3.6.2"
+version = "300.6.1+3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8e8cbfd3a4a8c8f089147fd7aaa33cf8c7450c4d09f8f80698a0cf093abeff4"
+checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
 dependencies = [
  "cc",
 ]
@@ -5446,6 +5574,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "intel_vtd",
  "iommu_common",
  "loader",
  "membacking",
@@ -5457,6 +5586,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "pci_resource_assignment",
@@ -6161,7 +6291,6 @@ dependencies = [
  "disk_vhdmp",
  "fatfs",
  "firmware_uefi_resources",
- "flate2",
  "framebuffer",
  "fs-err",
  "fscommon",
@@ -6176,6 +6305,7 @@ dependencies = [
  "hyperv_secure_boot_templates",
  "ide_resources",
  "image",
+ "initrd_cpio",
  "inspect",
  "jiff",
  "kmsg",
@@ -7765,6 +7895,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.39.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d0d938c10fcda3e897e28aaddf4ab462375d411f4378cd63b1c945f69aba96"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "objc2-open-directory",
+ "windows 0.62.0",
 ]
 
 [[package]]

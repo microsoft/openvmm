@@ -167,12 +167,19 @@ pub enum AssignmentError {
         aperture: &'static str,
     },
     /// Not enough MMIO space for all BAR allocations.
-    #[error("{aperture} MMIO exhaustion: need {required:#x} bytes, have {available:#x}")]
+    #[error(
+        "{aperture} MMIO exhaustion: need {required:#x} bytes (alignment \
+         {alignment:#x}), have {available:#x}"
+    )]
     MmioExhaustion {
         /// Total MMIO required across all devices.
         required: u64,
-        /// Total MMIO available.
+        /// Size of the MMIO aperture window.
         available: u64,
+        /// Natural alignment the pool base must satisfy. When this exceeds
+        /// the window size, aligning the base can consume the entire
+        /// aperture even though `available` is non-zero.
+        alignment: u64,
         /// Whether this was the low or high aperture.
         aperture: &'static str,
     },

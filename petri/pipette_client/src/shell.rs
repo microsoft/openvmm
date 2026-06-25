@@ -327,6 +327,8 @@ impl<'a, T: Utf8Encoding> Cmd<'a, T> {
         }
         if !self.stdin_contents.is_empty() {
             command.stdin(Stdio::piped());
+        } else {
+            command.stdin(Stdio::null());
         }
         let mut child = command.spawn().await.context("failed to spawn child")?;
 
