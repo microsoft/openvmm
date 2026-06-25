@@ -312,7 +312,7 @@ impl MemoryAcceptor {
                 if self.flags.tdx_page_release_required {
                     self.mshv_vtl
                         .tdx_release_pages(range)
-                        .expect("Failed to release pages");
+                        .unwrap_or_else(|e| panic!("Failed to release memory range {range}: {e}"));
                 }
             }
             IsolationType::Cca => {
