@@ -274,7 +274,12 @@ impl VirtioFs {
                     let child = {
                         let children = aggregate.children.read();
                         children.entries.get((n - 2) as usize).map(|e| {
-                            (e.name.clone(), Arc::clone(&e.volume), e.volume_id, e.readonly)
+                            (
+                                e.name.clone(),
+                                Arc::clone(&e.volume),
+                                e.volume_id,
+                                e.readonly,
+                            )
                         })
                     };
                     let Some((name, volume, volume_id, readonly)) = child else {
@@ -351,7 +356,7 @@ impl VirtioFs {
             // inode number (namespaced to its volume), falling back to the
             // volume id if it is inaccessible.
             let raw = volume
-                .lstat(&PathBuf::new())
+                .lstat(PathBuf::new())
                 .map(|s| s.inode_nr)
                 .unwrap_or(volume_id as lx::ino_t);
             let ino = inode::namespace_ino(volume_id, raw);
@@ -395,13 +400,7 @@ mod tests {
         fs.remove_child("share_a").unwrap();
         assert_eq!(fs.remove_child("share_a").unwrap_err(), lx::Error::ENOENT);
         assert_eq!(
-            fs.inner
-                .aggregate()
-                .unwrap()
-                .children
-                .read()
-                .entries
-                .len(),
+            fs.inner.aggregate().unwrap().children.read().entries.len(),
             1
         );
     }
@@ -465,8 +464,16 @@ mod tests {
 
         let aggregate = fs.inner.aggregate().unwrap();
         let children = aggregate.children.read();
-        let ro_entry = children.entries.iter().find(|e| e.name == "ro_child").unwrap();
-        let rw_entry = children.entries.iter().find(|e| e.name == "rw_child").unwrap();
+        let ro_entry = children
+            .entries
+            .iter()
+            .find(|e| e.name == "ro_child")
+            .unwrap();
+        let rw_entry = children
+            .entries
+            .iter()
+            .find(|e| e.name == "rw_child")
+            .unwrap();
         assert!(ro_entry.readonly);
         assert!(!rw_entry.readonly);
     }
@@ -485,13 +492,7 @@ mod tests {
             lx::Error::EAGAIN
         );
         assert_eq!(
-            fs.inner
-                .aggregate()
-                .unwrap()
-                .children
-                .read()
-                .entries
-                .len(),
+            fs.inner.aggregate().unwrap().children.read().entries.len(),
             1
         );
     }

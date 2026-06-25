@@ -183,8 +183,12 @@ impl VirtioFsInode {
     /// Performs a lookup for a child of this inode.
     pub fn lookup_child(&self, name: &LxStr) -> lx::Result<(VirtioFsInode, fuse_attr)> {
         let path = self.child_path(name)?;
-        let (inode, stat) =
-            VirtioFsInode::new(Arc::clone(&self.volume), self.volume_id, self.readonly, path)?;
+        let (inode, stat) = VirtioFsInode::new(
+            Arc::clone(&self.volume),
+            self.volume_id,
+            self.readonly,
+            path,
+        )?;
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -233,8 +237,13 @@ impl VirtioFsInode {
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
-        let inode =
-            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
+        let inode = Self::with_attr(
+            Arc::clone(&self.volume),
+            self.volume_id,
+            self.readonly,
+            path,
+            &stat,
+        );
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr, file))
     }
@@ -252,8 +261,13 @@ impl VirtioFsInode {
             .volume
             .mkdir_stat(&path, LxCreateOptions::new(mode, uid, gid))?;
 
-        let inode =
-            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
+        let inode = Self::with_attr(
+            Arc::clone(&self.volume),
+            self.volume_id,
+            self.readonly,
+            path,
+            &stat,
+        );
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -274,8 +288,13 @@ impl VirtioFsInode {
             device_id as usize,
         )?;
 
-        let inode =
-            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
+        let inode = Self::with_attr(
+            Arc::clone(&self.volume),
+            self.volume_id,
+            self.readonly,
+            path,
+            &stat,
+        );
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -295,8 +314,13 @@ impl VirtioFsInode {
             LxCreateOptions::new(lx::S_IFLNK | 0o777, uid, gid),
         )?;
 
-        let inode =
-            Self::with_attr(Arc::clone(&self.volume), self.volume_id, self.readonly, path, &stat);
+        let inode = Self::with_attr(
+            Arc::clone(&self.volume),
+            self.volume_id,
+            self.readonly,
+            path,
+            &stat,
+        );
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
