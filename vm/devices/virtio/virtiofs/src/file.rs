@@ -31,13 +31,13 @@ impl VirtioFsFile {
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         let stat = self.file.read().fstat()?.into();
-        Ok(util::stat_to_fuse_attr(&stat))
+        Ok(self.inode.attr_from_stat(&stat))
     }
 
     /// Gets the statx details for the open file.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
         let statx = self.file.read().fstat()?;
-        Ok(util::statx_to_fuse_statx(&statx))
+        Ok(self.inode.statx_from(&statx))
     }
 
     /// Sets the attributes of the open file.
@@ -74,7 +74,9 @@ impl VirtioFsFile {
     ) -> lx::Result<Vec<u8>> {
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
-        let self_inode_nr = self.inode.inode_nr();
+        // Report the directory's own inode number namespaced to its volume, so
+        // `.`/`..` agree with the number reported by lookup/getattr.
+        let self_inode_nr = self.inode.namespaced_ino(self.inode.inode_nr());
         let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
@@ -130,7 +132,9 @@ impl VirtioFsFile {
                         entry_count -= 1;
                         return Ok(true);
                     }
-                    entry.inode_nr
+                    // Children share this directory's volume, so namespace the
+                    // entry's inode number to match lookup/readdirplus.
+                    self.inode.namespaced_ino(entry.inode_nr)
                 };
 
                 Ok(buffer.dir_entry(

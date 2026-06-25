@@ -15,12 +15,36 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+/// Multiplier used to spread a volume id across the 64-bit inode space when
+/// namespacing inode numbers (see [`namespace_ino`]). It is the 64-bit
+/// golden-ratio constant, chosen because it has good bit-mixing properties.
+const INO_NAMESPACE_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Folds a volume's namespace into a raw host inode number so that the same
+/// inode number reported from two different aggregated volumes no longer
+/// collides under the single shared FUSE superblock.
+///
+/// `volume_id == 0` is the direct (single-root) mode, which returns `raw`
+/// unchanged. For aggregated volumes (`volume_id != 0`) the transform is an
+/// XOR by a per-volume constant, which is a bijection: distinct files within a
+/// volume keep distinct inode numbers (preserving hard-link identity), and it
+/// never introduces a within-volume collision. Sibling volumes get distinct
+/// keys, so cross-share `(st_dev, st_ino)` aliasing is avoided even when the
+/// guest never instantiates a submount.
+pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::ino_t {
+    if volume_id == 0 {
+        return raw;
+    }
+    raw ^ (volume_id as u64).wrapping_mul(INO_NAMESPACE_MULTIPLIER)
+}
+
 /// Implements inode callbacks for virtio-fs.
 pub struct VirtioFsInode {
     volume: Arc<LxVolume>,
     /// Identifies which aggregated volume this inode belongs to. Inode numbers
     /// are only unique within a volume, so this is needed to key the stable
-    /// inode-number map when a single file system exposes multiple roots.
+    /// inode-number map when a single file system exposes multiple roots, and
+    /// to namespace reported inode numbers (see [`namespace_ino`]).
     volume_id: u32,
     path: RwLock<PathBuf>,
     lookup_count: AtomicU64,
@@ -67,6 +91,28 @@ impl VirtioFsInode {
         self.volume_id
     }
 
+    /// Applies this inode's volume namespace to a raw host inode number (see
+    /// [`namespace_ino`]).
+    pub(crate) fn namespaced_ino(&self, raw: lx::ino_t) -> lx::ino_t {
+        namespace_ino(self.volume_id, raw)
+    }
+
+    /// Builds a `fuse_attr` from a stat, namespacing the reported inode number
+    /// to this inode's volume so that aggregated siblings never alias.
+    pub(crate) fn attr_from_stat(&self, stat: &lx::Stat) -> fuse_attr {
+        let mut attr = util::stat_to_fuse_attr(stat);
+        attr.ino = self.namespaced_ino(attr.ino);
+        attr
+    }
+
+    /// Builds a `fuse_statx` from a statx, namespacing the reported inode
+    /// number to this inode's volume.
+    pub(crate) fn statx_from(&self, statx: &lx::StatEx) -> fuse_statx {
+        let mut sx = util::statx_to_fuse_statx(statx);
+        sx.ino = self.namespaced_ino(sx.ino);
+        sx
+    }
+
     /// Increments the lookup count.
     pub fn lookup(&self, new_path: PathBuf) {
         self.lookup_count.fetch_add(1, Ordering::AcqRel);
@@ -109,20 +155,20 @@ impl VirtioFsInode {
     pub fn lookup_child(&self, name: &LxStr) -> lx::Result<(VirtioFsInode, fuse_attr)> {
         let path = self.child_path(name)?;
         let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), self.volume_id, path)?;
-        let attr = util::stat_to_fuse_attr(&stat);
+        let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
 
     /// Retrieves the attributes of this inode.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         let stat = self.volume.lstat(&*self.get_path())?;
-        Ok(util::stat_to_fuse_attr(&stat))
+        Ok(self.attr_from_stat(&stat))
     }
 
     /// Retrieves the extended attributes of this inode.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
         let statx = self.volume.statx(&*self.get_path())?;
-        Ok(util::statx_to_fuse_statx(&statx))
+        Ok(self.statx_from(&statx))
     }
 
     /// Sets the attributes of this inode.
@@ -133,7 +179,7 @@ impl VirtioFsInode {
         // depending on the attributes being set. Lxutil takes care of that on Windows (and Linux
         // does it naturally).
         let stat = self.volume.set_attr_stat(&*self.get_path(), attr)?;
-        Ok(util::stat_to_fuse_attr(&stat))
+        Ok(self.attr_from_stat(&stat))
     }
 
     /// Opens the inode, creating a file object.
@@ -158,7 +204,7 @@ impl VirtioFsInode {
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
         let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
-        let attr = util::stat_to_fuse_attr(&stat);
+        let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr, file))
     }
 
@@ -176,7 +222,7 @@ impl VirtioFsInode {
             .mkdir_stat(&path, LxCreateOptions::new(mode, uid, gid))?;
 
         let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
-        let attr = util::stat_to_fuse_attr(&stat);
+        let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
 
@@ -197,7 +243,7 @@ impl VirtioFsInode {
         )?;
 
         let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
-        let attr = util::stat_to_fuse_attr(&stat);
+        let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
 
@@ -217,7 +263,7 @@ impl VirtioFsInode {
         )?;
 
         let inode = Self::with_attr(Arc::clone(&self.volume), self.volume_id, path, &stat);
-        let attr = util::stat_to_fuse_attr(&stat);
+        let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
 
@@ -225,7 +271,7 @@ impl VirtioFsInode {
     pub fn link(&self, name: &LxStr, target: &VirtioFsInode) -> lx::Result<fuse_attr> {
         let path = self.child_path(name)?;
         let stat = self.volume.link_stat(&*target.get_path(), path)?;
-        Ok(util::stat_to_fuse_attr(&stat))
+        Ok(self.attr_from_stat(&stat))
     }
 
     /// Reads the target of the symbolic link, if this inode is a symbolic link.
