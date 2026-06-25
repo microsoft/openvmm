@@ -512,7 +512,6 @@ mod x86 {
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
-    use hvdef::hypercall::InitialVpContextX64;
     use thiserror::Error;
     use virt::LateMapVtl0MemoryPolicy;
     use virt::VpHaltReason;

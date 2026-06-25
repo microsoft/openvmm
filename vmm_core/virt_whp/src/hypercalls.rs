@@ -1018,7 +1018,7 @@ mod x86 {
                 return Err(HvError::AccessDenied);
             }
 
-            if target_vtl == Vtl::Vtl2 && !target_vp.vp().vtl2_enable.load(Ordering::SeqCst) {
+            if target_vtl == Vtl::Vtl2 && !target_vp.vp().vtl2_enable.load(Ordering::Relaxed) {
                 return Err(HvError::InvalidVpState);
             }
 
@@ -1360,7 +1360,7 @@ mod x86 {
                 return Err(HvError::InvalidParameter);
             }
 
-            if target_vp.vp().vtl2_enable.swap(true, Ordering::SeqCst) {
+            if target_vp.vp().vtl2_enable.swap(true, Ordering::Relaxed) {
                 return Err(HvError::VtlAlreadyEnabled);
             }
 
