@@ -283,10 +283,7 @@ impl VirtioFs {
         // `offset` is the cookie of the next entry to emit (0 at start of stream).
         // Entry 0 => ".", 1 => "..", 2.. => children[index - 2].
         let mut index = offset;
-        loop {
-            let Some(next) = index.checked_add(1) else {
-                break;
-            };
+        while let Some(next) = index.checked_add(1) {
             let fit = match index {
                 0 => self.write_synthetic_dot(&mut buffer, ".", next, plus),
                 1 => self.write_synthetic_dot(&mut buffer, "..", next, plus),
