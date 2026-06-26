@@ -45,13 +45,16 @@ mod vmbus_relay;
 mod vmgs;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[vmm_test_with(noagent(
-    openvmm_uefi_x64(none),
-    openvmm_openhcl_uefi_x64(none),
-    openvmm_uefi_aarch64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    hyperv_openhcl_uefi_x64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_x64(none),
+        openvmm_openhcl_uefi_x64(none),
+        openvmm_uefi_aarch64(none),
+        hyperv_openhcl_uefi_aarch64(none),
+        hyperv_openhcl_uefi_x64(none)
+    )
+)]
 async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config.run_without_agent().await?;
     vm.wait_for_clean_teardown().await?;
@@ -205,10 +208,13 @@ async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 }
 
 /// Basic boot test without agent
-#[vmm_test_with(noagent(
-    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
-    openvmm_pcat_x64(iso(freebsd_13_2_x64))
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+        openvmm_pcat_x64(iso(freebsd_13_2_x64))
+    )
+)]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -278,8 +284,8 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
 }
 
 #[vmm_test_with(
-    (requires(vpci)),
-    (
+    requires(vpci),
+    configs(
         // TODO: virt_whp is missing VPCI LPI interrupt support, used by Windows (but not Linux)
         // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
         openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -300,14 +306,14 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 
 /// Tests NVMe boot with OpenHCL VPCI relaying enabled.
 #[vmm_test_with(
-    (requires(vpci)),
-    (
-    // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
-    // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // TODO: Linux image is missing VPCI driver in its initrd
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    requires(vpci),
+    configs(
+        // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
+        // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        // TODO: Linux image is missing VPCI driver in its initrd
+        // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
     )
 )]
 async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -464,21 +470,24 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 
 /// Verify that secure boot fails with a mismatched template.
 /// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
-#[vmm_test_with(noagent(
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        // hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    )
+)]
 async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -499,11 +508,14 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[vmm_test_with(noagent(
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    openvmm_openhcl_uefi_x64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        hyperv_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_aarch64(none),
+        openvmm_openhcl_uefi_x64(none)
+    )
+)]
 async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -532,11 +544,14 @@ async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
 /// TODO:
 ///  - change hyperv tests to use WMI instead of env_cfg once
 ///    CI runners support it
-#[vmm_test_with(noagent(
-    openvmm_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_aarch64(none)
+    )
+)]
 async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -575,8 +590,8 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
 /// Boots OpenHCL UEFI with an NVMe device attached, then verifies
 /// whether IoMmuDxe will force bounce buffering on all DMA operations.
 #[vmm_test_with(
-    (requires(vpci)),
-    (openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+    requires(vpci),
+    configs(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
 )]
 async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -616,11 +631,14 @@ async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
-#[vmm_test_with(noagent(
-    openvmm_uefi_x64(guest_test_uefi_x64),
-    openvmm_uefi_aarch64(guest_test_uefi_aarch64),
-    openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_x64(guest_test_uefi_x64),
+        openvmm_uefi_aarch64(guest_test_uefi_aarch64),
+        openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
+    )
+)]
 async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()

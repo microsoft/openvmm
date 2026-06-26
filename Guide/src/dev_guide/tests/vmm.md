@@ -61,7 +61,7 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 For all variants of the test:
 
 ```rust,ignore
-#[vmm_test_with(unstable(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
     // ...

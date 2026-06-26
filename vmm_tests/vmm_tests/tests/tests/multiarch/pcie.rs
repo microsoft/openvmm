@@ -581,7 +581,10 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 /// Restricted to AMD-vendor hosts: the AMD IOMMU emulator's IVHD entries
 /// surface a host-cpuid-derived AMD-Vi family/model that Linux's IOMMU
 /// driver only accepts when the boot CPU also reports as AMD.
-#[vmm_test_with((openvmm, amd), (linux_direct_x64))]
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// IVRS ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 async fn amd_iommu_mixed_topology(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -665,7 +668,10 @@ async fn amd_iommu_mixed_topology(
 /// 3. Devices behind the IOMMU RC are in IOMMU groups
 /// 4. Devices on both RCs enumerate and function (block I/O, network interface)
 /// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
-#[vmm_test_with((openvmm, intel), (linux_direct_x64))]
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// DMAR ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(openvmm, intel, configs(linux_direct_x64))]
 async fn intel_vtd_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {

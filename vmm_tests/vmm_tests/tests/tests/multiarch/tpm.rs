@@ -716,7 +716,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
-#[vmm_test_with(unstable(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
@@ -799,7 +799,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// test function (`use_hw_unseal`), they all map to
 /// `KeyReleaseFailure`.
 #[cfg(windows)]
-#[vmm_test_with(unstable(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]

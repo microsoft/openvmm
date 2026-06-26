@@ -268,11 +268,61 @@ impl ToTokens for FirmwareAndArch {
 
 impl Parse for ArgsWithOverrides {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        if input.peek(syn::token::Paren) {
-            parse_tuple_args_with_overrides(input)
-        } else {
-            parse_legacy_args_with_overrides(input)
+        // Syntax: a comma-separated list of attributes followed by a single
+        // `configs(...)` group of firmware entries, e.g.
+        //   #[vmm_test_with(openvmm, amd, configs(linux_direct_x64, ...))]
+        //   #[vmm_test_with(requires(vpci), configs(...))]
+        //
+        // By convention the vmm (if specified) comes first and `configs(...)`
+        // comes last; both are enforced below. Floating the attributes as
+        // plain idents (rather than wrapping them in a tuple) keeps the whole
+        // attribute a valid meta item, which is what lets rustfmt format it.
+        let mut overrides = ParsedOverrides::new();
+        let mut args = None;
+        let mut position = 0usize;
+
+        while !input.is_empty() {
+            let ident = input.parse::<Ident>()?;
+            match ident.to_string().as_str() {
+                "configs" => {
+                    let configs;
+                    syn::parenthesized!(configs in input);
+                    args = Some(configs.parse::<Args>()?);
+                    if !input.is_empty() {
+                        return Err(input.error("`configs(...)` must be the last argument"));
+                    }
+                    break;
+                }
+                "requires" => {
+                    let capabilities;
+                    syn::parenthesized!(capabilities in input);
+                    for capability in parse_required_capabilities(&capabilities)? {
+                        overrides.add_capability(capability.span, capability.name)?;
+                    }
+                }
+                "openvmm" | "hyperv" => {
+                    if position != 0 {
+                        return Err(Error::new(
+                            ident.span(),
+                            "the vmm must be the first argument",
+                        ));
+                    }
+                    overrides.apply_ident(&ident)?;
+                }
+                _ => overrides.apply_ident(&ident)?,
+            }
+
+            position += 1;
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<Token![,]>()?;
         }
+
+        let args =
+            args.ok_or_else(|| input.error("expected a `configs(...)` group of firmware entries"))?;
+
+        Ok(overrides.finish(args))
     }
 }
 
@@ -365,26 +415,6 @@ struct RequiredCapability {
     name: &'static str,
 }
 
-enum OverrideItem {
-    Ident(Ident),
-    Requires(Vec<RequiredCapability>),
-}
-
-impl Parse for OverrideItem {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let ident = input.parse::<Ident>()?;
-        if ident == "requires" {
-            let capabilities;
-            syn::parenthesized!(capabilities in input);
-            Ok(OverrideItem::Requires(parse_required_capabilities(
-                &capabilities,
-            )?))
-        } else {
-            Ok(OverrideItem::Ident(ident))
-        }
-    }
-}
-
 fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<RequiredCapability>> {
     let idents = input.parse_terminated(Ident::parse, Token![,])?;
     if idents.is_empty() {
@@ -404,56 +434,6 @@ fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<Requir
             })
         })
         .collect()
-}
-
-fn parse_override_group(input: ParseStream<'_>) -> syn::Result<ParsedOverrides> {
-    let items = input.parse_terminated(OverrideItem::parse, Token![,])?;
-    let mut overrides = ParsedOverrides::new();
-    for item in items {
-        match item {
-            OverrideItem::Ident(ident) => overrides.apply_ident(&ident)?,
-            OverrideItem::Requires(capabilities) => {
-                for capability in capabilities {
-                    overrides.add_capability(capability.span, capability.name)?;
-                }
-            }
-        }
-    }
-    Ok(overrides)
-}
-
-fn parse_tuple_args_with_overrides(input: ParseStream<'_>) -> syn::Result<ArgsWithOverrides> {
-    let overrides;
-    syn::parenthesized!(overrides in input);
-    let overrides = parse_override_group(&overrides)?;
-
-    input.parse::<Token![,]>()?;
-
-    let args;
-    syn::parenthesized!(args in input);
-    let args = args.parse::<Args>()?;
-
-    if !input.is_empty() {
-        return Err(input.error("unexpected extra vmm_test_with arguments"));
-    }
-
-    Ok(overrides.finish(args))
-}
-
-fn parse_legacy_args_with_overrides(input: ParseStream<'_>) -> syn::Result<ArgsWithOverrides> {
-    let word = input.parse::<Ident>()?;
-    let mut overrides = ParsedOverrides::new();
-    overrides.apply_ident(&word)?;
-
-    let parens;
-    syn::parenthesized!(parens in input);
-    let args = parens.parse::<Args>()?;
-
-    if !input.is_empty() {
-        return Err(input.error("unexpected extra vmm_test_with arguments"));
-    }
-
-    Ok(overrides.finish(args))
 }
 
 impl ArgsWithOverrides {
@@ -918,26 +898,35 @@ pub fn vmm_test(
         .into()
 }
 
-/// Same options as `vmm_test`, but specify the following attributes to apply
-/// to all tests. The legacy form accepts a single attribute:
+/// Same options as `vmm_test`, but accepts test-wide attributes in addition to
+/// the firmware entries. The attributes are listed first, as plain comma-separated
+/// idents, and the firmware entries follow in a trailing `configs(...)` group:
+///
+/// ```ignore
+/// #[vmm_test_with(<attribute>,* configs(<firmware entry>,+))]
+/// ```
+///
+/// The available attributes are:
 /// - unstable: all variants of this test are unstable
 /// - noagent: don't use pipette in vtl0 for this test
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
 /// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
+/// - requires(...): required capabilities (see below)
 ///
-/// example: #[vmm_test_with(noagent(linux_direct_x64, ...))]
+/// `requires(...)` lists capabilities the test needs. Petri auto-detects some
+/// capabilities, such as `vpci`, and execution environments can advertise
+/// capabilities via the `PETRI_CAPABILITIES` environment variable. When a
+/// required capability is not available, the test is skipped, so it
+/// self-excludes on any host that cannot provide it.
 ///
-/// The preferred form separates attributes from firmware entries and supports
-/// `requires(...)` for capabilities. Petri auto-detects some capabilities, such
-/// as `vpci`, and execution environments can advertise capabilities via the
-/// `PETRI_CAPABILITIES` environment variable. When a required capability is not
-/// available, the test is skipped, so it self-excludes on any host that cannot
-/// provide it.
+/// By convention the vmm (if specified) comes first and `configs(...)` comes
+/// last; both are enforced.
 ///
-/// example: #[vmm_test_with((openvmm, requires(test_disk_vfio)), (linux_direct_aarch64))]
-/// example: #[vmm_test_with((openvmm, amd), (linux_direct_x64))]
+/// example: #[vmm_test_with(noagent, configs(linux_direct_x64, ...))]
+/// example: #[vmm_test_with(openvmm, requires(test_disk_vfio), configs(linux_direct_aarch64))]
+/// example: #[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 #[proc_macro_attribute]
 pub fn vmm_test_with(
     attr: proc_macro::TokenStream,

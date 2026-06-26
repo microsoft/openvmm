@@ -92,15 +92,7 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
 /// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
-#[vmm_test_with(
-    (
-        openvmm,
-        requires(test_disk_vfio)
-    ),
-    (
-        linux_direct_aarch64
-    )
-)]
+#[vmm_test_with(openvmm, requires(test_disk_vfio), configs(linux_direct_aarch64))]
 async fn boot_no_vmbus_pcie_aarch64_tcg(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
