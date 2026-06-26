@@ -416,12 +416,10 @@ impl WhpProcessor<'_> {
                 break;
             }
 
+            let scan_irr = self.vplc(vtl).scan_irr.swap(false, Ordering::Relaxed);
             let vtl_state = &mut self.state.vtls[vtl];
             if let Some(lapic) = &mut vtl_state.lapic {
-                let work = lapic.apic.scan(
-                    &mut self.state.vmtime,
-                    self.inner.scan_irr[vtl].swap(false, Ordering::Relaxed),
-                );
+                let work = lapic.apic.scan(&mut self.state.vmtime, scan_irr);
                 lapic.nmi_pending |= work.nmi;
                 if lapic.nmi_pending {
                     self.inject_nmi(vtl);

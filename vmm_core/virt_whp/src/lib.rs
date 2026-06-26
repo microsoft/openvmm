@@ -31,7 +31,6 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
-use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
@@ -192,8 +191,6 @@ struct WhpVp {
     vtl2_enable: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    scan_irr: VtlArray<AtomicBool, 3>,
 }
 
 #[derive(InspectMut)]
@@ -363,7 +360,6 @@ impl WhpVp {
             vtl2_enable: vtl2_enabled.into(),
             vp_info: vp,
             waker: Default::default(),
-            scan_irr: VtlArray::from_fn(|_| AtomicBool::new(true)),
         }
     }
 }
@@ -402,8 +398,9 @@ struct Vplc {
     extint_pending: AtomicBool,
     #[inspect(with = "|x| x.lock().is_some()")]
     start_vp_request: Mutex<Option<VpStartRequest>>,
-    #[inspect(skip)]
     start_vp: AtomicBool,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    scan_irr: AtomicBool,
 }
 
 impl Vplc {
@@ -414,6 +411,7 @@ impl Vplc {
             extint_pending: false.into(),
             start_vp: false.into(),
             start_vp_request: Default::default(),
+            scan_irr: false.into(),
         }
     }
 
@@ -429,12 +427,14 @@ impl Vplc {
             extint_pending,
             start_vp_request,
             start_vp,
+            scan_irr,
         } = self;
         message_queues.clear();
         check_queues.store(false, Ordering::Relaxed);
         extint_pending.store(false, Ordering::Relaxed);
         *start_vp_request.lock() = None;
         start_vp.store(false, Ordering::Relaxed);
+        scan_irr.store(false, Ordering::Relaxed);
     }
 }
 
@@ -481,7 +481,7 @@ impl<'a> WhpVpRef<'a> {
 
     #[cfg(guest_arch = "x86_64")]
     fn wake_for_apic(&self, vtl: Vtl) {
-        self.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
+        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
         self.wake();
     }
 
@@ -1816,7 +1816,6 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // startup suspend and any prior wake request is stale. Per-VP signals
         // that are not VTL2-specific are intentionally left intact, as they may
         // carry pending VTL0 work.
-        self.inner.scan_irr[Vtl::Vtl2].store(false, Ordering::Relaxed);
         self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
