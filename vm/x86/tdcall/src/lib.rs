@@ -6,7 +6,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use hvdef::HV_PAGE_SIZE;
 use hvdef::hypercall::HypercallOutput;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
@@ -533,7 +532,8 @@ fn set_page_attr(
             #[cfg(debug_assertions)]
             {
                 let result =
-                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * HV_PAGE_SIZE).unwrap();
+                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE)
+                        .unwrap();
                 assert_eq!(u64::from(mapping), result.mapping.into());
                 assert_eq!(attributes.l1(), result.attributes.l1());
                 assert_eq!(
@@ -920,7 +920,7 @@ fn for_each_tdcall_page<E>(
                     subrange = MemoryRange::new(subrange.start() + page_size..subrange.end())
                 }
                 TdcallPageOperationOutcome::Retry4k => {
-                    debug_assert!(
+                    assert!(
                         is_large_page,
                         "Retry4k requested while already retrying as 4K — would loop forever",
                     );
