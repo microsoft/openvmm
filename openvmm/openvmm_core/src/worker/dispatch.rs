@@ -3285,6 +3285,10 @@ impl LoadedVmInner {
                     cache_topology.is_some().then(|| acpi_builder.build_pptt()),
                     // IORT
                     acpi_builder.build_iort(),
+                    // IVRS (AMD IOMMU)
+                    acpi_builder.build_ivrs(),
+                    // DMAR (Intel VT-d)
+                    acpi_builder.build_dmar(),
                 ];
                 let acpi_tables: Vec<_> =
                     acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();

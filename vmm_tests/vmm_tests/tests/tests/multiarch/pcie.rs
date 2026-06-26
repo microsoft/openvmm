@@ -584,7 +584,11 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 ///
 /// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
 /// IVRS ACPI table is threaded through the UEFI firmware as well.
-#[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
+#[vmm_test_with(
+    openvmm,
+    amd,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
 async fn amd_iommu_mixed_topology(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -671,7 +675,11 @@ async fn amd_iommu_mixed_topology(
 ///
 /// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
 /// DMAR ACPI table is threaded through the UEFI firmware as well.
-#[vmm_test_with(openvmm, intel, configs(linux_direct_x64))]
+#[vmm_test_with(
+    openvmm,
+    intel,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
 async fn intel_vtd_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
