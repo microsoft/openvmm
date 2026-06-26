@@ -669,7 +669,7 @@ impl BackingPrivate for SnpBacked {
                 .irr
                 .iter()
                 .any(|irr| irr.value != 0);
-            let offload_not_supported =
+            let offload_supported =
                 match this.backing.cvm.lapics[vtl]
                     .lapic
                     .push_to_offload(|irr, isr, tmr| {
@@ -691,11 +691,11 @@ impl BackingPrivate for SnpBacked {
                             *proxy_irr_vtl0 = *tmr;
                         }
                     }) {
-                    Ok(_) => false,
-                    Err(virt_support_apic::OffloadNotSupported) => true,
+                    Ok(_) => true,
+                    Err(virt_support_apic::OffloadNotSupported) => false,
                 };
 
-            if offload_not_supported {
+            if !offload_supported {
                 tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
                 this.set_apic_offload(vtl, false);
                 hardware_cvm::apic::poll_apic_core(this, vtl, false);
