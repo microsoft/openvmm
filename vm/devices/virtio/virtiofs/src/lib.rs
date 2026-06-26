@@ -154,6 +154,10 @@ impl Fuse for VirtioFs {
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
         let node_id = request.node_id();
 
+        if self.is_synthetic_root(node_id) {
+            return Err(lx::Error::EROFS);
+        }
+
         // If a file handle is specified, set the attributes on the open file. This is faster on
         // Windows and works if the file was deleted.
         let attr = if arg.valid & FATTR_FH != 0 {
@@ -212,6 +216,9 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr, file) =
@@ -235,6 +242,9 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mkdir_in,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
@@ -253,6 +263,9 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mknod_in,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr) =
@@ -273,6 +286,9 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         target: &lx::LxStr,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
@@ -287,6 +303,9 @@ impl Fuse for VirtioFs {
     }
 
     fn link(&self, request: &Request, name: &lx::LxStr, target: u64) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
         self.check_writable(&inode)?;
@@ -378,6 +397,9 @@ impl Fuse for VirtioFs {
         new_name: &lx::LxStr,
         flags: u32,
     ) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) || self.is_synthetic_root(new_dir) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
         // A rename cannot cross aggregated volume boundaries.
@@ -407,6 +429,9 @@ impl Fuse for VirtioFs {
     }
 
     fn get_xattr(&self, request: &Request, name: &lx::LxStr, size: u32) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::ENODATA);
+        }
         let inode = self.get_inode(request.node_id())?;
         let mut value = vec![0u8; size as usize];
         let size = inode.get_xattr(name, Some(&mut value))?;
@@ -415,6 +440,9 @@ impl Fuse for VirtioFs {
     }
 
     fn get_xattr_size(&self, request: &Request, name: &lx::LxStr) -> lx::Result<u32> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::ENODATA);
+        }
         let inode = self.get_inode(request.node_id())?;
         let size = inode.get_xattr(name, None)?;
         let size = size.try_into().map_err(|_| lx::Error::E2BIG)?;
@@ -428,12 +456,18 @@ impl Fuse for VirtioFs {
         value: &[u8],
         flags: u32,
     ) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.set_xattr(name, value, flags)
     }
 
     fn list_xattr(&self, request: &Request, size: u32) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(Vec::new());
+        }
         let inode = self.get_inode(request.node_id())?;
         let mut list = vec![0u8; size as usize];
         let size = inode.list_xattr(Some(&mut list))?;
@@ -442,6 +476,9 @@ impl Fuse for VirtioFs {
     }
 
     fn list_xattr_size(&self, request: &Request) -> lx::Result<u32> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(0);
+        }
         let inode = self.get_inode(request.node_id())?;
         let size = inode.list_xattr(None)?;
         let size = size.try_into().map_err(|_| lx::Error::E2BIG)?;
@@ -449,6 +486,9 @@ impl Fuse for VirtioFs {
     }
 
     fn remove_xattr(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.remove_xattr(name)
@@ -557,6 +597,9 @@ impl VirtioFs {
 
     /// Removes a file or directory.
     fn unlink_helper(&self, request: &Request, name: &lx::LxStr, flags: i32) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.unlink(name, flags)

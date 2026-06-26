@@ -106,7 +106,8 @@ impl VirtioFs {
     /// shares under one aggregate device may differ.
     ///
     /// Only valid in aggregate mode. Returns:
-    /// - `EINVAL` on a direct-mode file system.
+    /// - `EINVAL` on a direct-mode file system, or if `name` is empty,
+    ///   reserved (`.`/`..`), or contains `/` or `\0`.
     /// - `EAGAIN` if the device has begun tearing down (see
     ///   [`Self::begin_teardown`]).
     /// - `EEXIST` if a child with the same name already exists.
@@ -119,6 +120,17 @@ impl VirtioFs {
         let Some(aggregate) = self.inner.aggregate() else {
             return Err(lx::Error::EINVAL);
         };
+
+        // Reject names that are empty, reserved ("." / ".."), or contain
+        // characters invalid in a POSIX directory entry ('/' or '\0').
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\0')
+        {
+            return Err(lx::Error::EINVAL);
+        }
 
         // Each child carries its own read-only setting, so shares under one
         // aggregate device may differ.
@@ -212,7 +224,13 @@ impl VirtioFs {
     /// Extended attributes of the synthetic aggregate root directory.
     pub(crate) fn synthetic_root_statx(mask: lx::StatExMask) -> fuse_statx {
         let mut sx = fuse_statx::new_zeroed();
-        sx.mask = mask.into_bits();
+        let returned_mask = lx::StatExMask::new()
+            .with_file_type(true)
+            .with_mode(true)
+            .with_nlink(true)
+            .with_ino(true)
+            .into_bits();
+        sx.mask = mask.into_bits() & returned_mask;
         sx.mode = (lx::S_IFDIR | 0o555) as u16;
         sx.nlink = 2;
         sx.ino = FUSE_ROOT_ID;
@@ -266,7 +284,9 @@ impl VirtioFs {
         // Entry 0 => ".", 1 => "..", 2.. => children[index - 2].
         let mut index = offset;
         loop {
-            let next = index + 1;
+            let Some(next) = index.checked_add(1) else {
+                break;
+            };
             let fit = match index {
                 0 => self.write_synthetic_dot(&mut buffer, ".", next, plus),
                 1 => self.write_synthetic_dot(&mut buffer, "..", next, plus),
@@ -299,7 +319,7 @@ impl VirtioFs {
             if !fit {
                 break;
             }
-            index += 1;
+            index = next;
         }
         Ok(buffer)
     }
