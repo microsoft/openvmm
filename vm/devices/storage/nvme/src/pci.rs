@@ -58,6 +58,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
+use std::task::Waker;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -103,6 +104,14 @@ pub struct NvmeController {
     /// and gone offline. Stalls the VCPU that wrote VF Enable=0 until then.
     #[inspect(with = "Option::is_some")]
     vf_drain: Option<VfDrainState>,
+    /// Waker that schedules a `poll_device` call, captured from the most
+    /// recent `poll_device` context (first populated by the initial poll at
+    /// device start). A config-space write that installs a `vf_drain` runs on
+    /// the VCPU thread and cannot itself drive `poll_device`, so it fires this
+    /// waker to kick the drain; without it the deferred write would never
+    /// complete and the VCPU would hang.
+    #[inspect(skip)]
+    poll_waker: Option<Waker>,
 }
 
 /// The common state machine shared by PF ([`super::NvmeController`]) and VF
@@ -438,6 +447,7 @@ impl NvmeController {
             secondaries,
             num_active_vfs: 0,
             vf_drain: None,
+            poll_waker: None,
         }
     }
 
@@ -500,6 +510,13 @@ impl NvmeController {
             deferred,
             pending_offline,
         });
+        // This runs on the VCPU thread handling the config write, which cannot
+        // drive `poll_device` itself. Kick the device poll loop so the drain
+        // actually makes progress and eventually completes the deferred write;
+        // otherwise the VCPU would stall here forever.
+        if let Some(waker) = &self.poll_waker {
+            waker.wake_by_ref();
+        }
         tracing::info!(count, "SR-IOV: deactivating VFs");
         Some(IoResult::Defer(token))
     }
@@ -919,6 +936,7 @@ impl ChangeDeviceState for NvmeController {
             secondaries,
             num_active_vfs,
             vf_drain: _,
+            poll_waker: _,
         } = self;
 
         // Force every secondary offline and controller-reset it in place. The
@@ -967,6 +985,9 @@ impl ChipsetDevice for NvmeController {
 
 impl PollDevice for NvmeController {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
+        // Capture a waker that re-schedules `poll_device`, so code running on
+        // the VCPU thread (e.g. `deactivate_vfs`) can kick the poll loop.
+        self.poll_waker = Some(cx.waker().clone());
         let Self {
             secondaries,
             vf_drain,

@@ -17,7 +17,6 @@ use crate::process::Stdio;
 use anyhow::Context;
 use futures::AsyncWriteExt;
 use futures_concurrency::future::Join;
-use std::collections::HashMap;
 use typed_path::Utf8Encoding;
 use typed_path::Utf8Path;
 use typed_path::Utf8PathBuf;
@@ -30,7 +29,8 @@ use typed_path::Utf8WindowsEncoding;
 pub struct Shell<'a, T: Utf8Encoding> {
     client: &'a PipetteClient,
     cwd: Utf8PathBuf<T>,
-    env: HashMap<String, String>,
+    /// Default `PATH` applied to every command, or empty to leave it unset.
+    default_path: &'static str,
     chroot: Option<String>,
 }
 
@@ -42,10 +42,14 @@ pub type UnixShell<'a> = Shell<'a, Utf8UnixEncoding>;
 
 impl<'a> UnixShell<'a> {
     pub(crate) fn new(client: &'a PipetteClient) -> Self {
+        // The pipette agent runs as init (PID 1) with an empty environment, so
+        // commands would otherwise inherit no `PATH` and fall back to glibc's
+        // default of `/bin:/usr/bin` (no sbin). Set a sensible default that
+        // includes the sbin directories so tools like `nvme` resolve by name.
         Self {
             client,
             cwd: Utf8PathBuf::from("/"),
-            env: HashMap::new(),
+            default_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             chroot: None,
         }
     }
@@ -56,7 +60,7 @@ impl<'a> WindowsShell<'a> {
         Self {
             client,
             cwd: Utf8PathBuf::from("C:/"),
-            env: HashMap::new(),
+            default_path: "",
             chroot: None,
         }
     }
@@ -275,8 +279,8 @@ impl<'a, T: Utf8Encoding> Cmd<'a, T> {
         if let Some(ref root) = self.shell.chroot {
             command.chroot(root);
         }
-        for (name, value) in &self.shell.env {
-            command.env(name, value);
+        if !self.shell.default_path.is_empty() {
+            command.env("PATH", self.shell.default_path);
         }
         for change in &self.env_changes {
             match change {
