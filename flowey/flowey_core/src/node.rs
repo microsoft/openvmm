@@ -1790,6 +1790,9 @@ pub mod steps {
             /// `System.System.JobAttempt`
             pub const SYSTEM__JOB_ATTEMPT: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.JobAttempt");
+
+            /// `Pipeline.Workspace`
+            pub const PIPELINE_WORKSPACE: AdoRuntimeVar = AdoRuntimeVar::new("Pipeline.Workspace");
         }
 
         impl AdoRuntimeVar {
