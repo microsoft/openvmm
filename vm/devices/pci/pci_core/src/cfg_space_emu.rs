@@ -674,18 +674,14 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 let val = val.merge(self.state.base_addresses[bar_index]);
                 let mut bar_value = val & self.bar_masks[bar_index];
 
-                // Preserve in-band BAR attribute bits only on the lower dword
-                // of a 64-bit BAR (i.e. a mapped BAR whose mask has the 64-bit
-                // type bit set).
-                let is_64bit_bar_lower = self.mapped_memory[bar_index].is_some()
-                    && cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index])
-                        .type_64_bit();
-                if is_64bit_bar_lower {
-                    let attrs = cfg_space::BarEncodingBits::from_bits(self.bar_masks[bar_index]);
-                    bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
-                        .with_type_64_bit(attrs.type_64_bit())
-                        .with_prefetchable(attrs.prefetchable())
-                        .into_bits();
+                // Preserve BAR in-band attribute bits (low nibble) on the
+                // low DWORD of mapped BARs. This applies to both 32-bit BARs
+                // and the low DWORD of 64-bit BARs. Upper DWORDs are not
+                // marked as mapped and therefore skip this path.
+                if self.mapped_memory[bar_index].is_some() {
+                    const BAR_ATTR_MASK: u32 = 0xF;
+                    let attr_bits = self.bar_masks[bar_index] & BAR_ATTR_MASK;
+                    bar_value = (bar_value & !BAR_ATTR_MASK) | attr_bits;
                 }
 
                 self.state.base_addresses[bar_index] = bar_value;
@@ -3059,5 +3055,42 @@ mod tests {
             CommonHeaderResult::Handled
         ));
         assert_eq!(common_emu.base_addresses()[2] & 0xF, 0);
+    }
+
+    #[test]
+    fn test_32bit_bar_preserves_attr_bits_without_clobbering_address_bits() {
+        let mut common_emu = ConfigSpaceCommonHeaderEmulatorType0::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            vec![],
+            DeviceBars::new(),
+        );
+
+        // Force BAR0 to behave like a 32-bit mapped BAR with the prefetchable
+        // bit set. This validates low-nibble preservation independent of
+        // current DeviceBars construction defaults.
+        common_emu.bar_masks[0] = 0xffff_fff0 | 0x8;
+        common_emu.mapped_memory[0] = Some(BarMemoryKind::Dummy);
+
+        assert!(matches!(
+            common_emu.write(
+                PciConfigAddress::new(0, 0, 0x10 / 4).unwrap(),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x1234_5670),
+            ),
+            CommonHeaderResult::Handled
+        ));
+
+        // Low nibble should retain BAR attribute bits from the mask while
+        // higher address bits should come from the guest write and BAR mask.
+        assert_eq!(common_emu.base_addresses()[0], 0x1234_5678);
     }
 }
