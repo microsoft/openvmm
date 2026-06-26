@@ -3050,11 +3050,11 @@ mod tests {
         assert!(matches!(
             common_emu.write(
                 PciConfigAddress::new(0, 0, 0x18 / 4).unwrap(),
-                ByteEnabledDwordWrite::with_all_bytes_enabled(0x89ab_cde0),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x89ab_cde5),
             ),
             CommonHeaderResult::Handled
         ));
-        assert_eq!(common_emu.base_addresses()[2] & 0xF, 0);
+        assert_eq!(common_emu.base_addresses()[2] & 0xF, 0x5);
     }
 
     #[test]

@@ -2007,7 +2007,9 @@ mod tests {
 
         let mut value = 0;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0xfffff004);
+        assert_eq!(value & 0xfffffff0, 0xfffff000);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0xffffffff);
         pci.lock().pci_cfg_read(0x18, &mut value).unwrap();
@@ -2022,7 +2024,9 @@ mod tests {
         complete_write(pci.lock().pci_cfg_write(0x14, 0x20)).await;
         complete_write(pci.lock().pci_cfg_write(0x10, 0x0)).await;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
 
@@ -2040,7 +2044,9 @@ mod tests {
         complete_write(pci.lock().pci_cfg_write(0x14, 0xffffffff)).await;
         complete_write(pci.lock().pci_cfg_write(0x10, 0xffffffff)).await;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
     }
