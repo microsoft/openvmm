@@ -436,7 +436,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 // Hyper-V (e.g., if it is in a WSL filesystem).
                 let src = match config.firmware.openhcl_firmware() {
                     crate::vm::OpenhclFirmwareSource::IgvmFile(p) => p,
-                    _ => unreachable!("igvm_file was constructed iff openhcl_firmware is IgvmFile"),
+                    _ => unreachable!("igvm_file is only set when openhcl_firmware is IgvmFile"),
                 };
                 fs_err::copy(src, local_path).context("failed to copy igvm file")?;
                 acl_for_vm(local_path, Some(*vm.vmid()), false)

@@ -964,6 +964,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         let mut use_openhcl_igvm_files_mi_secure_x86 = BTreeMap::new();
 
+        let mut vmfirmwareigvm_test_dll_jobs = Vec::new();
+
         // emit openhcl build job
         for (arch, mi_secure) in [
             (CommonArch::Aarch64, false),
@@ -1069,23 +1071,12 @@ impl IntoPipeline for CheckinGatesCli {
                             Some(use_vmfw_dll);
                     }
                 }
-                let dll_job = pipeline
-                    .new_job(
-                        FlowPlatform::Windows,
-                        FlowArch::X86_64,
-                        format!("build vmfirmwareigvm test DLL [{arch_tag}-windows]"),
-                    )
-                    .gh_set_pool(gh_pools::default_windows())
-                    .ado_set_pool(ado_pools::default_windows())
-                    .dep_on(|ctx| {
-                        flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll::Params {
-                            arch,
-                            openhcl_igvm: ctx.use_typed_artifact(&openhcl_igvm_for_dll),
-                            vmfirmwareigvm_test_dll_artifact: ctx
-                                .publish_typed_artifact(pub_vmfw_dll),
-                        }
-                    });
-                all_jobs.push(dll_job.finish());
+                vmfirmwareigvm_test_dll_jobs.push((
+                    arch,
+                    arch_tag,
+                    openhcl_igvm_for_dll,
+                    pub_vmfw_dll,
+                ));
             }
 
             let build_openhcl_job_tag = |arch_tag, mi_secure| {
@@ -1730,6 +1721,25 @@ impl IntoPipeline for CheckinGatesCli {
                     });
                 all_jobs.push(job.finish());
             }
+        }
+
+        for (arch, arch_tag, openhcl_igvm_for_dll, pub_vmfw_dll) in vmfirmwareigvm_test_dll_jobs {
+            let dll_job = pipeline
+                .new_job(
+                    FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    format!("build vmfirmwareigvm test DLL [{arch_tag}-windows]"),
+                )
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll::Params {
+                        arch,
+                        openhcl_igvm: ctx.use_typed_artifact(&openhcl_igvm_for_dll),
+                        vmfirmwareigvm_test_dll_artifact: ctx.publish_typed_artifact(pub_vmfw_dll),
+                    }
+                });
+            all_jobs.push(dll_job.finish());
         }
 
         // all jobs depend on the quick-check gate

@@ -15,6 +15,7 @@ use petri_artifacts_vmm_test::artifacts::vmfw_dll::CUSTOM_RESOURCE_CODE;
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_VMFW_DLL_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -52,8 +53,6 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     config: PetriVmBuilder<T>,
     (vmgstool, vmfw_dll): (ResolvedArtifact<impl IsVmgsTool>, ResolvedArtifact<D>),
 ) -> Result<(), anyhow::Error> {
-    let temp_dir = tempfile::tempdir()?;
-    let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
     let dll_path = vmfw_dll.get();
 
@@ -71,12 +70,7 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
     let resource_code_arg = "CUSTOM";
 
     // (1) Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(
-        vmgstool_path,
-        &vmgs_path,
-        Some(VMGS_FILE_SIZE),
-    ))
-    .await?;
+    let (temp_dir, vmgs_path) = create_test_vmgs(vmgstool_path, Some(VMGS_FILE_SIZE)).await?;
 
     // (2) Copy the IGVM out of the DLL and into the VMGS file.
     run_host_cmd(copy_igvmfile_cmd(
@@ -166,18 +160,11 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
         "this test only supports DLLs keyed under the CUSTOM resource code",
     );
 
-    let temp_dir = tempfile::tempdir()?;
-    let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
     let dll_path = vmfw_dll.get();
 
     // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(
-        vmgstool_path,
-        &vmgs_path,
-        Some(VMGS_FILE_SIZE),
-    ))
-    .await?;
+    let (_temp_dir, vmgs_path) = create_test_vmgs(vmgstool_path, Some(VMGS_FILE_SIZE)).await?;
 
     // First copy populates file id 8.
     run_host_cmd(copy_igvmfile_cmd(
@@ -234,13 +221,11 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
     _config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> Result<(), anyhow::Error> {
-    let temp_dir = tempfile::tempdir()?;
-    let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
 
     // Create a default-sized VMGS file; copy-igvmfile fails before
     // writing anything, so it never needs IGVM-sized capacity.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path, None)).await?;
+    let (temp_dir, vmgs_path) = create_test_vmgs(vmgstool_path, None).await?;
 
     // Write a junk "DLL" that is clearly not a PE image.
     let bogus_dll = temp_dir.path().join("not-a-dll.bin");
@@ -281,13 +266,11 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
     _config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> Result<(), anyhow::Error> {
-    let temp_dir = tempfile::tempdir()?;
-    let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
 
     // Create a default-sized VMGS file; copy-igvmfile fails before
     // writing anything, so it never needs IGVM-sized capacity.
-    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path, None)).await?;
+    let (temp_dir, vmgs_path) = create_test_vmgs(vmgstool_path, None).await?;
 
     // Point `--data-path` at a file that was never created.
     let missing_dll = temp_dir.path().join("does-not-exist.dll");
@@ -336,18 +319,11 @@ async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
         "this test relies on the DLL only carrying the CUSTOM resource code",
     );
 
-    let temp_dir = tempfile::tempdir()?;
-    let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
     let dll_path = vmfw_dll.get();
 
     // Create the VMGS file, sized to hold the IGVM payload.
-    run_host_cmd(create_vmgs_cmd(
-        vmgstool_path,
-        &vmgs_path,
-        Some(VMGS_FILE_SIZE),
-    ))
-    .await?;
+    let (_temp_dir, vmgs_path) = create_test_vmgs(vmgstool_path, Some(VMGS_FILE_SIZE)).await?;
 
     // Request a resource code the DLL does not contain.
     let res = run_host_cmd(copy_igvmfile_cmd(
@@ -400,6 +376,27 @@ fn create_vmgs_cmd(vmgstool_path: &Path, vmgs_path: &Path, file_size: Option<u64
     cmd
 }
 
+/// This creates a fresh temp directory and an empty VMGS file inside it (via `vmgstool create`),
+/// returning the temp dir and the path to the new VMGS file.
+///
+/// The returned [`tempfile::TempDir`] must be kept alive by the caller for
+/// the duration of the test (dropping it deletes the directory and
+/// therefore the VMGS file). Tests that need additional scratch files put
+/// them next to the VMGS using `temp_dir.path()`.
+///
+/// Pass `Some(`[`VMGS_FILE_SIZE`]`)` for tests that go on to write an IGVM
+/// into the VMGS; pass `None` for negative tests that fail before writing and
+/// only need vmgstool's small default capacity.
+async fn create_test_vmgs(
+    vmgstool_path: &Path,
+    file_size: Option<u64>,
+) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    run_host_cmd(create_vmgs_cmd(vmgstool_path, &vmgs_path, file_size)).await?;
+    Ok((temp_dir, vmgs_path))
+}
+
 /// Build a `vmgstool copy-igvmfile` command for the given VMGS file,
 /// resource DLL, and resource code, optionally passing `--allow-overwrite`.
 fn copy_igvmfile_cmd(
@@ -447,12 +444,11 @@ fn extract_vmfw_resource(dll_path: &Path, resource_id: u32) -> anyhow::Result<Ve
 
     file.seek(SeekFrom::Start(start))?;
 
-    const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB (matches vmgstool guard)
     anyhow::ensure!(
-        len <= MAX_IGVM_SIZE,
+        len <= resource_dll_parser::MAX_IGVM_SIZE,
         "VMFW resource size {} exceeds MAX_IGVM_SIZE {}",
         len,
-        MAX_IGVM_SIZE,
+        resource_dll_parser::MAX_IGVM_SIZE,
     );
 
     let mut bytes = vec![0u8; len];

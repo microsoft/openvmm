@@ -1444,13 +1444,12 @@ async fn read_igvmfile(
         })?;
 
     // Guard against crafted or corrupted DLLs advertising an unreasonable resource size.
-    const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
-    if len > MAX_IGVM_SIZE {
+    if len > resource_dll_parser::MAX_IGVM_SIZE {
         return Err(Error::IgvmFile(anyhow::anyhow!(
             "IGVM resource size {} in '{}' exceeds maximum allowed size of {} bytes",
             len,
             dll_path.display(),
-            MAX_IGVM_SIZE
+            resource_dll_parser::MAX_IGVM_SIZE
         )));
     }
 
@@ -2236,7 +2235,7 @@ mod tests {
         // the `.rsrc` section, which `create_test_vmfw_dll` places at file
         // offset 0x200 (`HEADERS_SIZE`).
         const SIZE_FIELD_OFFSET: usize = 0x200 + 0x5c;
-        let oversized: u32 = (256 * 1024 * 1024) + 1;
+        let oversized: u32 = (resource_dll_parser::MAX_IGVM_SIZE as u32) + 1;
         dll_data[SIZE_FIELD_OFFSET..SIZE_FIELD_OFFSET + 4]
             .copy_from_slice(&oversized.to_le_bytes());
 
