@@ -288,6 +288,10 @@ impl Parse for ArgsWithOverrides {
                     let configs;
                     syn::parenthesized!(configs in input);
                     args = Some(configs.parse::<Args>()?);
+                    // Tolerate an optional trailing comma after `configs(...)`.
+                    if input.peek(Token![,]) {
+                        input.parse::<Token![,]>()?;
+                    }
                     if !input.is_empty() {
                         return Err(input.error("`configs(...)` must be the last argument"));
                     }
@@ -307,7 +311,11 @@ impl Parse for ArgsWithOverrides {
                             "the vmm must be the first argument",
                         ));
                     }
-                    overrides.apply_ident(&ident)?;
+                    overrides.vmm = Some(if ident == "openvmm" {
+                        Vmm::OpenVmm
+                    } else {
+                        Vmm::HyperV
+                    });
                 }
                 _ => overrides.apply_ident(&ident)?,
             }
@@ -372,18 +380,6 @@ impl ParsedOverrides {
                     return conflict_err();
                 }
                 self.requires_host_vendor = Some(HostVendor::Intel);
-            }
-            "hyperv" => {
-                if self.vmm.is_some() {
-                    return conflict_err();
-                }
-                self.vmm = Some(Vmm::HyperV);
-            }
-            "openvmm" => {
-                if self.vmm.is_some() {
-                    return conflict_err();
-                }
-                self.vmm = Some(Vmm::OpenVmm);
             }
             _ => return Err(Error::new(ident.span(), "unrecognized vmm test override")),
         }
@@ -903,7 +899,7 @@ pub fn vmm_test(
 /// idents, and the firmware entries follow in a trailing `configs(...)` group:
 ///
 /// ```ignore
-/// #[vmm_test_with(<attribute>,* configs(<firmware entry>,+))]
+/// #[vmm_test_with(<attribute>, ..., configs(<firmware entry>, ...))]
 /// ```
 ///
 /// The available attributes are:
