@@ -20,17 +20,14 @@ use std::sync::atomic::Ordering;
 /// golden-ratio constant, chosen because it has good bit-mixing properties.
 const INO_NAMESPACE_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Folds a volume's namespace into a raw host inode number so that the same
-/// inode number reported from two different aggregated volumes no longer
-/// collides under the single shared FUSE superblock.
+/// XORs a per-volume key into a raw host inode number to reduce the likelihood
+/// of cross-volume `st_ino` collisions under the shared FUSE superblock.
 ///
-/// `volume_id == 0` is the direct (single-root) mode, which returns `raw`
-/// unchanged. For aggregated volumes (`volume_id != 0`) the transform is an
-/// XOR by a per-volume constant, which is a bijection: distinct files within a
-/// volume keep distinct inode numbers (preserving hard-link identity), and it
-/// never introduces a within-volume collision. Sibling volumes get distinct
-/// keys, so cross-share `(st_dev, st_ino)` aliasing is avoided even when the
-/// guest never instantiates a submount.
+/// `volume_id == 0` (direct/single-root mode) returns `raw` unchanged. For
+/// aggregated volumes the transform is a bijection within each volume
+/// (preserving hard-link identity), but cross-volume collisions are still
+/// possible when two volumes happen to have inode numbers whose XOR equals the
+/// difference of their volume keys.
 pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::ino_t {
     if volume_id == 0 {
         return raw;
