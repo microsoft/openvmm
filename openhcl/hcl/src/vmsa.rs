@@ -169,10 +169,8 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
         // only runs on the owning VP's thread. The atomic is needed because the
         // untrusted hypervisor's hardware may concurrently access this field via
         // VMRUN on another physical CPU.
-        let prev = unsafe {
-            &*(core::ptr::from_ref(&self.vmsa.v_intr_cntrl).cast::<AtomicU64>())
-        }
-        .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
+        let prev = unsafe { &*(core::ptr::from_ref(&self.vmsa.v_intr_cntrl).cast::<AtomicU64>()) }
+            .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
         (prev & VINTR_GUEST_BUSYBIT_MASK) != 0
     }
 }

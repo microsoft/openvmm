@@ -217,7 +217,7 @@ pub struct SevNpfInfo {
     pub vmpl_violation: bool,
     pub npt_supervisor_shadow_stack: bool,
     #[bits(25)]
-    rsvd38_63: u64,
+    rsvd38_62: u64,
     pub not_restartable: bool,
 }
 

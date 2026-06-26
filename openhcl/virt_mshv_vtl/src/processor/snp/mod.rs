@@ -106,7 +106,7 @@ enum SnpGhcbError {
 
 #[derive(Debug, Error)]
 enum SnpRunVpError {
-    #[error("Guest AVIC backing page is not validated or cannot be accessed.")]
+    #[error("guest AVIC backing page is not validated or cannot be accessed")]
     VpNotRestartableError,
     #[error("failed to run")]
     RunVpError(#[source] hcl::ioctl::Error),
@@ -1547,13 +1547,13 @@ impl UhProcessor<'_, SnpBacked> {
             let sev_error_code = SevExitCode(vmsa.guest_error_code());
             match sev_error_code {
                 SevExitCode::NOT_RESTARTABLE => {
-                    // The guest APIC backing page is not validated in the RMP.
+                    // The guest AVIC backing page is not validated in the RMP.
                     return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
                 }
                 SevExitCode::NPF => {
                     let exit_info = SevNpfInfo::from(vmsa.exit_info1());
                     if exit_info.not_restartable() {
-                        // An access to the guest's APIC backing page by AVIC hardware resulted
+                        // An access to the guest AVIC backing page by hardware resulted
                         // in a nested page fault.
                         return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
                     }
@@ -2051,7 +2051,7 @@ impl UhProcessor<'_, SnpBacked> {
                 tracing::error!(
                     CVM_CONFIDENTIAL,
                     "SEV exit code {sev_error_code:x?} sev features {:x?} v_intr_control {:x?} event inject {:x?} \
-                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?}  virtual_tom {:x?} \
+                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?} virtual_tom {:x?} \
                     efer {:x?} cr4 {:x?} cr3 {:x?} cr0 {:x?} rflag {:x?} rip {:x?} next rip {:x?}",
                     vmsa.sev_features(),
                     vmsa.v_intr_cntrl(),
