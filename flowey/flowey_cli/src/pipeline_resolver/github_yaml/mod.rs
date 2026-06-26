@@ -545,7 +545,18 @@ EOF
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
                 name: label.clone(),
-                runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
+                runs_on: gh_pool.clone().map(|runner| {
+                    let mut yaml_runner = runner_kind_to_yaml(&runner);
+                    if let github_yaml_defs::Runner::SelfHosted(ref mut labels) = yaml_runner {
+                        if labels.iter().any(|l| l.starts_with("1ES.Pool=")) {
+                            labels.push(format!(
+                                "JobId=job{}-${{{{ github.run_id }}}}-${{{{ github.run_number }}}}-${{{{ github.run_attempt }}}}",
+                                job_idx.index()
+                            ));
+                        }
+                    }
+                    yaml_runner
+                }),
                 permissions: job_permissions
                     .iter()
                     .map(|k| (perm_kind_to_yaml(k.0), perm_val_to_yaml(k.1)))

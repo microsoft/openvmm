@@ -347,6 +347,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -603,6 +604,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -897,6 +899,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -1194,6 +1197,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-arm-westus3
     - 1ES.ImageOverride=win-arm64-v2
+    - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -1416,6 +1420,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -1864,6 +1869,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -2087,6 +2093,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job17-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -2691,6 +2698,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -2937,6 +2945,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3171,6 +3180,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3421,6 +3431,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
     - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3661,6 +3672,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3964,6 +3976,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -4317,6 +4330,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -4668,6 +4682,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
     - 1ES.ImageOverride=ubuntu2404-amd64
+    - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
