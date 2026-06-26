@@ -1741,6 +1741,9 @@ pub struct MemoryConfig {
     pub dynamic_memory_range: Option<(u64, u64)>,
     /// Specifies the mmio gaps to use, either platform or custom.
     pub mmio_gaps: MmioConfig,
+    /// Per-NUMA-node memory sizes. When set, RAM is distributed across
+    /// vNUMA nodes instead of assigning all RAM to node 0.
+    pub numa_mem_sizes: Option<Vec<u64>>,
 }
 
 impl Default for MemoryConfig {
@@ -1749,6 +1752,7 @@ impl Default for MemoryConfig {
             startup_bytes: 0x1_0000_0000,
             dynamic_memory_range: None,
             mmio_gaps: MmioConfig::Platform,
+            numa_mem_sizes: None,
         }
     }
 }
