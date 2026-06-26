@@ -7,6 +7,8 @@ use super::SHA_384_OUTPUT_SIZE_BYTES;
 use crate::file_loader::DEFAULT_COMPATIBILITY_MASK;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmInitializationHeader;
+use igvm_defs::IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY;
+use igvm_defs::IGVM_VHS_SNP_ID_BLOCK_SIGNATURE;
 use igvm_defs::IgvmPageDataType;
 use igvm_defs::PAGE_SIZE_4K;
 use sha2::Digest;
@@ -22,13 +24,22 @@ use zerocopy::IntoBytes;
 pub enum Error {
     #[error("invalid parameter area index")]
     InvalidParameterAreaIndex,
+    #[error("failed to sign temporary SNP ID block: {0}")]
+    TempSigning(String),
 }
 
+const SNP_ID_KEY_ALGORITHM_ECDSA_P384_SHA384: u32 = 1;
+const SNP_ECDSA_CURVE_P384: u32 = 2;
+const SNP_ECC_KEY_SIZE_BYTES: usize = 48;
+const SNP_ECC_COMPONENT_SIZE_BYTES: usize = 72;
+
 /// Iterate through all headers, creating a launch digest which is then signed,
-/// returning an [`IgvmDirectiveHeader::SnpIdBlock`]
+/// returning the launch digest. Also emits a temporarily-signed
+/// [`IgvmDirectiveHeader::SnpIdBlock`] directive (the presence of this directive
+/// signals the IGVM loader to set `id_block_en = 1` at launch time).
 pub fn generate_snp_measurement(
     initialization_headers: &[IgvmInitializationHeader],
-    directive_headers: &[IgvmDirectiveHeader],
+    directive_headers: &mut Vec<IgvmDirectiveHeader>,
     svn: u32,
 ) -> Result<[u8; SHA_384_OUTPUT_SIZE_BYTES], Error> {
     let mut parameter_area_table = HashMap::new();
@@ -108,7 +119,7 @@ pub fn generate_snp_measurement(
     assert_ne!(policy, 0);
 
     // Loop over all the page data to build the digest
-    for header in directive_headers {
+    for header in directive_headers.iter() {
         // Skip headers that have compatibility masks that do not match snp.
         if header
             .compatibility_mask()
@@ -201,7 +212,7 @@ pub fn generate_snp_measurement(
     let family_id = *b"msft\0\0\0\0\0\0\0\0\0\0\0\0";
     let image_id = *b"underhill\0\0\0\0\0\0\0";
 
-    // Generate the PSP ID block format, hash with SHA-384
+    // Generate the PSP ID block format, hash with SHA-384.
     let psp_id_block = SnpPspIdBlock {
         ld: launch_digest,
         version: 0x1,
@@ -210,7 +221,109 @@ pub fn generate_snp_measurement(
         family_id,
         image_id,
     };
-    // Print the ID block for reference, not currently used.
+    // Print the ID block for reference.
     tracing::info!("SNP ID Block {:x?}", psp_id_block);
+
+    // Generate a temporary key and sign the ID block hash.
+    let (id_key_signature, id_public_key) = sign_id_block_with_temp_key(&psp_id_block)?;
+    directive_headers.push(IgvmDirectiveHeader::SnpIdBlock {
+        compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+        author_key_enabled: 0,
+        reserved: [0; 3],
+        ld: psp_id_block.ld,
+        family_id: psp_id_block.family_id,
+        image_id: psp_id_block.image_id,
+        version: psp_id_block.version,
+        guest_svn: psp_id_block.guest_svn,
+        id_key_algorithm: SNP_ID_KEY_ALGORITHM_ECDSA_P384_SHA384,
+        author_key_algorithm: 0,
+        id_key_signature: Box::new(id_key_signature),
+        id_public_key: Box::new(id_public_key),
+        author_key_signature: Box::new(IGVM_VHS_SNP_ID_BLOCK_SIGNATURE {
+            r_comp: [0; SNP_ECC_COMPONENT_SIZE_BYTES],
+            s_comp: [0; SNP_ECC_COMPONENT_SIZE_BYTES],
+        }),
+        author_public_key: Box::new(IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY {
+            curve: 0,
+            reserved: 0,
+            qx: [0; SNP_ECC_COMPONENT_SIZE_BYTES],
+            qy: [0; SNP_ECC_COMPONENT_SIZE_BYTES],
+        }),
+    });
+
     Ok(psp_id_block.ld)
+}
+
+/// Zero-pads and reverses a big-endian ECC component into a 72-byte
+/// little-endian array as required by the PSP ID block format.
+fn padded_le_component(input_be: &[u8]) -> [u8; SNP_ECC_COMPONENT_SIZE_BYTES] {
+    let mut out = [0u8; SNP_ECC_COMPONENT_SIZE_BYTES];
+    for (dst, src) in out.iter_mut().zip(input_be.iter().rev()) {
+        *dst = *src;
+    }
+    out
+}
+
+/// Generate a temporary ECDSA P-384 key pair using SymCrypt, sign the
+/// SHA-384 hash of the ID block, and return the signature + public key
+/// in the format expected by `IGVM_VHS_SNP_ID_BLOCK`.
+fn sign_id_block_with_temp_key(
+    id_block: &SnpPspIdBlock,
+) -> Result<
+    (
+        IGVM_VHS_SNP_ID_BLOCK_SIGNATURE,
+        IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY,
+    ),
+    Error,
+> {
+    use symcrypt::ecc::{CurveType, EcKey, EcKeyUsage};
+
+    // Generate a random P-384 key pair for ECDSA signing.
+    let key = EcKey::generate_key_pair(CurveType::NistP384, EcKeyUsage::EcDsa)
+        .map_err(|e| Error::TempSigning(format!("EcKey::generate_key_pair: {e:?}")))?;
+
+    // Hash the ID block with SHA-384.
+    let mut hash = Sha384::new();
+    hash.update(id_block.as_bytes());
+    let id_block_hash: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hash.finalize().into();
+
+    // Sign the hash. SymCrypt returns r || s in big-endian, each 48 bytes for P-384.
+    let signature = key
+        .ecdsa_sign(&id_block_hash)
+        .map_err(|e| Error::TempSigning(format!("ecdsa_sign: {e:?}")))?;
+
+    if signature.len() != SNP_ECC_KEY_SIZE_BYTES * 2 {
+        return Err(Error::TempSigning(format!(
+            "unexpected signature size {}",
+            signature.len()
+        )));
+    }
+
+    let (sig_r_be, sig_s_be) = signature.split_at(SNP_ECC_KEY_SIZE_BYTES);
+    let id_key_signature = IGVM_VHS_SNP_ID_BLOCK_SIGNATURE {
+        r_comp: padded_le_component(sig_r_be),
+        s_comp: padded_le_component(sig_s_be),
+    };
+
+    // Export the public key. SymCrypt returns Qx || Qy in big-endian, each 48 bytes for P-384.
+    let public_key = key
+        .export_public_key()
+        .map_err(|e| Error::TempSigning(format!("export_public_key: {e:?}")))?;
+
+    if public_key.len() != SNP_ECC_KEY_SIZE_BYTES * 2 {
+        return Err(Error::TempSigning(format!(
+            "unexpected public key size {}",
+            public_key.len()
+        )));
+    }
+
+    let (qx_be, qy_be) = public_key.split_at(SNP_ECC_KEY_SIZE_BYTES);
+    let id_public_key = IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY {
+        curve: SNP_ECDSA_CURVE_P384,
+        reserved: 0,
+        qx: padded_le_component(qx_be),
+        qy: padded_le_component(qy_be),
+    };
+
+    Ok((id_key_signature, id_public_key))
 }
