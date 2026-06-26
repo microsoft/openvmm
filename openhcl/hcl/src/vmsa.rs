@@ -32,6 +32,11 @@ impl<'a, T> VmsaWrapper<'a, T> {
 
 /// Wraps a SEV VMSA structure with the register tweak bitmap to provide safe access methods.
 impl<T: Deref<Target = SevVmsa>> VmsaWrapper<'_, T> {
+    /// Returns the raw VMSA bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.vmsa.as_bytes()
+    }
+
     /// 64 bit register read
     fn get_u64(&self, offset: usize) -> u64 {
         assert!(offset.is_multiple_of(8));
