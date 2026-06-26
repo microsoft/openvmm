@@ -399,7 +399,6 @@ struct Vplc {
     #[inspect(with = "|x| x.lock().is_some()")]
     start_vp_request: Mutex<Option<VpStartRequest>>,
     start_vp: AtomicBool,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     scan_irr: AtomicBool,
 }
 
