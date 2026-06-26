@@ -221,6 +221,7 @@ pub fn generate_snp_measurement(
         family_id,
         image_id,
     };
+    
     // Print the ID block for reference.
     tracing::info!("SNP ID Block {:x?}", psp_id_block);
 
