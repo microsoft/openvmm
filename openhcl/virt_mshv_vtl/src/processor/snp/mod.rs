@@ -1532,21 +1532,12 @@ impl UhProcessor<'_, SnpBacked> {
 
         let entered_from_vtl = next_vtl;
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
-        let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
 
         // Atomically test and set the guest busy bit. This prevents the untrusted
         // hypervisor from re-entering the VMSA on another physical CPU while VTL2
-        // is processing the exit. The return value indicates whether the hardware
-        // had already set the busy bit on exit (e.g., for APIC-related exits with
-        // secure AVIC, or injection failures with alternate injection).
-        #[cfg(not(feature = "disable_secure_avic"))]
-        if !vmsa.sev_features().alternate_injection() {
-            assert!(
-                vmsa.sev_features().secure_avic(),
-                "secure AVIC must be enabled"
-            );
-        }
+        // is processing the exit.
         let was_busy = vmsa.guest_busy_bit_test_and_set();
+        let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
 
         if was_busy {
             self.backing.general_stats[entered_from_vtl]
@@ -1571,8 +1562,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
         }
 
-        // Handle exit interrupt info re-injection (alternate injection only).
-        // Secure AVIC manages event injection through the APIC backing page.
         if vmsa.sev_features().alternate_injection() {
             // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
             // points to the instruction and the event should be re-generated when the
@@ -1605,7 +1594,14 @@ impl UhProcessor<'_, SnpBacked> {
                 // cleared so that it is not examined again on a subsequent reentry to
                 // the HCL.
                 vmsa.set_exit_int_info(0);
+            } else {
+                // Any previously injected event has been consumed.
             }
+        } else {
+            assert!(
+                cfg!(feature = "disable_secure_avic") || vmsa.sev_features().secure_avic(),
+                "secure AVIC must be enabled"
+            );
         }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
