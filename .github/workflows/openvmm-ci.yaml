@@ -176,10 +176,7 @@ jobs:
       shell: bash
   job1:
     name: xtask fmt (linux)
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -348,7 +345,8 @@ jobs:
     name: clippy [windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -602,8 +600,8 @@ jobs:
     name: clippy [linux, macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -896,8 +894,8 @@ jobs:
     name: clippy [linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -1193,9 +1191,8 @@ jobs:
     name: unit tests [aarch64-windows]
     runs-on:
     - self-hosted
-    - Windows
-    - ARM64
-    - Baremetal
+    - 1ES.Pool=openvmm-gh-arm-westus3
+    - 1ES.ImageOverride=win-arm64-v2
     permissions:
       contents: read
       id-token: write
@@ -1416,8 +1413,8 @@ jobs:
     name: run vmm-tests [x64-windows-intel]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -1864,8 +1861,8 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -2087,8 +2084,8 @@ jobs:
     name: run vmm-tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -2579,10 +2576,7 @@ jobs:
       shell: bash
   job19:
     name: test flowey local backend
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -2694,7 +2688,8 @@ jobs:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -2937,7 +2932,10 @@ jobs:
         include-hidden-files: true
   job3:
     name: build artifacts (for VMM tests) [aarch64-windows]
-    runs-on: windows-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -3170,7 +3168,8 @@ jobs:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -3417,7 +3416,10 @@ jobs:
         include-hidden-files: true
   job5:
     name: build artifacts (for VMM tests) [x64-windows]
-    runs-on: windows-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
     permissions:
       contents: read
       id-token: write
@@ -3656,8 +3658,8 @@ jobs:
     name: build artifacts [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -3959,8 +3961,8 @@ jobs:
     name: build artifacts [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -4312,8 +4314,8 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
@@ -4663,8 +4665,8 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.ImageOverride=ubuntu2404-amd64
     permissions:
       contents: read
       id-token: write
