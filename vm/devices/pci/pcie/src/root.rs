@@ -162,7 +162,7 @@ impl GenericSwitchDefinition {
 
 /// The target of a PCIe configuration space access.
 enum CfgAccessTarget<'a> {
-    /// The access targest a Root Complex Integrated Endpoint (RCiEP) on
+    /// The access targets a Root Complex Integrated Endpoint (RCiEP) on
     /// the internal bus of the root complex.
     Rciep(&'a mut dyn GenericPciBusDevice),
     /// The access targets a root port on the internal bus of the root

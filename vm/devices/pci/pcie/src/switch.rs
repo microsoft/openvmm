@@ -460,8 +460,11 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
         let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
-            *value = !0;
             return IoResult::Err(IoError::InvalidRegister);
         };
 
@@ -515,6 +518,10 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
         let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
             return IoResult::Err(IoError::InvalidRegister);
         };

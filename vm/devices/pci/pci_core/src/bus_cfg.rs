@@ -27,7 +27,7 @@ pub trait PciBusCfgAccessCallbacks {
     fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult;
 }
 
-/// A pending config-space access that deferred by a downstream device.
+/// A pending config space access that was deferred by a downstream device.
 #[derive(Inspect)]
 #[inspect(tag = "kind")]
 enum DeferredCfgAccess {
@@ -40,7 +40,7 @@ enum DeferredCfgAccess {
         addr: PciConfigAddress,
         byte_enable: PciConfigByteEnable,
     },
-    /// A read that was deferred by a downstream to device that was initiated
+    /// A read that was deferred by a downstream device that was initiated
     /// as part of a read-modify-write operation.
     ReadForWrite {
         #[inspect(skip)]
