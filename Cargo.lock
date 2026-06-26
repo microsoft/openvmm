@@ -3795,6 +3795,7 @@ dependencies = [
  "pal_async",
  "pipette_client",
  "serde",
+ "tempfile",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -3894,6 +3895,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_vtd"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "iommu_common",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "x86defs",
+ "zerocopy",
+]
+
+[[package]]
 name = "io-uring"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3909,6 +3930,7 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
 ]
@@ -4706,7 +4728,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=07a121e4b46659cdfa8711740c6622728adffd65#07a121e4b46659cdfa8711740c6622728adffd65"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d#9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d"
 dependencies = [
  "cc",
  "once_cell",
@@ -5554,6 +5576,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "intel_vtd",
  "iommu_common",
  "loader",
  "membacking",
@@ -5565,6 +5588,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "pci_resource_assignment",
@@ -10471,6 +10495,7 @@ dependencies = [
  "tmk_tests",
  "tracing",
  "unix_socket",
+ "vfio_assigned_device_resources",
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",

@@ -1698,6 +1698,51 @@ fn test_reserved_channels() {
     assert!(env.notifier.is_reset());
 }
 
+// Reserved channels are supposed to remain usable across unload. A close that
+// completes while the connection is disconnected must still deliver a
+// CloseReservedChannelResponse to the originally requested target.
+#[test]
+fn test_reserved_channel_close_response_after_unload() {
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    env.gpadl(1, 10);
+    env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
+
+    const RESERVED_SINT: u32 = 5;
+    env.open_reserved(1, 1, RESERVED_SINT);
+    env.c().open_complete(offer_id1, 0);
+
+    // Unload while the reserved channel is still open.
+    env.c().handle_unload();
+    env.complete_reset();
+
+    env.notifier.messages.clear();
+
+    // Close the reserved channel while disconnected and complete the close.
+    env.close_reserved(1, 4, RESERVED_SINT);
+    env.c().close_complete(offer_id1);
+
+    // A CloseReservedChannelResponse should still be sent to the reserved
+    // channel's requested target, even though the connection is disconnected.
+    env.notifier.check_message_with_target(
+        OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
+            channel_id: ChannelId(1),
+        }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 4,
+                sint: RESERVED_SINT as u8,
+            },
+        ),
+    );
+}
+
 #[test]
 fn test_disconnected_reset() {
     let mut env = TestEnv::new();

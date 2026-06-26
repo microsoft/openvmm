@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 guestmem.workspace = true
+parking_lot.workspace = true
 pci_core.workspace = true
 thiserror.workspace = true
 

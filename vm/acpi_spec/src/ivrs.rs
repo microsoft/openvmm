@@ -46,6 +46,18 @@ pub const IVHD_DEV_RANGE_START: u8 = 0x03;
 /// IVHD device entry type: end of device range (§5.2.2.7, Table 93).
 pub const IVHD_DEV_RANGE_END: u8 = 0x04;
 
+/// IVHD device entry type: special device (§5.2.2.8, Table 96).
+///
+/// 8-byte entry used for IOAPIC, HPET, and other special devices that
+/// are not PCI devices but need IOMMU interrupt remapping.
+pub const IVHD_DEV_SPECIAL: u8 = 0x48;
+
+/// IVHD special device variety: IOAPIC (§5.2.2.8, Table 96).
+pub const IVHD_SPECIAL_IOAPIC: u8 = 0x01;
+
+/// IVHD special device variety: HPET (§5.2.2.8, Table 96).
+pub const IVHD_SPECIAL_HPET: u8 = 0x02;
+
 /// DTE setting: INITPass, EIntPass, NMIPass for fixed interrupt passthrough.
 pub const IVHD_DTE_SETTING_INIT_PASS: u8 = 0x01;
 pub const IVHD_DTE_SETTING_EINT_PASS: u8 = 0x02;
@@ -247,6 +259,51 @@ impl IvhdDeviceEntry4 {
 }
 
 const_assert_eq!(size_of::<IvhdDeviceEntry4>(), 4);
+
+/// IVHD 8-byte special device entry (§5.2.2.8, Table 96).
+///
+/// Used for non-PCI devices (IOAPIC, HPET) that need IOMMU interrupt
+/// remapping. The `handle` identifies the device instance (e.g., IOAPIC ID
+/// or HPET number), and the source RID identifies the remapping context used
+/// for DTE/IRTE lookup.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct IvhdSpecialDeviceEntry8 {
+    /// Entry type (0x48 for special device).
+    pub entry_type: u8,
+    /// Reserved, must be zero (bytes 1-2 per spec Table 107).
+    _reserved: u16_ne,
+    /// DTE setting (same as `IvhdDeviceEntry4::dte_setting`).
+    pub dte_setting: u8,
+    /// Device handle — interpretation depends on `variety`:
+    /// - IOAPIC: IOAPIC ID (from ACPI MADT)
+    /// - HPET: HPET number
+    pub handle: u8,
+    /// Source DeviceID — the BDF used by the IOMMU for DTE/IRTE lookup
+    /// when this special device issues an interrupt.
+    pub source_device_id: u16_ne,
+    /// Variety of special device (see `IVHD_SPECIAL_*` constants).
+    pub variety: u8,
+}
+
+impl IvhdSpecialDeviceEntry8 {
+    /// Create a special device entry for an IOAPIC.
+    ///
+    /// - `rid`: IOAPIC RID for IOMMU DTE/IRTE lookup
+    /// - `ioapic_id`: the IOAPIC ID (matches the MADT entry)
+    pub fn ioapic(rid: u16, ioapic_id: u8) -> Self {
+        Self {
+            entry_type: IVHD_DEV_SPECIAL,
+            _reserved: 0.into(),
+            dte_setting: 0,
+            handle: ioapic_id,
+            source_device_id: rid.into(),
+            variety: IVHD_SPECIAL_IOAPIC,
+        }
+    }
+}
+
+const_assert_eq!(size_of::<IvhdSpecialDeviceEntry8>(), 8);
 
 #[cfg(test)]
 mod tests {

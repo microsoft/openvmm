@@ -520,6 +520,15 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
         })
         .run()
         .await?;
@@ -548,20 +557,9 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         "IORT ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the SMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
-    tracing::info!(%iommu_groups, "IOMMU groups");
-    assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the SMMU"
-    );
-
-    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
-    //    works through the SMMU (segment 0 / PCI domain 0000).
-    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
-
-    // 5. Verify virtio-net interfaces exist on both RCs
-    verify_net_interface_count(&sh, 2).await?;
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(&sh, |l| l.contains("arm-smmu-v3") && l.contains("event"), 2)
+        .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -583,7 +581,14 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 /// Restricted to AMD-vendor hosts: the AMD IOMMU emulator's IVHD entries
 /// surface a host-cpuid-derived AMD-Vi family/model that Linux's IOMMU
 /// driver only accepts when the boot CPU also reports as AMD.
-#[vmm_test_with(openvmm_amd(linux_direct_x64))]
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// IVRS ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(
+    openvmm,
+    amd,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
 async fn amd_iommu_mixed_topology(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -595,6 +600,15 @@ async fn amd_iommu_mixed_topology(
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
         })
         .run()
         .await?;
@@ -622,20 +636,122 @@ async fn amd_iommu_mixed_topology(
         "IVRS ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the IOMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
-    tracing::info!(%iommu_groups, "IOMMU groups");
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "AMD-Vi", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("amd-vi")
+    })
+    .await?;
+
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(
+        &sh,
+        |l| l.contains("AMD-Vi: Event") || l.contains("IO_PAGE_FAULT"),
+        2,
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test Intel VT-d IOMMU emulation across a multi-segment topology:
+///
+/// - Root complex s0rc0 (segment 0): VT-d IOMMU enabled, NVMe + virtio-net
+/// - Root complex s1rc0 (segment 1): VT-d IOMMU enabled, NVMe + virtio-net
+///
+/// Every root complex has its own VT-d unit. Unlike AMD-Vi, Intel VT-d cannot
+/// have a device on a segment with no VT-d unit: enabling VT-d forces global
+/// interrupt remapping (x2APIC), under which Linux can't allocate MSIs for a
+/// device outside every DRHD's scope (so OpenVMM rejects that configuration).
+///
+/// Verifies:
+/// 1. Linux discovers the Intel IOMMU (dmesg shows DMAR/Intel IOMMU init)
+/// 2. DMAR ACPI table is present
+/// 3. Devices behind the IOMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interface)
+/// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// DMAR ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(
+    openvmm,
+    intel,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
+async fn intel_vtd_multi_segment(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_intel_vtd(&["s0rc0", "s1rc0"]) // VT-d on every RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+                // Linux's Intel IOMMU driver is off by default unless the
+                // kernel was built with CONFIG_INTEL_IOMMU_DEFAULT_ON.
+                // Also set real ACS capability bits on root ports so Linux
+                // creates per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" intel_iommu=on");
+                    }
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify Intel IOMMU is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
     assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the IOMMU"
+        dmesg.contains("DMAR") || dmesg.contains("Intel IOMMU") || dmesg.contains("intel-iommu"),
+        "Linux should discover the Intel IOMMU in dmesg. dmesg excerpt:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| {
+                l.contains("IOMMU")
+                    || l.contains("iommu")
+                    || l.contains("DMAR")
+                    || l.contains("dmar")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
-    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
-    //    works through the IOMMU (segment 0 / PCI domain 0000).
-    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
+    // 2. Verify DMAR ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("DMAR"),
+        "DMAR ACPI table should be present. Tables: {acpi_tables}"
+    );
 
-    // 5. Verify virtio-net interfaces exist
-    verify_net_interface_count(&sh, 2).await?;
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "Intel VT-d", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("dmar") || l.contains("intel-iommu")
+    })
+    .await?;
+
+    // 3–6. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(
+        &sh,
+        |l| l.contains("DMAR: [DMA") || l.contains("DMAR: DRHD: handling fault"),
+        2,
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -662,6 +778,124 @@ async fn boot_no_vmbus_pcie_nvme(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+/// Common IOMMU validation for the mixed-topology tests.
+///
+/// After the platform-specific IOMMU discovery and ACPI table checks, this
+/// function verifies that DMA remapping is actually working:
+///
+/// 1. At least `min_iommu_groups` IOMMU groups exist (ensures all devices
+///    behind the IOMMU are scoped correctly, not just one).
+/// 2. NVMe DMA works on the IOMMU-backed segment.
+/// 3. Network interfaces are present on both segments.
+/// 4. No IOMMU faults in dmesg (using the caller-provided `fault_filter`).
+///    This is checked last, after exercising DMA/MSI, so that runtime faults
+///    triggered by the actual translation and interrupt-remapping paths are
+///    caught in addition to any boot-time faults.
+async fn verify_iommu_mixed_topology(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    fault_filter: impl Fn(&str) -> bool,
+    min_iommu_groups: usize,
+) -> anyhow::Result<()> {
+    // Verify IOMMU groups cover all devices behind the IOMMU RC.
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
+    let group_count = iommu_groups.split_whitespace().count();
+    tracing::info!(%iommu_groups, group_count, "IOMMU groups");
+    assert!(
+        group_count >= min_iommu_groups,
+        "expected at least {min_iommu_groups} IOMMU groups, got {group_count}"
+    );
+
+    // Verify NVMe DMA works through the IOMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(sh, 2, "0000").await?;
+
+    // Verify network interfaces exist on both RCs.
+    verify_net_interface_count(sh, 2).await?;
+
+    // Verify no IOMMU faults — faults indicate broken device scope, missing
+    // page table mappings, or devices not covered by the IOMMU. Re-read dmesg
+    // here (after the DMA exercise above) so faults from the actual
+    // translation/interrupt-remapping path are caught, not just boot-time ones.
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let faults: Vec<&str> = dmesg.lines().filter(|l| fault_filter(l)).collect();
+    assert!(
+        faults.is_empty(),
+        "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
+        faults.join("\n")
+    );
+
+    Ok(())
+}
+
+/// Verify that IOAPIC interrupts are routed through interrupt remapping.
+///
+/// Linux reports this path as `IR-IO-APIC` in `/proc/interrupts`. To prove the
+/// route is live, this captures the serial IRQ count, generates serial output,
+/// and confirms the count increases.
+async fn verify_ioapic_interrupt_remapping(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    dmesg: &str,
+    iommu: &str,
+    ir_dmesg_filter: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        iommu,
+        ir_dmesg = %dmesg
+            .lines()
+            .filter(|l| ir_dmesg_filter(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "interrupt remapping dmesg lines"
+    );
+
+    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
+    tracing::info!(%interrupts, "/proc/interrupts");
+
+    let serial_irq = interrupts
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
+    assert!(
+        serial_irq.contains("IR-IO-APIC"),
+        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
+         remapping is enabled, got: {serial_irq}"
+    );
+
+    let count_before = sum_irq_count(serial_irq);
+    cmd!(
+        sh,
+        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
+    )
+    .run()
+    .await?;
+    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
+    let serial_irq_after = interrupts_after
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
+    let count_after = sum_irq_count(serial_irq_after);
+    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
+    assert!(
+        count_after > count_before,
+        "serial (IOAPIC) interrupt count should increase after generating \
+         serial traffic with interrupt remapping enabled: \
+         before={count_before} after={count_after}"
+    );
+
+    Ok(())
+}
+
+/// Sum the per-CPU interrupt counts from a `/proc/interrupts` line.
+///
+/// A line looks like `" 4:   42    0   IR-IO-APIC   4-edge   ttyS0"`: the
+/// leading token is the IRQ label and the trailing tokens are the chip and
+/// device name, so only the numeric per-CPU columns in between are summed.
+fn sum_irq_count(line: &str) -> u64 {
+    line.split_whitespace()
+        .skip(1)
+        .map_while(|tok| tok.parse::<u64>().ok())
+        .sum()
 }
 
 /// Verify that NVMe block devices are visible in the guest and exercise DMA

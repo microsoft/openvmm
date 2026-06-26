@@ -226,6 +226,7 @@ aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
 amd_iommu = { path = "vm/devices/iommu/amd_iommu" }
+intel_vtd = { path = "vm/devices/iommu/intel_vtd" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
@@ -527,7 +528,7 @@ constant_time_eq = "0.5"
 cms = { version = "0.3.0-pre.2", default-features = false }
 der = "0.8"
 getrandom = "0.4"
-ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "07a121e4b46659cdfa8711740c6622728adffd65", default-features = false }
+ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 openssl = "0.10.79"
 openssl-sys = "0.9"
 pkcs1 = "0.8.0-rc.4"

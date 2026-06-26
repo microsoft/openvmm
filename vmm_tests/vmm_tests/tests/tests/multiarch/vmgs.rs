@@ -84,7 +84,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
 ///
 /// This test exists to ensure we are not getting a false positive for
 /// the `default_boot` and `clear_vmgs` test above.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],

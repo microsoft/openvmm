@@ -30,9 +30,9 @@ pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.6";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.6";
-pub const OPENVMM_DEPS: &str = "0.3.0-101";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.7";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.7";
+pub const OPENVMM_DEPS: &str = "0.3.0-110";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -62,6 +62,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
@@ -212,6 +213,10 @@ impl FlowNode for Node {
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_virtio_win::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        ctx.config(crate::resolve_openvmm_qemu::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });

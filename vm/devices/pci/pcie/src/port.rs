@@ -70,6 +70,25 @@ pub struct PciePortSettings {
     pub cxl_flex_bus_port_capability: Option<CxlFlexBusPortDvsecCapability>,
 }
 
+/// A description of a generic PCIe port (a root-complex root port or a switch
+/// downstream port).
+pub struct GenericPciePortDefinition {
+    /// The name of the port.
+    pub name: Arc<str>,
+    /// The device/function (`device << 3 | function`) to place this port at.
+    ///
+    /// When `None`, the port is assigned the lowest available devfn at or
+    /// above the builder's first-port device number. Ports are assigned in
+    /// order; an explicit devfn that collides with an already-assigned port
+    /// is an error. Honored for both root-complex root ports and switch
+    /// downstream ports.
+    pub devfn: Option<u8>,
+    /// Whether hotplug is enabled for this port.
+    pub hotplug: bool,
+    /// Express-level port settings (ACS, etc.).
+    pub settings: PciePortSettings,
+}
+
 /// Generic PCIe port BAR definition.
 #[derive(Clone)]
 pub struct PortBarDefinition {
@@ -971,14 +990,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             Some(1), // Enable hotplug with slot number 1
-            msi_conn.target(),
+            &msi_conn.target(),
             PciePortSettings::default(),
             None,
             None,
@@ -1025,14 +1044,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None, // No hotplug
-            msi_conn.target(),
+            &msi_conn.target(),
             PciePortSettings::default(),
             None,
             None,
@@ -1126,14 +1145,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
-            msi_conn.target(),
+            &msi_conn.target(),
             PciePortSettings::default(),
             None,
             None,
@@ -1193,14 +1212,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
-            msi_conn.target(),
+            &msi_conn.target(),
             PciePortSettings::default(),
             None,
             None,

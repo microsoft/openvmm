@@ -167,16 +167,6 @@ enum GuestMemAction {
     ProbeGpaWritable {
         gpa: u64,
     },
-    ProbeGpnReadableRange {
-        offset: usize,
-        len: usize,
-        gpns: Vec<u64>,
-    },
-    ProbeGpnWritableRange {
-        offset: usize,
-        len: usize,
-        gpns: Vec<u64>,
-    },
     FillRange {
         offset: usize,
         len: usize,
@@ -274,18 +264,6 @@ fn do_fuzz(input: FuzzCase) {
             }
             GuestMemAction::ProbeGpaWritable { gpa } => {
                 _ = gm.probe_gpa_writable(gpa);
-            }
-            GuestMemAction::ProbeGpnReadableRange { offset, len, gpns } => {
-                let len = len % MAX_SIZE;
-                if let Some(range) = PagedRange::new(offset, len, &gpns) {
-                    _ = gm.probe_gpn_readable_range(&range);
-                }
-            }
-            GuestMemAction::ProbeGpnWritableRange { offset, len, gpns } => {
-                let len = len % MAX_SIZE;
-                if let Some(range) = PagedRange::new(offset, len, &gpns) {
-                    _ = gm.probe_gpn_writable_range(&range);
-                }
             }
             GuestMemAction::FillRange {
                 offset,
