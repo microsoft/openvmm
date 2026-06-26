@@ -31,6 +31,7 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
@@ -192,7 +193,7 @@ struct WhpVp {
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    scan_irr: AtomicBool,
+    scan_irr: VtlArray<AtomicBool, 3>,
 }
 
 #[derive(InspectMut)]
@@ -362,7 +363,7 @@ impl WhpVp {
             vtl2_enable: vtl2_enabled.into(),
             vp_info: vp,
             waker: Default::default(),
-            scan_irr: true.into(),
+            scan_irr: VtlArray::from_fn(|_| AtomicBool::new(true)),
         }
     }
 }
@@ -1809,6 +1810,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // startup suspend and any prior wake request is stale. Per-VP signals
         // that are not VTL2-specific (such as `scan_irr`) are intentionally
         // left intact, as they may carry pending VTL0 work.
+        self.inner.scan_irr[Vtl::Vtl2].store(false, Ordering::Relaxed);
         self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
@@ -1914,6 +1916,7 @@ mod x86 {
     use crate::WhpPartition;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
+    use std::sync::atomic::Ordering;
     use virt::VpIndex;
     use virt::irqcon::MsiRequest;
 
@@ -1926,9 +1929,11 @@ mod x86 {
             move |vec: u32, auto_eoi| match &self.vtlp(vtl).lapic {
                 LocalApicKind::Emulated(lapic) => {
                     lapic.synic_interrupt(vp, vec as u8, auto_eoi, |vp_index| {
-                        self.vp(vp_index)
-                            .expect("apic emulator passes valid vp index")
-                            .wake()
+                        let vpref = self
+                            .vp(vp_index)
+                            .expect("apic emulator passes valid vp index");
+                        vpref.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
+                        vpref.wake();
                     });
                 }
                 LocalApicKind::Offloaded => unreachable!(),

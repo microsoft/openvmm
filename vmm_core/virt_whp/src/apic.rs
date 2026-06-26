@@ -78,9 +78,9 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(lapic) => {
                 lapic.request_interrupt(request.address, request.data, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    let vpref = self.vp(vp_index).unwrap();
+                    vpref.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
+                    vpref.wake();
                 });
             }
             LocalApicKind::Offloaded => {
@@ -122,6 +122,7 @@ impl WhpPartitionInner {
 
 pub struct WhpApicClient<'a, T> {
     partition: &'a WhpPartitionInner,
+    vtl: Vtl,
     whp: whp::Processor<'a>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
@@ -136,6 +137,7 @@ impl<'a> WhpVpRef<'a> {
     ) -> WhpApicClient<'a, T> {
         WhpApicClient {
             partition: self.partition,
+            vtl,
             whp: self.whp(vtl),
             dev,
             vmtime,
@@ -167,7 +169,7 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
             .expect("apic emulator passes valid vp index")
             .vp();
 
-        vp.scan_irr.store(true, Ordering::Relaxed);
+        vp.scan_irr[self.vtl].store(true, Ordering::Relaxed);
         if let Some(waker) = &*vp.waker.read() {
             waker.wake_by_ref();
         }
@@ -431,7 +433,7 @@ impl WhpProcessor<'_> {
             if let Some(lapic) = &mut vtl_state.lapic {
                 let work = lapic.apic.scan(
                     &mut self.state.vmtime,
-                    self.inner.scan_irr.swap(false, Ordering::Relaxed),
+                    self.inner.scan_irr[vtl].swap(false, Ordering::Relaxed),
                 );
                 lapic.nmi_pending |= work.nmi;
                 if lapic.nmi_pending {
