@@ -675,7 +675,7 @@ impl PollDevice for GenericPcieRootComplex {
 impl PciBusCfgAccessCallbacks for GenericPcieRootComplex {
     fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
         let Some(target) = self.route_cfg_access(addr) else {
-            // Unroutable.
+            tracing::trace!(?addr, "unroutable config space access");
             *value = !0;
             return IoResult::Ok;
         };
@@ -689,7 +689,10 @@ impl PciBusCfgAccessCallbacks for GenericPcieRootComplex {
                     addr.byte_offset(),
                     value,
                 )
-                .unwrap_or(IoResult::Ok),
+                .unwrap_or_else(|| {
+                    *value = !0;
+                    IoResult::Ok
+                }),
             CfgAccessTarget::RootPort(port) => {
                 port.port.cfg_space.read_u32(addr.byte_offset(), value)
             }
@@ -699,7 +702,7 @@ impl PciBusCfgAccessCallbacks for GenericPcieRootComplex {
 
     fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
         let Some(target) = self.route_cfg_access(addr) else {
-            // Unroutable.
+            tracing::trace!(?addr, "unroutable config space access");
             return IoResult::Ok;
         };
 

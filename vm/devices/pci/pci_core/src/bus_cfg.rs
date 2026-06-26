@@ -167,8 +167,7 @@ impl PciBusCfgAccessHandler {
                     addr,
                     byte_enable,
                 } => {
-                    // Poll the deferred device read. If it's ready, complete the corresponding bus read.
-                    // If not, keep the action for the next poll.
+                    // If the inner read is ready, complete the outer read accordingly.
                     let mut dword_buffer = 0;
                     if let Poll::Ready(res) =
                         deferred_device_read.poll_read(cx, dword_buffer.as_mut_bytes())
@@ -185,6 +184,8 @@ impl PciBusCfgAccessHandler {
                         }
                         None
                     } else {
+                        // If the inner read is not ready, keep the outer read pending and
+                        // leave the deferred action in the list for the next poll.
                         Some(DeferredCfgAccess::Read {
                             deferred_device_read,
                             bus_read,
@@ -199,6 +200,8 @@ impl PciBusCfgAccessHandler {
                     addr,
                     value,
                 } => {
+                    // If the inner read succeeded, proceed with the write. If the inner
+                    // read failed, fail the outer write.
                     let mut old_value = 0;
                     if let Poll::Ready(res) =
                         deferred_device_read.poll_read(cx, old_value.as_mut_bytes())
@@ -231,6 +234,8 @@ impl PciBusCfgAccessHandler {
                             }
                         }
                     } else {
+                        // If the inner read is not ready, keep the write pending and
+                        // leave the deferred action in the list for the next poll.
                         Some(DeferredCfgAccess::ReadForWrite {
                             deferred_device_read,
                             bus_write,
@@ -244,6 +249,7 @@ impl PciBusCfgAccessHandler {
                     bus_write,
                     addr,
                 } => {
+                    // If the inner write completed, complete the outer write accordingly.
                     if let Poll::Ready(res) = deferred_device_write.poll_write(cx) {
                         match res {
                             Ok(()) => bus_write.complete(),
@@ -251,6 +257,8 @@ impl PciBusCfgAccessHandler {
                         }
                         None
                     } else {
+                        // If the inner write is not ready, keep the outer write pending and
+                        // leave the deferred action in the list for the next poll.
                         Some(DeferredCfgAccess::Write {
                             deferred_device_write,
                             bus_write,

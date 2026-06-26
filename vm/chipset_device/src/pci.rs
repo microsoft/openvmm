@@ -33,10 +33,10 @@ impl PciConfigByteEnable {
 
     /// Create byte enables from raw lane bits.
     pub const fn new(bits: u8) -> Option<Self> {
-        match bits {
-            0b0001 | 0b0010 | 0b0100 | 0b1000 | 0b0011 | 0b0110 | 0b1100 | 0b0111 | 0b1110
-            | 0b1111 => Some(Self(bits)),
-            _ => None,
+        if bits != 0 && bits <= 0xf {
+            Some(Self(bits))
+        } else {
+            None
         }
     }
 
