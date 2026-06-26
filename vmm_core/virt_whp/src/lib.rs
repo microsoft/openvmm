@@ -479,6 +479,11 @@ impl<'a> WhpVpRef<'a> {
         }
     }
 
+    fn wake_for_apic(&self, vtl: Vtl) {
+        self.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
+        self.wake();
+    }
+
     // Enqueues a message to be posted when the associated message slot is free.
     fn post_message(&self, vtl: Vtl, sint: u8, message: &HvMessage) {
         let request_notification = self.vplc(vtl).message_queues.enqueue_message(sint, message);
@@ -1916,7 +1921,6 @@ mod x86 {
     use crate::WhpPartition;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use std::sync::atomic::Ordering;
     use virt::VpIndex;
     use virt::irqcon::MsiRequest;
 
@@ -1929,11 +1933,7 @@ mod x86 {
             move |vec: u32, auto_eoi| match &self.vtlp(vtl).lapic {
                 LocalApicKind::Emulated(lapic) => {
                     lapic.synic_interrupt(vp, vec as u8, auto_eoi, |vp_index| {
-                        let vpref = self
-                            .vp(vp_index)
-                            .expect("apic emulator passes valid vp index");
-                        vpref.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
-                        vpref.wake();
+                        self.vp(vp_index).unwrap().wake_for_apic(vtl);
                     });
                 }
                 LocalApicKind::Offloaded => unreachable!(),

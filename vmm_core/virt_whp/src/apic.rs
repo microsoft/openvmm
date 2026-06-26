@@ -78,9 +78,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(lapic) => {
                 lapic.request_interrupt(request.address, request.data, |vp_index| {
-                    let vpref = self.vp(vp_index).unwrap();
-                    vpref.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
-                    vpref.wake();
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {
@@ -163,16 +161,7 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
-        let vp = self
-            .partition
-            .vp(vp_index)
-            .expect("apic emulator passes valid vp index")
-            .vp();
-
-        vp.scan_irr[self.vtl].store(true, Ordering::Relaxed);
-        if let Some(waker) = &*vp.waker.read() {
-            waker.wake_by_ref();
-        }
+        self.partition.vp(vp_index).unwrap().wake_for_apic(self.vtl);
     }
 
     fn eoi(&mut self, vector: u8) {
