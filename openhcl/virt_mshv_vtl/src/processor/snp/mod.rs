@@ -669,31 +669,37 @@ impl BackingPrivate for SnpBacked {
                 .irr
                 .iter()
                 .any(|irr| irr.value != 0);
-            match this.backing.cvm.lapics[vtl]
-                .lapic
-                .push_to_offload(|irr, isr, tmr| {
-                    offloaded_interrupt |= irr.iter().any(|&irr| irr != 0);
+            let offload_not_supported =
+                match this.backing.cvm.lapics[vtl]
+                    .lapic
+                    .push_to_offload(|irr, isr, tmr| {
+                        offloaded_interrupt |= irr.iter().any(|&irr| irr != 0);
 
-                    let (apic_page, proxy_irr_vtl0) =
-                        this.runner.secure_avic_page_proxy_irr_exit_vtl0_mut();
+                        let (apic_page, proxy_irr_vtl0) =
+                            this.runner.secure_avic_page_proxy_irr_exit_vtl0_mut();
 
-                    for (((((irr, page_irr), isr), page_isr), tmr), proxy_irr_vtl0) in irr
-                        .iter()
-                        .zip(&mut apic_page.irr)
-                        .zip(isr)
-                        .zip(&mut apic_page.isr)
-                        .zip(tmr)
-                        .zip(proxy_irr_vtl0)
-                    {
-                        page_irr.value |= *irr;
-                        page_isr.value |= *isr;
-                        *proxy_irr_vtl0 = *tmr;
-                    }
-                }) {
-                Ok(_) => {}
-                Err(virt_support_apic::OffloadNotSupported) => {
-                    tracelimit::error_ratelimited!("push_to_offload failed: offload not supported");
-                }
+                        for (((((irr, page_irr), isr), page_isr), tmr), proxy_irr_vtl0) in irr
+                            .iter()
+                            .zip(&mut apic_page.irr)
+                            .zip(isr)
+                            .zip(&mut apic_page.isr)
+                            .zip(tmr)
+                            .zip(proxy_irr_vtl0)
+                        {
+                            page_irr.value |= *irr;
+                            page_isr.value |= *isr;
+                            *proxy_irr_vtl0 = *tmr;
+                        }
+                    }) {
+                    Ok(_) => false,
+                    Err(virt_support_apic::OffloadNotSupported) => true,
+                };
+
+            if offload_not_supported {
+                tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
+                this.set_apic_offload(vtl, false);
+                hardware_cvm::apic::poll_apic_core(this, vtl, false);
+                return;
             }
 
             if was_halted && offloaded_interrupt {
