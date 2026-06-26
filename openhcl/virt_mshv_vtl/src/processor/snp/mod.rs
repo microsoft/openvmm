@@ -658,9 +658,22 @@ impl BackingPrivate for SnpBacked {
         if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
             debug_assert!(vtl == GuestVtl::Vtl0);
 
+            let was_halted = matches!(
+                this.backing.cvm.lapics[vtl].activity,
+                MpState::Halted | MpState::Idle
+            );
+
+            let mut offloaded_interrupt = this
+                .runner
+                .secure_avic_page(vtl)
+                .irr
+                .iter()
+                .any(|irr| irr.value != 0);
             match this.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
+                    offloaded_interrupt |= irr.iter().any(|&irr| irr != 0);
+
                     let (apic_page, proxy_irr_vtl0) =
                         this.runner.secure_avic_page_proxy_irr_exit_vtl0_mut();
 
@@ -683,14 +696,7 @@ impl BackingPrivate for SnpBacked {
                 }
             }
 
-            // If there is a pending interrupt, clear the halted and idle state.
-            // TODO SNP: There are few other bits to take into account, such as the VintCtrl.GIF
-            // and the RFLAGS.IF ones as well as running in the interrupt shadow.
-            // Shouldn't be of concern for now as the guests account for these.
-            if matches!(
-                this.backing.cvm.lapics[vtl].activity,
-                MpState::Halted | MpState::Idle
-            ) {
+            if was_halted && offloaded_interrupt {
                 this.backing.cvm.lapics[vtl].activity = MpState::Running;
             }
         }
@@ -1527,6 +1533,28 @@ impl UhProcessor<'_, SnpBacked> {
             .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
+
+        // Kernel offload may have set or cleared the halt/idle states while
+        // handling VTL0 exits internally. Keep the userspace activity state in
+        // sync before processing the exit that finally returned to userspace.
+        if offload_enabled && kernel_known_state {
+            let offload_flags = self.runner.offload_flags_mut();
+
+            self.backing.cvm.lapics[entered_from_vtl].activity =
+                match (offload_flags.halted_hlt(), offload_flags.halted_idle()) {
+                    (false, false) => MpState::Running,
+                    (true, false) => MpState::Halted,
+                    (false, true) => MpState::Idle,
+                    (true, true) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            "Kernel indicates VP is both halted and idle!"
+                        );
+                        activity
+                    }
+                };
+        }
+
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
@@ -2919,7 +2947,6 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X86X_AMD_MSR_SYSCFG
             | x86defs::X86X_MSR_MCG_CAP
             | x86defs::X86X_MSR_MCG_STATUS => 0,
-
             hvdef::HV_X64_MSR_GUEST_IDLE => {
                 self.backing.cvm.lapics[vtl].activity = MpState::Idle;
                 let mut vmsa = self.runner.vmsa_mut(vtl);
