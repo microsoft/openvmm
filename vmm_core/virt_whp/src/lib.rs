@@ -1808,8 +1808,8 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
         // Clear any pending VTL2 wake signal, since VTL2 is now back in
         // startup suspend and any prior wake request is stale. Per-VP signals
-        // that are not VTL2-specific (such as `scan_irr`) are intentionally
-        // left intact, as they may carry pending VTL0 work.
+        // that are not VTL2-specific are intentionally left intact, as they may
+        // carry pending VTL0 work.
         self.inner.scan_irr[Vtl::Vtl2].store(false, Ordering::Relaxed);
         self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
