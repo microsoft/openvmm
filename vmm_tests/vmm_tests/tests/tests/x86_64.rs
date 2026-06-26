@@ -115,7 +115,10 @@ fn configure_for_sidecar<T: PetriVmmBackend>(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none)))]
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))
+)]
 async fn sidecar_aps_unused<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

@@ -324,7 +324,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// OpenVMM.
-#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
@@ -344,7 +344,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 /// correctly parses the device tree with memory on multiple NUMA nodes.
 /// Checks the absence of NUMA errors and confirms the kernel brought up
 /// multiple NUMA nodes with memory (not memoryless).
-#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
@@ -424,7 +424,7 @@ async fn no_numa_errors<T: PetriVmmBackend>(
 /// Boot OpenHCL with a multi-NUMA topology and force the private pool to be
 /// split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`. Validates
 /// that the pool was actually allocated on multiple NUMA nodes.
-#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
 async fn numa_private_pool_split<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
