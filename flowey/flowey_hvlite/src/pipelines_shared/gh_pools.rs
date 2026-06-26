@@ -5,18 +5,22 @@
 
 use flowey::pipeline::prelude::*;
 
+// Constants in this file may be added, renamed or deleted, but the values
+// of these constants should not be changed to avoid changing the image to one
+// that may not be present in all of the pools where the constant is used
+// (in both GitHub and ADO).
+pub const WINDOWS_IMAGE_AMD64_V2: &str = "win-amd64-v2";
+pub const WINDOWS_IMAGE_ARM64_V2: &str = "win-arm64-v2";
+pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
+pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
+pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0";
+
 pub const AMD_V6_POOL_1ES: &str = "openvmm-gh-amd-westus3-v6";
 pub const AMD_V7_POOL_1ES: &str = "openvmm-gh-amd-westus3-v7";
 pub const INTEL_V5_POOL_1ES: &str = "openvmm-gh-intel-westus3";
 pub const INTEL_V6_POOL_1ES: &str = "openvmm-gh-intel-westus3-v6";
 pub const ARM_V5_POOL_1ES: &str = "openvmm-gh-arm-westus2";
 pub const ARM_V6_POOL_1ES: &str = "openvmm-gh-arm-westus3";
-
-pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64-v2";
-pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64-v2";
-pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
-pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
-pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0";
 
 fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
     GhRunner::SelfHosted(vec![
@@ -27,15 +31,15 @@ fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
 }
 
 pub fn windows_arm_v6_1es() -> GhRunner {
-    gh_pool_with_image_1es(ARM_V6_POOL_1ES, WINDOWS_IMAGE_ARM64)
+    gh_pool_with_image_1es(ARM_V6_POOL_1ES, WINDOWS_IMAGE_ARM64_V2)
 }
 
 pub fn windows_amd_v6_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_V6_POOL_1ES, WINDOWS_IMAGE_AMD64)
+    gh_pool_with_image_1es(AMD_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
 pub fn windows_intel_v6_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, WINDOWS_IMAGE_AMD64)
+    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
 pub fn linux_arm_v5_1es() -> GhRunner {

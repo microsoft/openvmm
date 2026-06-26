@@ -62,6 +62,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
@@ -212,6 +213,10 @@ impl FlowNode for Node {
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_virtio_win::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        ctx.config(crate::resolve_openvmm_qemu::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });

@@ -581,7 +581,10 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 /// Restricted to AMD-vendor hosts: the AMD IOMMU emulator's IVHD entries
 /// surface a host-cpuid-derived AMD-Vi family/model that Linux's IOMMU
 /// driver only accepts when the boot CPU also reports as AMD.
-#[vmm_test_with(openvmm_amd(linux_direct_x64))]
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// IVRS ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 async fn amd_iommu_mixed_topology(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -629,6 +632,13 @@ async fn amd_iommu_mixed_topology(
         "IVRS ACPI table should be present. Tables: {acpi_tables}"
     );
 
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "AMD-Vi", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("amd-vi")
+    })
+    .await?;
+
     // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
         &sh,
@@ -642,10 +652,15 @@ async fn amd_iommu_mixed_topology(
     Ok(())
 }
 
-/// Test Intel VT-d IOMMU emulation with a mixed topology:
+/// Test Intel VT-d IOMMU emulation across a multi-segment topology:
 ///
 /// - Root complex s0rc0 (segment 0): VT-d IOMMU enabled, NVMe + virtio-net
-/// - Root complex s1rc0 (segment 1): no IOMMU, NVMe + virtio-net
+/// - Root complex s1rc0 (segment 1): VT-d IOMMU enabled, NVMe + virtio-net
+///
+/// Every root complex has its own VT-d unit. Unlike AMD-Vi, Intel VT-d cannot
+/// have a device on a segment with no VT-d unit: enabling VT-d forces global
+/// interrupt remapping (x2APIC), under which Linux can't allocate MSIs for a
+/// device outside every DRHD's scope (so OpenVMM rejects that configuration).
 ///
 /// Verifies:
 /// 1. Linux discovers the Intel IOMMU (dmesg shows DMAR/Intel IOMMU init)
@@ -653,14 +668,17 @@ async fn amd_iommu_mixed_topology(
 /// 3. Devices behind the IOMMU RC are in IOMMU groups
 /// 4. Devices on both RCs enumerate and function (block I/O, network interface)
 /// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
-#[vmm_test_with(openvmm_intel(linux_direct_x64))]
-async fn intel_vtd_mixed_topology(
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// DMAR ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(openvmm, intel, configs(linux_direct_x64))]
+async fn intel_vtd_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
-                .with_intel_vtd(&["s0rc0"]) // VT-d only on segment 0's RC
+                .with_intel_vtd(&["s0rc0", "s1rc0"]) // VT-d on every RC
                 .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
@@ -711,6 +729,13 @@ async fn intel_vtd_mixed_topology(
         acpi_tables.contains("DMAR"),
         "DMAR ACPI table should be present. Tables: {acpi_tables}"
     );
+
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "Intel VT-d", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("dmar") || l.contains("intel-iommu")
+    })
+    .await?;
 
     // 3–6. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
     verify_iommu_mixed_topology(
@@ -793,6 +818,76 @@ async fn verify_iommu_mixed_topology(
     );
 
     Ok(())
+}
+
+/// Verify that IOAPIC interrupts are routed through interrupt remapping.
+///
+/// Linux reports this path as `IR-IO-APIC` in `/proc/interrupts`. To prove the
+/// route is live, this captures the serial IRQ count, generates serial output,
+/// and confirms the count increases.
+async fn verify_ioapic_interrupt_remapping(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    dmesg: &str,
+    iommu: &str,
+    ir_dmesg_filter: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        iommu,
+        ir_dmesg = %dmesg
+            .lines()
+            .filter(|l| ir_dmesg_filter(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "interrupt remapping dmesg lines"
+    );
+
+    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
+    tracing::info!(%interrupts, "/proc/interrupts");
+
+    let serial_irq = interrupts
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
+    assert!(
+        serial_irq.contains("IR-IO-APIC"),
+        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
+         remapping is enabled, got: {serial_irq}"
+    );
+
+    let count_before = sum_irq_count(serial_irq);
+    cmd!(
+        sh,
+        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
+    )
+    .run()
+    .await?;
+    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
+    let serial_irq_after = interrupts_after
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
+    let count_after = sum_irq_count(serial_irq_after);
+    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
+    assert!(
+        count_after > count_before,
+        "serial (IOAPIC) interrupt count should increase after generating \
+         serial traffic with interrupt remapping enabled: \
+         before={count_before} after={count_after}"
+    );
+
+    Ok(())
+}
+
+/// Sum the per-CPU interrupt counts from a `/proc/interrupts` line.
+///
+/// A line looks like `" 4:   42    0   IR-IO-APIC   4-edge   ttyS0"`: the
+/// leading token is the IRQ label and the trailing tokens are the chip and
+/// device name, so only the numeric per-CPU columns in between are summed.
+fn sum_irq_count(line: &str) -> u64 {
+    line.split_whitespace()
+        .skip(1)
+        .map_while(|tok| tok.parse::<u64>().ok())
+        .sum()
 }
 
 /// Verify that NVMe block devices are visible in the guest and exercise DMA

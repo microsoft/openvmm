@@ -3794,6 +3794,7 @@ dependencies = [
  "pal_async",
  "pipette_client",
  "serde",
+ "tempfile",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -3928,6 +3929,7 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
 ]
@@ -5585,6 +5587,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "pci_resource_assignment",
@@ -10490,6 +10493,7 @@ dependencies = [
  "tmk_tests",
  "tracing",
  "unix_socket",
+ "vfio_assigned_device_resources",
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",

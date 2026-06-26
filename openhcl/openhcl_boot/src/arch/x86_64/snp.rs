@@ -5,6 +5,8 @@
 
 use super::address_space::LocalMap;
 use core::arch::asm;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::fence;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -20,12 +22,36 @@ use {
     super::address_space::X64_PTE_READ_WRITE,
     crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL,
     crate::single_threaded::SingleThreaded, bitfield_struct::bitfield, core::cell::Cell,
-    core::cell::UnsafeCell, core::sync::atomic::Ordering, core::sync::atomic::compiler_fence,
-    core::sync::atomic::fence, hvdef::HvRegisterValue, hvdef::HvX64RegisterName,
-    hvdef::hypercall::HvInputVtl, hvdef::hypercall::HypercallOutput,
+    core::cell::UnsafeCell, core::sync::atomic::compiler_fence, hvdef::HvRegisterValue,
+    hvdef::HvX64RegisterName, hvdef::hypercall::HvInputVtl, hvdef::hypercall::HypercallOutput,
     x86defs::snp::GhcbProtocolVersion, x86defs::snp::GhcbUsage, x86defs::snp::SevExitCode,
     x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
 };
+
+/// Flush all cache lines covering a single page-sized region starting at the
+/// given virtual address.
+///
+/// On AMD SEV-SNP, the C-bit is part of the cache-line tag for a physical
+/// address. When transitioning a page between shared (C=0) and private (C=1)
+/// state, any cache lines tagged with the old C-bit setting must be evicted
+/// before the new mapping is accessed; otherwise stale cache lines can lead
+/// to data corruption observed via the new mapping. Callers must invoke this
+/// using a VA whose PTE has the C-bit setting that is being torn down.
+pub(super) fn cache_lines_flush_page(addr: u64) {
+    const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
+    let start = addr & !(X64_PAGE_SIZE - 1);
+    let end = start + X64_PAGE_SIZE;
+
+    // Make sure there are no pending writes on the cache lines.
+    fence(Ordering::SeqCst);
+
+    for addr in (start..end).step_by(FLUSH_SIZE as usize) {
+        // SAFETY: No concurrency issues.
+        unsafe {
+            asm!("clflush [{0}]", in(reg) addr, options(nostack));
+        }
+    }
+}
 
 #[cfg(feature = "cvm_boot_log")]
 static GHCB_PREVIOUS: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
@@ -143,22 +169,6 @@ mod ghcb_page_mapping {
             asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
         }
         cr3
-    }
-
-    pub fn cache_lines_flush_page(addr: u64) {
-        const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
-        let start = addr & !(X64_PAGE_SIZE - 1);
-        let end = start + X64_PAGE_SIZE;
-
-        // Make sure there are no pending writes on the cache lines.
-        fence(Ordering::SeqCst);
-
-        for addr in (start..end).step_by(FLUSH_SIZE as usize) {
-            // SAFETY: No concurrency issues.
-            unsafe {
-                asm!("clflush [{0}]", in(reg) addr, options(nostack));
-            }
-        }
     }
 
     pub fn flush_tlb() {

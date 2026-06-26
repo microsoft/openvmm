@@ -6,6 +6,31 @@
 use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::path::Path;
+
+/// Determine the configured JUnit output path for a nextest profile.
+pub fn nextest_junit_path(
+    config_file: &Path,
+    nextest_profile: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let nextest_toml = fs_err::read_to_string(config_file)?
+        .parse::<toml_edit::DocumentMut>()
+        .context("failed to parse nextest.toml")?;
+
+    let path = Some(&nextest_toml)
+        .and_then(|i| i.get("profile"))
+        .and_then(|i| i.get(nextest_profile))
+        .and_then(|i| i.get("junit"))
+        .and_then(|i| i.get("path"));
+
+    if let Some(path) = path {
+        Ok(Some(
+            path.as_str().context("malformed nextest.toml")?.into(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
@@ -233,25 +258,7 @@ impl FlowNodeWithConfig for Node {
 
                     // first things first - determine if junit is supported by
                     // the profile, and if so, where the output if going to be.
-                    let junit_path = {
-                        let nextest_toml = fs_err::read_to_string(&config_file)?
-                            .parse::<toml_edit::DocumentMut>()
-                            .context("failed to parse nextest.toml")?;
-
-                        let path = Some(&nextest_toml)
-                            .and_then(|i| i.get("profile"))
-                            .and_then(|i| i.get(&nextest_profile))
-                            .and_then(|i| i.get("junit"))
-                            .and_then(|i| i.get("path"));
-
-                        if let Some(path) = path {
-                            let path: PathBuf =
-                                path.as_str().context("malformed nextest.toml")?.into();
-                            Some(path)
-                        } else {
-                            None
-                        }
-                    };
+                    let junit_path = nextest_junit_path(&config_file, &nextest_profile)?;
 
                     // allow unlimited coredump sizes
                     //

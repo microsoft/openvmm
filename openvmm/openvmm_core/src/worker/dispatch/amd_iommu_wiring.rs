@@ -8,6 +8,7 @@
 //! This module handles instantiating AMD IOMMU chipset devices on each
 //! requested root complex.
 
+use super::ioapic_iommu_wiring::IoapicIommuSelection;
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
@@ -52,6 +53,11 @@ pub(super) struct IommuDevicesResult {
     /// Per-RC IOMMU shared state, indexed parallel to `pcie_host_bridges`.
     /// `None` for root complexes without an AMD IOMMU.
     pub shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>>,
+    /// The IOMMU that covers the southbridge IOAPIC (segment 0, bus 0), if
+    /// any. Used to wire IOAPIC interrupt remapping and publish the IVRS
+    /// DEV_SPECIAL(IOAPIC) entry. `None` if no AMD IOMMU covers that
+    /// location, in which case IOAPIC interrupt remapping stays disabled.
+    pub ioapic_iommu: Option<IoapicIommuSelection>,
 }
 
 /// Instantiate AMD IOMMU chipset devices.
@@ -70,6 +76,7 @@ pub(super) fn setup_amd_iommu(
     let mut shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>> =
         vec![None; pcie_host_bridges.len()];
     let mut acpi_configs: Vec<vmm_core::acpi_builder::AmdIommuAcpiConfig> = Vec::new();
+    let mut ioapic_iommu: Option<IoapicIommuSelection> = None;
 
     for res in resolved_resources {
         let rc_pos = res.rc_idx;
@@ -109,7 +116,7 @@ pub(super) fn setup_amd_iommu(
             iommu_msi_conn.connect(signal_msi);
         }
         let shared = iommu_dev.lock().shared_state().clone();
-        shared_states[rc_pos] = Some(shared);
+        shared_states[rc_pos] = Some(shared.clone());
 
         acpi_configs.push(vmm_core::acpi_builder::AmdIommuAcpiConfig {
             device_id: (hb.start_bus as u16) << 8, // device 0, function 0
@@ -120,10 +127,29 @@ pub(super) fn setup_amd_iommu(
             start_bus: hb.start_bus,
             end_bus: hb.end_bus,
         });
+
+        // The southbridge IOAPIC lives at segment 0, bus 0. Select the IOMMU
+        // covering it so the RID and the remapper come from the same IOMMU,
+        // keeping the IVRS entry and runtime remapping in agreement.
+        if hb.segment == 0 && hb.start_bus == 0 {
+            let ioapic_rid = (hb.start_bus as u16) << 8
+                | super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
+            ioapic_iommu = Some(IoapicIommuSelection {
+                remapper: shared,
+                ioapic_rid,
+            });
+        }
+    }
+
+    // At least one IOMMU exists but none covers the IOAPIC, so interrupt
+    // remapping can't be enabled (breaks nested PCI device assignment).
+    if ioapic_iommu.is_none() && !acpi_configs.is_empty() {
+        tracing::warn!("no AMD IOMMU covers segment 0 bus 0; IOAPIC interrupt remapping disabled");
     }
 
     Ok(IommuDevicesResult {
         acpi_configs,
         shared_states,
+        ioapic_iommu,
     })
 }

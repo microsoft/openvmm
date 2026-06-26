@@ -245,6 +245,8 @@ pub struct VtdSharedState {
     /// with no PCI MSI capability — it programs MSI address/data directly
     /// into MMIO registers (FEADDR/FEDATA, IEADDR/IEDATA).
     signal_msi: Arc<dyn SignalMsi>,
+    /// Registered interrupt routes for invalidation callbacks.
+    retranslate_interrupts: iommu_common::RetranslateInterruptsList,
 }
 
 impl VtdSharedState {
@@ -254,6 +256,7 @@ impl VtdSharedState {
             guest_memory,
             state: RwLock::new(VtdState::new()),
             signal_msi,
+            retranslate_interrupts: iommu_common::RetranslateInterruptsList::new(),
         }
     }
 
@@ -1044,6 +1047,32 @@ impl SignalMsi for VtdSignalMsi {
     }
 }
 
+impl iommu_common::InterruptRemapper for VtdSharedState {
+    fn remap_msi(&self, device_id: u16, address: u64, data: u32) -> Option<(u64, u32)> {
+        let state = self.state.read();
+        match self.remap_msi_locked(&state, device_id, address, data) {
+            Ok(result) => Some(result),
+            Err(fault) => {
+                drop(state);
+                fault.record(self, true);
+                tracelimit::warn_ratelimited!(
+                    device_id,
+                    "vtd: interrupt remapping fault on cached route, masking"
+                );
+                None
+            }
+        }
+    }
+
+    fn register_route(&self, route: &Arc<dyn iommu_common::RetranslateInterrupts>) {
+        self.retranslate_interrupts.register(route);
+    }
+
+    fn unregister_route(&self, route: &Arc<dyn iommu_common::RetranslateInterrupts>) {
+        self.retranslate_interrupts.unregister(route);
+    }
+}
+
 // =============================================================================
 // IntelVtdDevice
 // =============================================================================
@@ -1182,6 +1211,7 @@ impl IntelVtdDevice {
     /// write. No register requires atomic writes across both DWORDs.
     fn write_register_dword(&self, offset: u16, value: u32) {
         let mut state = self.shared.state.write();
+        let mut retranslate_interrupts = false;
         tracing::trace!(offset, value, "vtd mmio_write_dword");
 
         /// Merge a DWORD write into the lo or hi half of a 64-bit value.
@@ -1261,7 +1291,7 @@ impl IntelVtdDevice {
                 let full = write_lo(state.iqt.into_bits(), value);
                 let iqt = IqtReg::from(full);
                 state.iqt = IqtReg::new().with_qt(iqt.qt());
-                self.process_invalidation_queue(&mut state);
+                retranslate_interrupts = self.process_invalidation_queue(&mut state);
             }
             Reg::IQT_HI => {
                 state.iqt = IqtReg::from(write_hi(state.iqt.into_bits(), value));
@@ -1340,6 +1370,11 @@ impl IntelVtdDevice {
             }
 
             _ => {} // Unmapped offsets: silently ignored.
+        }
+
+        drop(state);
+        if retranslate_interrupts {
+            self.shared.retranslate_interrupts.invalidate(None);
         }
     }
 
@@ -1481,16 +1516,16 @@ impl IntelVtdDevice {
     ///
     /// Consumes descriptors from head to tail. Called when the guest writes
     /// IQT.
-    fn process_invalidation_queue(&self, state: &mut VtdState) {
+    fn process_invalidation_queue(&self, state: &mut VtdState) -> bool {
         let gsts = state.gsts;
         if !gsts.qies() {
-            return;
+            return false;
         }
 
         // Check for IQE — don't process if error is outstanding.
         let fsts = state.fsts;
         if fsts.iqe() {
-            return;
+            return false;
         }
 
         let iqa = state.iqa;
@@ -1501,7 +1536,7 @@ impl IntelVtdDevice {
             let mut fsts = state.fsts;
             fsts.set_iqe(true);
             state.fsts = fsts;
-            return;
+            return false;
         }
 
         let queue_base = iqa.queue_base_address();
@@ -1510,6 +1545,7 @@ impl IntelVtdDevice {
         let tail = state.iqt.tail_offset();
 
         let mut current_head = head;
+        let mut retranslate_interrupts = false;
 
         while current_head != tail {
             let entry_addr = queue_base + current_head;
@@ -1541,7 +1577,16 @@ impl IntelVtdDevice {
                         "vtd: unsupported DEVICE_TLB_INVALIDATE descriptor"
                     );
                 }
-                DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE => {} // no-op
+                DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE => {
+                    let desc = spec::invalidation::parse_interrupt_cache_invalidate(&desc);
+                    tracing::trace!(
+                        granularity = desc.granularity(),
+                        im = desc.im(),
+                        iidx = desc.iidx(),
+                        "vtd: interrupt entry cache invalidate"
+                    );
+                    retranslate_interrupts = true;
+                }
                 DescriptorType::INVALIDATION_WAIT => {
                     self.process_invalidation_wait(state, &descriptor);
                 }
@@ -1560,6 +1605,7 @@ impl IntelVtdDevice {
 
         // Update head register.
         state.iqh = IqhReg::new().with_qh((current_head >> 4) as u32);
+        retranslate_interrupts
     }
 
     /// Process an INVALIDATION_WAIT descriptor (type 0x05).
@@ -1741,6 +1787,8 @@ impl InspectMut for IntelVtdDevice {
 mod tests {
     use super::*;
     use guestmem::GuestMemory;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
 
     const TEST_MMIO_BASE: u64 = 0xFED9_0000;
 
@@ -2692,6 +2740,21 @@ mod tests {
         state.gsts = gsts;
     }
 
+    struct CountingRoute {
+        device_id: u16,
+        retranslate_count: AtomicU32,
+    }
+
+    impl iommu_common::RetranslateInterrupts for CountingRoute {
+        fn device_id(&self) -> u16 {
+            self.device_id
+        }
+
+        fn retranslate(&self) {
+            self.retranslate_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[test]
     fn test_remap_msi_basic() {
         let gm = GuestMemory::allocate(0x40_0000);
@@ -2789,6 +2852,42 @@ mod tests {
     }
 
     #[test]
+    fn test_interrupt_remapper_transitions_from_passthrough_to_remap() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        let compat_addr = 0xFEE0_0000u64;
+        assert_eq!(
+            iommu_common::InterruptRemapper::remap_msi(&*shared, 0x00A0, compat_addr, 0x31),
+            Some((compat_addr, 0x31))
+        );
+
+        setup_ir_state(&shared, false);
+        let irte = Irte {
+            lo: IrteLo::new()
+                .with_p(true)
+                .with_vector(0x45)
+                .with_dst(0x0200)
+                .with_dlm(0)
+                .with_dm(false),
+            hi: IrteHi::new().with_svt(0b01).with_sq(0).with_sid(0x00A0),
+        };
+        gm.write_at(IRT_BASE_ADDR, irte.as_bytes()).unwrap();
+
+        let (new_addr, new_data) =
+            iommu_common::InterruptRemapper::remap_msi(&*shared, 0x00A0, 0xFEE0_0010, 0).unwrap();
+        assert_eq!((new_addr >> 12) & 0xFF, 2);
+        assert_eq!(new_data & 0xFF, 0x45);
+    }
+
+    #[test]
     fn test_remap_msi_irte_not_present() {
         let gm = GuestMemory::allocate(0x40_0000);
         let signal_msi = Arc::new(TestSignalMsi);
@@ -2809,6 +2908,76 @@ mod tests {
             .remap_msi_locked(&state, 0x0000, addr, 0)
             .unwrap_err();
         assert!(matches!(err, VtdFault::IrteNotPresent { .. }));
+    }
+
+    #[test]
+    fn test_remap_msi_posted_irte_rejected() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+
+        let irte = Irte {
+            lo: IrteLo::new().with_p(true).with_im(true).with_vector(0x40),
+            hi: IrteHi::new().with_svt(0),
+        };
+        gm.write_at(IRT_BASE_ADDR, irte.as_bytes()).unwrap();
+
+        let state = shared.state.read();
+        let err = shared
+            .remap_msi_locked(&state, 0x0000, 0xFEE0_0010, 0)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::IrteReservedField { .. }));
+    }
+
+    #[test]
+    fn test_interrupt_entry_cache_invalidate_retranslates_routes() {
+        const IQ_BASE: u64 = 0x20_0000;
+
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (mut dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        let route = Arc::new(CountingRoute {
+            device_id: 0x00A0,
+            retranslate_count: AtomicU32::new(0),
+        });
+        let route_dyn: Arc<dyn iommu_common::RetranslateInterrupts> = route.clone();
+        iommu_common::InterruptRemapper::register_route(&*shared, &route_dyn);
+
+        let iqa = IqaReg::new().with_qs(0).with_iqa(IQ_BASE >> 12);
+        write64(&mut dev, Reg::IQA.0, iqa.into_bits());
+        write32(
+            &mut dev,
+            Reg::GCMD.0,
+            GcmdReg::new().with_qie(true).into_bits(),
+        );
+
+        let desc = spec::invalidation::InvalidationDescriptor {
+            dw0: DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE.0 as u32,
+            dw1: 0,
+            dw2: 0,
+            dw3: 0,
+        };
+        gm.write_at(IQ_BASE, desc.as_bytes()).unwrap();
+
+        write64(&mut dev, Reg::IQT.0, IqtReg::new().with_qt(1).into_bits());
+
+        assert_eq!(route.retranslate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(IqhReg::from(read64(&mut dev, Reg::IQH.0)).head_offset(), 16);
     }
 
     #[test]
