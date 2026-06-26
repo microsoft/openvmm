@@ -121,7 +121,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 13 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: report cloned repo directories
@@ -373,7 +376,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 12 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 12 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -610,7 +616,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -875,7 +884,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 10 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 10 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -1278,7 +1290,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 9 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -1565,7 +1580,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 8 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -1902,7 +1920,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 7 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 7 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 7 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -2183,7 +2204,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 6 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 6 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -2468,7 +2492,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
@@ -2721,7 +2748,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 15 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 15 flowey_core::pipeline::artifact::resolve 5
@@ -2976,7 +3006,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 14 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 14 flowey_core::pipeline::artifact::resolve 5
@@ -3182,7 +3215,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 5 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 5 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 5 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -3388,7 +3424,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 4 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 4 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -3653,7 +3692,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 3 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 3 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -3834,7 +3876,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 2 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 2 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 2 flowey_lib_common::install_rust 0
@@ -3996,7 +4041,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 1 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::install_rust 0
@@ -4148,7 +4196,10 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 2
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:382:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 3
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::install_rust 0
