@@ -49,9 +49,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(apic) => {
                 apic.lint(vp_index, index, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {

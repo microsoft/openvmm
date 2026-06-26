@@ -479,6 +479,7 @@ impl<'a> WhpVpRef<'a> {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     fn wake_for_apic(&self, vtl: Vtl) {
         self.vp().scan_irr[vtl].store(true, Ordering::Relaxed);
         self.wake();
