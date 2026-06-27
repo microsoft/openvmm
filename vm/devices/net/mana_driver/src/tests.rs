@@ -193,7 +193,10 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 
         gdma.test_eq().await.unwrap();
         gdma.verify_vf_driver_version().await.unwrap();
-        gdma.save().await.unwrap()
+        gdma.save()
+            .await
+            .unwrap()
+            .expect("save should return Some without a reset request pending")
     };
 
     let mut new_gdma = GdmaDriver::restore(saved_state, cloned_device, gdma_buffer)
@@ -435,5 +438,49 @@ async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
         gdma.get_reset_request_pending(),
         Some(true),
         "reset_request_pending should remain revoke_vtl0_vf=true after deregister_device"
+    );
+}
+
+#[async_test]
+async fn test_gdma_save_vf_reset_pending(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "test_gdma");
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+    let dma_client = device.dma_client();
+    let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
+
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    // Trigger the VF reset request EQE 135
+    gdma.generate_reset_request_eqe(false).await.unwrap();
+
+    // Some - Reset is pending. false - VTL0 VF revoke not requested.
+    assert_eq!(
+        gdma.get_reset_request_pending(),
+        Some(false),
+        "reset_request_pending should be set"
+    );
+
+    let result = gdma.save().await;
+    assert!(
+        result.is_ok(),
+        "save() should not return an error when VF reset is pending"
+    );
+    assert!(
+        result.unwrap().is_none(),
+        "save() should return None (no saved state) when VF reset is pending"
     );
 }
