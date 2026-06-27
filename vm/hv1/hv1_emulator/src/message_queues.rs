@@ -171,4 +171,23 @@ mod tests {
         assert_eq!(queues.pending_sints(), 0b10001);
         assert_eq!(sints, 0b10100);
     }
+
+    /// Restoring a non-empty saved queue must repopulate `pending_sints` so
+    /// that consumers can detect there are messages to flush. `restore`
+    /// populates the queues directly rather than via `enqueue_message`, so the
+    /// `pending` bitmap is the only signal a consumer has that the restored
+    /// queue is non-empty and needs flushing.
+    #[test]
+    fn restore_repopulates_pending_sints() {
+        let queues = MessageQueues::new();
+        let message = HvMessage::new(HvMessageType(0), 0, &[]);
+        queues.enqueue_message(2, &message);
+        queues.enqueue_message(5, &message);
+        let saved = queues.save();
+
+        let restored = MessageQueues::new();
+        assert_eq!(restored.pending_sints(), 0);
+        restored.restore(&saved);
+        assert_eq!(restored.pending_sints(), 0b100100);
+    }
 }

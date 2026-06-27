@@ -6,6 +6,7 @@ mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
 mod ioapic_iommu_wiring;
+mod pcie_topology;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -25,7 +26,6 @@ use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
 use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
@@ -69,7 +69,6 @@ use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieIommuConfig;
-use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
@@ -92,9 +91,6 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
-use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
-use pcie::GenericPciePortDefinition;
-use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
@@ -918,35 +914,6 @@ fn convert_vtl2_config(
     };
 
     Ok(Some(config))
-}
-
-/// Builds root-port PCIe settings from manifest flags.
-///
-/// When CXL is enabled, emit a default Flex Bus capability advertising both
-/// cache and memory support.
-fn build_root_port_settings(rp_cfg: &PciePortConfig) -> PciePortSettings {
-    PciePortSettings {
-        acs_capabilities_supported: rp_cfg
-            .acs_capabilities_supported
-            .unwrap_or(DEFAULT_ACS_CAP_MASK),
-        cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
-            CxlFlexBusPortDvsecCapability::new()
-                .with_cache_capable(true)
-                .with_mem_capable(true),
-        ),
-    }
-}
-
-/// Converts a manifest root-port entry into the runtime root-port definition.
-fn build_root_port_definition(rp_cfg: &PciePortConfig) -> GenericPciePortDefinition {
-    let settings = build_root_port_settings(rp_cfg);
-
-    GenericPciePortDefinition {
-        name: rp_cfg.name.as_str().into(),
-        devfn: rp_cfg.devfn,
-        hotplug: rp_cfg.hotplug,
-        settings,
-    }
 }
 
 /// A source for an SRAT generic-initiator entry.
@@ -2016,6 +1983,7 @@ impl InitializedVm {
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
         let (mut pcie_host_bridges, pcie_root_complexes) = {
+            pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
@@ -2114,8 +2082,11 @@ impl InitializedVm {
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
-                            let root_port_definitions =
-                                rc.ports.iter().map(build_root_port_definition).collect();
+                            let root_port_definitions = rc
+                                .ports
+                                .iter()
+                                .map(pcie_topology::build_root_port_definition)
+                                .collect();
                             GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
                                 rc.start_bus..=rc.end_bus,
@@ -2242,7 +2213,7 @@ impl InitializedVm {
                     let downstream_ports = switch
                         .ports
                         .iter()
-                        .map(build_root_port_definition)
+                        .map(pcie_topology::build_root_port_definition)
                         .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
