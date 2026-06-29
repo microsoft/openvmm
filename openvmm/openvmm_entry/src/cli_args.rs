@@ -1086,6 +1086,12 @@ Options:
                                    lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
+    `aer`                          enable AER extended capability with default masks
+    `acs_ce_mask=<mask>`           AER Correctable Error Mask register default (u32)
+    `aer_uce_mask=<mask>`
+                                   AER Uncorrectable Error Mask register default (u32)
+    `aer_uce_sev=<mask>`
+                                   AER Uncorrectable Error Severity register default (u32)
     `cxl`                          configure this root port as CXL-capable
 "#)]
     #[clap(long, conflicts_with("pcat"))]
@@ -1120,6 +1126,12 @@ Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
+    `aer`                           enable AER extended capability with default masks
+    `acs_ce_mask=<mask>`            AER Correctable Error Mask register default (u32)
+    `aer_uce_mask=<mask>`
+                                    AER Uncorrectable Error Mask register default (u32)
+    `aer_uce_sev=<mask>`
+                                    AER Uncorrectable Error Severity register default (u32)
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
@@ -1467,6 +1479,26 @@ fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
     } else {
         value.parse::<u16>().context("invalid ACS capability mask")
     }
+}
+
+fn parse_u32_mask(value: &str, name: &str) -> anyhow::Result<u32> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16).with_context(|| format!("invalid {name}"))
+    } else {
+        value
+            .parse::<u32>()
+            .with_context(|| format!("invalid {name}"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PcieAerCli {
+    pub correctable_mask: Option<u32>,
+    pub uncorrectable_mask: Option<u32>,
+    pub uncorrectable_severity_mask: Option<u32>,
 }
 
 fn parse_memory_toggle(key: &str, value: &str) -> anyhow::Result<bool> {
@@ -3115,6 +3147,7 @@ pub struct PcieRootPortCli {
     pub devfn: Option<u8>,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
+    pub aer: Option<PcieAerCli>,
     pub cxl: bool,
 }
 
@@ -3139,6 +3172,7 @@ impl FromStr for PcieRootPortCli {
         let mut devfn = None;
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
+        let mut aer: Option<PcieAerCli> = None;
         let mut cxl = false;
 
         // Parse optional flags
@@ -3168,6 +3202,38 @@ impl FromStr for PcieRootPortCli {
                     }
                     acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
                 }
+                "aer" => {
+                    if value.is_some() {
+                        anyhow::bail!("aer option does not take a value")
+                    }
+                    aer.get_or_insert_with(PcieAerCli::default);
+                }
+                "acs_ce_mask" => {
+                    let value = value.context("acs_ce_mask option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs_ce_mask option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER correctable mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default).correctable_mask = Some(parsed);
+                }
+                "aer_uce_mask" => {
+                    let value = value.context("aer_uce_mask option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("aer_uce_mask option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER uncorrectable mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default)
+                        .uncorrectable_mask = Some(parsed);
+                }
+                "aer_uce_sev" => {
+                    let value = value.context("aer_uce_sev option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("aer_uce_sev option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER uncorrectable severity mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default)
+                        .uncorrectable_severity_mask = Some(parsed);
+                }
                 "cxl" => {
                     if value.is_some() {
                         anyhow::bail!("cxl option does not take a value")
@@ -3184,6 +3250,7 @@ impl FromStr for PcieRootPortCli {
             devfn,
             hotplug,
             acs_capabilities_supported,
+            aer,
             cxl,
         })
     }
@@ -3226,6 +3293,7 @@ pub struct GenericPcieSwitchCli {
     pub num_downstream_ports: u8,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
+    pub aer: Option<PcieAerCli>,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -3249,6 +3317,7 @@ impl FromStr for GenericPcieSwitchCli {
         let mut num_downstream_ports = 4u8; // Default value
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
+        let mut aer: Option<PcieAerCli> = None;
 
         for opt in opts {
             let mut kv = opt.split('=');
@@ -3275,6 +3344,38 @@ impl FromStr for GenericPcieSwitchCli {
                     }
                     acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
                 }
+                "aer" => {
+                    if kv.next().is_some() {
+                        anyhow::bail!("aer option does not take a value")
+                    }
+                    aer.get_or_insert_with(PcieAerCli::default);
+                }
+                "acs_ce_mask" => {
+                    let value = kv.next().context("acs_ce_mask option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs_ce_mask option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER correctable mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default).correctable_mask = Some(parsed);
+                }
+                "aer_uce_mask" => {
+                    let value = kv.next().context("aer_uce_mask option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("aer_uce_mask option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER uncorrectable mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default)
+                        .uncorrectable_mask = Some(parsed);
+                }
+                "aer_uce_sev" => {
+                    let value = kv.next().context("aer_uce_sev option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("aer_uce_sev option expects a single value")
+                    }
+                    let parsed = parse_u32_mask(value, "AER uncorrectable severity mask")?;
+                    aer.get_or_insert_with(PcieAerCli::default)
+                        .uncorrectable_severity_mask = Some(parsed);
+                }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
         }
@@ -3285,6 +3386,7 @@ impl FromStr for GenericPcieSwitchCli {
             num_downstream_ports,
             hotplug,
             acs_capabilities_supported,
+            aer,
         })
     }
 }
@@ -4659,6 +4761,7 @@ mod tests {
                 devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4671,6 +4774,7 @@ mod tests {
                 devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4684,6 +4788,7 @@ mod tests {
                 devfn: None,
                 hotplug: true,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4696,6 +4801,7 @@ mod tests {
                 devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
+                aer: None,
                 cxl: false,
             }
         );
@@ -4708,6 +4814,40 @@ mod tests {
                 devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
+                aer: None,
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port3,aer").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                devfn: None,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                aer: Some(PcieAerCli::default()),
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str(
+                "my_rc:port3,acs_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=0x13000"
+            )
+            .unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                devfn: None,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                aer: Some(PcieAerCli {
+                    correctable_mask: Some(0x21),
+                    uncorrectable_mask: Some(0x04000000),
+                    uncorrectable_severity_mask: Some(0x13000),
+                }),
                 cxl: false,
             }
         );
@@ -4720,6 +4860,7 @@ mod tests {
                 devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: true,
             }
         );
@@ -4733,6 +4874,7 @@ mod tests {
                 devfn: Some(5 << 3),
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4744,6 +4886,7 @@ mod tests {
                 devfn: Some((5 << 3) | 1),
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4755,6 +4898,7 @@ mod tests {
                 devfn: Some(0xff),
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
                 cxl: false,
             }
         );
@@ -4766,6 +4910,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,aer=1").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr=32").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
@@ -4811,6 +4956,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4822,6 +4968,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4833,6 +4980,7 @@ mod tests {
                 num_downstream_ports: 8,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4845,6 +4993,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4857,6 +5006,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: true,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4869,6 +5019,7 @@ mod tests {
                 num_downstream_ports: 8,
                 hotplug: true,
                 acs_capabilities_supported: None,
+                aer: None,
             }
         );
 
@@ -4880,6 +5031,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
+                aer: None,
             }
         );
 
@@ -4891,6 +5043,38 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: Some(95),
+                aer: None,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,aer").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                aer: Some(PcieAerCli::default()),
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str(
+                "rp0:switch0,acs_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=77824"
+            )
+            .unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                aer: Some(PcieAerCli {
+                    correctable_mask: Some(0x21),
+                    uncorrectable_mask: Some(0x04000000),
+                    uncorrectable_severity_mask: Some(77824),
+                }),
             }
         );
 
@@ -4901,6 +5085,7 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,aer=1").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
     }
 

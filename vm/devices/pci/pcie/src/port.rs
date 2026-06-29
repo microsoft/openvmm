@@ -20,6 +20,9 @@ use pci_bus::GenericPciBusDevice;
 use pci_core::bus_range::AssignedBusRange;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::capabilities::extended::acs::AcsExtendedCapability;
+use pci_core::capabilities::extended::aer::AerCapabilityConfig;
+use pci_core::capabilities::extended::aer::AerExtendedCapability;
+use pci_core::capabilities::extended::aer::AerPortType;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
@@ -62,11 +65,26 @@ pub struct PciePortSettings {
     /// extended capability is not present.
     pub acs_capabilities_supported: u16,
 
+    /// Optional AER configuration. `None` means the AER extended capability
+    /// is not present on this port.
+    pub aer: Option<PcieAerSettings>,
+
     /// Flex Bus Port capability bits used to advertise CXL support on ports.
     ///
     /// CXL DVSECs are added only when this is `Some` and either `cache_capable`
     /// or `mem_capable` is set.
     pub cxl_flex_bus_port_capability: Option<CxlFlexBusPortDvsecCapability>,
+}
+
+/// AER settings for a PCIe port.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PcieAerSettings {
+    /// Default value for the AER Correctable Error Mask register.
+    pub correctable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Mask register.
+    pub uncorrectable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Severity register.
+    pub uncorrectable_severity_mask: Option<u32>,
 }
 
 /// A description of a generic PCIe port (a root-complex root port or a switch
@@ -361,6 +379,7 @@ impl PcieDownstreamPort {
         let msi_capability = MsiCapability::new(0, true, false, msi_target);
         let acs_supported =
             filter_acs_capabilities_for_bridge(&port_type, settings.acs_capabilities_supported);
+        let aer_port_type = AerPortType::from(&port_type);
 
         let pcie_cap = if hotplug {
             let slot_num = slot_number.unwrap_or(0);
@@ -369,16 +388,24 @@ impl PcieDownstreamPort {
             PciExpressCapability::new(port_type, None)
         };
 
-        let extended_capabilities = if acs_supported != 0 {
-            vec![
-                Box::new(AcsExtendedCapability::with_capabilities(acs_supported))
-                    as Box<dyn PciExtendedCapability>,
-            ]
-        } else {
-            vec![]
-        };
+        let mut extended_capabilities: Vec<Box<dyn PciExtendedCapability>> = Vec::new();
 
-        let mut extended_capabilities = extended_capabilities;
+        if acs_supported != 0 {
+            extended_capabilities.push(Box::new(AcsExtendedCapability::with_capabilities(
+                acs_supported,
+            )));
+        }
+
+        if let Some(aer_settings) = settings.aer {
+            extended_capabilities.push(Box::new(AerExtendedCapability::with_config(
+                aer_port_type,
+                AerCapabilityConfig {
+                    correctable_mask: aer_settings.correctable_mask,
+                    uncorrectable_mask: aer_settings.uncorrectable_mask,
+                    uncorrectable_severity_mask: aer_settings.uncorrectable_severity_mask,
+                },
+            )));
+        }
 
         if cxl_enabled {
             // CXL Spec mandates that a CXL root port or downstream switch port must have CXL Port DVSEC
@@ -880,6 +907,7 @@ mod tests {
             &msi_target,
             PciePortSettings {
                 acs_capabilities_supported: 0,
+                aer: None,
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
@@ -1316,6 +1344,7 @@ mod tests {
             &msi_target,
             PciePortSettings {
                 acs_capabilities_supported: 0,
+                aer: None,
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),

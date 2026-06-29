@@ -344,6 +344,7 @@ async fn pcie_device_numa_affinity(
                         devfn: None,
                         hotplug: false,
                         acs_capabilities_supported: None,
+                        aer: None,
                         cxl: false,
                     }],
                     iommu: None,

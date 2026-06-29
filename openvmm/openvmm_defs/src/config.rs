@@ -250,11 +250,24 @@ pub struct PciePortConfig {
     pub hotplug: bool,
     /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
+    /// Optional AER configuration to expose on this port.
+    pub aer: Option<PcieAerConfig>,
     /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+}
+
+/// Optional AER capability configuration for a PCIe port.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub struct PcieAerConfig {
+    /// Default value for the AER Correctable Error Mask register.
+    pub correctable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Mask register.
+    pub uncorrectable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Severity register.
+    pub uncorrectable_severity_mask: Option<u32>,
 }
 
 #[derive(Debug, MeshPayload)]
