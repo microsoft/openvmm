@@ -356,6 +356,12 @@ impl PetriVmConfigOpenVmm {
     /// All root ports are named according to their index within their parent
     /// using the naming scheme `sXrcYrpZ`. For example, the third root port on
     /// the fourth root complex in segment 0 would be named `s0rc3rp2`.
+    ///
+    /// This may be called multiple times to build asymmetric topologies (e.g. a
+    /// different number of root complexes per segment). Each call appends its
+    /// root complexes to segments numbered after any added by previous calls,
+    /// so the segment numbers in the `sXrcY` names continue from where the last
+    /// call left off.
     pub fn with_pcie_root_topology(
         mut self,
         segment_count: u64,
@@ -365,11 +371,26 @@ impl PetriVmConfigOpenVmm {
         const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
         const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
 
+        // Offset the segments and global indices added by this call so that it
+        // can be called multiple times. New segments are numbered after any
+        // existing ones, and the global index continues from the existing
+        // root complex count.
+        let segment_base = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .map(|rc| u64::from(rc.segment) + 1)
+            .max()
+            .unwrap_or(0);
+        let index_base = self.config.pcie_root_complexes.len() as u64;
+
         // Add the root complexes to the VM
-        for segment in 0..segment_count {
+        for segment_offset in 0..segment_count {
+            let segment = segment_base + segment_offset;
             let bus_count_per_rc = 256 / root_complex_per_segment;
             for rc_index_in_segment in 0..root_complex_per_segment {
-                let index = segment * root_complex_per_segment + rc_index_in_segment;
+                let index =
+                    index_base + segment_offset * root_complex_per_segment + rc_index_in_segment;
                 let name = format!("s{}rc{}", segment, rc_index_in_segment);
 
                 let start_bus = rc_index_in_segment * bus_count_per_rc;
