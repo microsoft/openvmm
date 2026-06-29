@@ -25,6 +25,37 @@ pub enum AerPortType {
     DownstreamSwitchPort,
 }
 
+#[derive(Debug, Clone, Copy, Inspect)]
+/// Type of injected AER event.
+pub enum AerInjectedErrorKind {
+    /// Inject a correctable error.
+    Correctable,
+    /// Inject an uncorrectable error.
+    Uncorrectable,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Input payload for AER error injection.
+pub struct AerInjection {
+    /// Correctable vs. uncorrectable error class.
+    pub kind: AerInjectedErrorKind,
+    /// Status bits to OR into the corresponding AER status register.
+    pub status_bits: u32,
+    /// Header Log DWORDs (DW0..DW3).
+    pub header_log: [u32; 4],
+    /// Source Requester ID (Bus<<8 | DevFn).
+    pub source_id: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Result of injecting into a Root Port AER capability.
+pub struct AerRootInjectionOutcome {
+    /// Whether this event should report via root error interrupt signaling.
+    pub should_interrupt: bool,
+    /// Whether the uncorrectable event is treated as fatal.
+    pub fatal: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, Inspect)]
 /// Optional AER register defaults used at capability construction time.
 pub struct AerCapabilityConfig {
@@ -159,6 +190,14 @@ impl AerExtendedCapability {
         matches!(self.port_type, AerPortType::RootPort)
     }
 
+    /// Returns the configured AER interrupt message number for root ports.
+    pub fn interrupt_message_number(&self) -> Option<u8> {
+        self.supports_root_registers().then(|| {
+            self.root_error_status
+                .advanced_error_interrupt_message_number() as u8
+        })
+    }
+
     fn advanced_capabilities_and_control(&self) -> u32 {
         let mut v = self.aer_cap_ctl;
 
@@ -193,6 +232,80 @@ impl AerExtendedCapability {
             mask |= aer_spec::AER_CAP_CTL_MULTI_HEADER_RECORDING_ENABLE_BIT;
         }
         mask
+    }
+
+    /// Injects an AER event into this capability.
+    ///
+    /// For endpoints/switch ports, this updates local status/header-log state.
+    /// For root ports, this additionally updates root-error status/source fields
+    /// and returns interrupt signaling guidance.
+    pub fn inject(&mut self, injection: AerInjection) -> Option<AerRootInjectionOutcome> {
+        match injection.kind {
+            AerInjectedErrorKind::Correctable => {
+                let new_cor = self.cor_err_status.into_bits()
+                    | (injection.status_bits & aer_spec::COR_ERR_STATUS_RW1C_MASK);
+                self.cor_err_status = aer_spec::CorrectableErrorStatus::from_bits(new_cor);
+            }
+            AerInjectedErrorKind::Uncorrectable => {
+                let new_unc = self.unc_err_status.into_bits()
+                    | (injection.status_bits & aer_spec::UNC_ERR_STATUS_RW1C_MASK);
+                self.unc_err_status = aer_spec::UncorrectableErrorStatus::from_bits(new_unc);
+            }
+        }
+
+        self.header_log = injection.header_log;
+
+        if !self.supports_root_registers() {
+            return None;
+        }
+
+        let mut root_status = self.root_error_status;
+        let mut error_source = self.error_source_identification;
+        let (should_interrupt, fatal) = match injection.kind {
+            AerInjectedErrorKind::Correctable => {
+                if root_status.err_cor_received() {
+                    root_status.set_multiple_err_cor_received(true);
+                }
+                root_status.set_err_cor_received(true);
+                error_source.set_err_cor_source_identification(injection.source_id);
+                (
+                    self.root_error_command.correctable_error_reporting_enable(),
+                    false,
+                )
+            }
+            AerInjectedErrorKind::Uncorrectable => {
+                if root_status.err_fatal_nonfatal_received() {
+                    root_status.set_multiple_err_fatal_nonfatal_received(true);
+                }
+                root_status.set_err_fatal_nonfatal_received(true);
+                error_source.set_err_fatal_nonfatal_source_identification(injection.source_id);
+
+                let fatal = (injection.status_bits & self.unc_err_severity.into_bits()) != 0;
+                if fatal {
+                    root_status.set_first_uncorrectable_fatal(true);
+                    root_status.set_fatal_error_messages_received(true);
+                } else {
+                    root_status.set_non_fatal_error_messages_received(true);
+                }
+
+                (
+                    if fatal {
+                        self.root_error_command.fatal_error_reporting_enable()
+                    } else {
+                        self.root_error_command.non_fatal_error_reporting_enable()
+                    },
+                    fatal,
+                )
+            }
+        };
+
+        self.root_error_status = root_status;
+        self.error_source_identification = error_source;
+
+        Some(AerRootInjectionOutcome {
+            should_interrupt,
+            fatal,
+        })
     }
 }
 
@@ -365,6 +478,14 @@ impl PciExtendedCapability for AerExtendedCapability {
         self.root_error_status = aer_spec::RootErrorStatus::new();
         self.error_source_identification = aer_spec::ErrorSourceIdentification::new();
         self.tlp_prefix_log = [0; 4];
+    }
+
+    fn as_aer(&self) -> Option<&AerExtendedCapability> {
+        Some(self)
+    }
+
+    fn as_aer_mut(&mut self) -> Option<&mut AerExtendedCapability> {
+        Some(self)
     }
 }
 

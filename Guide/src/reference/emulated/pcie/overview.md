@@ -61,6 +61,11 @@ These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
 
+Runtime AER testing/injection can be triggered via
+`VmRpc::InjectPcieAer`, which injects a correctable or uncorrectable
+event on a named root port and signals MSI when the corresponding
+root AER reporting enable bits are set.
+
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)
 trait for the test API (`add_pcie_device` / `remove_pcie_device`)

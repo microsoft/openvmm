@@ -417,6 +417,11 @@ impl PciExpressCapability {
         self.state.lock().slot_control.hot_plug_interrupt_enable()
     }
 
+    /// Returns the PCIe capability interrupt message number.
+    pub fn interrupt_message_number(&self) -> u8 {
+        self.pcie_capabilities.interrupt_message_number() as u8
+    }
+
     /// Returns a reference to the slot capabilities register.
     pub fn slot_capabilities(&self) -> &pci_express::SlotCapabilities {
         &self.slot_capabilities

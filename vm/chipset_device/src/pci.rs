@@ -241,6 +241,28 @@ pub struct PciConfigAddress {
     dword_number: u16,
 }
 
+/// Type of AER event to inject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PciAerErrorKind {
+    /// Inject a correctable AER event.
+    Correctable,
+    /// Inject an uncorrectable AER event.
+    Uncorrectable,
+}
+
+/// Generic PCI AER injection request.
+#[derive(Debug, Clone, Copy)]
+pub struct PciAerInjection {
+    /// Error kind.
+    pub kind: PciAerErrorKind,
+    /// Status bits to OR into the corresponding AER status register.
+    pub status_bits: u32,
+    /// AER Header Log DWORDs (DW0..DW3).
+    pub header_log: [u32; 4],
+    /// Source Requester ID (Bus<<8 | DevFn).
+    pub source_id: u16,
+}
+
 impl PciConfigAddress {
     /// Create a new PCI configuration-space request.
     pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Option<Self> {
@@ -365,6 +387,21 @@ pub trait PciConfigSpace: ChipsetDevice {
         } else {
             IoResult::Ok
         }
+    }
+
+    /// Inject a PCIe AER event with full routing context.
+    ///
+    /// Returns `true` when the target function consumed the injection.
+    /// The default implementation does not support injection.
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        injection: PciAerInjection,
+    ) -> bool {
+        let _ = (secondary_bus, target_bus, function, injection);
+        false
     }
 
     /// Check if the device has a suggested (bus, device, function) it expects

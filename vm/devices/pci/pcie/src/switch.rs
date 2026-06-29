@@ -19,6 +19,7 @@ use crate::port::PciePortSettings;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -397,6 +398,42 @@ impl GenericPcieSwitch {
         None
     }
 
+    /// Route AER injection to the appropriate downstream topology target.
+    fn route_aer_inject(&mut self, bus: u8, function: u8, injection: PciAerInjection) -> bool {
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            return false;
+        }
+
+        let secondary_bus = *upstream_bus_range.start();
+        if bus == secondary_bus {
+            if let Some((_, _, downstream_port)) = self
+                .downstream_ports
+                .iter_mut()
+                .find(|(devfn, _, _)| *devfn == function)
+            {
+                return downstream_port.port.inject_local_aer_state(injection);
+            }
+            return false;
+        }
+
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&bus) {
+                return downstream_port
+                    .port
+                    .inject_child_aer(bus, function, injection)
+                    .unwrap_or(false);
+            }
+        }
+
+        false
+    }
+
     /// Route configuration space write to downstream ports for further forwarding.
     fn route_write_to_downstream_ports(
         &mut self,
@@ -537,6 +574,24 @@ impl PciConfigSpace for GenericPcieSwitch {
         IoResult::Ok
     }
 
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        injection: PciAerInjection,
+    ) -> bool {
+        if self.route_aer_inject(target_bus, function, injection) {
+            return true;
+        }
+
+        if target_bus == secondary_bus && function == 0 {
+            return false;
+        }
+
+        false
+    }
+
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
         // PCIe switches typically don't have a fixed BDF requirement
         None
@@ -674,6 +729,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::SwitchAdapter;
     use pci_core::msi::MsiConnection;
 
     /// Builds a switch definition with `downstream_port_count` uniform
@@ -1463,54 +1519,6 @@ mod tests {
             assert_eq!(*downstream_bus_range.end(), 0x20);
         } else {
             panic!("missing downstream port 1");
-        }
-    }
-
-    /// Adapts a `GenericPcieSwitch` to the `GenericPciBusDevice` trait so it
-    /// can be attached to a downstream port as a linked device in tests.
-    struct SwitchAdapter(GenericPcieSwitch);
-
-    impl GenericPciBusDevice for SwitchAdapter {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
-            Some(PciConfigSpace::pci_cfg_read(&mut self.0, offset, value))
-        }
-
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
-            Some(PciConfigSpace::pci_cfg_write(&mut self.0, offset, value))
-        }
-
-        fn pci_cfg_read_with_routing(
-            &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: &mut u32,
-        ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_read_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
-        }
-
-        fn pci_cfg_write_with_routing(
-            &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: u32,
-        ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_write_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
         }
     }
 

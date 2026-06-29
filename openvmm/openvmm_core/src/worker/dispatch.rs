@@ -3781,6 +3781,53 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::InjectPcieAer(rpc) => {
+                        rpc.handle_failable(async |request: openvmm_defs::rpc::PcieAerInjectRequest| {
+                            let openvmm_defs::rpc::PcieAerInjectRequest {
+                                port_name,
+                                source_id,
+                                error_kind,
+                                status_bits,
+                                header_log,
+                            } = request;
+
+                            let rc = self
+                                .inner
+                                .pcie_root_complexes
+                                .iter()
+                                .find(|rc| {
+                                    rc.lock()
+                                        .downstream_ports()
+                                        .iter()
+                                        .any(|p| p.name.as_ref() == port_name.as_str())
+                                })
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("port '{}' not found in any root complex", port_name)
+                                })?;
+
+                            let kind = match error_kind {
+                                openvmm_defs::rpc::PcieAerErrorKind::Correctable => {
+                                    chipset_device::pci::PciAerErrorKind::Correctable
+                                }
+                                openvmm_defs::rpc::PcieAerErrorKind::Uncorrectable => {
+                                    chipset_device::pci::PciAerErrorKind::Uncorrectable
+                                }
+                            };
+
+                            rc.lock().inject_aer(
+                                &port_name,
+                                pcie::PcieAerInjectRequest {
+                                    kind,
+                                    status_bits,
+                                    header_log,
+                                    source_id,
+                                },
+                            )?;
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await

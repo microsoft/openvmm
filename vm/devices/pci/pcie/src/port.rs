@@ -7,6 +7,8 @@ use anyhow::bail;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::PciAerErrorKind;
+use chipset_device::pci::PciAerInjection;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
 use cxl_spec::CxlPortDvsecExtendedCapability;
@@ -22,6 +24,8 @@ use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::capabilities::extended::acs::AcsExtendedCapability;
 use pci_core::capabilities::extended::aer::AerCapabilityConfig;
 use pci_core::capabilities::extended::aer::AerExtendedCapability;
+use pci_core::capabilities::extended::aer::AerInjectedErrorKind;
+use pci_core::capabilities::extended::aer::AerInjection;
 use pci_core::capabilities::extended::aer::AerPortType;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
@@ -85,6 +89,19 @@ pub struct PcieAerSettings {
     pub uncorrectable_mask: Option<u32>,
     /// Default value for the AER Uncorrectable Error Severity register.
     pub uncorrectable_severity_mask: Option<u32>,
+}
+
+/// Runtime AER injection request for a downstream-facing port.
+#[derive(Debug, Clone, Copy)]
+pub struct PcieAerInjectRequest {
+    /// Error kind.
+    pub kind: PciAerErrorKind,
+    /// Status bits to OR into the corresponding AER status register.
+    pub status_bits: u32,
+    /// Header log DWORDs.
+    pub header_log: [u32; 4],
+    /// Source Requester ID (Bus<<8 | DevFn).
+    pub source_id: u16,
 }
 
 /// A description of a generic PCIe port (a root-complex root port or a switch
@@ -270,6 +287,12 @@ pub struct PcieDownstreamPort {
     /// Optional CXL component-register backing for CXL BAR subregion emulation.
     #[inspect(skip)]
     cxl_component_registers: Option<CxlComponentRegisters>,
+}
+
+#[derive(Copy, Clone)]
+enum PortInterruptKind {
+    Hotplug,
+    Aer,
 }
 
 impl PcieDownstreamPort {
@@ -681,29 +704,35 @@ impl PcieDownstreamPort {
         self.cfg_space.bus_range()
     }
 
-    /// Notify the guest of a hotplug event via MSI.
-    ///
-    /// Fires MSI if the guest has enabled hot_plug_interrupt_enable in
-    /// Slot Control. The caller must have already set the appropriate
-    /// status bits (via set_hotplug_state) before calling this.
-    fn fire_hotplug_msi(&self) {
-        let hotplug_enabled = self
-            .cfg_space
-            .capabilities()
-            .iter()
-            .find_map(|cap| cap.as_pci_express())
-            .is_some_and(|pcie| pcie.hot_plug_interrupt_enabled());
-
-        if hotplug_enabled {
-            if let Some(interrupt) = self
+    /// Notify the guest using the selected interrupt source and message number.
+    fn fire_port_interrupt(&self, kind: PortInterruptKind) {
+        let interrupt_message_number = match kind {
+            PortInterruptKind::Hotplug => self
                 .cfg_space
                 .capabilities()
                 .iter()
-                .find_map(|cap| cap.as_msi_cap())
-                .and_then(|msi| msi.interrupt())
-            {
-                interrupt.deliver();
-            }
+                .find_map(|cap| cap.as_pci_express())
+                .filter(|pcie| pcie.hot_plug_interrupt_enabled())
+                .map(|pcie| pcie.interrupt_message_number()),
+            PortInterruptKind::Aer => self
+                .cfg_space
+                .extended_capabilities()
+                .iter()
+                .find_map(|cap| cap.as_aer())
+                .and_then(|aer| aer.interrupt_message_number()),
+        };
+
+        let Some(interrupt_message_number) = interrupt_message_number else {
+            return;
+        };
+
+        if let Some(msi) = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_msi_cap())
+        {
+            msi.signal_message_number(interrupt_message_number);
         }
     }
 
@@ -853,7 +882,7 @@ impl PcieDownstreamPort {
                 pcie.set_hotplug_state(true);
             }
         }
-        self.fire_hotplug_msi();
+        self.fire_port_interrupt(PortInterruptKind::Hotplug);
         Ok(())
     }
 
@@ -881,8 +910,106 @@ impl PcieDownstreamPort {
                 pcie.set_hotplug_state(false);
             }
         }
-        self.fire_hotplug_msi();
+        self.fire_port_interrupt(PortInterruptKind::Hotplug);
         Ok(())
+    }
+
+    /// Inject an AER event into this port.
+    ///
+    /// This is only supported for root ports with AER capability present.
+    /// The source device update is best-effort through the routed child device.
+    pub fn inject_aer(&mut self, request: PcieAerInjectRequest) -> anyhow::Result<()> {
+        let mut injected_root = false;
+        let mut should_interrupt = false;
+
+        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
+            if let Some(aer) = ext.as_aer_mut() {
+                let injection = AerInjection {
+                    kind: match request.kind {
+                        PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
+                        PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
+                    },
+                    status_bits: request.status_bits,
+                    header_log: request.header_log,
+                    source_id: request.source_id,
+                };
+
+                if let Some(outcome) = aer.inject(injection) {
+                    injected_root = true;
+                    should_interrupt = outcome.should_interrupt;
+                    break;
+                }
+            }
+        }
+
+        if !injected_root {
+            anyhow::bail!("AER injection is only supported for root ports with an AER capability");
+        }
+
+        if let Some((_, device)) = &mut self.link {
+            let secondary_bus = *self.cfg_space.assigned_bus_range().start();
+            let target_bus = (request.source_id >> 8) as u8;
+            let function = (request.source_id & 0xff) as u8;
+            let _ = device.pci_inject_aer_with_routing(
+                secondary_bus,
+                target_bus,
+                function,
+                PciAerInjection {
+                    kind: request.kind,
+                    status_bits: request.status_bits,
+                    header_log: request.header_log,
+                    source_id: request.source_id,
+                },
+            );
+        }
+
+        if should_interrupt {
+            self.fire_port_interrupt(PortInterruptKind::Aer);
+        }
+        Ok(())
+    }
+
+    /// Inject AER state into this port's local AER capability.
+    ///
+    /// This updates status/header/source fields for the source function device
+    /// and does not perform root-port-only interrupt handling.
+    pub fn inject_local_aer_state(&mut self, request: PciAerInjection) -> bool {
+        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
+            if let Some(aer) = ext.as_aer_mut() {
+                let _ = aer.inject(AerInjection {
+                    kind: match request.kind {
+                        PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
+                        PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
+                    },
+                    status_bits: request.status_bits,
+                    header_log: request.header_log,
+                    source_id: request.source_id,
+                });
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Route AER state update to a child device reachable through this port.
+    ///
+    /// This is used to locate the source function and update its local AER
+    /// capability while root-port reporting remains handled by `inject_aer`.
+    pub fn inject_child_aer(
+        &mut self,
+        target_bus: u8,
+        function: u8,
+        request: PciAerInjection,
+    ) -> anyhow::Result<bool> {
+        let Some((_, device)) = &mut self.link else {
+            return Ok(false);
+        };
+
+        let secondary_bus = *self.cfg_space.assigned_bus_range().start();
+        Ok(device
+            .pci_inject_aer_with_routing(secondary_bus, target_bus, function, request)
+            .unwrap_or(false))
     }
 }
 
@@ -953,11 +1080,11 @@ mod tests {
         }
     }
 
-    #[derive(Default, Debug, Clone, PartialEq, Eq)]
+    #[derive(Default, Clone)]
     struct RoutingStats {
-        direct_reads: usize,
+        direct_reads: u32,
+        direct_writes: u32,
         forward_reads: Vec<(u8, u8, u16)>,
-        direct_writes: usize,
         forward_writes: Vec<(u8, u8, u16, u32)>,
     }
 

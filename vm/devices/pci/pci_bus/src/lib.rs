@@ -20,6 +20,7 @@ use bitfield_struct::bitfield;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::pci::PciAerInjection;
 use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
@@ -150,6 +151,21 @@ pub trait GenericPciBusDevice: 'static + Send {
         } else {
             Some(IoResult::Ok)
         }
+    }
+
+    /// Inject a PCIe AER event with routing context.
+    ///
+    /// Returns `Some(true)` if the target consumed the injection,
+    /// `Some(false)` if not supported/not found, and `None` if the backing
+    /// device is no longer responding.
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        _target_bus: u8,
+        _function: u8,
+        _injection: PciAerInjection,
+    ) -> Option<bool> {
+        Some(false)
     }
 }
 

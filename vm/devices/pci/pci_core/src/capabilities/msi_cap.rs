@@ -140,6 +140,14 @@ impl MsiCapability {
         self.state.lock().interrupt.as_mut().map(|i| i.interrupt())
     }
 
+    /// Signals MSI using a specific message number.
+    pub fn signal_message_number(&self, message_number: u8) {
+        let state = self.state.lock();
+        if let Some(interrupt) = &state.interrupt {
+            interrupt.deliver_message_number(message_number, state.multiple_message_enable);
+        }
+    }
+
     /// Returns the MSI message number used by the PCIe capability path
     /// (for example, hotplug notifications).
     ///

@@ -42,6 +42,16 @@ pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
     /// Reset the capability.
     fn reset(&mut self);
+
+    /// Downcast to AER capability.
+    fn as_aer(&self) -> Option<&aer::AerExtendedCapability> {
+        None
+    }
+
+    /// Downcast to AER capability (mutable).
+    fn as_aer_mut(&mut self) -> Option<&mut aer::AerExtendedCapability> {
+        None
+    }
 }
 
 #[cfg(test)]

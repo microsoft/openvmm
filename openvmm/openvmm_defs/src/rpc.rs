@@ -17,6 +17,23 @@ use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum PcieAerErrorKind {
+    Correctable,
+    Uncorrectable,
+}
+
+#[derive(Debug, MeshPayload, Clone)]
+pub struct PcieAerInjectRequest {
+    pub port_name: String,
+    /// Source Requester ID (Bus<<8 | DevFn).
+    pub source_id: u16,
+    pub error_kind: PcieAerErrorKind,
+    /// Error status bits for COR/UNC status register based on `error_kind`.
+    pub status_bits: u32,
+    pub header_log: [u32; 4],
+}
+
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
@@ -40,6 +57,8 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
+    /// Inject an AER event on a named PCIe root port at runtime.
+    InjectPcieAer(FailableRpc<PcieAerInjectRequest, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -82,6 +101,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::InjectPcieAer(_) => "InjectPcieAer",
             VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)

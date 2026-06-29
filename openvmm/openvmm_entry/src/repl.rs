@@ -82,6 +82,65 @@ fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
     u64::from_str_radix(&s[prefix_len..], radix).map_err(|e| format!("{e}"))
 }
 
+fn parse_segment_bus_device_function(s: &str) -> Result<u16, String> {
+    let mut parts = s.split('.');
+    let segment = parts
+        .next()
+        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
+    let bus = parts
+        .next()
+        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
+    let device = parts
+        .next()
+        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
+    let function = parts
+        .next()
+        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
+
+    if parts.next().is_some() {
+        return Err("expected segment.bus.device.function".to_string());
+    }
+
+    let segment = maybe_with_radix_u64(segment)?;
+    if segment != 0 {
+        return Err("only segment 0 is supported".to_string());
+    }
+
+    let bus = maybe_with_radix_u64(bus)?;
+    if bus > u8::MAX as u64 {
+        return Err("bus out of range (0..255)".to_string());
+    }
+
+    let device = maybe_with_radix_u64(device)?;
+    if device > 31 {
+        return Err("device out of range (0..31)".to_string());
+    }
+
+    let function = maybe_with_radix_u64(function)?;
+    if function > 7 {
+        return Err("function out of range (0..7)".to_string());
+    }
+
+    let devfn = ((device as u8) << 3) | (function as u8);
+    Ok(((bus as u16) << 8) | (devfn as u16))
+}
+
+fn parse_header_log_dwords(s: &str) -> Result<[u32; 4], String> {
+    let values: Vec<&str> = s.split(',').map(str::trim).collect();
+    if values.len() != 4 {
+        return Err("expected 4 comma-separated DWORD values".to_string());
+    }
+
+    let mut dwords = [0u32; 4];
+    for (i, value) in values.iter().enumerate() {
+        let parsed = maybe_with_radix_u64(value)?;
+        dwords[i] = u32::try_from(parsed)
+            .map_err(|_| format!("log value {} out of u32 range", i))?;
+    }
+
+    Ok(dwords)
+}
+
 #[derive(Parser)]
 #[clap(
     name = "openvmm",
@@ -245,6 +304,25 @@ enum InteractiveCommand {
     /// Once in input mode, Ctrl-Q returns to command mode.
     #[clap(visible_alias = "I")]
     InputMode,
+
+    /// Inject a PCIe AER event on a hotplug-capable root port.
+    InjectAer {
+        /// Root-port name.
+        #[clap(long)]
+        port: String,
+        /// Source in segment.bus.device.function format (for example: 0.1.0.0).
+        #[clap(long, value_parser=parse_segment_bus_device_function)]
+        source: u16,
+        /// Error kind: "cor" for correctable or "unc" for uncorrectable.
+        #[clap(long)]
+        kind: String,
+        /// Status bits to inject into COR/UNC status register.
+        #[clap(long, value_parser=maybe_with_radix_u64)]
+        status: u64,
+        /// Header log as comma-separated DW0,DW1,DW2,DW3.
+        #[clap(long, value_parser=parse_header_log_dwords, default_value = "0,0,0,0")]
+        log: [u32; 4],
+    },
 
     /// Reset the VM.
     Reset,
@@ -952,6 +1030,41 @@ pub(crate) async fn run_repl(
             }
             InteractiveCommand::ClearHalt => {
                 vm_rpc.call(VmRpc::ClearHalt, ()).await.ok();
+            }
+            InteractiveCommand::InjectAer {
+                port,
+                source,
+                kind,
+                status,
+                log,
+            } => {
+                let action = async {
+                    let status_bits = u32::try_from(status).context("status out of u32 range")?;
+                    let error_kind = match kind.as_str() {
+                        "cor" => openvmm_defs::rpc::PcieAerErrorKind::Correctable,
+                        "unc" => openvmm_defs::rpc::PcieAerErrorKind::Uncorrectable,
+                        _ => anyhow::bail!("invalid kind '{}', expected 'cor' or 'unc'", kind),
+                    };
+
+                    vm_rpc
+                        .call(
+                            VmRpc::InjectPcieAer,
+                            openvmm_defs::rpc::PcieAerInjectRequest {
+                                port_name: port,
+                                source_id: source,
+                                error_kind,
+                                status_bits,
+                                header_log: log,
+                            },
+                        )
+                        .await??;
+
+                    anyhow::Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    tracing::error!(error = error.as_error(), "error injecting PCIe AER")
+                }
             }
             InteractiveCommand::AddDisk {
                 read_only,
