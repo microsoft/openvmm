@@ -44,31 +44,28 @@ const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 #[derive(Clone, Copy)]
 struct TrackedSecureBootVariable {
     variable: &'static str,
-    nvram_identity: (Guid, &'static Ucs2LeSlice),
+    nvram_identity: fn() -> (Guid, &'static Ucs2LeSlice),
 }
 
-/// Returns all Secure Boot variables tracked by rollout telemetry.
-fn tracked_secure_boot_variables() -> [TrackedSecureBootVariable; 2] {
-    [
-        TrackedSecureBootVariable {
-            variable: "KEK",
-            nvram_identity: vars::KEK(),
-        },
-        TrackedSecureBootVariable {
-            variable: "db",
-            nvram_identity: vars::DB(),
-        },
-    ]
-}
+const TRACKED_SECURE_BOOT_VARIABLES: [TrackedSecureBootVariable; 2] = [
+    TrackedSecureBootVariable {
+        variable: "KEK",
+        nvram_identity: vars::KEK,
+    },
+    TrackedSecureBootVariable {
+        variable: "db",
+        nvram_identity: vars::DB,
+    },
+];
 
 /// Finds a tracked Secure Boot variable by NVRAM identity.
 fn tracked_secure_boot_variable(
     vendor: Guid,
     name: &Ucs2LeSlice,
 ) -> Option<TrackedSecureBootVariable> {
-    tracked_secure_boot_variables()
+    TRACKED_SECURE_BOOT_VARIABLES
         .into_iter()
-        .find(|tracked| (vendor, name) == tracked.nvram_identity)
+        .find(|tracked| (vendor, name) == (tracked.nvram_identity)())
 }
 
 // Max size allows two re-sizings, max size of 128K
@@ -164,7 +161,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             Ok(()) => {
                 if !self.logged_tracked_secure_boot_state {
                     self.logged_tracked_secure_boot_state = true;
-                    for variable in tracked_secure_boot_variables() {
+                    for variable in TRACKED_SECURE_BOOT_VARIABLES {
                         self.log_tracked_secure_boot_variable_state(variable, false);
                     }
                 }
@@ -388,7 +385,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         variable: TrackedSecureBootVariable,
         rate_limit: bool,
     ) {
-        let (vendor, name) = variable.nvram_identity;
+        let (vendor, name) = (variable.nvram_identity)();
         let data = self
             .in_memory
             .iter()
