@@ -393,7 +393,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             .map(|entry| entry.data);
         let present = data.is_some();
         let size = data.map_or(0, <[u8]>::len);
-        let sha256 = data.map(|data| sha_256(data).encode_hex::<String>());
 
         if rate_limit {
             tracelimit::info_ratelimited!(
@@ -401,7 +400,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 variable = variable.variable,
                 present,
                 size,
-                sha256,
+                sha256 = data.map(|data| sha_256(data).encode_hex::<String>()),
                 "secure boot variable state"
             );
         } else {
@@ -410,7 +409,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 variable = variable.variable,
                 present,
                 size,
-                sha256,
+                sha256 = data.map(|data| sha_256(data).encode_hex::<String>()),
                 "secure boot variable state"
             );
         }
@@ -573,6 +572,7 @@ mod save_restore {
             if state.nvram.is_some() {
                 self.in_memory.restore(state)?;
                 self.loaded = true;
+                self.logged_tracked_secure_boot_state = false;
             }
             Ok(())
         }

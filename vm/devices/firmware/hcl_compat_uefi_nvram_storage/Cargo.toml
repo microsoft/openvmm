@@ -13,7 +13,7 @@ inspect = ["dep:inspect", "uefi_nvram_storage/inspect"]
 save_restore = [ "dep:vmcore", "uefi_nvram_storage/save_restore"]
 
 [dependencies]
-crypto = { workspace = true, features = ["native"] }
+crypto.workspace = true
 hcl_compat_uefi_nvram_resources.workspace = true
 hex.workspace = true
 uefi_nvram_storage.workspace = true
