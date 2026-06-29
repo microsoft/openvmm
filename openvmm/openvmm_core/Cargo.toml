@@ -100,6 +100,7 @@ cfg-if.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true

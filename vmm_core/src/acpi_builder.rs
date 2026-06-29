@@ -139,6 +139,13 @@ pub struct AmdIommuIvrsConfig {
     pub va_size: u8,
     /// Per-IOMMU configurations, one per root complex with an AMD IOMMU.
     pub iommus: Vec<AmdIommuAcpiConfig>,
+    /// IOAPIC PCIe Requester ID (RID) for the IVRS DEV_SPECIAL(IOAPIC)
+    /// entry.
+    ///
+    /// When set, a DEV_SPECIAL(IOAPIC) entry is added to the IVHD whose
+    /// segment (0) and bus range cover this RID, so the guest can locate the
+    /// IOAPIC's DTE/IRTE context for interrupt remapping.
+    pub ioapic_rid: Option<u16>,
 }
 
 /// Configuration for a single Intel VT-d remapping unit in the DMAR table.
@@ -178,6 +185,12 @@ pub struct IntelVtdDmarConfig {
     pub host_address_width: u8,
     /// Per-unit configurations, one per root complex with an Intel VT-d unit.
     pub units: Vec<IntelVtdAcpiConfig>,
+    /// IOAPIC PCIe Requester ID (RID) for the DMAR IOAPIC device scope.
+    ///
+    /// When set, a DEVICE_SCOPE_IOAPIC entry is added to the DRHD whose
+    /// segment (0) and start bus cover this RID, so the guest can locate the
+    /// IOAPIC's source ID for interrupt remapping.
+    pub ioapic_rid: Option<u16>,
 }
 
 /// x86 IOMMU ACPI table configuration.
@@ -330,6 +343,9 @@ pub trait AcpiTopology: ArchTopology + Inspect + Sized {
 ///
 /// This isn't 0xff because that's the broadcast ID.
 const MAX_LEGACY_APIC_ID: u32 = 0xfe;
+
+/// IOAPIC ID emitted in the x86 MADT and referenced by DMAR IOAPIC scopes.
+const X86_IOAPIC_ID: u8 = 0;
 
 impl AcpiTopology for X86Topology {
     fn extend_srat(topology: &ProcessorTopology<Self>, srat: &mut Vec<u8>) {
@@ -536,7 +552,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             if with_ioapic {
                 madt_extra.extend_from_slice(
                     acpi_spec::madt::MadtIoApic {
-                        io_apic_id: 0,
+                        io_apic_id: X86_IOAPIC_ID,
                         io_apic_address: ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS as u32,
                         ..acpi_spec::madt::MadtIoApic::new()
                     }
@@ -789,7 +805,22 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // root complex's IOMMU (IVHD_DEV_RANGE_START + IVHD_DEV_RANGE_END).
             // This correctly supports multiple IOMMUs within a single PCI
             // segment, each covering its own bus range.
-            let dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+            let mut dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+
+            // Emit the IOAPIC DEV_SPECIAL entry on the IVHD whose segment (0)
+            // and bus range cover the IOAPIC RID, so the guest resolves the
+            // IOAPIC's DTE/IRTE from the correct IOMMU regardless of config
+            // ordering.
+            let ioapic_special = ivrs_config.ioapic_rid.and_then(|ioapic_rid| {
+                let ioapic_bus = (ioapic_rid >> 8) as u8;
+                (config.pci_segment == 0
+                    && (config.start_bus..=config.end_bus).contains(&ioapic_bus))
+                .then(|| {
+                    dev_entries_size += size_of::<ivrs::IvhdSpecialDeviceEntry8>();
+                    ivrs::IvhdSpecialDeviceEntry8::ioapic(ioapic_rid, X86_IOAPIC_ID)
+                })
+            });
+
             let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
 
             // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
@@ -812,6 +843,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             ivrs_extra
                 .extend_from_slice(ivrs::IvhdDeviceEntry4::range_start(start_bdf, 0).as_bytes());
             ivrs_extra.extend_from_slice(ivrs::IvhdDeviceEntry4::range_end(end_bdf).as_bytes());
+
+            if let Some(entry) = &ioapic_special {
+                ivrs_extra.extend_from_slice(entry.as_bytes());
+            }
         }
 
         let iv_info = ivrs::IvInfo::new()
@@ -835,12 +870,31 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         use acpi_spec::dmar::DmarDevicePath;
 
         let mut dmar_extra: Vec<u8> = Vec::new();
+        if let Some(ioapic_rid) = dmar_config.ioapic_rid {
+            let ioapic_bus = (ioapic_rid >> 8) as u8;
+            let matching_units = dmar_config
+                .units
+                .iter()
+                .filter(|config| config.pci_segment == 0 && config.start_bus == ioapic_bus)
+                .count();
+            assert_eq!(
+                matching_units, 1,
+                "VT-d IOAPIC RID {ioapic_rid:#06x} must be covered by exactly one segment-0 DRHD"
+            );
+        }
 
         for config in &dmar_config.units {
             // Each device scope entry is a DmarDeviceScope header (6 bytes)
             // plus one DmarDevicePath (2 bytes).
             let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
-            let total_scope_size = per_scope_size * config.device_scopes.len();
+            let ioapic_devfn = dmar_config.ioapic_rid.and_then(|ioapic_rid| {
+                let ioapic_bus = (ioapic_rid >> 8) as u8;
+                (config.pci_segment == 0 && config.start_bus == ioapic_bus)
+                    .then_some(ioapic_rid as u8)
+            });
+            let ioapic_scope_count = if ioapic_devfn.is_some() { 1 } else { 0 };
+            let total_scope_size =
+                per_scope_size * (config.device_scopes.len() + ioapic_scope_count);
             let drhd_total = size_of::<dmar::DmarDrhd>() + total_scope_size;
 
             let drhd = dmar::DmarDrhd::new(
@@ -865,6 +919,20 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     DmarDevicePath {
                         device: scope.devfn >> 3,
                         function: scope.devfn & 0x7,
+                    }
+                    .as_bytes(),
+                );
+            }
+
+            if let Some(ioapic_devfn) = ioapic_devfn {
+                let mut scope =
+                    dmar::DmarDeviceScope::new(dmar::DEVICE_SCOPE_IOAPIC, config.start_bus);
+                scope.enumeration_id = X86_IOAPIC_ID;
+                dmar_extra.extend_from_slice(scope.as_bytes());
+                dmar_extra.extend_from_slice(
+                    DmarDevicePath {
+                        device: ioapic_devfn >> 3,
+                        function: ioapic_devfn & 0x7,
                     }
                     .as_bytes(),
                 );
@@ -1993,6 +2061,24 @@ mod test {
                 pa_size: 48,
                 va_size: 48,
                 iommus: configs,
+                ioapic_rid: None,
+            }));
+        } else {
+            panic!("expected X86 arch config");
+        }
+    }
+
+    fn set_amd_iommu_with_ioapic(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<AmdIommuAcpiConfig>,
+        ioapic_rid: Option<u16>,
+    ) {
+        if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
+            *iommu = Some(X86IommuAcpiConfig::AmdVi(AmdIommuIvrsConfig {
+                pa_size: 48,
+                va_size: 48,
+                iommus: configs,
+                ioapic_rid,
             }));
         } else {
             panic!("expected X86 arch config");
@@ -2215,10 +2301,19 @@ mod test {
         builder: &mut AcpiTablesBuilder<'_, X86Topology>,
         configs: Vec<IntelVtdAcpiConfig>,
     ) {
+        set_intel_vtd_with_ioapic(builder, configs, None);
+    }
+
+    fn set_intel_vtd_with_ioapic(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<IntelVtdAcpiConfig>,
+        ioapic_rid: Option<u16>,
+    ) {
         if let AcpiArchConfig::X86 { iommu, .. } = &mut builder.arch {
             *iommu = Some(X86IommuAcpiConfig::IntelVtd(IntelVtdDmarConfig {
                 host_address_width: 48,
                 units: configs,
+                ioapic_rid,
             }));
         } else {
             panic!("expected X86 arch config");
@@ -2298,6 +2393,69 @@ mod test {
         // Path: device 0, function 1
         assert_eq!(dmar[scope1_offset + 6], 0);
         assert_eq!(dmar[scope1_offset + 7], 1);
+    }
+
+    #[test]
+    fn test_dmar_ioapic_scope() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd_with_ioapic(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 0,
+                start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
+            }],
+            Some(0x00A0),
+        );
+
+        let dmar = builder.build_dmar().unwrap();
+        assert_eq!(checksum(&dmar), 0);
+
+        let drhd_offset = 48;
+        let drhd_len =
+            u16::from_ne_bytes(dmar[drhd_offset + 2..drhd_offset + 4].try_into().unwrap());
+        assert_eq!(drhd_len, 32);
+
+        let ioapic_scope_offset = drhd_offset + 16 + 8;
+        assert_eq!(
+            dmar[ioapic_scope_offset],
+            acpi_spec::dmar::DEVICE_SCOPE_IOAPIC
+        );
+        assert_eq!(dmar[ioapic_scope_offset + 4], 0);
+        assert_eq!(dmar[ioapic_scope_offset + 5], 0);
+        assert_eq!(dmar[ioapic_scope_offset + 6], 0x14);
+        assert_eq!(dmar[ioapic_scope_offset + 7], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be covered by exactly one segment-0 DRHD")]
+    fn test_dmar_ioapic_rid_must_be_covered() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_intel_vtd_with_ioapic(
+            &mut builder,
+            vec![IntelVtdAcpiConfig {
+                mmio_base: 0xFED9_0000,
+                pci_segment: 1,
+                start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
+            }],
+            Some(0x00A0),
+        );
+
+        let _ = builder.build_dmar();
     }
 
     #[test]
@@ -2398,5 +2556,81 @@ mod test {
         // Second DRHD's device scope start_bus = 128
         let scope1_offset = drhd1_offset + 16;
         assert_eq!(dmar[scope1_offset + 5], 128);
+    }
+
+    /// The IOAPIC DEV_SPECIAL entry must be emitted on the IVHD whose
+    /// segment (0) and bus range cover the IOAPIC RID, regardless of where
+    /// that IOMMU sits in the config list. Here the covering IOMMU is listed
+    /// second, so a correct implementation must not assume index 0.
+    #[test]
+    fn test_ivrs_ioapic_special_entry_placement() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        // RID 00:14.0 on segment 0, bus 0.
+        let ioapic_rid = 0x00A0u16;
+        set_amd_iommu_with_ioapic(
+            &mut builder,
+            vec![
+                // First config: segment 1, does NOT cover the IOAPIC.
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_4000,
+                    pci_segment: 1,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 255,
+                },
+                // Second config: segment 0, bus 0 — covers the IOAPIC RID.
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_0000,
+                    pci_segment: 0,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 127,
+                },
+            ],
+            Some(ioapic_rid),
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        assert_eq!(checksum(&ivrs), 0);
+
+        // First IVHD (segment 1): only the range_start + range_end pair, so
+        // its length is header (40) + 2 * 4 = 48, and it carries no special
+        // device entry.
+        let ivhd0_offset = 48;
+        assert_eq!(ivrs[ivhd0_offset], 0x40);
+        let ivhd0_len =
+            u16::from_ne_bytes(ivrs[ivhd0_offset + 2..ivhd0_offset + 4].try_into().unwrap());
+        assert_eq!(ivhd0_len as usize, 40 + 2 * 4);
+
+        // Second IVHD (segment 0): range_start + range_end + the 8-byte
+        // IOAPIC special device entry, so its length is 40 + 2 * 4 + 8 = 56.
+        let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
+        assert_eq!(ivrs[ivhd1_offset], 0x40);
+        let ivhd1_len =
+            u16::from_ne_bytes(ivrs[ivhd1_offset + 2..ivhd1_offset + 4].try_into().unwrap());
+        assert_eq!(ivhd1_len as usize, 40 + 2 * 4 + 8);
+        let seg1 = u16::from_ne_bytes(
+            ivrs[ivhd1_offset + 16..ivhd1_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg1, 0);
+
+        // The special entry follows the two range entries (header + 8 bytes).
+        let special = ivhd1_offset + 40 + 2 * 4;
+        assert_eq!(ivrs[special], 0x48); // IVHD_DEV_SPECIAL
+        // source_device_id at +5 (u16) must equal the IOAPIC RID.
+        let src_rid = u16::from_ne_bytes(ivrs[special + 5..special + 7].try_into().unwrap());
+        assert_eq!(src_rid, ioapic_rid);
+        // variety at +7 must be IOAPIC (0x01).
+        assert_eq!(ivrs[special + 7], 0x01);
     }
 }

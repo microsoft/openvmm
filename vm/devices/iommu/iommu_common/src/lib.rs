@@ -1,12 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared IOMMU DMA translation infrastructure.
+//! Shared IOMMU infrastructure for DMA translation and interrupt remapping.
 //!
-//! This crate provides a generic [`TranslatingMemory`] implementation of
-//! [`GuestMemoryAccess`](guestmem::GuestMemoryAccess) that translates IOVAs
-//! to GPAs via an [`IommuTranslator`] before delegating to an inner
-//! [`GuestMemory`].
+//! This crate provides:
+//!
+//! - A generic [`TranslatingMemory`] implementation of
+//!   [`GuestMemoryAccess`](guestmem::GuestMemoryAccess) that translates IOVAs
+//!   to GPAs via an [`IommuTranslator`] before delegating to an inner
+//!   [`GuestMemory`].
+//!
+//! - An [`InterruptRemapper`] trait and [`RetranslateInterruptsList`] for
+//!   routing pre-registered interrupt routes (IOAPIC, IrqFd) through an
+//!   IOMMU's interrupt remapping table, with invalidation support.
 //!
 //! Both the ARM SMMUv3 and AMD IOMMU implementations use this crate to avoid
 //! duplicating the per-page-boundary splitting, lock-across-translate-and-access
@@ -17,8 +23,11 @@
 
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryBackingError;
+use parking_lot::Mutex;
 use pci_core::bus_range::AssignedBusRange;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::Weak;
 
 /// Trait for IOMMU translation backends.
 ///
@@ -122,7 +131,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     /// access: `(secondary_bus << 8)`. If the secondary bus is 0, the RID is
     /// 0 and the IOMMU translates or faults accordingly.
     pub fn new_guest_memory(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         inner_gm: GuestMemory,
@@ -138,7 +147,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     /// tracks the bus assignment. This is the primitive for SR-IOV virtual
     /// functions, which are constructed before the PF's bus is programmed.
     pub fn new_guest_memory_for_rid_offset(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         rid_offset: u16,
@@ -285,7 +294,7 @@ unsafe impl<T: IommuTranslator> guestmem::GuestMemoryAccess for TranslatingMemor
 /// construction generically.
 pub struct TranslatingDmaTarget<T: IommuTranslator + Clone> {
     /// Debug label applied to each VF's `GuestMemory`.
-    label: std::sync::Arc<str>,
+    label: Arc<str>,
     /// The IOMMU's arch-specific translator, cloned per derived VF.
     translator: T,
     /// The device's assigned bus range; the requester ID is derived as
@@ -304,7 +313,7 @@ impl<T: IommuTranslator + Clone> TranslatingDmaTarget<T> {
     ///   default function-0 RID
     /// - `inner_gm`: the raw (untranslated) guest memory
     pub fn new(
-        label: impl Into<std::sync::Arc<str>>,
+        label: impl Into<Arc<str>>,
         translator: T,
         bus_range: AssignedBusRange,
         inner_gm: GuestMemory,
@@ -349,7 +358,7 @@ pub fn new_dma_target<T>(
 where
     T: IommuTranslator + Clone,
 {
-    let iommu = std::sync::Arc::new(TranslatingDmaTarget::new(
+    let iommu = Arc::new(TranslatingDmaTarget::new(
         format!("{label}-translating"),
         translator,
         bus_range.clone(),
@@ -358,9 +367,125 @@ where
     pci_core::dma::DmaTarget::with_iommu(bus_range, devfn, iommu, msi)
 }
 
+// =============================================================================
+// Interrupt Remapping Infrastructure
+// =============================================================================
+
+/// Trait for IOMMU interrupt remapping backends.
+///
+/// Each IOMMU implementation (AMD IOMMU, SMMU, etc.) provides a type that
+/// implements this trait. Consumers use it both for on-demand MSI translation
+/// and for registering pre-cached routes that need retranslation on IOMMU
+/// invalidation commands.
+///
+/// When the IOMMU is disabled or interrupt remapping is not enabled,
+/// [`remap_msi`](InterruptRemapper::remap_msi) should return the input
+/// values unchanged (passthrough).
+///
+/// On remapping faults, the implementation is responsible for queuing any
+/// IOMMU-specific fault events internally before returning `None`.
+pub trait InterruptRemapper: Send + Sync {
+    /// Translate an MSI address/data pair for a device.
+    ///
+    /// Returns `Some((address, data))` with the translated values, or `None`
+    /// if the MSI should be masked (remapping fault or abort).
+    fn remap_msi(&self, device_id: u16, address: u64, data: u32) -> Option<(u64, u32)>;
+
+    /// Register a route for invalidation callbacks.
+    ///
+    /// When the IOMMU processes an `INVALIDATE_INTERRUPT_TABLE` command
+    /// matching this route's device ID, it will call
+    /// [`RetranslateInterrupts::retranslate`] so the route can re-translate
+    /// its cached MSI parameters.
+    fn register_route(&self, route: &Arc<dyn RetranslateInterrupts>);
+
+    /// Unregister a route. Dead (dropped) routes are also cleaned up
+    /// lazily during invalidation.
+    fn unregister_route(&self, route: &Arc<dyn RetranslateInterrupts>);
+}
+
+/// Trait for pre-registered interrupt routes that can be retranslated on
+/// IOMMU invalidation.
+///
+/// Routes that cache translated MSI parameters (e.g., IOAPIC routes
+/// registered with KVM, or IrqFd routes) implement this trait so the
+/// IOMMU can ask them to retranslate when the guest issues an
+/// `INVALIDATE_INTERRUPT_TABLE` command.
+pub trait RetranslateInterrupts: Send + Sync {
+    /// The device ID (BDF) this route is associated with.
+    fn device_id(&self) -> u16;
+
+    /// Re-translate all cached routes and re-push any that changed to
+    /// the hypervisor.
+    fn retranslate(&self);
+}
+
+/// Shared infrastructure for managing registered interrupt routes.
+///
+/// IOMMU implementations embed this struct and delegate
+/// `register_route`/`unregister_route` to it. On invalidation commands,
+/// call [`invalidate`](RetranslateInterruptsList::invalidate) to retranslate
+/// matching routes.
+///
+/// Routes are stored as `Weak` references and cleaned up lazily.
+pub struct RetranslateInterruptsList {
+    routes: Mutex<Vec<Weak<dyn RetranslateInterrupts>>>,
+}
+
+impl RetranslateInterruptsList {
+    /// Create an empty route list.
+    pub fn new() -> Self {
+        Self {
+            routes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a route for invalidation callbacks.
+    pub fn register(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let mut routes = self.routes.lock();
+        routes.push(Arc::downgrade(route));
+    }
+
+    /// Unregister a route. Removes all dead weak references as well.
+    pub fn unregister(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let mut routes = self.routes.lock();
+        routes.retain(|w| w.upgrade().is_some_and(|r| !Arc::ptr_eq(&r, route)));
+    }
+
+    /// Invalidate routes for a specific device, or all routes if
+    /// `device_id` is `None`.
+    ///
+    /// For each matching route, calls `retranslate`. Dead references are
+    /// cleaned up lazily.
+    pub fn invalidate(&self, device_id: Option<u16>) {
+        let routes = {
+            let mut routes = self.routes.lock();
+            let mut live_routes = Vec::new();
+
+            routes.retain(|weak| {
+                let Some(route) = weak.upgrade() else {
+                    return false; // dead, remove
+                };
+                live_routes.push(route);
+                true
+            });
+
+            live_routes
+        };
+
+        for route in routes {
+            if device_id.is_none() || device_id == Some(route.device_id()) {
+                route.retranslate();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
 
     /// Identity translator: GPA == IOVA, never faults. Records nothing — the
     /// `rid` validation happens in `TranslatingMemory` before `translate` is
@@ -394,6 +519,38 @@ mod tests {
         let r = AssignedBusRange::new();
         r.set_bus_range(secondary, subordinate);
         r
+    }
+
+    struct ReentrantRoute {
+        list: Arc<RetranslateInterruptsList>,
+        retranslates: AtomicU32,
+    }
+
+    impl RetranslateInterrupts for ReentrantRoute {
+        fn device_id(&self) -> u16 {
+            assert!(self.list.routes.try_lock().is_some());
+            7
+        }
+
+        fn retranslate(&self) {
+            self.retranslates.fetch_add(1, Ordering::SeqCst);
+            assert!(self.list.routes.try_lock().is_some());
+        }
+    }
+
+    #[test]
+    fn invalidate_does_not_hold_lock_during_retranslate() {
+        let list = Arc::new(RetranslateInterruptsList::new());
+        let route = Arc::new(ReentrantRoute {
+            list: list.clone(),
+            retranslates: AtomicU32::new(0),
+        });
+        let route_dyn = route.clone() as Arc<dyn RetranslateInterrupts>;
+        list.register(&route_dyn);
+
+        list.invalidate(Some(7));
+
+        assert_eq!(route.retranslates.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -61,7 +61,7 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 For all variants of the test:
 
 ```rust,ignore
-#[vmm_test_with(unstable(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
     // ...
@@ -198,7 +198,7 @@ And, for further example, to rebuild everything* and run all* the tests
 rustup target add x86_64-unknown-none
 rustup target add x86_64-unknown-uefi
 rustup target add x86_64-pc-windows-msvc
-sudo apt install clang-tools-14 lld-14
+sudo apt install clang-tools lld
 
 cargo install cargo-nextest --locked
 

@@ -109,6 +109,22 @@ pub struct VmmTestsRunCli {
     /// `disabled` in the IGVM manifest.
     #[clap(long)]
     pub disable_secure_avic: bool,
+
+    /// Run tests inside an emulated incubator.
+    ///
+    /// Pass `--incubator` on its own to use the default profile for the
+    /// selected `--target`, or `--incubator <PATH>` to point at a specific
+    /// profile TOML describing the emulated platform (e.g., AArch64 with
+    /// SMMUv3).
+    ///
+    /// When set, `--target` is required and must match the profile's
+    /// architecture; artifacts are cross-compiled for that target and tests
+    /// run inside the incubator.
+    ///
+    /// Example: `--incubator --target linux-aarch64-musl`
+    #[clap(long, num_args = 0..=1)]
+    #[expect(clippy::option_option)]
+    incubator: Option<Option<PathBuf>>,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -165,7 +181,14 @@ impl IntoPipeline for VmmTestsRunCli {
             ci_profile,
             no_reuse_prepped_vhds,
             disable_secure_avic,
+            incubator,
         } = self;
+
+        // When --incubator is set, --target must also be specified
+        // to indicate the cross-compilation target for the incubator.
+        if incubator.is_some() && target.is_none() {
+            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
+        }
 
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
@@ -178,6 +201,34 @@ impl IntoPipeline for VmmTestsRunCli {
         validate_output_dir(dir.as_deref(), target_os)?;
         let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
         std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
+
+        // Resolve the incubator profile path. `--incubator` with no value uses
+        // the default profile for the target; `--incubator <PATH>` overrides.
+        let incubator_profile = match incubator {
+            None => None,
+            Some(Some(path)) => Some(path),
+            Some(None) => Some(default_incubator_profile(&repo_root, &target).ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "no default incubator profile for target {target_str}; \
+                     pass an explicit path with --incubator <PATH>"
+                    )
+                },
+            )?),
+        };
+
+        // Artifact discovery only needs to execute the test binary far enough
+        // to dump its static artifact metadata (`--list-required-artifacts`),
+        // which never boots a VM. So we run it directly rather than through the
+        // incubator. The binary is built for the test target, so on a foreign
+        // host this relies on the binary being executable (natively, or via
+        // binfmt/user-mode emulation).
+        //
+        // Running outside the real guest means the per-test host capability
+        // checks (the source of nextest's `#[ignore]` flag) would wrongly drop
+        // incubator tests, so for the incubator path we enumerate ignored tests
+        // too — their artifacts still need to be built.
+        let include_ignored = build_only || incubator_profile.is_some();
 
         // Run artifact discovery inline at pipeline construction time since
         // flowey doesn't support conditional requests yet
@@ -196,7 +247,8 @@ impl IntoPipeline for VmmTestsRunCli {
             // When using build-only mode, we need to enumerate tests that could be
             // run on any system so that we build all necessary dependencies. By default
             // petri marks incompatible tests as ignored.
-            include_ignored: build_only,
+            //
+            include_ignored,
         })?;
 
         if suites.is_empty() {
@@ -358,6 +410,7 @@ impl IntoPipeline for VmmTestsRunCli {
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
                     disable_secure_avic,
+                    incubator_profile,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -480,19 +533,22 @@ fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSui
 fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>> {
     log::info!("Using test binary: {}", suite.binary_path.display());
     log::info!("Querying artifacts for {} tests", suite.testcases.len());
-    let stdin_data = suite
-        .testcases
-        .iter()
-        .map(|n| format!("{n}\n"))
-        .collect::<String>();
-    let mut child = Command::new(&suite.binary_path)
-        .args(["--list-required-artifacts", "--tests-from-stdin"])
-        .stdin(Stdio::piped())
+
+    let mut command = Command::new(&suite.binary_path);
+    command.arg("--list-required-artifacts");
+    command.arg("--tests-from-stdin").stdin(Stdio::piped());
+
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn test binary")?;
 
+    let stdin_data = suite
+        .testcases
+        .iter()
+        .map(|n| format!("{n}\n"))
+        .collect::<String>();
     child
         .stdin
         .take()
@@ -531,6 +587,8 @@ enum VmmTestTargetCli {
     WindowsX64,
     /// Linux X64
     LinuxX64,
+    /// Linux Aarch64 (musl, for incubator cross-compilation)
+    LinuxAarch64Musl,
 }
 
 /// Resolve a CLI target option to a CommonTriple, defaulting to the host.
@@ -556,7 +614,23 @@ fn resolve_target(
         VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
         VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
         VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
+        VmmTestTargetCli::LinuxAarch64Musl => CommonTriple::AARCH64_LINUX_MUSL,
     })
+}
+
+/// Default incubator profile path for a target, used when `--incubator` is
+/// passed without an explicit profile path. Returns `None` for targets that
+/// have no incubator profile.
+fn default_incubator_profile(repo_root: &Path, target: &CommonTriple) -> Option<PathBuf> {
+    let name = match *target {
+        CommonTriple::AARCH64_LINUX_MUSL => "aarch64-tcg-pcie",
+        _ => return None,
+    };
+    Some(
+        repo_root
+            .join("petri/incubator/profiles")
+            .join(format!("{name}.toml")),
+    )
 }
 
 /// Validate the output directory path based on the current platform.

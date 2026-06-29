@@ -1018,8 +1018,15 @@ mod x86 {
                 return Err(HvError::AccessDenied);
             }
 
+            if target_vtl == Vtl::Vtl2 && !target_vp.vp().vtl2_enable.load(Ordering::Relaxed) {
+                return Err(HvError::InvalidVpState);
+            }
+
             let target_vplc = target_vp.vplc(target_vtl);
-            *target_vplc.start_vp_context.lock() = Some(Box::new(*vp_context));
+            *target_vplc.start_vp_request.lock() = Some(crate::VpStartRequest {
+                operation: crate::VpStartOperation::StartVirtualProcessor,
+                context: Box::new(*vp_context),
+            });
             target_vplc.start_vp.store(true, Ordering::Release);
             target_vp.wake();
             Ok(())
@@ -1353,18 +1360,21 @@ mod x86 {
                 return Err(HvError::InvalidParameter);
             }
 
-            if target_vp.vp().vtl2_enable.swap(true, Ordering::SeqCst) {
+            if target_vp.vp().vtl2_enable.swap(true, Ordering::Relaxed) {
                 return Err(HvError::VtlAlreadyEnabled);
             }
 
             tracing::debug!(vp_index = vp_index.index(), ?vtl, "enabling vtl");
 
             let target_vplc = target_vp.vplc(vtl);
-            *target_vplc.start_vp_context.lock() = Some(Box::new(*vp_context));
+            *target_vplc.start_vp_request.lock() = Some(crate::VpStartRequest {
+                operation: crate::VpStartOperation::EnableVpVtl,
+                context: Box::new(*vp_context),
+            });
             target_vplc.start_vp.store(true, Ordering::Release);
 
-            // Force the target VP to return from any in-progress run and
-            // wake its async future so it processes the start-VP request.
+            // Force the target VP to return from any in-progress run and wake
+            // its async future so it processes the request.
             target_vp.whp(Vtl::Vtl0).cancel_run().expect("can't fail");
             target_vp.wake();
             Ok(())

@@ -3794,6 +3794,7 @@ dependencies = [
  "pal_async",
  "pipette_client",
  "serde",
+ "tempfile",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -3928,6 +3929,7 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
 ]
@@ -4725,7 +4727,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=07a121e4b46659cdfa8711740c6622728adffd65#07a121e4b46659cdfa8711740c6622728adffd65"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d#9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d"
 dependencies = [
  "cc",
  "once_cell",
@@ -5585,6 +5587,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "pci_resource_assignment",
@@ -10491,6 +10494,7 @@ dependencies = [
  "tmk_tests",
  "tracing",
  "unix_socket",
+ "vfio_assigned_device_resources",
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",

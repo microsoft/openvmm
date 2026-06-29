@@ -231,6 +231,14 @@ pub struct InterruptCacheInvalidateDw0Dw1 {
     _reserved3: u64,
 }
 
+/// Parse an `InvalidationDescriptor` as INTERRUPT_ENTRY_CACHE_INVALIDATE fields.
+pub fn parse_interrupt_cache_invalidate(
+    desc: &InvalidationDescriptor,
+) -> InterruptCacheInvalidateDw0Dw1 {
+    let lo = ((desc.dw1 as u64) << 32) | desc.dw0 as u64;
+    InterruptCacheInvalidateDw0Dw1::from(lo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +265,27 @@ mod tests {
         assert!(parsed_lo.sw());
         assert_eq!(parsed_lo.status_data(), 0x42);
         assert_eq!(parsed_hi.status_address(), 0x1000 << 2);
+    }
+
+    #[test]
+    fn test_parse_interrupt_cache_invalidate() {
+        let lo_val = InterruptCacheInvalidateDw0Dw1::new()
+            .with_desc_type(0x04)
+            .with_granularity(true)
+            .with_im(0x1f)
+            .with_iidx(0x1234);
+
+        let lo_raw = u64::from(lo_val);
+        let desc = InvalidationDescriptor {
+            dw0: lo_raw as u32,
+            dw1: (lo_raw >> 32) as u32,
+            dw2: 0,
+            dw3: 0,
+        };
+
+        let parsed = parse_interrupt_cache_invalidate(&desc);
+        assert!(parsed.granularity());
+        assert_eq!(parsed.im(), 0x1f);
+        assert_eq!(parsed.iidx(), 0x1234);
     }
 }

@@ -41,6 +41,7 @@ nvme_spec.workspace = true
 nvme_test.workspace = true
 scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
+vfio_assigned_device_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
 disk_vhd1.workspace = true

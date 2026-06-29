@@ -254,19 +254,12 @@ impl<'a> WhpProcessor<'a> {
                     && self.inner.vtl2_enable.load(Ordering::SeqCst)
                 {
                     tracing::debug!("enabled vtl2");
+                    // Mark VTL2 as enabled. The VP is not made runnable in VTL2
+                    // here; that happens in `start_vp` (below) once a start
+                    // request from `enable_vp_vtl` or `start_virtual_processor`
+                    // is processed, which also installs the initial register
+                    // state and hands VTL2 control of VTL0 startup.
                     self.state.enabled_vtls.set(Vtl::Vtl2);
-                    self.set_vtl_runnable(Vtl::Vtl2, HvVtlEntryReason::INTERRUPT);
-                    // VTL2 "owns" startup suspend now, so clear the suspension state of VTL0.
-                    #[cfg(guest_arch = "x86_64")]
-                    if !matches!(self.vp.partition.hvstate, super::Hv1State::Disabled) {
-                        if let Some(lapic) = self.state.vtls.lapic(self.state.active_vtl) {
-                            lapic.startup_suspend = false;
-                        } else {
-                            self.current_whp()
-                                .set_register(whp::Register64::InternalActivityState, 0)
-                                .unwrap();
-                        }
-                    }
                 }
 
                 // Check if we need to make VTL2 runnable for forward progress.
@@ -333,9 +326,9 @@ impl<'a> WhpProcessor<'a> {
                     let vplc = self.vplc(vtl);
                     if vplc.start_vp.load(Ordering::Relaxed) {
                         vplc.start_vp.store(false, Ordering::SeqCst);
-                        let context = vplc.start_vp_context.lock().take();
-                        if let Some(context) = context {
-                            self.start_vp(vtl, context);
+                        let request = vplc.start_vp_request.lock().take();
+                        if let Some(request) = request {
+                            self.start_vp(vtl, request);
                         }
                     }
                 }
@@ -459,7 +452,6 @@ impl<'a> WhpProcessor<'a> {
 
     pub(crate) fn finish_reset(&mut self, vtl: Vtl) {
         self.finish_reset_arch(vtl);
-        *self.vplc(vtl).start_vp_context.lock() = None;
     }
 
     fn request_sint_notifications(&mut self, vtl: Vtl, sints: u16) {
@@ -520,7 +512,6 @@ mod x86 {
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
-    use hvdef::hypercall::InitialVpContextX64;
     use thiserror::Error;
     use virt::LateMapVtl0MemoryPolicy;
     use virt::VpHaltReason;
@@ -1555,25 +1546,56 @@ mod x86 {
             }
         }
 
-        pub(super) fn start_vp(&mut self, vtl: Vtl, vp_context: Box<InitialVpContextX64>) {
-            // Synchronize the register state.
-            self.switch_vtl(vtl);
+        pub(super) fn start_vp(&mut self, vtl: Vtl, request: crate::VpStartRequest) {
+            let start = matches!(
+                request.operation,
+                crate::VpStartOperation::StartVirtualProcessor
+            );
 
-            tracing::debug!(vp_index = self.vp.index.index(), ?vtl, "starting vp");
+            // HvCallStartVirtualProcessor starts the VP running the target VTL,
+            // making it the active VTL. HvCallEnableVpVtl only installs the
+            // initial context (below) and does not change the active VTL.
+            if start {
+                self.switch_vtl(vtl);
+            }
+
+            tracing::debug!(
+                vp_index = self.vp.index.index(),
+                ?vtl,
+                ?request.operation,
+                "setting up vp initial context"
+            );
 
             match hv1_emulator::hypercall::set_x86_vp_context(
                 &mut self.access_state(vtl),
-                &vp_context,
+                &request.context,
             ) {
                 Ok(()) => {
-                    self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
+                    if start {
+                        self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
+                        if vtl == Vtl::Vtl2 {
+                            // VTL2 now owns startup control of VTL0, so clear
+                            // VTL0's startup-suspend state so it can run when
+                            // VTL2 switches to it.
+                            if !matches!(self.vp.partition.hvstate, Hv1State::Disabled) {
+                                if let Some(lapic) = self.state.vtls.lapic(Vtl::Vtl0) {
+                                    lapic.startup_suspend = false;
+                                } else {
+                                    self.vp
+                                        .whp(Vtl::Vtl0)
+                                        .set_register(whp::Register64::InternalActivityState, 0)
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,
                         vp_index = self.vp.index.index(),
                         ?vtl,
-                        "failed to start VP"
+                        "failed to set up VP initial context"
                     );
                 }
             }
@@ -1660,7 +1682,6 @@ mod x86 {
 
 #[cfg(guest_arch = "aarch64")]
 mod aarch64 {
-    use crate::InitialVpContext;
     use crate::WhpProcessor;
     use aarch64defs::EsrEl2;
     use aarch64defs::ExceptionClass;
@@ -1839,8 +1860,8 @@ mod aarch64 {
             let _ = vtl;
         }
 
-        pub(super) fn start_vp(&mut self, vtl: Vtl, vp_context: Box<InitialVpContext>) {
-            let _ = (vtl, vp_context);
+        pub(super) fn start_vp(&mut self, vtl: Vtl, request: crate::VpStartRequest) {
+            let _ = (vtl, request);
             todo!("TODO-aarch64")
         }
 
