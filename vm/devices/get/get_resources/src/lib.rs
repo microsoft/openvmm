@@ -95,8 +95,8 @@ pub mod ged {
         pub test_gsp_by_id: bool,
         /// EFI diagnostics log level
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-        /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
-        pub hv_sint_enabled: bool,
+        /// Force UEFI to bounce-buffer all DMA traffic.
+        pub force_dma_bounce_enabled: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -302,5 +302,13 @@ pub mod ged {
         /// unsealing using the hardware key protector saved on the
         /// previous successful boot.  The VM should boot normally.
         KeyReleaseFailure,
+        /// Config for testing a host/agent-requested TPM state refresh.
+        ///
+        /// The agent's GSP RPC reports `state_refresh_request`, which
+        /// drives `refresh_tpm_seeds` in OpenHCL and causes the vTPM
+        /// seeds (and therefore the AK) to be regenerated on the next
+        /// boot.  AK cert requests are served so the guest has a valid
+        /// AK to read across boots.
+        StateRefresh,
     }
 }

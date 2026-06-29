@@ -11,6 +11,7 @@ use crate::state::StateElement;
 use crate::state::state_trait;
 use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvInternalActivityRegister;
+use hvdef::HvMessage;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64InterruptStateRegister;
 use hvdef::HvX64PendingEventReg0;
@@ -1862,12 +1863,31 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicMessageQueues {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf)]
 #[mesh(package = "virt.x86")]
-#[inspect(skip)]
 pub struct SynicMessagePage {
     #[mesh(1)]
     pub data: [u8; 4096],
+}
+
+impl Inspect for SynicMessagePage {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        let mut occupied = 0u16;
+        for (sint, slot) in self
+            .data
+            .as_chunks::<HV_MESSAGE_SIZE>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            let msg: HvMessage = zerocopy::transmute!(*slot);
+            if msg.header.typ != hvdef::HvMessageType::HvMessageTypeNone {
+                occupied |= 1 << sint;
+            }
+        }
+        resp.binary("occupied_bitmap", occupied);
+    }
 }
 
 impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicMessagePage {
@@ -1895,6 +1915,29 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicEventFlagsPage {
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
         Self { data: [0; 4096] }
+    }
+}
+
+/// Opaque nested-virtualization state blob for save/restore.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+#[inspect(skip)]
+pub struct NestedState {
+    #[mesh(1)]
+    pub data: Vec<u8>,
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.nested_virt
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+
+    fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
+        false
     }
 }
 
@@ -1948,6 +1991,8 @@ state_trait! {
         SynicMessageQueues
     ),
     (104, "synic_timers", synic_timers, set_synic_timers, SynicTimers),
+
+    (200, "nested_state", nested_state, set_nested_state, NestedState),
 }
 
 /// Resets register state for an x86 INIT via the APIC.

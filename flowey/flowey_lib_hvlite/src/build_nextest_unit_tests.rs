@@ -105,8 +105,6 @@ impl FlowNode for Node {
                     "vmm_tests",
                     // Skip guest_test_uefi, as it's a no_std UEFI crate
                     "guest_test_uefi",
-                    // Skip crypto, handle it separately due to its non-additive features
-                    "crypto",
                     // Exclude various proc_macro crates, since they don't compile successfully
                     // under --test with panic=abort targets.
                     // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
@@ -198,20 +196,20 @@ impl FlowNode for Node {
                 extra_env: injected_env,
             };
 
-            // The first run is the main workspace run with --all-features.
+            // The first run is the main workspace run with the base features.
             let mut runs: Vec<(String, NextestBuildParams)> =
-                vec![("unit-tests".into(), base_build_params.clone())];
+                vec![("base".into(), base_build_params.clone())];
 
             // crypto has non-additive features, so it gets its own runs to
             // ensure full coverage of different backends. Always test the
-            // 'native' no-feature and pure-rust backends. On linux additionally
-            // test the openssl & symcrypt backends and --all-features fallback.
+            // native and pure-rust backends. On linux additionally test
+            // the openssl & symcrypt backends and --all-features fallback.
             // We could test openssl on non-linux targets too, but setting up
             // builds for them is a pain. We could test Symcrypt on non-musl
             // linux targets too, but we don't currently have a prebuilt
             // library for them.
             let mut crypto_feature_sets = vec![
-                ("none", CargoFeatureSet::None),
+                ("native", CargoFeatureSet::Specific(vec!["native".into()])),
                 ("rust", CargoFeatureSet::Specific(vec!["rust".into()])),
             ];
             if matches!(
@@ -231,7 +229,7 @@ impl FlowNode for Node {
             }
             for (name, features) in crypto_feature_sets {
                 runs.push((
-                    format!("unit-tests crypto ({})", name),
+                    format!("crypto-{}", name),
                     NextestBuildParams {
                         packages: ReadVar::from_static(TestPackages::Crates {
                             crates: vec!["crypto".into()],
@@ -253,8 +251,9 @@ impl FlowNode for Node {
                     let test_results: Vec<_> = runs
                         .into_iter()
                         .map(|(friendly_name, build_params)| {
+                            let test_label = format!("{junit_test_label}-{friendly_name}");
                             let r = ctx.reqv(|v| crate::run_cargo_nextest_run::Request {
-                                friendly_name: friendly_name.clone(),
+                                friendly_name: test_label.clone(),
                                 run_kind:
                                     flowey_lib_common::run_cargo_nextest_run::NextestRunKind::BuildAndRun(
                                         build_params,
@@ -268,7 +267,7 @@ impl FlowNode for Node {
                                 pre_run_deps: pre_run_deps.clone(),
                                 results: v,
                             });
-                            (friendly_name, r)
+                            (test_label, r)
                         })
                         .collect();
 
@@ -276,11 +275,11 @@ impl FlowNode for Node {
                     // run's junit.xml gets uploaded with a distinct label.
                     let publish_dones: Vec<_> = test_results
                         .iter()
-                        .map(|(friendly_name, r)| {
+                        .map(|(test_label, r)| {
                             let junit_xml = r.clone().map(ctx, |t| t.junit_xml);
                             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
                                 junit_xml,
-                                test_label: format!("{junit_test_label}-{friendly_name}"),
+                                test_label: test_label.clone(),
                                 attachments: BTreeMap::new(),
                                 output_dir: artifact_dir.clone(),
                                 done: v,

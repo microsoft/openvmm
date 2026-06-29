@@ -26,20 +26,20 @@ Additional build tools must be installed as well. If your distro has LLVM 14
 available (Ubuntu 22.04 or newer):
 
 ```bash
-sudo apt install clang-tools-14 lld-14 llvm-dev
+sudo apt install clang-tools lld llvm-dev
 ```
 
 Otherwise, follow the steps at <https://apt.llvm.org/> to install a specific
 version, by adding the correct apt repos. Note that you must install
-`clang-tools-14` as default `clang-14` uses gcc style arguments, where
-`clang-cl-14` uses msvc style arguments. You can use their helper script as
+`clang-tools` as default `clang` uses gcc style arguments, where
+`clang-cl` uses msvc style arguments. You can use their helper script as
 well:
 
 ```bash
 wget https://apt.llvm.org/llvm.sh
 chmod +x llvm.sh
-sudo ./llvm.sh 14
-sudo apt install clang-tools-14
+sudo ./llvm.sh
+sudo apt install clang-tools
 ```
 
 ## Setting up the terminal environment
@@ -176,7 +176,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
         
 
         if [[ $4 == "uefi" ]]; then
-            args+=" --uefi --uefi-firmware $uefi_firmware --disk memdiff:$disk_path"
+            args+=" --uefi --uefi-firmware $uefi_firmware --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0"
         elif [[ $4 == "linux" ]]; then
             args+=""
         else
@@ -189,7 +189,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
 
         if [[ $4 == "uefi" ]]; then
             recipe="$short_arch"
-            args+=" --disk memdiff:$disk_path --gfx --vmbus-com1-serial term --uefi-console-mode com1 --uefi"
+            args+=" --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0 --gfx --vmbus-com1-serial term --uefi-console-mode com1 --uefi"
         elif [[ $4 == "linux" ]]; then
             recipe="$short_arch-test-linux-direct"
             args+=" --vmbus-com1-serial term --vmbus-com2-serial term"
@@ -319,7 +319,8 @@ Here is a full working example that launches OpenVMM with a VHDX disk:
 
 ```bash
 cargo run --target x86_64-pc-windows-msvc -- \
-  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --vmbus-scsi id=scsi0 \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx),on=scsi0" \
   --uefi \
   --uefi-firmware "$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
   --gfx -p 6 -m 8GB
@@ -334,7 +335,8 @@ Windows path:
 ```bash
 export WSLENV=$WSLENV:X86_64_OPENVMM_UEFI_FIRMWARE/p
 cargo run --target x86_64-pc-windows-msvc -- \
-  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --vmbus-scsi id=scsi0 \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx),on=scsi0" \
   --uefi --gfx -p 6 -m 8GB
 ```
 ~~~

@@ -41,7 +41,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,shared=off,thp=on
   ```
-* `--hv`: Exposes Hyper-V enlightenments and VMBus support.
+* `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
+  when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
+  enlightenments.
+* `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
+  `--hv` or `--uefi` is active. The guest boots using only standard PCIe
+  devices and virtio transports. Incompatible with `--disk`, `--pcat`,
+  `--vtl2`, and VMBus serial options.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
   Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux,
@@ -52,26 +58,77 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
+  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
+    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
+    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
+    virt). The host must expose virtualization extensions to the VM
+    running OpenVMM.
+
+  KVM accepts the following parameters (x86_64 guests only):
+  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
+    hypervisor. Off by default: when enabled, a Windows guest detects
+    nested virtualization support and turns on Virtual Secure Mode (VSM),
+    which hurts performance and breaks boot while VMBus devices are in use.
+    The host must support KVM nested virtualization; the backend validates
+    this and fails early if it does not.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
+  --hypervisor whp:nested_virt
   --hypervisor kvm
+  --hypervisor kvm:nested_virt
   ```
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
-  pass `--hv`. The `DISK` argument can be:
+* `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
+  named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
+  attach disks.
+* `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
+  controller. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
-  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+* `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
+  node). Mutually exclusive with `--memory`. Each `--numa` specifies one
+  guest NUMA node with its own memory backing and optional VP assignment.
+
+  Supported keys (in addition to all `--memory` keys except `file`):
+  * `host_numa_node=<N>` - bind memory allocation to host NUMA node N
+  * `vps=<LIST>` - explicit VP indices for this node. Uses bracket syntax
+    with comma-separated indices and dash ranges: `vps=[0,1]`,
+    `vps=[0-3]`, `vps=[0,1,4-5]`. When omitted, VPs are assigned by
+    round-robin sockets across nodes. An empty list, `vps=[]`, declares a
+    CPU-less node (e.g. a generic-initiator target); unlike a non-empty
+    list, it may be combined with nodes that omit `vps`.
+
+  Examples:
+
+  ```bash
+  --numa size=2G --numa size=2G
+  --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
+  --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
+  --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+  ```
+
+  See [NUMA Topology](../../architecture/openvmm/numa.md) for details.
+
+* `--numa-distance <SRC:DST:DIST>`: Specify inter-node NUMA distance
+  (repeatable). `SRC` and `DST` are 0-based node indices, `DIST` is
+  10–255 (10 = local, 255 = unreachable). Each direction must be specified
+  explicitly.
+
+  ```bash
+  --numa-distance 0:1:30 --numa-distance 1:0:30
+  ```
+
 * `--private-memory`, `--prefetch`, `--thp`, and
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
@@ -84,6 +141,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
+* `--vnc-port <PORT>`: VNC server port (default: 5900)
+* `--vnc-listen <ADDRESS>`: VNC server bind address (default: `127.0.0.1`).
+  Use `0.0.0.0` for all IPv4 interfaces, or `::` for dual-stack IPv4+IPv6.
+* `--vnc-max-clients <COUNT>`: Maximum concurrent VNC clients (default: 16).
+  Each client uses ~8MB for framebuffer buffers.
+* `--vnc-evict-oldest`: When the client limit is reached, disconnect the oldest
+  client instead of rejecting the new connection. Useful for admin takeover.
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
@@ -131,6 +195,38 @@ The `BACKEND` argument is the same for all serial devices:
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
 
+## Guest power events
+
+By default OpenVMM keeps running when the guest powers itself off, hibernates,
+or triple-faults: the virtual processors stop, but the VMM process stays up so
+you can inspect the VM or restart it from the
+[interactive console](./interactive_console.md). A guest-requested reset reboots
+the VM in place, as does a guest watchdog timeout when `--guest-watchdog` is
+enabled.
+
+Four flags override what happens on each guest power event, so a supervising
+process can treat the OpenVMM process lifetime as the VM lifetime. Each takes a
+`reset` (reboot in place), `halt` (stop the processors but keep the VMM process,
+as above), or `exit` (exit the VMM process) action. The `exit` action may carry a
+status code as `exit:<code>` (0-255); a bare `exit` uses 0:
+
+* `--guest-reset-action <reset|halt|exit[:<code>]>` (default `reset`): the guest requested
+  a reset.
+* `--guest-shutdown-action <reset|halt|exit[:<code>]>` (default `halt`): the guest powered
+  off or hibernated.
+* `--guest-crash-action <reset|halt|exit[:<code>]>` (default `halt`): the guest
+  triple-faulted. The fault registers are written to the trace log.
+* `--guest-watchdog-action <reset|halt|exit[:<code>]>` (default `reset`): the guest
+  watchdog timer expired without being petted (requires `--guest-watchdog`).
+
+A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
+a supervisor can tell the exit reasons apart.
+
+`--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
+firmware frontpage (the menu shown when there is no bootable device). Combined
+with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
+Requires `--uefi`.
+
 ## PCIe Device Support
 
 OpenVMM can emulate a PCI Express topology using `--pcie-root-complex` and
@@ -155,6 +251,12 @@ complex name:
 - `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
   root complex.
 - `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `low_mmio_base=<ADDR>` and `high_mmio_base=<ADDR>`: pin the low/high
+  MMIO window to a fixed base address instead of letting the VM topology
+  allocate it dynamically. Used with `preserve_bars` for P2P DMA.
+- `preserve_bars`: treat non-zero BAR values found during PCI probing as
+  pinned addresses (GPA = HPA). Required for peer-to-peer DMA between
+  VFIO passthrough devices without ATS.
 - `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
   is `1G`.
 - `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
@@ -168,6 +270,9 @@ complex name:
   4: fixed device configuration
   5: BI
   Bits 15:6 are reserved and rejected.
+- `node=<N>`: NUMA node affinity for this root complex. The guest sees
+  this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
+  and the guest uses its default allocation policy.
 
 ### Root port and switch options
 
@@ -178,6 +283,11 @@ name:
 --pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
 ```
 
+- `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
+  its bus. `dev` is 0-31 and the optional `fn` is 0-7 (both decimal or
+  `0x`-prefixed hex). When omitted, the port is assigned the lowest
+  available devfn. Ports are assigned in order, so an explicit `addr` that
+  collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
@@ -196,17 +306,43 @@ name:
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
 
+### Generic initiators
+
+A generic initiator is a device that originates memory accesses but has no
+CPUs of its own — for example a GPU or accelerator with its own coherent
+memory. Declaring one emits an SRAT Generic Initiator Affinity structure that
+tells the guest which NUMA node the device belongs to, so the guest can
+account for access latency and online the device's memory on the right
+proximity domain.
+
+Use `--pcie-generic-initiator` to mark the device directly behind a PCIe port
+as a generic initiator for a NUMA node:
+
+```sh
+# Create a CPU-less, memory-less NUMA node and a root port, then declare the
+# device behind the root port as a generic initiator for that node.
+--numa size=2G --numa size=0,vps=[] \
+  --pcie-root-complex rc0 --pcie-root-port rc0:rp0 \
+  --pcie-generic-initiator port=rp0,node=1
+```
+
+- Syntax: `port=<port_name>,node=<node>`.
+- `port=<port_name>` may be a root port name or a switch downstream port name
+  (e.g. `switch0-downstream-1`); it is resolved against the live topology.
+- `node=<node>` is the NUMA node the device is a generic initiator for, and
+  should typically be a CPU-less and memory-less node created via `--numa`.
+
+
 ### Attaching devices to PCIe
 
 Several device types support the `pcie_port=<name>` option to attach to a
 PCIe root port. The syntax varies slightly between device types:
 
-**Disks** (comma-separated option): `--disk`, `--nvme`, `--virtio-blk`
+**Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
 --virtio-blk file:/path/to/disk.raw,pcie_port=rp0
---nvme file:/path/to/disk.raw,pcie_port=rp0
---disk file:/path/to/disk.raw,pcie_port=rp0
+--nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
@@ -259,6 +395,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+# Pin BAR0 to its physical address for P2P DMA:
+--vfio host=0000:01:00.0,port=rp0,bar0=pt
 ```
 
 ### SMMU (aarch64 only)
@@ -278,3 +417,36 @@ software IOVA→GPA translation for DMA and MSI addresses.
 
 VFIO devices cannot currently be placed behind an SMMU-covered root
 complex because iommufd nested translation is not yet available.
+
+### AMD IOMMU (x86_64 only)
+
+`--amd-iommu <RC_NAME>` enables an emulated AMD-Vi IOMMU for the named
+root complex. The flag is repeatable — use one `--amd-iommu` per root
+complex that should have an IOMMU. Devices behind a covered root complex
+get software IOVA→GPA translation for DMA and interrupt remapping.
+
+```sh
+# Enable AMD IOMMU on root complex rc0
+--amd-iommu rc0
+```
+
+Mutually exclusive with `--intel-vtd` within the same VM (only one x86
+IOMMU type can be active).
+
+### Intel VT-d (x86_64 only)
+
+`--intel-vtd <RC_NAME>` enables an emulated Intel VT-d IOMMU for the
+named root complex. The flag is repeatable — use one `--intel-vtd` per
+root complex that should have an IOMMU. The guest discovers VT-d units
+via the ACPI DMAR table (not PCI config space).
+
+```sh
+# Enable Intel VT-d on root complex rc0
+--intel-vtd rc0
+
+# Multiple root complexes
+--intel-vtd rc0 --intel-vtd rc1
+```
+
+Mutually exclusive with `--amd-iommu` within the same VM (only one x86
+IOMMU type can be active).

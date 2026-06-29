@@ -36,27 +36,15 @@
 //! e.g: there's no reason for, say, UEFI generation ID services to directly
 //! share state with the UEFI watchdog service, or the event log service. As
 //! such, each is modeled as a separate struct + impl.
-//!
-//! ### `pub mod platform`
-//!
-//! A centralized place to expose various service-specific interface traits that
-//! must be implemented by the "platform" hosting the UEFI device.
-//!
-//! This layer of abstraction allows the re-using the same UEFI emulator between
-//! multiple VMMs (OpenVMM, Underhill, etc...), without tying the emulator to any
-//! VMM specific infrastructure (via some kind of compile-time feature flag
-//! infrastructure).
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod platform;
+pub mod resolver;
 #[cfg(feature = "fuzzing")]
 pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
-
-pub use crate::service::diagnostics::LogLevel;
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -64,14 +52,15 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
+use firmware_uefi_resources::UefiConfig;
+use firmware_uefi_resources::platform::UefiLogger;
+use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemory;
-use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
-use platform::logger::UefiLogger;
-use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
 use service::diagnostics::WATCHDOG_LOGS_PER_PERIOD;
 use std::convert::TryInto;
@@ -92,12 +81,6 @@ pub enum UefiInitError {
     Nvram(#[from] service::nvram::NvramError),
     #[error("event log error")]
     EventLog(#[from] service::event_log::EventLogError),
-}
-
-#[derive(Inspect, PartialEq, Clone)]
-pub enum UefiCommandSet {
-    X64,
-    Aarch64,
 }
 
 #[derive(InspectMut)]
@@ -121,17 +104,6 @@ const MMIO_RANGE_END: u64 = 0xeffedfff;
 const REGISTER_ADDRESS: u16 = 0x0;
 const REGISTER_DATA: u16 = 0x4;
 
-/// Various bits of static configuration data.
-#[derive(Clone)]
-pub struct UefiConfig {
-    pub custom_uefi_vars: CustomVars,
-    pub secure_boot: bool,
-    pub initial_generation_id: [u8; 16],
-    pub use_mmio: bool,
-    pub command_set: UefiCommandSet,
-    pub diagnostics_log_level: LogLevel,
-}
-
 /// Various runtime objects used by the UEFI device + underlying services.
 pub struct UefiRuntimeDeps<'a> {
     pub gm: GuestMemory,
@@ -152,6 +124,9 @@ pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
     command_set: UefiCommandSet,
+    /// Overrides the per-period rate limit applied to EfiDiagnostics
+    /// See [`UefiDevice::resolve_rate_limit`] for more information.
+    diagnostics_rate_limit: Option<u32>,
 
     // Runtime glue
     gm: GuestMemory,
@@ -191,6 +166,7 @@ impl UefiDevice {
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,
             command_set: cfg.command_set,
+            diagnostics_rate_limit: cfg.diagnostics_rate_limit,
             address: 0,
             gm,
             watchdog_recv,
@@ -222,6 +198,20 @@ impl UefiDevice {
         };
 
         Ok(uefi)
+    }
+
+    /// Resolves the effective per-period rate limit for diagnostics emission,
+    /// given a built-in default and the device's optional override.
+    ///
+    /// - override is `None`: use the built-in default.
+    /// - override is `Some(0)`: disable rate limiting entirely.
+    /// - override is `Some(n)`: use `n` as the override limit.
+    fn resolve_rate_limit(&self, default_limit: u32) -> Option<u32> {
+        match self.diagnostics_rate_limit {
+            None => Some(default_limit),
+            Some(0) => None,
+            Some(n) => Some(n),
+        }
     }
 
     fn read_data(&mut self, addr: u32) -> u32 {
@@ -280,7 +270,7 @@ impl UefiDevice {
                 let _ = self.process_diagnostics(
                     false,
                     service::diagnostics::DiagnosticsEmitter::Tracing {
-                        limit: Some(DEFAULT_LOGS_PER_PERIOD),
+                        limit: self.resolve_rate_limit(DEFAULT_LOGS_PER_PERIOD),
                     },
                     None,
                 );
@@ -384,12 +374,10 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            //
-            // Here, we emit diagnostics to tracing with INFO level and no limit
             let _ = self.process_diagnostics(
                 false,
                 service::diagnostics::DiagnosticsEmitter::Tracing {
-                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                    limit: self.resolve_rate_limit(WATCHDOG_LOGS_PER_PERIOD),
                 },
                 Some(LogLevel::make_info()),
             );
@@ -590,6 +578,7 @@ mod save_restore {
                         diagnostics,
                     },
                 address,
+                diagnostics_rate_limit: _,
             } = self;
 
             Ok(state::SavedState {

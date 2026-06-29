@@ -16,7 +16,6 @@ use gdma_defs::GdmaQueueType;
 use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use std::sync::Arc;
 use test_with_tracing::test;
@@ -30,11 +29,11 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[async_test]
 async fn test_gdma(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -168,11 +167,11 @@ async fn test_gdma(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_save_restore(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -208,11 +207,11 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 #[async_test]
 async fn test_adapter_link_speed_default(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_adapter_link_speed_default");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -256,11 +255,11 @@ async fn test_adapter_link_speed_default(driver: DefaultDriver) {
 /// and `link_speed_bps()` converts it correctly.
 async fn verify_adapter_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32) {
     let mem = DeviceTestMemory::new(128, false, "test_adapter_link_speed_expected");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new_with_config(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -316,11 +315,11 @@ async fn test_adapter_link_speed_expected(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_reset_request(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -336,9 +335,10 @@ async fn test_gdma_reset_request(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    assert!(
-        !gdma.get_reset_request_pending(),
-        "reset_request_pending should be false"
+    assert_eq!(
+        gdma.get_reset_request_pending(),
+        None,
+        "reset_request_pending should be unset before reset request"
     );
 
     // Get the device ID while HWC is still alive (needed for deregister later).
@@ -352,11 +352,12 @@ async fn test_gdma_reset_request(driver: DefaultDriver) {
         .unwrap();
 
     // Trigger the reset event (EQE 135).
-    gdma.generate_reset_request_eqe().await.unwrap();
+    gdma.generate_reset_request_eqe(false).await.unwrap();
 
-    assert!(
+    assert_eq!(
         gdma.get_reset_request_pending(),
-        "reset_request_pending should be true after reset request"
+        Some(false),
+        "reset_request_pending should capture revoke_vtl0_vf=false"
     );
 
     // Deregister should fail immediately because reset_request_pending is set.
@@ -367,8 +368,72 @@ async fn test_gdma_reset_request(driver: DefaultDriver) {
         err_msg.contains("HWC reset request pending"),
         "unexpected error: {err_msg}"
     );
-    assert!(
+    assert_eq!(
         gdma.get_reset_request_pending(),
-        "reset_request_pending should remain true after deregister_device"
+        Some(false),
+        "reset_request_pending should remain revoke_vtl0_vf=false after deregister_device"
+    );
+}
+
+#[async_test]
+async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "test_gdma");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        &msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+    let dma_client = device.dma_client();
+    let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
+
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        gdma.get_reset_request_pending(),
+        None,
+        "reset_request_pending should be unset before reset request"
+    );
+
+    // Get the device ID while HWC is still alive (needed for deregister later).
+    let dev_id = gdma
+        .list_devices()
+        .await
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
+        .unwrap();
+
+    // Trigger the reset event (EQE 135) with vtl0 VF revoke.
+    gdma.generate_reset_request_eqe(true).await.unwrap();
+
+    assert_eq!(
+        gdma.get_reset_request_pending(),
+        Some(true),
+        "reset_request_pending should capture revoke_vtl0_vf=true"
+    );
+
+    // Deregister should fail immediately because reset_request_pending is set.
+    let deregister_result = gdma.deregister_device(dev_id).await;
+    let err = deregister_result.expect_err("deregister_device should fail after EQE 135");
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("HWC reset request pending"),
+        "unexpected error: {err_msg}"
+    );
+    assert_eq!(
+        gdma.get_reset_request_pending(),
+        Some(true),
+        "reset_request_pending should remain revoke_vtl0_vf=true after deregister_device"
     );
 }

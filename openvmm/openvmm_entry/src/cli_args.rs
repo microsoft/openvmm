@@ -22,6 +22,7 @@ use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::spec::CfmwsWindowRestrictions;
+use guid::Guid;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -32,6 +33,37 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
+
+/// Parse CLI options, using a thread with a larger stack on Windows to avoid
+/// stack overflow in debug builds due to clap's deep stack usage.
+/// See <https://github.com/clap-rs/clap/issues/5134>.
+pub(crate) fn parse_options() -> Options {
+    // In non-optimized builds, clap uses an embarrassing amount of stack space
+    // to construct the `Command` instance for `Options`, more than the Windows
+    // default of 1MB. This has been known since 2023:
+    // <https://github.com/clap-rs/clap/issues/5134>, but no one has stepped up
+    // to fix it.
+    //
+    // Work around this by running the code on a thread with lots of stack
+    // space. This is easier and more reliable than configuring the PE binary to
+    // have a larger stack.
+    fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+        if cfg!(windows) {
+            std::thread::scope(|s| {
+                std::thread::Builder::new()
+                    .stack_size(0x400000)
+                    .spawn_scoped(s, f)
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            })
+        } else {
+            f()
+        }
+    }
+
+    on_big_stack(Options::parse)
+}
 
 const DEFAULT_MEMORY_SIZE: u64 = 1024 * 1024 * 1024;
 
@@ -54,6 +86,28 @@ pub struct MemoryCli {
     pub file: Option<PathBuf>,
 }
 
+/// NUMA node configuration parsed from `--numa`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumaNodeCli {
+    /// Memory configuration (size, shared, prefetch, hugepages, etc.)
+    pub memory: MemoryCli,
+    /// Host NUMA node to bind memory allocation to.
+    pub host_numa_node: Option<u32>,
+    /// Explicit VP indices for this node.
+    pub vps: Option<Vec<u32>>,
+}
+
+/// NUMA distance parsed from `--numa-distance`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumaDistanceCli {
+    /// Source node index.
+    pub src: u32,
+    /// Destination node index.
+    pub dst: u32,
+    /// Distance value (10-255, 255 = unreachable).
+    pub distance: u8,
+}
+
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
@@ -71,7 +125,7 @@ pub struct Options {
         value_name = "PARAMS",
         default_value = "1GB",
         value_parser = parse_memory_config,
-        conflicts_with = "numa_memory",
+        conflicts_with = "numa",
         long_help = r#"Configure guest RAM.
 
 Syntax: SIZE | key=value[,key=value...]
@@ -95,21 +149,56 @@ Examples:
     )]
     pub memory: MemoryCli,
 
-    /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
-    /// Distributes memory across vNUMA nodes reported to the guest. Mutually
-    /// exclusive with --memory. This is for test-only usage.
+    /// NUMA node configuration (repeatable, one per node).
     ///
-    /// TODO: Backing pages are not pinned to any host topology, nor coordinated
-    /// with CPUs. This should change once we implement real numa support.
-    #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
-    pub numa_memory: Option<Vec<u64>>,
+    /// Each --numa specifies one guest NUMA node. Mutually exclusive with
+    /// --memory.
+    #[clap(
+        long,
+        value_name = "PARAMS",
+        value_parser = parse_numa_node,
+        conflicts_with = "memory",
+        long_help = r#"Configure a guest NUMA node (repeatable, one per node).
+
+Syntax: key=value[,key=value...]
+
+Options:
+    size=<SIZE>              RAM for this node (required)
+    shared=on|off            use shared file-backed RAM, default on
+    prefetch=on|off          pre-populate shared RAM mappings
+    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    hugepages=on|off         allocate RAM from hugetlb pages
+    hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
+    host_numa_node=<N>       bind allocation to host NUMA node N
+    vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
+
+  VP lists use bracket syntax with comma-separated indices and dash
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5]. An empty list, vps=[],
+  declares a CPU-less node (e.g. a generic-initiator target); unlike a
+  non-empty list, it may be combined with nodes that omit vps.
+
+Examples:
+    --numa size=2G --numa size=2G
+    --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
+    --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+    --numa size=2G --numa size=0,vps=[]"#
+    )]
+    pub numa: Option<Vec<NumaNodeCli>>,
+
+    /// NUMA distance (repeatable). Format: SRC:DST:DISTANCE.
+    ///
+    /// SRC and DST are 0-based node indices. DISTANCE is 10-255 (10 = local, 255 = unreachable).
+    /// Specify each direction explicitly (not auto-symmetric).
+    #[clap(long, value_name = "SRC:DST:DIST", value_parser = parse_numa_distance, conflicts_with = "memory", requires = "numa")]
+    pub numa_distance: Option<Vec<NumaDistanceCli>>,
 
     /// use shared memory segment
     #[clap(short = 'M', long, hide = true)]
     pub shared_memory: bool,
 
     /// prefetch guest RAM
-    #[clap(long = "prefetch", hide = true)]
+    #[clap(long = "prefetch", hide = true, conflicts_with = "numa")]
     pub deprecated_prefetch: bool,
 
     /// back guest RAM with a file instead of anonymous memory.
@@ -119,7 +208,7 @@ Examples:
         long = "memory-backing-file",
         value_name = "FILE",
         hide = true,
-        conflicts_with = "deprecated_private_memory"
+        conflicts_with_all = ["deprecated_private_memory", "numa"]
     )]
     pub deprecated_memory_backing_file: Option<PathBuf>,
 
@@ -128,16 +217,16 @@ Examples:
     #[clap(
         long,
         value_name = "DIR",
-        conflicts_with = "deprecated_memory_backing_file"
+        conflicts_with_all = ["deprecated_memory_backing_file", "numa"]
     )]
     pub restore_snapshot: Option<PathBuf>,
 
     /// use private anonymous memory for guest RAM
-    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
+    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot", "numa"])]
     pub deprecated_private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long = "thp", hide = true)]
+    #[clap(long = "thp", hide = true, conflicts_with = "numa")]
     pub deprecated_thp: bool,
 
     /// start in paused state
@@ -181,6 +270,23 @@ Examples:
     /// when --vtl2 is passed.
     #[clap(long, conflicts_with("get"))]
     pub no_get: bool,
+
+    /// Run without VMBus, even if --hv or --uefi are specified.
+    #[clap(
+        long,
+        conflicts_with_all = [
+            "vmbus_vsock_path",
+            "vmbus_vtl2_vsock_path",
+            "vmbus_redirect",
+            "vmbus_max_version",
+            "vmbus_com1_serial",
+            "vmbus_com2_serial",
+            "vtl2",
+            "get",
+            "pcat",
+        ],
+    )]
+    pub no_vmbus: bool,
 
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
@@ -234,11 +340,17 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
+    `on=<name>`                    attach to a named controller (NVMe or SCSI), incompatible with `pcie_port` and `vtl2`
+    `nsid=<N>`                     NVMe namespace ID (1-based), requires `on`; auto-assigned if omitted
+    `lun=<N>`                      SCSI LUN (0-based), requires `on`; auto-assigned if omitted
+    `relay=<ctrl>[:<loc>]`         relay through OpenHCL to the named OpenHCL controller, with optional location (LUN or NSID)
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
 
-    /// attach a disk via an NVMe controller
+    /// \[deprecated\] attach a disk via an NVMe controller
+    ///
+    /// Use --nvme-pci and --disk on=\<name\> instead.
     #[clap(long_help = r#"
 e.g: --nvme memdiff:file:/path/to/disk.vhd
 
@@ -272,6 +384,71 @@ options:
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
+
+    /// create a named NVMe controller
+    #[clap(long_help = r#"
+Create a named NVMe controller with an explicit transport.
+
+syntax: id=<name>,pcie_port=<port> | id=<name>,vpci[=<guid>]
+
+The controller name can be referenced by `--disk` with the `on=<name>`
+option to attach namespaces to this controller.
+
+options:
+    `id=<name>`                    controller name (required)
+    `pcie_port=<port>`             present on PCIe under the specified port
+    `vpci[=<guid>]`                present via VPCI; optional instance GUID
+    `vtl2`                         assign to VTL2 (default VTL0)
+
+Exactly one of `pcie_port` or `vpci` must be specified.
+
+Examples:
+    --nvme-pci id=nvme0,pcie_port=p0
+    --nvme-pci id=nvme1,vpci
+    --nvme-pci id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
+"#)]
+    #[clap(long = "nvme-pci")]
+    pub nvme_pci: Vec<NvmeControllerCli>,
+
+    /// create a named VMBus SCSI controller
+    #[clap(long_help = r#"
+Create a named VMBus SCSI controller.
+
+syntax: id=<name>[,sub_channels=<N>][,vtl2]
+
+The controller name can be referenced by `--disk` with the `on=<name>`
+option to attach disks to this controller.
+
+options:
+    `id=<name>`                    controller name (required)
+    `sub_channels=<N>`             number of sub-channels (default 0)
+    `vtl2`                         assign to VTL2 (default VTL0)
+
+Examples:
+    --vmbus-scsi id=scsi0
+    --vmbus-scsi id=scsi1,sub_channels=4
+"#)]
+    #[clap(long = "vmbus-scsi")]
+    pub vmbus_scsi: Vec<ScsiControllerCli>,
+
+    /// register an OpenHCL-managed storage controller (relay target)
+    #[clap(long_help = r#"
+Register an OpenHCL-managed storage controller that can be used as a
+relay target with `--disk ... relay=<name>`.
+
+syntax: id=<name>,type=scsi|nvme[,guid=<guid>]
+
+options:
+    `id=<name>`                    controller name (required)
+    `type=scsi|nvme`               controller protocol (required)
+    `guid=<guid>`                  instance GUID (auto-derived from name if omitted)
+
+Examples:
+    --openhcl-controller id=vtl0-scsi,type=scsi
+    --openhcl-controller id=vtl0-nvme,type=nvme,guid=09a59b81-...
+"#)]
+    #[clap(long = "openhcl-controller")]
+    pub openhcl_controller: Vec<OpenhclControllerCli>,
 
     /// attach a CXL Type-3 test endpoint on a PCIe root port
     #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>")]
@@ -365,13 +542,9 @@ options:
     #[clap(long, requires("vtl2"), conflicts_with("gfx"))]
     pub vtl2_gfx: bool,
 
-    /// listen for vnc connections. implied by gfx.
-    #[clap(long)]
-    pub vnc: bool,
-
-    /// VNC port number
-    #[clap(long, value_name = "PORT", default_value = "5900")]
-    pub vnc_port: u16,
+    /// VNC server configuration (listen address, port, client limit, etc.).
+    #[clap(flatten)]
+    pub vnc: VncCli,
 
     /// set the APIC ID offset, for testing APIC IDs that don't match VP index
     #[cfg(guest_arch = "x86_64")]
@@ -448,6 +621,10 @@ options:
     /// enable memory protections in UEFI
     #[clap(long, requires("uefi"))]
     pub uefi_enable_memory_protections: bool,
+
+    /// force UEFI to bounce-buffer all DMA traffic
+    #[clap(long, requires("uefi"))]
+    pub uefi_force_dma_bounce: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -677,11 +854,23 @@ flags:
     /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
+    ///   nested_virt          - expose VMX/SVM to the guest so it can run
+    ///                          its own hypervisor (requires
+    ///                          user_mode_apic=false and host WHP
+    ///                          support)
+    ///
+    /// KVM parameters (x86_64 guests only):
+    ///   nested_virt          - expose VMX/SVM to the guest so it can run
+    ///                          its own hypervisor (requires host KVM
+    ///                          nested-virt support)
     ///
     /// Examples:
     ///   --hypervisor whp
     ///   --hypervisor whp:user_mode_apic
     ///   --hypervisor whp:user_mode_apic,no_enlightenments
+    ///   --hypervisor whp:nested_virt
+    ///   --hypervisor kvm
+    ///   --hypervisor kvm:nested_virt
     #[clap(long)]
     pub hypervisor: Option<String>,
 
@@ -769,9 +958,29 @@ flags:
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
-    /// halt the VM when the guest requests a reset, instead of resetting it
-    #[clap(long)]
-    pub halt_on_reset: bool,
+    /// what to do when the guest requests a reset: reset it (default), halt the
+    /// VM for inspection, or exit the VMM process (use `exit:<code>` to set the
+    /// exit status)
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action)]
+    pub guest_reset_action: GuestPowerAction,
+
+    /// what to do when the guest powers off or hibernates: halt the VM for
+    /// inspection (default), reset it, or exit the VMM process (use
+    /// `exit:<code>` to set the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_shutdown_action: GuestPowerAction,
+
+    /// what to do when the guest triple-faults: halt the VM for inspection
+    /// (default), reset it, or exit the VMM process (use `exit:<code>` to set
+    /// the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_crash_action: GuestPowerAction,
+
+    /// what to do when the guest watchdog fires (the guest stopped petting it):
+    /// reset the VM (default), halt it for inspection, or exit the VMM process
+    /// (use `exit:<code>` to set the exit status). Requires `--guest-watchdog`.
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action, requires = "guest_watchdog")]
+    pub guest_watchdog_action: GuestPowerAction,
 
     /// write saved state .proto files to the specified path
     #[clap(long)]
@@ -805,6 +1014,24 @@ options:
     #[clap(long)]
     pub default_boot_always_attempt: bool,
 
+    /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --amd-iommu rc0 --amd-iommu rc1
+    /// The IOMMU appears at device 0 function 0 on each specified root
+    /// complex. Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub amd_iommu: Vec<String>,
+
+    /// Enable Intel VT-d IOMMU emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --intel-vtd rc0 --intel-vtd rc1
+    /// Mutually exclusive with --amd-iommu within the same VM.
+    /// Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub intel_vtd: Vec<String>,
+
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
@@ -824,9 +1051,13 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `low_mmio_base=<addr>`         pin low MMIO window base address (0x-prefixed hex)
+    `high_mmio_base=<addr>`        pin high MMIO window base address (0x-prefixed hex)
     `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
     `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
                                    default DEVICE_COHERENT (bit 0, value 0x1)
+    `preserve_bars`                keep pinned BARs at their assigned addresses
+    `node=<value>`                 NUMA node the root complex is associated with
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -842,9 +1073,17 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
+    # Attach root port rc0rp2 at device 5, function 0
+    --pcie-root-port rc0:rc0rp2,addr=5
+
+    # Attach root port rc0rp3 at device 5, function 1
+    --pcie-root-port rc0:rc0rp3,addr=5.1
+
 Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
+    `addr=<dev>[.<fn>]`            device/function to place this port at (default:
+                                   lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
@@ -884,6 +1123,33 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Declare the device behind a PCIe port as an SRAT generic initiator
+    #[clap(long_help = r#"
+Declare that the device directly behind a PCIe port is a generic initiator
+(GI) for a NUMA node, generating an SRAT Generic Initiator Affinity structure.
+
+The port may be a root port or a switch downstream port, so this works for
+devices that sit behind a switch (e.g. a GPU placed under a switch shared
+with a NIC for peer-to-peer DMA). The port is resolved by name against the
+live topology after switch downstream ports are enumerated.
+
+Examples:
+    # The device behind switch downstream port sw1-downstream-0 is a generic
+    # initiator for NUMA node 1
+    --pcie-generic-initiator port=sw1-downstream-0,node=1
+
+    # Also works for a root port name
+    --pcie-generic-initiator port=rp0,node=2
+
+Syntax: port=<port_name>,node=<node>
+"#)]
+    #[clap(
+        long = "pcie-generic-initiator",
+        value_name = "port=<name>,node=<node>",
+        conflicts_with("pcat")
+    )]
+    pub pcie_generic_initiator: Vec<PcieGenericInitiatorCli>,
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
@@ -1071,6 +1337,39 @@ impl FromStr for FsArgsWithOptions {
     }
 }
 
+/// What the VMM does on a guest power event (reset, power-off/hibernate,
+/// triple-fault, or watchdog timeout). Parsed from `reset`, `halt`, `exit`, or
+/// `exit:<code>`; a bare `exit` uses status 0.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GuestPowerAction {
+    /// Restart the guest.
+    Reset,
+    /// Stop the VM but keep the VMM process, so it can be inspected or
+    /// restarted from the REPL.
+    Halt,
+    /// Exit the VMM process with this status code.
+    Exit(u8),
+}
+
+/// Parse a [`GuestPowerAction`] from `reset`, `halt`, `exit`, or `exit:<code>`.
+/// A bare `exit` exits with status 0; `exit:<code>` exits with `<code>` (0-255).
+fn parse_guest_power_action(s: &str) -> Result<GuestPowerAction, String> {
+    match s {
+        "reset" => Ok(GuestPowerAction::Reset),
+        "halt" => Ok(GuestPowerAction::Halt),
+        "exit" => Ok(GuestPowerAction::Exit(0)),
+        _ => match s.strip_prefix("exit:") {
+            Some(code) => code
+                .parse::<u8>()
+                .map(GuestPowerAction::Exit)
+                .map_err(|err| format!("invalid exit code '{code}' (expected 0-255): {err}")),
+            None => Err(format!(
+                "expected reset, halt, exit, or exit:<code>, got '{s}'"
+            )),
+        },
+    }
+}
+
 #[derive(Copy, Clone, clap::ValueEnum)]
 pub enum VirtioBusCli {
     Auto,
@@ -1150,6 +1449,15 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
     }
 }
 
+/// Parses an address, which must be a `0x`-prefixed hexadecimal value.
+fn parse_address(s: &str) -> anyhow::Result<u64> {
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .with_context(|| format!("invalid address '{s}', expected a 0x-prefixed hex value"))?;
+    u64::from_str_radix(hex, 16).with_context(|| format!("invalid address '{s}'"))
+}
+
 fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
     if let Some(hex) = value
         .strip_prefix("0x")
@@ -1169,6 +1477,87 @@ fn parse_memory_toggle(key: &str, value: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// Accumulator for shared memory option parsing (size, shared, prefetch, thp,
+/// hugepages, hugepage_size). Used by both `parse_memory_config` and
+/// `parse_numa_node`.
+#[derive(Default)]
+struct MemoryOptionAccum {
+    mem_size: Option<u64>,
+    shared: Option<bool>,
+    prefetch: Option<bool>,
+    transparent_hugepages: Option<bool>,
+    hugepages: Option<bool>,
+    hugepage_size: Option<u64>,
+}
+
+impl MemoryOptionAccum {
+    /// Try to parse a key=value pair as a common memory option.
+    /// Returns `Ok(true)` if the key was recognized, `Ok(false)` if not.
+    fn try_parse(&mut self, key: &str, value: &str) -> anyhow::Result<bool> {
+        match key {
+            "size" => {
+                anyhow::ensure!(self.mem_size.is_none(), "duplicate option 'size'");
+                self.mem_size = Some(parse_memory(value)?);
+            }
+            "shared" => {
+                anyhow::ensure!(self.shared.is_none(), "duplicate option 'shared'");
+                self.shared = Some(parse_memory_toggle(key, value)?);
+            }
+            "prefetch" => {
+                anyhow::ensure!(self.prefetch.is_none(), "duplicate option 'prefetch'");
+                self.prefetch = Some(parse_memory_toggle(key, value)?);
+            }
+            "thp" => {
+                anyhow::ensure!(
+                    self.transparent_hugepages.is_none(),
+                    "duplicate option 'thp'"
+                );
+                self.transparent_hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepages" => {
+                anyhow::ensure!(self.hugepages.is_none(), "duplicate option 'hugepages'");
+                self.hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepage_size" => {
+                anyhow::ensure!(
+                    self.hugepage_size.is_none(),
+                    "duplicate option 'hugepage_size'"
+                );
+                self.hugepage_size = Some(parse_memory(value)?);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Validate common constraints and build a `MemoryCli`.
+    fn finish(self, default_size: u64, file: Option<PathBuf>) -> anyhow::Result<MemoryCli> {
+        if self.transparent_hugepages == Some(true) && self.shared != Some(false) {
+            anyhow::bail!("thp=on requires shared=off");
+        }
+        if self.hugepage_size.is_some() && self.hugepages != Some(true) {
+            anyhow::bail!("hugepage_size requires hugepages=on");
+        }
+        if self.hugepages == Some(true) {
+            if self.shared == Some(false) {
+                anyhow::bail!("hugepages=on conflicts with shared=off");
+            }
+            if file.is_some() {
+                anyhow::bail!("hugepages=on conflicts with file=...");
+            }
+        }
+        Ok(MemoryCli {
+            mem_size: self.mem_size.unwrap_or(default_size),
+            shared: self.shared,
+            prefetch: self.prefetch.unwrap_or(false),
+            transparent_hugepages: self.transparent_hugepages.unwrap_or(false),
+            hugepages: self.hugepages.unwrap_or(false),
+            hugepage_size: self.hugepage_size,
+            file,
+        })
+    }
+}
+
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
     if !s.contains('=') && !s.contains(',') {
         return Ok(MemoryCli {
@@ -1182,13 +1571,7 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
         });
     }
 
-    let mut mem_size = DEFAULT_MEMORY_SIZE;
-    let mut saw_size = false;
-    let mut shared = None;
-    let mut prefetch = None;
-    let mut transparent_hugepages = None;
-    let mut hugepages = None;
-    let mut hugepage_size = None;
+    let mut accum = MemoryOptionAccum::default();
     let mut file = None;
 
     for part in s.split(',') {
@@ -1199,78 +1582,129 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
             anyhow::bail!("invalid memory option '{part}', expected key=value");
         }
 
+        if accum.try_parse(key, value)? {
+            continue;
+        }
         match key {
-            "size" => {
-                if saw_size {
-                    anyhow::bail!("duplicate memory option 'size'");
-                }
-                mem_size = parse_memory(value)?;
-                saw_size = true;
-            }
-            "shared" => {
-                if shared.is_some() {
-                    anyhow::bail!("duplicate memory option 'shared'");
-                }
-                shared = Some(parse_memory_toggle(key, value)?);
-            }
-            "prefetch" => {
-                if prefetch.is_some() {
-                    anyhow::bail!("duplicate memory option 'prefetch'");
-                }
-                prefetch = Some(parse_memory_toggle(key, value)?);
-            }
-            "thp" => {
-                if transparent_hugepages.is_some() {
-                    anyhow::bail!("duplicate memory option 'thp'");
-                }
-                transparent_hugepages = Some(parse_memory_toggle(key, value)?);
-            }
-            "hugepages" => {
-                if hugepages.is_some() {
-                    anyhow::bail!("duplicate memory option 'hugepages'");
-                }
-                hugepages = Some(parse_memory_toggle(key, value)?);
-            }
-            "hugepage_size" => {
-                if hugepage_size.is_some() {
-                    anyhow::bail!("duplicate memory option 'hugepage_size'");
-                }
-                hugepage_size = Some(parse_memory(value)?);
-            }
             "file" => {
-                if file.is_some() {
-                    anyhow::bail!("duplicate memory option 'file'");
-                }
+                anyhow::ensure!(file.is_none(), "duplicate memory option 'file'");
                 file = Some(PathBuf::from(value));
             }
             _ => anyhow::bail!("unknown memory option '{key}'"),
         }
     }
 
-    if transparent_hugepages == Some(true) && shared != Some(false) {
-        anyhow::bail!("memory thp=on requires shared=off");
-    }
-    if hugepage_size.is_some() && hugepages != Some(true) {
-        anyhow::bail!("memory hugepage_size requires hugepages=on");
-    }
-    if hugepages == Some(true) {
-        if shared == Some(false) {
-            anyhow::bail!("memory hugepages=on conflicts with shared=off");
+    accum.finish(DEFAULT_MEMORY_SIZE, file)
+}
+
+/// Split a comma-delimited option string, but skip commas inside `[]`.
+fn split_options(s: &str) -> anyhow::Result<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                anyhow::ensure!(depth > 0, "unmatched ']' in '{s}'");
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
         }
-        if file.is_some() {
-            anyhow::bail!("memory hugepages=on conflicts with file=...");
+    }
+    anyhow::ensure!(depth == 0, "unmatched '[' in '{s}'");
+    parts.push(&s[start..]);
+    Ok(parts)
+}
+
+/// Parse a VP list value in bracket syntax: `[0,1,4-5]`.
+/// Returns individual VP indices.
+fn parse_vp_list(value: &str) -> anyhow::Result<Vec<u32>> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .with_context(|| {
+            format!("vps value must use bracket syntax, e.g. [0,1,2-3], got '{value}'")
+        })?;
+
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut vps = Vec::new();
+    for item in inner.split(',') {
+        let item = item.trim();
+        if let Some((lo, hi)) = item.split_once('-') {
+            let lo = lo.trim().parse::<u32>().context("invalid vp index")?;
+            let hi = hi.trim().parse::<u32>().context("invalid vp index")?;
+            anyhow::ensure!(lo <= hi, "invalid vp range {lo}-{hi}");
+            vps.extend(lo..=hi);
+        } else {
+            vps.push(item.parse::<u32>().context("invalid vp index")?);
+        }
+    }
+    Ok(vps)
+}
+
+fn parse_numa_node(s: &str) -> anyhow::Result<NumaNodeCli> {
+    let mut accum = MemoryOptionAccum::default();
+    let mut host_numa_node = None;
+    let mut vps: Option<Vec<u32>> = None;
+
+    for part in split_options(s)? {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid numa option '{part}', expected key=value"))?;
+
+        if accum.try_parse(key, value)? {
+            continue;
+        }
+        match key {
+            "host_numa_node" => {
+                anyhow::ensure!(
+                    host_numa_node.is_none(),
+                    "duplicate numa option 'host_numa_node'"
+                );
+                host_numa_node = Some(value.parse::<u32>().context("invalid host_numa_node")?);
+            }
+            "vps" => {
+                anyhow::ensure!(vps.is_none(), "duplicate numa option 'vps'");
+                vps = Some(parse_vp_list(value)?);
+            }
+            _ => anyhow::bail!("unknown numa option '{key}'"),
         }
     }
 
-    Ok(MemoryCli {
-        mem_size,
-        shared,
-        prefetch: prefetch.unwrap_or(false),
-        transparent_hugepages: transparent_hugepages.unwrap_or(false),
-        hugepages: hugepages.unwrap_or(false),
-        hugepage_size,
-        file,
+    anyhow::ensure!(accum.mem_size.is_some(), "numa node requires 'size' option");
+    let memory = accum.finish(0, None)?;
+
+    Ok(NumaNodeCli {
+        memory,
+        host_numa_node,
+        vps,
     })
+}
+
+fn parse_numa_distance(s: &str) -> anyhow::Result<NumaDistanceCli> {
+    let parts: Vec<&str> = s.split(':').collect();
+    anyhow::ensure!(
+        parts.len() == 3,
+        "expected SRC:DST:DISTANCE format, got '{s}'"
+    );
+    let src = parts[0].parse::<u32>().context("invalid source node")?;
+    let dst = parts[1]
+        .parse::<u32>()
+        .context("invalid destination node")?;
+    let distance = parts[2].parse::<u8>().context("invalid distance")?;
+    anyhow::ensure!(
+        distance >= 10,
+        "distance must be >= 10 (10 = local), got {distance}"
+    );
+    Ok(NumaDistanceCli { src, dst, distance })
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
@@ -1548,6 +1982,33 @@ impl FromStr for VmgsCli {
     }
 }
 
+/// VNC server configuration options.
+#[derive(clap::Args)]
+pub struct VncCli {
+    /// Listen for VNC connections. Implied by --gfx.
+    #[clap(long)]
+    pub vnc: bool,
+
+    /// VNC port number
+    #[clap(long, value_name = "PORT", default_value = "5900")]
+    pub vnc_port: u16,
+
+    /// VNC listen address (use 0.0.0.0 for all IPv4, :: for dual-stack IPv4+IPv6).
+    /// Accepts a bare IP address (combined with --vnc-port) or a full socket
+    /// address like [::1]:5900 (overrides --vnc-port).
+    #[clap(long, value_name = "ADDRESS", default_value = "127.0.0.1")]
+    pub vnc_listen: String,
+
+    /// Maximum concurrent VNC clients (~8MB memory per client for framebuffer buffers)
+    #[clap(long, value_name = "COUNT", default_value = "16")]
+    pub vnc_max_clients: usize,
+
+    /// When the client limit is reached, disconnect the oldest client
+    /// instead of rejecting the new connection
+    #[clap(long)]
+    pub vnc_evict_oldest: bool,
+}
+
 // <kind>[,ro]
 #[derive(Clone)]
 pub struct DiskCli {
@@ -1557,6 +2018,10 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
+    pub controller: Option<String>,
+    pub nsid: Option<u32>,
+    pub lun: Option<u8>,
+    pub relay: Option<(String, Option<u32>)>,
 }
 
 #[derive(Copy, Clone)]
@@ -1577,6 +2042,10 @@ impl FromStr for DiskCli {
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
         let mut pcie_port = None;
+        let mut controller = None;
+        let mut nsid = None;
+        let mut lun = None;
+        let mut relay = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().unwrap();
@@ -1598,6 +2067,35 @@ impl FromStr for DiskCli {
                     }
                     pcie_port = Some(String::from(port.unwrap()));
                 }
+                "on" => {
+                    let name = s.next();
+                    if name.is_none_or(|n| n.is_empty()) {
+                        anyhow::bail!("`on` requires a controller name");
+                    }
+                    controller = Some(String::from(name.unwrap()));
+                }
+                "nsid" => {
+                    let val = s.next().context("`nsid` requires a value")?;
+                    nsid = Some(val.parse::<u32>().context("invalid `nsid` value")?);
+                }
+                "lun" => {
+                    let val = s.next().context("`lun` requires a value")?;
+                    lun = Some(val.parse::<u8>().context("invalid `lun` value")?);
+                }
+                "relay" => {
+                    let val = s.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`relay` requires a target controller name");
+                    }
+                    let val = val.unwrap();
+                    // Parse "name" or "name:location"
+                    if let Some((name, loc)) = val.split_once(':') {
+                        let loc = loc.parse::<u32>().context("invalid relay location")?;
+                        relay = Some((name.to_string(), Some(loc)));
+                    } else {
+                        relay = Some((val.to_string(), None));
+                    }
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -1610,6 +2108,40 @@ impl FromStr for DiskCli {
             anyhow::bail!("`pcie_port` is incompatible with `uh`, `uh-nvme`, `vtl2`, and `dvd`");
         }
 
+        if controller.is_some() && pcie_port.is_some() {
+            anyhow::bail!("`on` is incompatible with `pcie_port`");
+        }
+
+        if controller.is_some() && vtl != DeviceVtl::Vtl0 {
+            anyhow::bail!(
+                "`vtl2` is incompatible with `on`; the controller's VTL determines placement"
+            );
+        }
+
+        if controller.is_some() && underhill.is_some() {
+            anyhow::bail!("`on` is incompatible with `uh` and `uh-nvme`; use `relay` instead");
+        }
+
+        if nsid.is_some() && controller.is_none() {
+            anyhow::bail!("`nsid` requires `on`");
+        }
+
+        if lun.is_some() && controller.is_none() {
+            anyhow::bail!("`lun` requires `on`");
+        }
+
+        if nsid.is_some() && lun.is_some() {
+            anyhow::bail!("`nsid` and `lun` are mutually exclusive");
+        }
+
+        if relay.is_some() && controller.is_none() {
+            anyhow::bail!("`relay` requires `on`");
+        }
+
+        if relay.is_some() && underhill.is_some() {
+            anyhow::bail!("`relay` is incompatible with `uh` and `uh-nvme`");
+        }
+
         Ok(DiskCli {
             vtl,
             kind,
@@ -1617,6 +2149,205 @@ impl FromStr for DiskCli {
             is_dvd,
             underhill,
             pcie_port,
+            controller,
+            nsid,
+            lun,
+            relay,
+        })
+    }
+}
+
+/// The transport for a named NVMe controller.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NvmeControllerTransport {
+    /// Present via PCIe on the specified root port.
+    Pcie(String),
+    /// Present via VPCI with an optional instance GUID.
+    Vpci(Option<Guid>),
+}
+
+/// CLI arguments for a named NVMe controller.
+#[derive(Clone, Debug)]
+pub struct NvmeControllerCli {
+    /// Controller name, referenced by `--disk on=<name>`.
+    pub id: String,
+    /// Transport configuration.
+    pub transport: NvmeControllerTransport,
+    /// VTL assignment (default VTL0).
+    pub vtl: DeviceVtl,
+}
+
+impl FromStr for NvmeControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut pcie_port = None;
+        let mut vpci = None;
+        let mut vpci_set = false;
+        let mut vtl = DeviceVtl::Vtl0;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "pcie_port" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(val.unwrap().to_string());
+                }
+                "vpci" => {
+                    vpci_set = true;
+                    if let Some(val) = kv.next() {
+                        if !val.is_empty() {
+                            vpci = Some(val.parse::<Guid>().context("invalid GUID for `vpci`")?);
+                        }
+                    }
+                }
+                "vtl2" => {
+                    vtl = DeviceVtl::Vtl2;
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+
+        let transport = match (pcie_port, vpci_set) {
+            (Some(port), false) => NvmeControllerTransport::Pcie(port),
+            (None, true) => NvmeControllerTransport::Vpci(vpci),
+            (Some(_), true) => {
+                anyhow::bail!("`pcie_port` and `vpci` are mutually exclusive")
+            }
+            (None, false) => {
+                anyhow::bail!("one of `pcie_port` or `vpci` is required")
+            }
+        };
+
+        Ok(NvmeControllerCli { id, transport, vtl })
+    }
+}
+
+/// CLI arguments for a named VMBus SCSI controller.
+#[derive(Clone, Debug)]
+pub struct ScsiControllerCli {
+    /// Controller name, referenced by `--disk on=<name>`.
+    pub id: String,
+    /// Number of sub-channels.
+    pub sub_channels: u16,
+    /// VTL assignment (default VTL0).
+    pub vtl: DeviceVtl,
+}
+
+impl FromStr for ScsiControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut sub_channels = 0u16;
+        let mut vtl = DeviceVtl::Vtl0;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "sub_channels" => {
+                    let val = kv.next().context("`sub_channels` requires a value")?;
+                    sub_channels = val.parse().context("invalid `sub_channels` value")?;
+                }
+                "vtl2" => {
+                    vtl = DeviceVtl::Vtl2;
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+
+        Ok(ScsiControllerCli {
+            id,
+            sub_channels,
+            vtl,
+        })
+    }
+}
+
+/// Protocol type for an OpenHCL-managed controller.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum OpenhclControllerType {
+    Scsi,
+    Nvme,
+}
+
+/// CLI arguments for an OpenHCL-managed storage controller (relay target).
+#[derive(Clone, Debug)]
+pub struct OpenhclControllerCli {
+    /// Controller name, referenced by `--disk ... relay=<name>`.
+    pub id: String,
+    /// Controller protocol.
+    pub controller_type: OpenhclControllerType,
+    /// Instance GUID (auto-derived from name if omitted).
+    pub guid: Option<Guid>,
+}
+
+impl FromStr for OpenhclControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut controller_type = None;
+        let mut guid = None;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "type" => {
+                    let val = kv.next().context("`type` requires a value")?;
+                    controller_type = Some(match val {
+                        "scsi" => OpenhclControllerType::Scsi,
+                        "nvme" => OpenhclControllerType::Nvme,
+                        other => anyhow::bail!("unknown controller type: '{other}'"),
+                    });
+                }
+                "guid" => {
+                    let val = kv.next().context("`guid` requires a value")?;
+                    guid = Some(val.parse::<Guid>().context("invalid GUID")?);
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+        let controller_type = controller_type.context("`type` is required")?;
+
+        Ok(OpenhclControllerCli {
+            id,
+            controller_type,
+            guid,
         })
     }
 }
@@ -2243,8 +2974,12 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub low_mmio_base: Option<u64>,
+    pub high_mmio_base: Option<u64>,
+    pub preserve_bars: bool,
     pub hdm: u64,
     pub hdm_window_restrictions: CfmwsWindowRestrictions,
+    pub vnode: Option<u32>,
 }
 
 impl FromStr for PcieRootComplexCli {
@@ -2268,8 +3003,12 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut low_mmio_base = None;
+        let mut high_mmio_base = None;
+        let mut preserve_bars = false;
         let mut hdm = DEFAULT_PCIE_HDM_SIZE;
         let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
+        let mut vnode = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -2298,6 +3037,22 @@ impl FromStr for PcieRootComplexCli {
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
                 }
+                "low_mmio_base" => {
+                    let base_str = s.next().context("expected low MMIO base address")?;
+                    low_mmio_base = Some(
+                        parse_address(base_str).context("failed to parse low MMIO base address")?,
+                    );
+                }
+                "high_mmio_base" => {
+                    let base_str = s.next().context("expected high MMIO base address")?;
+                    high_mmio_base = Some(
+                        parse_address(base_str)
+                            .context("failed to parse high MMIO base address")?,
+                    );
+                }
+                "preserve_bars" => {
+                    preserve_bars = true;
+                }
                 "hdm" => {
                     let hdm_str = s.next().context("expected HDM decoder size")?;
                     hdm = parse_memory(hdm_str).context("failed to parse HDM decoder size")?;
@@ -2309,6 +3064,11 @@ impl FromStr for PcieRootComplexCli {
                     hdm_window_restrictions =
                         parse_cxl_cfmws_window_restriction_u16_bitmask(mask_str)
                             .context("failed to parse HDM window restrictions bitmask")?;
+                }
+                "node" => {
+                    let node_str = s.next().context("expected NUMA node number")?;
+                    vnode =
+                        Some(u32::from_str(node_str).context("failed to parse NUMA node number")?);
                 }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
@@ -2325,8 +3085,12 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            low_mmio_base,
+            high_mmio_base,
+            preserve_bars,
             hdm,
             hdm_window_restrictions,
+            vnode,
         })
     }
 }
@@ -2348,6 +3112,7 @@ fn parse_cxl_cfmws_window_restriction_u16_bitmask(
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub devfn: Option<u8>,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
@@ -2371,6 +3136,7 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
+        let mut devfn = None;
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
         let mut cxl = false;
@@ -2382,6 +3148,13 @@ impl FromStr for PcieRootPortCli {
             let value = kv.next();
 
             match key {
+                "addr" => {
+                    let value = value.context("addr option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("addr option expects a single value")
+                    }
+                    devfn = Some(parse_pcie_addr(value)?);
+                }
                 "hotplug" => {
                     if value.is_some() {
                         anyhow::bail!("hotplug option does not take a value")
@@ -2408,11 +3181,42 @@ impl FromStr for PcieRootPortCli {
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            devfn,
             hotplug,
             acs_capabilities_supported,
             cxl,
         })
     }
+}
+
+/// Parses a PCIe address of the form `XX[.Y]`, where `XX` is the device number
+/// (0-31) and the optional `Y` is the function number (0-7), into a devfn
+/// (`device << 3 | function`).
+fn parse_pcie_addr(s: &str) -> anyhow::Result<u8> {
+    let parse_int = |v: &str| -> anyhow::Result<u8> {
+        if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).context("invalid hex number")
+        } else {
+            v.parse().context("invalid number")
+        }
+    };
+
+    let mut parts = s.split('.');
+    let device = parse_int(parts.next().context("expected device number")?)?;
+    let function = match parts.next() {
+        Some(f) => parse_int(f)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected token in addr '{s}'");
+    }
+    if device > 31 {
+        anyhow::bail!("device number {device} out of range (0-31)");
+    }
+    if function > 7 {
+        anyhow::bail!("function number {function} out of range (0-7)");
+    }
+    Ok((device << 3) | function)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2481,6 +3285,57 @@ impl FromStr for GenericPcieSwitchCli {
             num_downstream_ports,
             hotplug,
             acs_capabilities_supported,
+        })
+    }
+}
+
+/// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieGenericInitiatorCli {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut port_name = None;
+        let mut node = None;
+
+        for opt in s.split(',') {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+            if kv.next().is_some() {
+                anyhow::bail!("option '{key}' expects a single value")
+            }
+
+            match key {
+                "port" => {
+                    let value = value.context("port option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("port option requires a value");
+                    }
+                    port_name = Some(value.to_string());
+                }
+                "node" => {
+                    let value = value.context("node option requires a value")?;
+                    node = Some(
+                        u32::from_str(value)
+                            .context("failed to parse generic initiator NUMA node")?,
+                    );
+                }
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: port_name.context("expected 'port=<name>'")?,
+            node: node.context("expected 'node=<node>'")?,
         })
     }
 }
@@ -2557,7 +3412,7 @@ impl FromStr for PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -2568,6 +3423,9 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 #[cfg(target_os = "linux")]
@@ -2578,6 +3436,7 @@ impl FromStr for VfioDeviceCli {
         let mut host: Option<String> = None;
         let mut port: Option<String> = None;
         let mut iommu: Option<String> = None;
+        let mut bar_pt = [false; 6];
 
         for kv in s.split(',') {
             let (key, value) = kv
@@ -2605,6 +3464,13 @@ impl FromStr for VfioDeviceCli {
                     }
                     iommu = Some(value.to_string());
                 }
+                "bar0" | "bar1" | "bar2" | "bar3" | "bar4" | "bar5" => {
+                    if value != "pt" {
+                        anyhow::bail!("--vfio: '{key}' only accepts 'pt' as a value");
+                    }
+                    let idx: usize = key[3..].parse().unwrap();
+                    bar_pt[idx] = true;
+                }
                 _ => anyhow::bail!("unknown --vfio key: '{key}'"),
             }
         }
@@ -2621,6 +3487,7 @@ impl FromStr for VfioDeviceCli {
             port_name,
             pci_id,
             iommu,
+            bar_pt,
         })
     }
 }
@@ -3593,6 +4460,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3607,6 +4478,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3621,6 +4496,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3635,6 +4514,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3649,6 +4532,10 @@ mod tests {
                 high_mmio: 2 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3663,6 +4550,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3677,6 +4568,10 @@ mod tests {
                 high_mmio: 64 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3691,6 +4586,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: 2 * ONE_GB,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3705,6 +4604,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -3725,6 +4628,25 @@ mod tests {
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions=bad").is_err());
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions").is_err());
         assert!(PcieRootComplexCli::from_str("rc,cxl").is_err());
+
+        // node option
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc9,node=1").unwrap(),
+            PcieRootComplexCli {
+                name: "rc9".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: Some(1),
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
+            }
+        );
     }
 
     #[test]
@@ -3734,6 +4656,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -3745,6 +4668,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -3757,6 +4681,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: true,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -3768,6 +4693,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
@@ -3779,6 +4705,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
@@ -3790,9 +4717,45 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: true,
+            }
+        );
+
+        // Test addr= (device only, and device.function)
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port5,addr=5").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port5".to_string(),
+                devfn: Some(5 << 3),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port6,addr=5.1").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port6".to_string(),
+                devfn: Some((5 << 3) | 1),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port7,addr=0x1f.7").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port7".to_string(),
+                devfn: Some(0xff),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3803,6 +4766,39 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=32").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr").is_err());
+    }
+
+    #[test]
+    fn test_pcie_generic_initiator_from_str() {
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+            }
+        );
+
+        // Order should not matter.
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("node=2,port=sw0-downstream-1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "sw0-downstream-1".to_string(),
+                node: 2,
+            }
+        );
+
+        // Error cases
+        assert!(PcieGenericInitiatorCli::from_str("").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
     #[test]
@@ -4106,6 +5102,55 @@ mod tests {
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 
+    #[test]
+    fn test_guest_power_action_flags() {
+        // Defaults preserve the historical behavior: reset and watchdog reboot,
+        // power-off and crash keep the stopped VM.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Reset);
+        // The CLI defaults must match the shared GuestPowerActions::default() the
+        // ttrpc server uses, so the two launch paths never drift.
+        assert_eq!(
+            crate::vm_controller::GuestPowerActions {
+                shutdown: opt.guest_shutdown_action,
+                reset: opt.guest_reset_action,
+                crash: opt.guest_crash_action,
+                watchdog: opt.guest_watchdog_action,
+            },
+            crate::vm_controller::GuestPowerActions::default(),
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--guest-watchdog",
+            "--guest-reset-action",
+            "exit",
+            "--guest-shutdown-action",
+            "exit:5",
+            "--guest-crash-action",
+            "reset",
+            "--guest-watchdog-action",
+            "halt",
+        ])
+        .unwrap();
+        // A bare `exit` is status 0; `exit:5` carries the code through.
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Exit(0));
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Exit(5));
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Halt);
+
+        // Malformed and out-of-range exit codes are rejected (status is 0-255).
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:nope"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:300"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:-1"]).is_err());
+
+        // --guest-watchdog-action requires the watchdog device (--guest-watchdog).
+        assert!(Options::try_parse_from(["openvmm", "--guest-watchdog-action", "halt"]).is_err());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn test_vfio_device_cli_parse() {
@@ -4165,5 +5210,303 @@ mod tests {
 
         // Empty id.
         assert!(IommuCli::from_str("id=").is_err());
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_pcie() {
+        let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
+        assert_eq!(c.id, "nvme0");
+        assert_eq!(c.transport, NvmeControllerTransport::Pcie("p0".into()));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vpci_no_guid() {
+        let c = NvmeControllerCli::from_str("id=nvme1,vpci").unwrap();
+        assert_eq!(c.id, "nvme1");
+        assert!(matches!(c.transport, NvmeControllerTransport::Vpci(None)));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vpci_with_guid() {
+        let c = NvmeControllerCli::from_str("id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c")
+            .unwrap();
+        assert_eq!(c.id, "nvme2");
+        assert!(matches!(
+            c.transport,
+            NvmeControllerTransport::Vpci(Some(_))
+        ));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_errors() {
+        // Missing id.
+        assert!(NvmeControllerCli::from_str("pcie_port=p0").is_err());
+        // Missing transport.
+        assert!(NvmeControllerCli::from_str("id=nvme0").is_err());
+        // Both transports.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=p0,vpci").is_err());
+        // Unknown option.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=p0,foo=bar").is_err());
+        // Empty id.
+        assert!(NvmeControllerCli::from_str("id=,pcie_port=p0").is_err());
+        // Empty pcie_port.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=").is_err());
+        // Invalid GUID.
+        assert!(NvmeControllerCli::from_str("id=nvme0,vpci=not-a-guid").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_controller() {
+        let d = DiskCli::from_str("file:disk.vhd,on=nvme0").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("nvme0"));
+        assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_controller_with_nsid() {
+        let d = DiskCli::from_str("file:disk.vhd,on=nvme0,nsid=3").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("nvme0"));
+        assert_eq!(d.nsid, Some(3));
+    }
+
+    #[test]
+    fn test_disk_cli_controller_errors() {
+        // nsid without on.
+        assert!(DiskCli::from_str("file:disk.vhd,nsid=1").is_err());
+        // lun without on.
+        assert!(DiskCli::from_str("file:disk.vhd,lun=0").is_err());
+        // on with pcie_port.
+        assert!(DiskCli::from_str("file:disk.vhd,on=nvme0,pcie_port=p0").is_err());
+        // Empty controller name.
+        assert!(DiskCli::from_str("file:disk.vhd,on=").is_err());
+        // Invalid nsid.
+        assert!(DiskCli::from_str("file:disk.vhd,on=nvme0,nsid=abc").is_err());
+        // nsid and lun together.
+        assert!(DiskCli::from_str("file:disk.vhd,on=c,nsid=1,lun=0").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_controller_with_lun() {
+        let d = DiskCli::from_str("file:disk.vhd,on=scsi0,lun=3").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("scsi0"));
+        assert_eq!(d.lun, Some(3));
+        assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli() {
+        let c = ScsiControllerCli::from_str("id=scsi0").unwrap();
+        assert_eq!(c.id, "scsi0");
+        assert_eq!(c.sub_channels, 0);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_with_sub_channels() {
+        let c = ScsiControllerCli::from_str("id=scsi1,sub_channels=4").unwrap();
+        assert_eq!(c.id, "scsi1");
+        assert_eq!(c.sub_channels, 4);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_errors() {
+        // Missing id.
+        assert!(ScsiControllerCli::from_str("sub_channels=4").is_err());
+        // Empty id.
+        assert!(ScsiControllerCli::from_str("id=").is_err());
+        // Unknown option.
+        assert!(ScsiControllerCli::from_str("id=scsi0,foo=bar").is_err());
+        // Invalid sub_channels.
+        assert!(ScsiControllerCli::from_str("id=scsi0,sub_channels=abc").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_relay() {
+        let d = DiskCli::from_str("file:disk.vhd,on=src,relay=tgt").unwrap();
+        assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
+        assert_eq!(d.relay.as_ref().unwrap().1, None);
+    }
+
+    #[test]
+    fn test_disk_cli_relay_with_location() {
+        let d = DiskCli::from_str("file:disk.vhd,on=src,relay=tgt:3").unwrap();
+        assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
+        assert_eq!(d.relay.as_ref().unwrap().1, Some(3));
+    }
+
+    #[test]
+    fn test_disk_cli_relay_errors() {
+        // relay without on.
+        assert!(DiskCli::from_str("file:disk.vhd,relay=tgt").is_err());
+        // relay with uh.
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=tgt,uh").is_err());
+        // relay with invalid location.
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=tgt:abc").is_err());
+        // empty relay.
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=").is_err());
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vtl2() {
+        let c = NvmeControllerCli::from_str("id=nvme0,vpci,vtl2").unwrap();
+        assert_eq!(c.vtl, DeviceVtl::Vtl2);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_vtl2() {
+        let c = ScsiControllerCli::from_str("id=scsi0,vtl2").unwrap();
+        assert_eq!(c.vtl, DeviceVtl::Vtl2);
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli() {
+        let c = OpenhclControllerCli::from_str("id=vtl0-scsi,type=scsi").unwrap();
+        assert_eq!(c.id, "vtl0-scsi");
+        assert_eq!(c.controller_type, OpenhclControllerType::Scsi);
+        assert_eq!(c.guid, None);
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli_nvme_with_guid() {
+        let c = OpenhclControllerCli::from_str(
+            "id=vtl0-nvme,type=nvme,guid=09a59b81-2bf6-4164-81d7-3a0dc977ba65",
+        )
+        .unwrap();
+        assert_eq!(c.controller_type, OpenhclControllerType::Nvme);
+        assert!(c.guid.is_some());
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli_errors() {
+        // Missing id.
+        assert!(OpenhclControllerCli::from_str("type=scsi").is_err());
+        // Missing type.
+        assert!(OpenhclControllerCli::from_str("id=foo").is_err());
+        // Invalid type.
+        assert!(OpenhclControllerCli::from_str("id=foo,type=ide").is_err());
+        // Invalid guid.
+        assert!(OpenhclControllerCli::from_str("id=foo,type=scsi,guid=bad").is_err());
+    }
+
+    #[test]
+    fn test_parse_vp_list() {
+        use super::parse_vp_list;
+
+        // Individual indices.
+        assert_eq!(parse_vp_list("[0,1,2,3]").unwrap(), vec![0, 1, 2, 3]);
+
+        // Single index.
+        assert_eq!(parse_vp_list("[5]").unwrap(), vec![5]);
+
+        // Dash range.
+        assert_eq!(parse_vp_list("[0-3]").unwrap(), vec![0, 1, 2, 3]);
+
+        // Mixed indices and ranges.
+        assert_eq!(
+            parse_vp_list("[0,1,4-6,10]").unwrap(),
+            vec![0, 1, 4, 5, 6, 10]
+        );
+
+        // Whitespace tolerance.
+        assert_eq!(parse_vp_list("[0, 1, 2-4]").unwrap(), vec![0, 1, 2, 3, 4]);
+
+        // Missing brackets.
+        assert!(parse_vp_list("0,1,2").is_err());
+        assert!(parse_vp_list("0-3").is_err());
+
+        // Inverted range.
+        assert!(parse_vp_list("[3-0]").is_err());
+
+        // Non-numeric.
+        assert!(parse_vp_list("[a,b]").is_err());
+    }
+
+    #[test]
+    fn test_split_options_brackets() {
+        use super::split_options;
+
+        // No brackets — plain comma split.
+        assert_eq!(
+            split_options("a=1,b=2,c=3").unwrap(),
+            vec!["a=1", "b=2", "c=3"]
+        );
+
+        // Brackets protect inner commas.
+        assert_eq!(
+            split_options("size=2G,vps=[0,1,2]").unwrap(),
+            vec!["size=2G", "vps=[0,1,2]"]
+        );
+
+        // Brackets with ranges and trailing option.
+        assert_eq!(
+            split_options("size=2G,vps=[0-1,4-5],host_numa_node=0").unwrap(),
+            vec!["size=2G", "vps=[0-1,4-5]", "host_numa_node=0"]
+        );
+
+        // Unmatched brackets.
+        assert!(split_options("vps=[0,1").is_err());
+        assert!(split_options("vps=0,1]").is_err());
+    }
+
+    #[test]
+    fn test_parse_numa_node() {
+        use super::parse_numa_node;
+
+        // Basic node with size only.
+        let n = parse_numa_node("size=2G").unwrap();
+        assert_eq!(n.memory.mem_size, 2 * 1024 * 1024 * 1024);
+        assert!(n.vps.is_none());
+        assert!(n.host_numa_node.is_none());
+
+        // Node with bracket VP list.
+        let n = parse_numa_node("size=1G,vps=[0,1,2,3]").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1, 2, 3]);
+
+        // Node with VP range in brackets.
+        let n = parse_numa_node("size=1G,vps=[0-3]").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1, 2, 3]);
+
+        // Node with host_numa_node.
+        let n = parse_numa_node("size=1G,host_numa_node=1").unwrap();
+        assert_eq!(n.host_numa_node, Some(1));
+
+        // All options together.
+        let n = parse_numa_node("size=1G,vps=[0,1],host_numa_node=0,hugepages=on").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1]);
+        assert_eq!(n.host_numa_node, Some(0));
+        assert!(n.memory.hugepages);
+
+        // Missing size.
+        assert!(parse_numa_node("vps=[0,1]").is_err());
+
+        // Bare vps without brackets.
+        assert!(parse_numa_node("size=1G,vps=0,1").is_err());
+
+        // Duplicate vps.
+        assert!(parse_numa_node("size=1G,vps=[0],vps=[1]").is_err());
+
+        // Empty vps=[] for memory-only node.
+        let n = parse_numa_node("size=1G,vps=[]").unwrap();
+        assert_eq!(n.vps.unwrap(), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn test_parse_numa_distance() {
+        use super::parse_numa_distance;
+
+        let d = parse_numa_distance("0:1:20").unwrap();
+        assert_eq!(d.src, 0);
+        assert_eq!(d.dst, 1);
+        assert_eq!(d.distance, 20);
+
+        // Self-distance.
+        let d = parse_numa_distance("0:0:10").unwrap();
+        assert_eq!(d.distance, 10);
+
+        // Distance below minimum.
+        assert!(parse_numa_distance("0:1:5").is_err());
+
+        // Wrong format.
+        assert!(parse_numa_distance("0:1").is_err());
+        assert!(parse_numa_distance("0:1:20:extra").is_err());
     }
 }

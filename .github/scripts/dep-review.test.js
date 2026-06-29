@@ -18,6 +18,7 @@ const {
   checkContainment,
   diffContainmentViolations,
   buildPolicySummary,
+  run,
 } = require("./dep-review.js");
 
 // -- fixtures --
@@ -408,5 +409,90 @@ version = "0.0.0"
     assert.equal(newV.length, 1);
     assert.equal(newV[0].crate, "lib_a");
     assert.equal(newV[0].dep, "lib_b");
+  });
+});
+
+describe("run", () => {
+  it("uses merge-base sha for baseline file fetches", async () => {
+    const lock = `
+[[package]]
+name = "serde"
+version = "1.0.200"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`;
+    const manifest = `
+[workspace]
+members = []
+
+[workspace.dependencies]
+`;
+
+    const calls = {
+      getContent: [],
+      compare: [],
+      requestReviewers: 0,
+      removeRequestedReviewers: 0,
+    };
+
+    const github = {
+      request: async (route, params) => {
+        calls.compare.push({ route, params });
+        return { data: { merge_base_commit: { sha: "mergebase123" } } };
+      },
+      rest: {
+        pulls: {
+          listFiles: async () => ({ data: [{ filename: "Cargo.lock" }] }),
+          requestReviewers: async () => {
+            calls.requestReviewers += 1;
+            return {};
+          },
+          removeRequestedReviewers: async () => {
+            calls.removeRequestedReviewers += 1;
+            return {};
+          },
+        },
+        repos: {
+          getContent: async ({ path, ref }) => {
+            calls.getContent.push({ path, ref });
+            const content = path === "Cargo.lock" ? lock : manifest;
+            return {
+              data: {
+                type: "file",
+                content: Buffer.from(content, "utf8").toString("base64"),
+              },
+            };
+          },
+        },
+      },
+    };
+
+    const context = {
+      repo: { owner: "microsoft", repo: "openvmm" },
+      payload: {
+        pull_request: {
+          number: 42,
+          base: { sha: "basetip999" },
+          head: { sha: "headabc999" },
+        },
+      },
+    };
+
+    const core = {
+      warning: () => {},
+      setFailed: () => {},
+    };
+
+    await run(github, context, core);
+
+    assert.equal(calls.compare.length, 1);
+    assert.equal(
+      calls.compare[0].params.basehead,
+      "basetip999...headabc999"
+    );
+
+    const lockFetches = calls.getContent.filter((c) => c.path === "Cargo.lock");
+    assert.equal(lockFetches.length, 2);
+    assert.ok(lockFetches.some((c) => c.ref === "mergebase123"));
+    assert.ok(lockFetches.some((c) => c.ref === "refs/pull/42/head"));
   });
 });

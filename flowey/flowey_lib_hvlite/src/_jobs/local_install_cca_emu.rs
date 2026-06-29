@@ -117,7 +117,13 @@ pub(crate) fn build_plane0_linux(
     Ok(())
 }
 
-fn sync_shrinkwrap_overlay_assets(
+/// Syncs OpenVMM-owned CCA shrinkwrap overlay assets into the shrinkwrap checkout.
+///
+/// Call this before invoking shrinkwrap builds that reference the CCA overlay
+/// assets. The helper ensures `config/` exists under `shrinkwrap_dir` and copies
+/// the repo versions of the assets there, replacing existing files only when
+/// their contents differ.
+pub(crate) fn sync_shrinkwrap_overlay_assets(
     openvmm_root: &Path,
     shrinkwrap_dir: &Path,
 ) -> anyhow::Result<()> {
@@ -131,6 +137,11 @@ fn sync_shrinkwrap_overlay_assets(
             openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_realm_overlay.yaml"),
             shrinkwrap_dir.join("config/cca_realm_overlay.yaml"),
             "realm overlay config",
+        ),
+        (
+            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_start_tmk.sh"),
+            shrinkwrap_dir.join("config/cca_start_tmk.sh"),
+            "Plane0 TMK launcher",
         ),
     ];
 

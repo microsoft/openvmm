@@ -371,10 +371,12 @@ fn parse_packet<M: RingMem>(
     ring_off: u32,
     avail: u32,
 ) -> Result<(u32, IncomingPacket), ReadError> {
+    const DESCRIPTOR_SIZE8: u16 = size_of::<PacketDescriptor>() as u16 / 8;
+
     let mut desc = PacketDescriptor::new_zeroed();
     ring.read_aligned(ring_off as usize, desc.as_mut_bytes());
     let len = desc.length8 as u32 * 8;
-    if desc.length8 < desc.data_offset8 || desc.data_offset8 < 2 || avail < len {
+    if desc.length8 < desc.data_offset8 || desc.data_offset8 < DESCRIPTOR_SIZE8 || avail < len {
         return Err(ReadError::Corrupt(Error::InvalidDescriptorLengths));
     }
 
@@ -392,20 +394,40 @@ fn parse_packet<M: RingMem>(
         PACKET_TYPE_IN_BAND => IncomingPacketType::InBand,
         PACKET_TYPE_COMPLETION => IncomingPacketType::Completion,
         PACKET_TYPE_TRANSFER_PAGES => {
+            const TRANSFER_PAGE_HEADER_SIZE8: u16 =
+                DESCRIPTOR_SIZE8 + size_of::<TransferPageHeader>() as u16 / 8;
+
+            if desc.data_offset8 < TRANSFER_PAGE_HEADER_SIZE8 {
+                return Err(ReadError::Corrupt(Error::InvalidDescriptorLengths));
+            }
+
             let mut tph = TransferPageHeader::new_zeroed();
-            ring.read_aligned(ring_off as usize + 16, tph.as_mut_bytes());
+            ring.read_aligned(
+                ring_off as usize + size_of::<PacketDescriptor>(),
+                tph.as_mut_bytes(),
+            );
             IncomingPacketType::TransferPages(
                 tph.transfer_page_set_id,
                 tph.range_count,
                 RingRange {
-                    off: ring_off + 24,
-                    size: desc.data_offset8 as u32 * 8 - 24,
+                    off: ring_off + TRANSFER_PAGE_HEADER_SIZE8 as u32 * 8,
+                    size: (desc.data_offset8 - TRANSFER_PAGE_HEADER_SIZE8) as u32 * 8,
                 },
             )
         }
         PACKET_TYPE_GPA_DIRECT => {
+            const GPA_DIRECT_HEADER_SIZE8: u16 =
+                DESCRIPTOR_SIZE8 + size_of::<GpaDirectHeader>() as u16 / 8;
+
+            if desc.data_offset8 < GPA_DIRECT_HEADER_SIZE8 {
+                return Err(ReadError::Corrupt(Error::InvalidDescriptorLengths));
+            }
+
             let mut gph = GpaDirectHeader::new_zeroed();
-            ring.read_aligned(ring_off as usize + 16, gph.as_mut_bytes());
+            ring.read_aligned(
+                ring_off as usize + size_of::<PacketDescriptor>(),
+                gph.as_mut_bytes(),
+            );
             if gph.range_count == 0 {
                 return Err(ReadError::Corrupt(
                     Error::InvalidDescriptorGpaDirectRangeCount,
@@ -414,8 +436,8 @@ fn parse_packet<M: RingMem>(
             IncomingPacketType::GpaDirect(
                 gph.range_count,
                 RingRange {
-                    off: ring_off + 24,
-                    size: desc.data_offset8 as u32 * 8 - 24,
+                    off: ring_off + GPA_DIRECT_HEADER_SIZE8 as u32 * 8,
+                    size: (desc.data_offset8 - GPA_DIRECT_HEADER_SIZE8) as u32 * 8,
                 },
             )
         }
@@ -1424,5 +1446,56 @@ mod tests {
         assert!(!read_simple(&mut in_ring).1);
         assert!(read_simple(&mut in_ring).1);
         assert!(!read_simple(&mut in_ring).1);
+    }
+
+    #[test]
+    fn test_malformed_gpa_direct_packet() {
+        let rmem = FlatRingMem::new(16384);
+
+        let desc = PacketDescriptor {
+            packet_type: PACKET_TYPE_GPA_DIRECT,
+            data_offset8: 2,
+            length8: 3,
+            flags: 0,
+            transaction_id: 0,
+        };
+
+        rmem.write_aligned(0, desc.as_bytes());
+        let header = GpaDirectHeader {
+            reserved: 0,
+            range_count: 1,
+        };
+        rmem.write_aligned(size_of::<PacketDescriptor>(), header.as_bytes());
+        let err = parse_packet(&rmem, 0, 16384).unwrap_err();
+        assert!(matches!(
+            err,
+            ReadError::Corrupt(Error::InvalidDescriptorLengths)
+        ));
+    }
+
+    #[test]
+    fn test_malformed_transfer_page_packet() {
+        let rmem = FlatRingMem::new(16384);
+
+        let desc = PacketDescriptor {
+            packet_type: PACKET_TYPE_TRANSFER_PAGES,
+            data_offset8: 2,
+            length8: 3,
+            flags: 0,
+            transaction_id: 0,
+        };
+
+        rmem.write_aligned(0, desc.as_bytes());
+        let header = TransferPageHeader {
+            range_count: 1,
+            transfer_page_set_id: 1,
+            reserved: 0,
+        };
+        rmem.write_aligned(size_of::<PacketDescriptor>(), header.as_bytes());
+        let err = parse_packet(&rmem, 0, 16384).unwrap_err();
+        assert!(matches!(
+            err,
+            ReadError::Corrupt(Error::InvalidDescriptorLengths)
+        ));
     }
 }

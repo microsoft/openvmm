@@ -7,6 +7,8 @@
 use std::array;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use x86defs::snp::SecureAvicControl;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevFeatures;
@@ -157,6 +159,19 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
             let val = self.set_u64(*new_v, base + (i * 8));
             self.vmsa.x87_registers[i] = val;
         }
+    }
+
+    /// Atomically test and set the guest busy bit in v_intr_cntrl.
+    pub fn guest_busy_bit_test_and_set(&mut self) -> bool {
+        const VINTR_GUEST_BUSYBIT_MASK: u64 = 1u64 << 63;
+        // SAFETY: `v_intr_cntrl` is in the per-VP per-VTL VMSA. The `&mut self`
+        // guarantees no other Rust reference to this field exists, and this code
+        // only runs on the owning VP's thread. The atomic is needed because the
+        // untrusted hypervisor's hardware may concurrently access this field via
+        // VMRUN on another physical CPU.
+        let prev = unsafe { &*(core::ptr::from_ref(&self.vmsa.v_intr_cntrl).cast::<AtomicU64>()) }
+            .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
+        (prev & VINTR_GUEST_BUSYBIT_MASK) != 0
     }
 }
 

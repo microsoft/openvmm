@@ -341,12 +341,15 @@ impl VpciRelay {
                     async |mmio| {
                         let bus = vpci::bus::VpciBus::new(
                             &self.driver_source,
-                            instance_id,
+                            vpci::bus::VpciBusConfig {
+                                instance_id,
+                                vtom: self.vtom,
+                                vnode: None,
+                            },
                             device,
                             mmio,
                             self.vmbus.as_ref(),
                             interrupt_mapper,
-                            self.vtom,
                         )
                         .await?;
 

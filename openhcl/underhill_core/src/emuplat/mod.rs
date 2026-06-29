@@ -10,6 +10,7 @@ pub mod netvsp;
 pub mod non_volatile_store;
 pub mod pm_timer_assist;
 pub mod tpm;
+pub mod uefi;
 pub mod vga_proxy;
 pub mod watchdog;
 

@@ -182,6 +182,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     prebuilt_initrd: Option<PathBuf>,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
     use_virtio_vsock: bool,
+    // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
+    no_vmbus: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -203,6 +205,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
+            .field("no_vmbus", &self.no_vmbus)
             .finish()
     }
 }
@@ -230,6 +233,8 @@ pub struct PetriVmConfig {
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+    /// Physical NVMe devices to attach
+    pub physical_nvme_devices: HashMap<Guid, PhysicalNvmeDevice>,
 }
 
 /// PCIe NVMe drive configuration.
@@ -241,6 +246,18 @@ pub struct PcieNvmeDrive {
     pub nsid: u32,
     /// The drive to attach.
     pub drive: Drive,
+}
+
+/// Physical NVMe device to assign to a VM.
+/// Only used in closed-source HyperV tests
+#[derive(Debug, Clone)]
+pub struct PhysicalNvmeDevice {
+    /// The VTL to assign the physical NVMe device to.
+    pub target_vtl: Vtl,
+    /// NVMe namespace ID.
+    pub nsid: u32,
+    /// Namespace size in MiB
+    pub namespace_size_mib: u64,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -272,6 +289,8 @@ pub struct PetriVmProperties {
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
     pub use_virtio_vsock: bool,
+    /// VMBus is entirely disabled
+    pub no_vmbus: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -361,6 +380,11 @@ pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
 pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
     guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
+/// PCIe root port used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_PORT: &str = "s0rc0rp1";
+/// NVMe namespace ID used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
+
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
@@ -372,7 +396,6 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
-    uses_pipette_as_init: bool,
 
     config: PetriVmRuntimeConfig,
 }
@@ -416,6 +439,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -438,6 +462,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -490,6 +515,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -512,6 +538,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         })
     }
 
@@ -565,7 +592,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         })?;
 
         let merged_gz =
-            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+            initrd_cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
                 .context("failed to inject pipette into initrd")?;
 
         let mut tmp = tempfile::NamedTempFile::new()
@@ -619,6 +646,22 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// blacklist hv_sock instead of virtio_vsock.
     pub fn with_virtio_vsock(mut self) -> Self {
         self.use_virtio_vsock = true;
+        self
+    }
+
+    /// Disable VMBus entirely.
+    ///
+    /// This removes all VMBus storage controllers. For Linux guests,
+    /// virtio-vsock is used for pipette communication. For Windows guests,
+    /// the caller must also configure TCP pipette transport via
+    /// `modify_backend(|b| b.with_tcp_pipette_nic())`. The guest must boot
+    /// from a non-VMBus device (e.g. PCIe NVMe).
+    pub fn with_no_vmbus(mut self) -> Self {
+        self.no_vmbus = true;
+        if self.config.firmware.os_flavor() != OsFlavor::Windows {
+            self.use_virtio_vsock = true;
+        }
+        self.config.vmbus_storage_controllers.clear();
         self
     }
 
@@ -726,6 +769,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             return self;
         };
 
+        // When VMBus is disabled, route the agent disk through PCIe NVMe
+        // instead of VMBus SCSI.
+        if self.no_vmbus {
+            self.config.pcie_nvme_drives.push(PcieNvmeDrive {
+                port_name: PETRI_PCIE_NVME_AGENT_PORT.into(),
+                nsid: PETRI_PCIE_NVME_AGENT_NSID,
+                drive: Drive::new(
+                    Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
+                    false,
+                ),
+            });
+            return self;
+        }
+
         // Ensure the storage controller exists (minimal mode doesn't
         // add controllers upfront).
         if !self
@@ -753,6 +810,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     fn add_boot_disk(mut self) -> Self {
         if self.boot_device_type.requires_vtl2() && !self.is_openhcl() {
             panic!("boot device type {:?} requires vtl2", self.boot_device_type);
+        }
+
+        if self.no_vmbus && self.boot_device_type.requires_vmbus() {
+            panic!(
+                "boot device type {:?} requires vmbus, but vmbus is disabled; \
+                 use with_boot_device_type(BootDeviceType::PcieNvme) or similar",
+                self.boot_device_type
+            );
         }
 
         if self.boot_device_type.requires_vpci_boot() {
@@ -898,6 +963,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
+            no_vmbus: self.no_vmbus,
         }
     }
 
@@ -959,7 +1025,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
-        let uses_pipette_as_init = self.uses_pipette_as_init();
         let properties = self.properties();
 
         let (mut runtime, config) = self
@@ -985,7 +1050,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
-            uses_pipette_as_init,
 
             config,
         };
@@ -1330,6 +1394,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets the per-period rate-limit override for UEFI diagnostics emission.
+    ///
+    /// - Not called: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    pub fn with_efi_diagnostics_rate_limit(mut self, limit: u32) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics rate limit is only supported for UEFI firmware.")
+            .efi_diagnostics_rate_limit = Some(limit);
+        self
+    }
+
     /// Sets whether UEFI should always attempt a default boot.
     pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
         self.config
@@ -1337,6 +1415,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .uefi_config_mut()
             .expect("Default boot always attempt is only supported for UEFI firmware.")
             .default_boot_always_attempt = enable;
+        self
+    }
+
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub fn with_uefi_force_dma_bounce(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("force DMA bounce is only supported for UEFI firmware.")
+            .force_dma_bounce = enable;
         self
     }
 
@@ -1528,6 +1616,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Add a physical NVMe device to the VM
+    pub fn add_physical_nvme_device(mut self, vsid: Guid, device: PhysicalNvmeDevice) -> Self {
+        if self
+            .config
+            .physical_nvme_devices
+            .insert(vsid, device)
+            .is_some()
+        {
+            panic!("physical NVMe device {vsid} already existed");
+        }
+        self
+    }
+
     /// Get VM's guest OS flavor
     pub fn os_flavor(&self) -> OsFlavor {
         self.config.firmware.os_flavor()
@@ -1714,11 +1815,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // TODO: remove this once the bug is fixed, since it shouldn't be
         // necessary and a guest could in theory support pipette and not the IC
         //
-        // Skip when pipette runs as PID 1 init — the shutdown IC may not
-        // be present (e.g., minimal mode).
-        if !self.uses_pipette_as_init {
-            self.runtime.wait_for_enlightened_shutdown_ready().await?;
-        }
+        // This is a no-op when the shutdown IC is not configured (e.g.,
+        // no VMBus or minimal mode).
+        self.runtime.wait_for_enlightened_shutdown_ready().await?;
         self.runtime.wait_for_agent(false).await
     }
 
@@ -2181,8 +2280,13 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic
+    pub force_dma_bounce: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
+    /// Per-period rate-limit override for EFI diagnostics emission.
+    /// See [`PetriVmBuilder::with_efi_diagnostics_rate_limit()`] for more information.
+    pub efi_diagnostics_rate_limit: Option<u32>,
 }
 
 impl Default for UefiConfig {
@@ -2193,7 +2297,9 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            force_dma_bounce: false,
             efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
+            efi_diagnostics_rate_limit: None,
         }
     }
 }
@@ -2441,6 +2547,20 @@ impl BootDeviceType {
             self,
             BootDeviceType::Nvme | BootDeviceType::NvmeViaScsi | BootDeviceType::NvmeViaNvme
         )
+    }
+
+    fn requires_vmbus(&self) -> bool {
+        match self {
+            BootDeviceType::None | BootDeviceType::Ide | BootDeviceType::PcieNvme => false,
+            BootDeviceType::IdeViaScsi
+            | BootDeviceType::IdeViaNvme
+            | BootDeviceType::Scsi
+            | BootDeviceType::ScsiViaScsi
+            | BootDeviceType::ScsiViaNvme
+            | BootDeviceType::Nvme
+            | BootDeviceType::NvmeViaScsi
+            | BootDeviceType::NvmeViaNvme => true,
+        }
     }
 }
 

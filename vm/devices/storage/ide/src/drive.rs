@@ -117,7 +117,12 @@ impl DiskDrive {
             DiskDrive::OpticalDevice(device) => device.dma_request(),
         }
     }
-    pub fn dma_transfer(&mut self, guest_memory: &GuestMemory, gpa: u64, len: usize) {
+    pub fn dma_transfer(
+        &mut self,
+        guest_memory: &GuestMemory,
+        gpa: u64,
+        len: usize,
+    ) -> Result<(), guestmem::GuestMemoryError> {
         match self {
             DiskDrive::HardDevice(device) => device.dma_transfer(guest_memory, gpa, len),
             DiskDrive::OpticalDevice(device) => device.dma_transfer(guest_memory, gpa, len),

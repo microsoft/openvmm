@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
@@ -10,6 +11,7 @@ use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use loader::linux::RegisterConfig;
 use loader::linux::ZeroPageConfig;
+use memory_range::MemoryRange;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
@@ -148,6 +150,8 @@ fn build_dt(
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
     initrd_start: u64,
     initrd_end: u64,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
@@ -237,6 +241,7 @@ fn build_dt(
     let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
     let p_iommu_cells = builder.add_string("#iommu-cells")?;
     let p_iommu_map = builder.add_string("iommu-map")?;
+    let p_linux_pci_probe_only = builder.add_string("linux,pci-probe-only")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
@@ -504,6 +509,14 @@ fn build_dt(
             // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
             node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
         }
+        if bridge.preserve_boot_config {
+            // Tell Linux to keep the firmware-assigned PCI boot configuration
+            // (bus numbers and BARs) instead of re-enumerating. Linux checks
+            // this via of_pci_preserve_config(). This is the device-tree
+            // equivalent of the host-bridge "Ignore PCI Boot Configurations"
+            // _DSM emitted on the ACPI path.
+            node = node.add_u32(p_linux_pci_probe_only, 1)?;
+        }
         root_builder = node.end_node()?;
     }
 
@@ -540,13 +553,7 @@ fn build_dt(
         }
     }
 
-    // Build VMBus MMIO ranges from the memory layout's chipset MMIO gaps.
-    assert!(
-        cfg.mem_layout.mmio().len() >= 2,
-        "need at least two MMIO regions for VMBus DT node"
-    );
-    let low_mmio_gap = cfg.mem_layout.mmio()[0];
-    let high_mmio_gap = cfg.mem_layout.mmio()[1];
+    // Build VMBus MMIO ranges from the chipset MMIO ranges.
     soc = soc
         .start_node("vmbus")?
         .add_u32(p_address_cells, 2)?
@@ -555,10 +562,10 @@ fn build_dt(
         .add_u64_array(
             p_ranges,
             &[
-                low_mmio_gap.start(),
-                low_mmio_gap.len(),
-                high_mmio_gap.start(),
-                high_mmio_gap.len(),
+                chipset_low_mmio.start(),
+                chipset_low_mmio.len(),
+                chipset_high_mmio.start(),
+                chipset_high_mmio.len(),
             ],
         )?
         .add_str(p_compatible, "microsoft,vmbus")?
@@ -835,6 +842,7 @@ pub fn load_linux_arm64(
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
+    chipset_mmio: &ChipsetMmioRanges,
     build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
 ) -> Result<Vec<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
@@ -896,6 +904,8 @@ pub fn load_linux_arm64(
             processor_topology,
             pcie_host_bridges,
             smmu_configs,
+            chipset_mmio.low,
+            chipset_mmio.high,
             initrd_start,
             initrd_end,
         )

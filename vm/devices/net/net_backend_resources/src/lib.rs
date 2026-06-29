@@ -67,17 +67,36 @@ pub mod consomme {
         }
     }
 
+    /// The host port to listen on for a port forward.
+    #[derive(Debug, MeshPayload)]
+    pub enum HostPort {
+        /// A fixed host port.
+        Fixed(u16),
+        /// Let the OS assign a port. The assigned port is sent back via the
+        /// oneshot sender.
+        Dynamic(mesh::OneshotSender<u16>),
+    }
+
     /// Configuration for forwarding a host port into the guest.
-    #[derive(Clone, Debug, MeshPayload)]
+    #[derive(Debug, MeshPayload)]
     pub struct HostPortConfig {
         /// The protocol to forward.
         pub protocol: HostPortProtocol,
         /// The host IP address to bind to, or `None` to bind to all interfaces.
         pub host_address: Option<HostIpAddress>,
         /// The host port to listen on.
-        pub host_port: u16,
+        pub host_port: HostPort,
         /// The guest port to forward to.
         pub guest_port: u16,
+    }
+
+    /// A runtime request to bind or unbind a port on a running Consomme endpoint.
+    #[derive(MeshPayload)]
+    pub enum ConsommeRequest {
+        /// Bind a host port to forward traffic to the guest.
+        Bind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+        /// Unbind a previously forwarded port.
+        Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
     }
 
     /// Handle to a Consomme network endpoint.
@@ -85,8 +104,10 @@ pub mod consomme {
     pub struct ConsommeHandle {
         /// The CIDR of the network to use.
         pub cidr: Option<String>,
-        /// Ports to forward from the host into the guest.
+        /// Ports to forward from the host into the guest at creation time.
         pub ports: Vec<HostPortConfig>,
+        /// Optional channel for runtime port bind/unbind after the endpoint starts.
+        pub recv: Option<mesh::Receiver<ConsommeRequest>>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

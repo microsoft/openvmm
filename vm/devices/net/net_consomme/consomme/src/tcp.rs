@@ -10,13 +10,18 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
+use crate::FourTuple;
 use crate::IpAddresses;
+use crate::IpVersion;
+use crate::PortForwardKey;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
+use inspect_counters::Counter;
+use inspect_counters::Histogram;
 use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
@@ -57,34 +62,61 @@ use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct FourTuple {
-    src: SocketAddr,
-    dst: SocketAddr,
-}
-
-impl core::fmt::Display for FourTuple {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}-{}", self.src, self.dst)
-    }
-}
-
 #[derive(InspectMut)]
 pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
     #[inspect(iter_by_key)]
-    listeners: HashMap<u16, TcpListener>,
-    #[inspect(mut)]
+    listeners: HashMap<PortForwardKey, TcpListener>,
     connection_params: ConnectionParams,
+    aggregate_stats: TcpAggregateStats,
 }
 
-#[derive(InspectMut)]
+/// Aggregate statistics across all TCP connections for inspect/diagnostics.
+#[derive(Inspect, Default)]
+struct TcpAggregateStats {
+    connections_accepted: Counter,
+    connections_initiated: Counter,
+    /// Connections closed normally (LastAck final ACK, TimeWait, FIN exchange).
+    connections_closed_normal: Counter,
+    /// Connections closed by receiving a valid RST from the peer.
+    connections_closed_peer_rst: Counter,
+    /// Connections closed due to local errors (socket failures, invalid handshake).
+    connections_closed_local_error: Counter,
+}
+
+impl TcpAggregateStats {
+    fn record_close(&mut self, reason: ConnectionCloseReason) {
+        match reason {
+            ConnectionCloseReason::Normal => self.connections_closed_normal.increment(),
+            ConnectionCloseReason::PeerRst => self.connections_closed_peer_rst.increment(),
+            ConnectionCloseReason::LocalError => self.connections_closed_local_error.increment(),
+        }
+    }
+}
+
+#[derive(Inspect)]
 struct ConnectionParams {
-    #[inspect(mut)]
-    rx_buffer_size: usize,
-    #[inspect(mut)]
-    tx_buffer_size: usize,
+    rx_buffer: NormalizedBufferBounds,
+    tx_buffer: NormalizedBufferBounds,
+}
+
+/// Normalized version of [`crate::TcpBufferBounds`] with both values clamped
+/// to `[16 KiB, 4 MiB]` and rounded up to a power of two, then `initial`
+/// further clamped to be no greater than `max`.
+#[derive(Inspect, Clone, Copy, Debug)]
+struct NormalizedBufferBounds {
+    initial: usize,
+    max: usize,
+}
+
+impl NormalizedBufferBounds {
+    fn from_bounds(b: crate::TcpBufferBounds) -> Self {
+        let clamp = |v: usize| v.clamp(16 << 10, 4 << 20).next_power_of_two();
+        let max = clamp(b.max);
+        let initial = clamp(b.initial).min(max);
+        Self { initial, max }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -102,14 +134,15 @@ pub enum TcpError {
 }
 
 impl Tcp {
-    pub fn new() -> Self {
+    pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             connection_params: ConnectionParams {
-                rx_buffer_size: 256 * 1024,
-                tx_buffer_size: 256 * 1024,
+                rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
+                tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
             },
+            aggregate_stats: TcpAggregateStats::default(),
         }
     }
 }
@@ -151,8 +184,19 @@ struct TcpConnectionInner {
     #[inspect(hex)]
     rx_window_cap: usize,
     rx_window_scale: u8,
+    /// Autotune ceiling for `rx_window_cap`. Once `rx_window_cap` reaches this
+    /// value, no further grow is attempted. The backing ring is rounded up to a
+    /// power of two, so its allocated capacity can slightly exceed this value
+    /// (e.g. when window scaling is disabled and this is capped to `u16::MAX`,
+    /// the ring is 65536 while this is 65535).
+    #[inspect(hex)]
+    rx_buffer_max: usize,
     #[inspect(with = "inspect_seq")]
     rx_seq: TcpSeqNumber,
+    /// Window last advertised to the guest, as it reconstructs it after
+    /// window-scale truncation. Used to detect a zero-window reopen.
+    #[inspect(hex)]
+    rx_window_last_adv: usize,
     #[inspect(flatten)]
     rx_assembler: assembler::Assembler,
     needs_ack: bool,
@@ -161,6 +205,9 @@ struct TcpConnectionInner {
 
     #[inspect(with = "|x| x.len()")]
     tx_buffer: ring::Ring,
+    /// Autotune ceiling for the tx_buffer ring capacity.
+    #[inspect(hex)]
+    tx_buffer_max: usize,
     #[inspect(with = "inspect_seq")]
     tx_acked: TcpSeqNumber,
     #[inspect(with = "inspect_seq")]
@@ -169,12 +216,85 @@ struct TcpConnectionInner {
     #[inspect(hex)]
     tx_window_len: u16,
     tx_window_scale: u8,
+    /// Whether the tx_window_scale is active (i.e., we've received the first
+    /// non-SYN ACK). Per RFC 1323 §2.2, the window field in SYN/SYN-ACK
+    /// segments is NOT scaled — only subsequent segments are.
+    tx_window_scale_active: bool,
     #[inspect(with = "inspect_seq")]
     tx_window_rx_seq: TcpSeqNumber,
     #[inspect(with = "inspect_seq")]
     tx_window_tx_seq: TcpSeqNumber,
     #[inspect(hex)]
     tx_mss: usize,
+    #[inspect(skip)]
+    last_close_reason: ConnectionCloseReason,
+
+    stats: TcpConnStats,
+}
+
+/// Why a connection was closed, for aggregate stats categorization.
+#[derive(Default, Clone, Copy)]
+enum ConnectionCloseReason {
+    #[default]
+    LocalError,
+    PeerRst,
+    Normal,
+}
+
+/// Policy for whether `send_data` should emit a standalone (pure) ACK when
+/// there is nothing else to put in the segment.
+///
+/// Pure ACKs are deferred from the per-packet `handle_tcp` hot path so that
+/// bursts of inbound guest packets coalesce into a single ACK emitted by the
+/// trailing `poll_tcp` cycle. Without this, every inbound data segment
+/// triggers a zero-payload ACK back, doubling the packet rate and adding
+/// per-packet overhead on the virtual link (RFC 1122 §4.2.3.2 explicitly
+/// permits delaying ACKs to coalesce them).
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum AckPolicy {
+    /// Don't emit a standalone ACK in this call. Data segments and FINs
+    /// still go out; `needs_ack` remains set so a later `Flush` call (or
+    /// a piggybacked ACK on outbound data) will satisfy it.
+    Defer,
+    /// Emit a standalone ACK if one is pending. Used from poll-cycle paths
+    /// that run once per batch (`poll_socket_backend`, `poll_dns_backend`).
+    Flush,
+}
+
+/// Per-connection TCP statistics for performance analysis.
+#[derive(Inspect, Default)]
+struct TcpConnStats {
+    /// Bytes sent from host to guest.
+    bytes_tx_to_guest: Counter,
+    /// Payload bytes received from guest to host (excludes pure ACKs and
+    /// FIN-only segments).
+    bytes_rx_from_guest: Counter,
+    /// Data segments sent from host to guest via `send_data` (every such
+    /// segment carries an ACK; this does not include standalone ACKs).
+    pkts_tx_to_guest: Counter,
+    /// Data segments received from guest to host (payload-bearing only;
+    /// excludes pure ACKs and FIN-only segments).
+    data_segments_rx_from_guest: Counter,
+    /// Standalone ACKs sent via `ack()` in response to unacceptable
+    /// segments (duplicate, out-of-order, out-of-window). Data segments
+    /// sent via `send_data` are counted in `pkts_tx_to_guest` instead.
+    standalone_acks_tx: Counter,
+    /// RSTs sent.
+    rsts_tx: Counter,
+    /// Times send_data broke out because rx_mtu was 0 (no guest rx buffers).
+    tx_blocked_no_rx_mtu: Counter,
+    /// Times send_data was limited by the peer's advertised window being full.
+    tx_blocked_window_full: Counter,
+    /// Out-of-window packets received.
+    out_of_window_pkts: Counter,
+    /// Segment size distribution for packets sent to guest.
+    tx_segment_size: Histogram<14>,
+    /// Segment size distribution for packets received from guest.
+    rx_segment_size: Histogram<14>,
+    /// Number of times the tx_buffer ring capacity was grown by autotune.
+    tx_buffer_grows: Counter,
+    /// Number of times the rx_buffer ring capacity was grown by autotune.
+    rx_buffer_grows: Counter,
 }
 
 fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
@@ -185,6 +305,7 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 struct TcpListener {
     #[inspect(skip)]
     socket: PolledSocket<Socket>,
+    host_port: u16,
 }
 
 #[derive(Debug, PartialEq, Eq, Inspect)]
@@ -240,15 +361,21 @@ impl<T: Client> Access<'_, T> {
         self.inner
             .tcp
             .listeners
-            .retain(|port, listener| match listener.poll_listener(cx) {
+            .retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
-                        // Check for loopback requests and replace the dest port.
-                        // This supports a guest owning both the sending and receiving ports.
-                        if other_addr.ip().is_loopback() {
+                        // If this packet was originally from the guest, update the port to match
+                        // the original guest port. This allows loopback to work as expected.
+                        if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if connection.inner.state == TcpState::Connecting && other_ft.dst.port() == *port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
+                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived)
+                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()) == *key
+                                {
+                                    if let LoopbackPortInfo::ProxyForGuestPort {
+                                        sending_port,
+                                        guest_port,
+                                    } = connection.inner.loopback_port
+                                    {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
                                             break;
@@ -257,25 +384,14 @@ impl<T: Client> Access<'_, T> {
                                 }
                             }
                         }
+                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, key.guest_port) else {
+                            return true;
+                        };
 
-                        let ft = match other_addr {
-                            SocketAddr::V4(_) => FourTuple {
-                                dst: other_addr,
-                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip, *port)),
-                            },
-                            SocketAddr::V6(_) => {
-                                let client_ipv6 = match self.inner.state.params.client_ip_ipv6 {
-                                    Some(ip) => ip,
-                                    None => {
-                                        tracing::warn!("Received IPv6 connection but client IPv6 address is not known");
-                                        return true;
-                                    }
-                                };
-                                FourTuple {
-                                    dst: other_addr,
-                                    src: SocketAddr::V6(SocketAddrV6::new(client_ipv6, *port, 0, 0)),
-                                }
-                            }
+                        // TCP connections are stored with the source always as the guest. Switch the order.
+                        let ft = FourTuple {
+                            src: ft.dst,
+                            dst: ft.src,
                         };
 
                         match self.inner.tcp.connections.entry(ft) {
@@ -302,7 +418,9 @@ impl<T: Client> Access<'_, T> {
                                         return true;
                                     }
                                 };
+                                tracing::trace!(?ft, "TCP connection established");
                                 e.insert(conn);
+                                self.inner.tcp.aggregate_stats.connections_accepted.increment();
                             }
                             hash_map::Entry::Occupied(_) => {
                                 tracing::warn!(
@@ -324,7 +442,7 @@ impl<T: Client> Access<'_, T> {
                 state: &mut self.inner.state,
                 client: self.client,
             };
-            match &mut conn.backend {
+            let keep = match &mut conn.backend {
                 TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
                     Some(dns) => conn
                         .inner
@@ -337,7 +455,14 @@ impl<T: Client> Access<'_, T> {
                 TcpBackend::Socket(opt_socket) => {
                     conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
                 }
+            };
+            if !keep {
+                self.inner
+                    .tcp
+                    .aggregate_stats
+                    .record_close(conn.inner.last_close_reason);
             }
+            keep
         })
     }
 
@@ -407,7 +532,24 @@ impl<T: Client> Access<'_, T> {
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
                 let keep = e.get_mut().inner.handle_packet(&mut sender, &tcp)?;
-                if !keep {
+                if keep {
+                    // Push out any newly-unblocked data (e.g., this ACK advanced
+                    // the peer window) so we don't wait an entire poll cycle.
+                    //
+                    // Use `AckPolicy::Defer` so we DON'T emit a standalone ACK
+                    // here: inbound bursts arrive as many back-to-back
+                    // `handle_tcp` calls within a single `poll_ready` cycle,
+                    // and the trailing `poll_tcp` will emit (at most) one
+                    // consolidated ACK for the whole batch — or piggyback it
+                    // on outbound data if any becomes available. Without this,
+                    // every guest packet would trigger a zero-payload ACK back,
+                    // doubling packet rate and creating an ACK storm.
+                    e.get_mut().inner.send_next(&mut sender, AckPolicy::Defer);
+                } else {
+                    self.inner
+                        .tcp
+                        .aggregate_stats
+                        .record_close(e.get().inner.last_close_reason);
                     let dns_in_flight = matches!(
                         e.get().backend,
                         TcpBackend::Dns(ref h) if h.is_in_flight()
@@ -434,9 +576,47 @@ impl<T: Client> Access<'_, T> {
                             &self.inner.tcp.connection_params,
                         )?
                     } else {
-                        TcpConnection::new(&mut sender, &tcp, &self.inner.tcp.connection_params)?
+                        // Resolve virtual mapped addresses back to real host
+                        // addresses before establishing the connection.
+                        let resolved_dst = sender.state.resolve_destination(&sender.ft.dst);
+                        // If this is directed to a local port owned by the guest, use the
+                        // appropriate host port substitution.
+                        let is_local_address = sender.state.params.is_local_address(&resolved_dst);
+                        let key =
+                            PortForwardKey::from_socket_addr(resolved_dst, resolved_dst.port());
+                        let ft = if is_local_address
+                            && let Some(listener) = self.inner.tcp.listeners.get(&key)
+                        {
+                            FourTuple {
+                                src: sender.ft.src,
+                                dst: SocketAddr::new(resolved_dst.ip(), listener.host_port),
+                            }
+                        } else if resolved_dst != sender.ft.dst {
+                            FourTuple {
+                                src: sender.ft.src,
+                                dst: resolved_dst,
+                            }
+                        } else {
+                            ft
+                        };
+                        let mut sender = Sender {
+                            ft: &ft,
+                            client: sender.client,
+                            state: sender.state,
+                        };
+                        TcpConnection::new(
+                            &mut sender,
+                            &tcp,
+                            &self.inner.tcp.connection_params,
+                            is_local_address,
+                        )?
                     };
                     e.insert(conn);
+                    self.inner
+                        .tcp
+                        .aggregate_stats
+                        .connections_initiated
+                        .increment();
                 } else {
                     // Ignore the packet.
                 }
@@ -448,7 +628,9 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(guest_port) {
+        let host_addr = Self::socket_local_addr(&socket)?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        match self.inner.tcp.listeners.entry(key) {
             hash_map::Entry::Occupied(_) => {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
@@ -460,15 +642,28 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(port) {
+    /// Unbinds from the specified guest port and IP family.
+    pub fn unbind_tcp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        match self
+            .inner
+            .tcp
+            .listeners
+            .entry(PortForwardKey::new(family, port))
+        {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
             }
             hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
         }
+    }
+
+    fn socket_local_addr(socket: &Socket) -> Result<SocketAddr, BindError> {
+        socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))
     }
 }
 
@@ -573,37 +768,40 @@ impl TcpConnection {
             rx_tx_seq[4..8].try_into().expect("invalid length"),
         ));
 
-        let rx_buffer_size: usize = params.rx_buffer_size.clamp(16384, 4 << 20);
+        let rx_bounds = params.rx_buffer;
         let rx_window_scale =
-            (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
+            (usize::BITS - rx_bounds.max.leading_zeros()).saturating_sub(16) as u8;
 
-        let tx_buffer_size = params
-            .tx_buffer_size
-            .clamp(16384, 4 << 20)
-            .next_power_of_two();
+        let tx_bounds = params.tx_buffer;
 
         TcpConnectionInner {
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
             rx_buffer: ring::Ring::new(0),
-            rx_window_cap: rx_buffer_size,
+            rx_window_cap: rx_bounds.initial,
             rx_window_scale,
+            rx_buffer_max: rx_bounds.max,
             rx_seq,
+            rx_window_last_adv: rx_bounds.initial,
             rx_assembler: assembler::Assembler::new(),
             needs_ack: false,
             is_shutdown: false,
             enable_window_scaling: false,
-            tx_buffer: ring::Ring::new(tx_buffer_size),
+            tx_buffer: ring::Ring::new(tx_bounds.initial),
+            tx_buffer_max: tx_bounds.max,
             tx_acked: tx_seq,
             tx_send: tx_seq,
             tx_window_len: 1,
             tx_window_scale: 0,
+            tx_window_scale_active: false,
             tx_window_rx_seq: rx_seq,
             tx_window_tx_seq: tx_seq,
             // The TCPv4 default maximum segment size is 536. This can be bigger for
             // IPv6.
             tx_mss: 536,
             tx_fin_buffered: false,
+            last_close_reason: ConnectionCloseReason::LocalError,
+            stats: TcpConnStats::default(),
         }
     }
 
@@ -611,6 +809,7 @@ impl TcpConnection {
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
+        is_local_address: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(tcp)?;
@@ -624,6 +823,9 @@ impl TcpConnection {
             Some(Protocol::TCP),
         )
         .map_err(DropReason::Io)?;
+
+        // Disable Nagle's algorithm to reduce latency for small packets.
+        socket.set_tcp_nodelay(true).map_err(DropReason::Io)?;
 
         // On Windows the default behavior for non-existent loopback sockets is
         // to wait and try again. This is different than the Linux behavior of
@@ -645,7 +847,7 @@ impl TcpConnection {
                 return Err(DropReason::Io(err));
             }
         }
-        if let Ok(addr) = socket.get().local_addr() {
+        if is_local_address && let Ok(addr) = socket.get().local_addr() {
             match addr.as_socket() {
                 None => {
                     tracing::warn!(
@@ -655,12 +857,10 @@ impl TcpConnection {
                     );
                 }
                 Some(addr) => {
-                    if addr.ip().is_loopback() {
-                        inner.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
-                            sending_port: addr.port(),
-                            guest_port: sender.ft.src.port(),
-                        };
-                    }
+                    inner.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
+                        sending_port: addr.port(),
+                        guest_port: sender.ft.src.port(),
+                    };
                 }
             }
         }
@@ -675,8 +875,12 @@ impl TcpConnection {
         socket: Socket,
         params: &ConnectionParams,
     ) -> Result<Self, DropReason> {
+        // Disable Nagle's algorithm to reduce latency for small packets.
+        socket.set_tcp_nodelay(true).map_err(DropReason::Io)?;
+
         let mut inner = TcpConnectionInner {
             state: TcpState::SynSent,
+            enable_window_scaling: true,
             ..Self::new_base(params)
         };
         inner.send_syn(sender, None);
@@ -735,6 +939,7 @@ impl TcpConnectionInner {
             // since without window scaling, the window field is only 16 bits.
             self.enable_window_scaling = false;
             self.rx_window_cap = self.rx_window_cap.min(u16::MAX as usize);
+            self.rx_buffer_max = self.rx_buffer_max.min(u16::MAX as usize);
             self.rx_window_scale = 0;
         }
 
@@ -794,6 +999,7 @@ impl TcpConnectionInner {
                 }
                 Poll::Ready(Err(_)) => {
                     sender.rst(self.tx_send, Some(self.rx_seq));
+                    self.stats.rsts_tx.increment();
                     return false;
                 }
                 Poll::Pending => break,
@@ -811,14 +1017,20 @@ impl TcpConnectionInner {
             Err(_) => {
                 // Invalid DNS TCP framing; reset the connection.
                 sender.rst(self.tx_send, Some(self.rx_seq));
+                self.stats.rsts_tx.increment();
                 return false;
             }
         }
 
-        self.send_next(sender);
-        !(self.state == TcpState::TimeWait
+        // Flush any deferred pure-ACK from per-packet `handle_tcp` calls.
+        self.send_next(sender, AckPolicy::Flush);
+        let closing = self.state == TcpState::TimeWait
             || self.state == TcpState::LastAck
-            || (self.state.tx_fin() && self.state.rx_fin() && self.tx_buffer.is_empty()))
+            || (self.state.tx_fin() && self.state.rx_fin() && self.tx_buffer.is_empty());
+        if closing {
+            self.last_close_reason = ConnectionCloseReason::Normal;
+        }
+        !closing
     }
 
     /// Poll the real-socket TCP connection backend.
@@ -873,6 +1085,7 @@ impl TcpConnectionInner {
                             ),
                         }
                         sender.rst(self.tx_send, Some(self.rx_seq));
+                        self.stats.rsts_tx.increment();
                         return false;
                     }
 
@@ -880,43 +1093,66 @@ impl TcpConnectionInner {
                     *opt_socket = None;
                 }
             } else {
-                while !self.tx_buffer.is_full() {
-                    let (a, b) = self.tx_buffer.unwritten_slices_mut();
-                    let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
-                        Poll::Ready(Ok(n)) => {
-                            if n == 0 {
-                                self.close();
-                                break;
+                // Drain the host socket into the tx ring until the socket has
+                // no more data (Pending) or the ring reaches its autotune
+                // ceiling. When the ring fills with data still pending, grow it
+                // (doubling, capped at tx_buffer_max) and keep reading so the
+                // freshly added capacity is used in this same poll rather than
+                // waiting for a later guest ACK to re-clock the connection.
+                'read: loop {
+                    while !self.tx_buffer.is_full() {
+                        let (a, b) = self.tx_buffer.unwritten_slices_mut();
+                        let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
+                        match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
+                            Poll::Ready(Ok(n)) => {
+                                if n == 0 {
+                                    self.close();
+                                    break 'read;
+                                }
+                                self.tx_buffer.extend_by(n);
                             }
-                            self.tx_buffer.extend_by(n);
-                        }
-                        Poll::Ready(Err(err)) => {
-                            match err.kind() {
-                                ErrorKind::ConnectionReset => tracing::trace!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket read error"
-                                ),
-                                _ => tracelimit::warn_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket read error"
-                                ),
+                            Poll::Ready(Err(err)) => {
+                                match err.kind() {
+                                    ErrorKind::ConnectionReset => tracing::trace!(
+                                        error = &err as &dyn std::error::Error,
+                                        src = %sender.ft.src,
+                                        dst = %sender.ft.dst,
+                                        "socket read error"
+                                    ),
+                                    _ => tracelimit::warn_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        src = %sender.ft.src,
+                                        dst = %sender.ft.dst,
+                                        "socket read error"
+                                    ),
+                                }
+                                sender.rst(self.tx_send, Some(self.rx_seq));
+                                self.stats.rsts_tx.increment();
+                                return false;
                             }
-                            sender.rst(self.tx_send, Some(self.rx_seq));
-                            return false;
+                            Poll::Pending => break 'read,
                         }
-                        Poll::Pending => break,
                     }
+
+                    // The ring is full. If we can still grow, double it (capped
+                    // at tx_buffer_max) and keep reading into the new space. At
+                    // the ceiling we stop without re-arming: the cached socket
+                    // readiness stays set and the next guest ACK that drains the
+                    // ring re-clocks the read, which is safe on edge-triggered
+                    // epoll backends.
+                    if self.tx_buffer.capacity() >= self.tx_buffer_max {
+                        break;
+                    }
+                    let new_cap = (self.tx_buffer.capacity() * 2).min(self.tx_buffer_max);
+                    self.tx_buffer.resize(new_cap);
+                    self.stats.tx_buffer_grows.increment();
                 }
             }
         }
 
         // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
+            let rx_high_water = self.rx_buffer.len();
             while !self.rx_buffer.is_empty() {
                 let view = self.rx_buffer.view(0..self.rx_buffer.len());
                 let (a, b) = view.as_slices();
@@ -938,10 +1174,37 @@ impl TcpConnectionInner {
                             }
                         }
                         sender.rst(self.tx_send, Some(self.rx_seq));
+                        self.stats.rsts_tx.increment();
                         return false;
                     }
                     Poll::Pending => break,
                 }
+            }
+            // Draining to the host may have reopened the window; re-advertise it
+            // so the guest resumes without waiting on its persist timer.
+            if self.should_reopen_window() {
+                self.needs_ack = true;
+            }
+            // Autotune: if the host kept up (drained to empty) and the buffer
+            // was at least 75% full this cycle, the guest is rx-bound. Grow
+            // both the ring and the advertised window ceiling so the next ACK
+            // tells the guest it can send more. Gated on the assembler being
+            // empty because `Ring::resize` only preserves contiguous bytes
+            // in `[head, tail)` — any out-of-order data staged past `tail`
+            // via `write_at` would be lost.
+            if self.rx_buffer.is_empty()
+                && self.rx_assembler.is_empty()
+                && self.rx_window_cap < self.rx_buffer_max
+                && rx_high_water * 4 >= self.rx_window_cap * 3
+            {
+                let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
+                let new_ring_cap = new_cap.next_power_of_two();
+                if new_ring_cap > self.rx_buffer.capacity() {
+                    self.rx_buffer.resize(new_ring_cap);
+                }
+                self.rx_window_cap = new_cap;
+                self.needs_ack = true;
+                self.stats.rx_buffer_grows.increment();
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
                 if let Err(err) = socket.get().shutdown(Shutdown::Write) {
@@ -952,14 +1215,17 @@ impl TcpConnectionInner {
                         "shutdown error"
                     );
                     sender.rst(self.tx_send, Some(self.rx_seq));
+                    self.stats.rsts_tx.increment();
                     return false;
                 }
                 self.is_shutdown = true;
             }
         }
 
-        // Send whatever needs to be sent.
-        self.send_next(sender);
+        // Send any pending data or ACKs. Always use Flush: if no data was
+        // read from the socket and no ACK is pending, send_data will find
+        // nothing to do anyway.
+        self.send_next(sender, AckPolicy::Flush);
         true
     }
 
@@ -982,18 +1248,50 @@ impl TcpConnectionInner {
         } else {
             log_connect_error(sender.ft, &err);
             sender.rst(self.tx_send, Some(self.rx_seq));
+            self.stats.rsts_tx.increment();
         }
     }
 
     fn rx_window_len(&self) -> u16 {
-        ((self.rx_window_cap - self.rx_buffer.len()) >> self.rx_window_scale) as u16
+        (self.rx_window_avail() >> self.rx_window_scale) as u16
     }
 
-    fn send_next(&mut self, sender: &mut Sender<'_, impl Client>) {
+    /// Available receive window in unscaled bytes.
+    fn rx_window_avail(&self) -> usize {
+        self.rx_window_cap - self.rx_buffer.len()
+    }
+
+    /// The receive window as the guest reconstructs it: `rx_window_avail`
+    /// rounded down to the scale quantum, since the low `rx_window_scale` bits
+    /// are not transmitted. Equals `rx_window_avail` when scaling is off.
+    fn rx_window_advertised(&self) -> usize {
+        (self.rx_window_avail() >> self.rx_window_scale) << self.rx_window_scale
+    }
+
+    /// Record the window just advertised to the guest. `window_len` is the
+    /// scaled value placed on the wire; the guest shifts it back up by the
+    /// window scale, so track that reconstructed value to keep the reopen
+    /// check accurate.
+    fn record_advertised_window(&mut self, window_len: u16) {
+        self.rx_window_last_adv = (window_len as usize) << self.rx_window_scale;
+    }
+
+    /// Whether draining to the host reopened the receive window enough to
+    /// re-advertise it (RFC 1122 §4.2.3.3 receiver SWS avoidance). Fires once on
+    /// the closed-to-open transition, once the guest-visible (post-scale-
+    /// truncation) window reaches the reopen threshold: a full segment, or half
+    /// the window cap when the cap is smaller than one segment.
+    fn should_reopen_window(&self) -> bool {
+        let reopen_threshold = self.tx_mss.min(self.rx_window_cap / 2);
+        self.rx_window_last_adv < reopen_threshold
+            && self.rx_window_advertised() >= reopen_threshold
+    }
+
+    fn send_next(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
         match self.state {
             TcpState::Connecting => {}
             TcpState::SynReceived => self.send_syn(sender, Some(self.rx_seq)),
-            _ => self.send_data(sender),
+            _ => self.send_data(sender, ack_policy),
         }
     }
 
@@ -1006,6 +1304,15 @@ impl TcpConnectionInner {
         // (even with no shift) to enable window scale support.
         let window_scale = self.enable_window_scaling.then_some(self.rx_window_scale);
 
+        // RFC 7323 §2.2: the window in a SYN/SYN-ACK is not scaled even with the
+        // window_scale option present. Advertise the real window clamped to 16
+        // bits; the active-open SYN (no ACK) carries a zero window.
+        let window_len = if ack_number.is_some() {
+            self.rx_window_avail().min(u16::MAX as usize) as u16
+        } else {
+            0
+        };
+
         // Advertise the maximum possible segment size, allowing the guest
         // to truncate this to its own MTU calculation.
         let max_seg_size = u16::MAX;
@@ -1015,11 +1322,7 @@ impl TcpConnectionInner {
             control: TcpControl::Syn,
             seq_number: self.tx_send,
             ack_number,
-            window_len: if ack_number.is_some() {
-                self.rx_window_len()
-            } else {
-                0
-            },
+            window_len,
             window_scale,
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
@@ -1030,29 +1333,48 @@ impl TcpConnectionInner {
 
         sender.send_packet(&tcp, None);
         self.tx_send += 1;
+        if ack_number.is_some() {
+            // The guest reads the SYN-ACK window unscaled, so record that value.
+            self.rx_window_last_adv = window_len as usize;
+        }
     }
 
-    fn send_data(&mut self, sender: &mut Sender<'_, impl Client>) {
-        // These computations assume syn has already been sent and acked.
+    fn send_data(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
+        // RFC 1323 §2.2: the window field in SYN/SYN-ACK is unscaled. Only
+        // apply the shift once the handshake is complete (first non-SYN window
+        // update sets tx_window_scale_active). For the guest-initiated path
+        // this is set before send_data can run; for host-initiated (port-forward)
+        // connections it guards against using the unscaled SYN-ACK window.
+        let scale = if self.tx_window_scale_active {
+            self.tx_window_scale
+        } else {
+            0
+        };
         let tx_payload_end = self.tx_acked + self.tx_buffer.len();
         let tx_end = tx_payload_end + self.tx_fin_buffered as usize;
-        let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << self.tx_window_scale);
+        let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << scale);
         let tx_done = seq_min([tx_end, tx_window_end]);
+
+        if self.tx_send < tx_end && tx_window_end <= self.tx_send {
+            self.stats.tx_blocked_window_full.increment();
+        }
 
         while self.needs_ack || self.tx_send < tx_done {
             let rx_mtu = sender.client.rx_mtu();
             if rx_mtu == 0 {
                 // Out of receive buffers.
+                self.stats.tx_blocked_no_rx_mtu.increment();
                 break;
             }
 
+            let window_len = self.rx_window_len();
             let mut tcp = TcpRepr {
                 src_port: sender.ft.dst.port(),
                 dst_port: sender.ft.src.port(),
                 control: TcpControl::None,
                 seq_number: self.tx_send,
                 ack_number: Some(self.rx_seq),
-                window_len: self.rx_window_len(),
+                window_len,
                 window_scale: None,
                 max_seg_size: None,
                 sack_permitted: false,
@@ -1092,14 +1414,34 @@ impl TcpConnectionInner {
 
             tx_next += payload_len;
 
+            // Set PSH on the segment that drains all currently-buffered data.
+            // This tells the guest TCP stack to deliver the data to the
+            // application immediately rather than waiting for more.
+            // Note: when tx_fin_buffered is true, the FIN block below will
+            // override tcp.control to Fin, which takes priority over Psh.
+            if payload_len > 0 && tx_next == tx_payload_end && !self.tx_fin_buffered {
+                tcp.control = TcpControl::Psh;
+            }
+
             // Include the fin if present if there is still room.
             if self.tx_fin_buffered
-                && tcp.control == TcpControl::None
+                && tcp.control != TcpControl::Fin
                 && tx_next == tx_payload_end
                 && tx_next < tx_window_end
             {
                 tcp.control = TcpControl::Fin;
                 tx_next += 1;
+            }
+
+            // If this iteration would emit a pure ACK (no payload, no FIN)
+            // and the caller asked us to defer pure ACKs, stop the loop.
+            // `needs_ack` is left set for the next poll-cycle `Flush` call
+            // (or a piggybacked ACK on later outbound data).
+            if ack_policy == AckPolicy::Defer
+                && tx_next == self.tx_send
+                && tcp.control == TcpControl::None
+            {
+                break;
             }
 
             assert!(tx_next <= tx_end);
@@ -1112,8 +1454,12 @@ impl TcpConnectionInner {
                 .view(payload_start..payload_start + payload_len);
 
             sender.send_packet(&tcp, Some(payload));
+            self.stats.pkts_tx_to_guest.increment();
+            self.stats.bytes_tx_to_guest.add(payload_len as u64);
+            self.stats.tx_segment_size.add_sample(payload_len as u64);
             self.tx_send = tx_next;
             self.needs_ack = false;
+            self.record_advertised_window(window_len);
         }
 
         assert!(self.tx_send <= tx_end);
@@ -1144,14 +1490,15 @@ impl TcpConnectionInner {
     /// unacceptable packet (duplicate, out of order, etc.). These acks
     /// shouldn't be combined with data so that they are interpreted correctly
     /// by the peer.
-    fn ack(&self, sender: &mut Sender<'_, impl Client>) {
+    fn ack(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let window_len = self.rx_window_len();
         let tcp = TcpRepr {
             src_port: sender.ft.dst.port(),
             dst_port: sender.ft.src.port(),
             control: TcpControl::None,
             seq_number: self.tx_send,
             ack_number: Some(self.rx_seq),
-            window_len: self.rx_window_len(),
+            window_len,
             window_scale: None,
             max_seg_size: None,
             sack_permitted: false,
@@ -1163,6 +1510,8 @@ impl TcpConnectionInner {
         trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
         sender.send_packet(&tcp, None);
+        self.stats.standalone_acks_tx.increment();
+        self.record_advertised_window(window_len);
     }
 
     fn handle_listen_syn(
@@ -1178,6 +1527,7 @@ impl TcpConnectionInner {
         let ack_number = tcp.ack_number.ok_or(TcpError::MissingAck)?;
         if ack_number <= self.tx_acked || ack_number > self.tx_send {
             sender.rst(ack_number, None);
+            self.stats.rsts_tx.increment();
             return Ok(false);
         }
         self.tx_acked = ack_number;
@@ -1237,11 +1587,13 @@ impl TcpConnectionInner {
 
             // This is a valid RST. Drop the connection.
             tracing::debug!("connection reset");
+            self.last_close_reason = ConnectionCloseReason::PeerRst;
             return Ok(false);
         }
 
         // Send ack and drop packets with unacceptable sequence numbers.
         if !seq_acceptable {
+            self.stats.out_of_window_pkts.increment();
             self.ack(sender);
             return Err(TcpError::Unacceptable.into());
         }
@@ -1266,6 +1618,7 @@ impl TcpConnectionInner {
         if self.state == TcpState::SynReceived {
             if ack_number <= self.tx_acked || ack_number > self.tx_send {
                 sender.rst(ack_number, None);
+                self.stats.rsts_tx.increment();
                 return Ok(false);
             }
             self.tx_window_len = tcp.window_len;
@@ -1290,7 +1643,10 @@ impl TcpConnectionInner {
                 match self.state {
                     TcpState::FinWait1 => self.state = TcpState::FinWait2,
                     TcpState::Closing => self.state = TcpState::TimeWait,
-                    TcpState::LastAck => return Ok(false),
+                    TcpState::LastAck => {
+                        self.last_close_reason = ConnectionCloseReason::Normal;
+                        return Ok(false);
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -1306,6 +1662,9 @@ impl TcpConnectionInner {
             self.tx_window_len = tcp.window_len;
             self.tx_window_rx_seq = tcp.seq_number;
             self.tx_window_tx_seq = ack_number;
+            // RFC 1323 §2.2: window scaling becomes active after the
+            // handshake. The SYN/SYN-ACK window field is unscaled.
+            self.tx_window_scale_active = true;
         }
 
         // Scope the data payload and FIN to the in-window portion of the segment.
@@ -1330,6 +1689,11 @@ impl TcpConnectionInner {
             TcpState::Connecting | TcpState::SynReceived | TcpState::SynSent => unreachable!(),
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 if !payload.is_empty() || fin {
+                    if !payload.is_empty() {
+                        self.stats.data_segments_rx_from_guest.increment();
+                        self.stats.bytes_rx_from_guest.add(payload.len() as u64);
+                        self.stats.rx_segment_size.add_sample(payload.len() as u64);
+                    }
                     // Stage 1: Compute the byte offset from the contiguous
                     // frontier.
                     //
@@ -1412,6 +1776,16 @@ impl TcpListener {
     /// The socket must already be bound to an address. This method will call
     /// `listen` on it.
     pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+        let Some(host_port) = socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .map(|addr| addr.port())
+        else {
+            return Err(BindError::Io(io::Error::other(
+                "socket local address is invalid",
+            )));
+        };
         let socket = PolledSocket::new(driver, socket).map_err(BindError::Io)?;
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
@@ -1420,7 +1794,7 @@ impl TcpListener {
             );
             return Err(BindError::Io(err));
         }
-        Ok(Self { socket })
+        Ok(Self { socket, host_port })
     }
 
     fn poll_listener(

@@ -1448,7 +1448,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
             GuestVsmState::NotGuestEnabled => (),
             GuestVsmState::Enabled { vtl1: _ } => {
                 // VTL 1 cannot be already enabled
-                return Err(HvError::VtlAlreadyEnabled);
+                return Err(HvError::InvalidVtlState);
             }
         }
 

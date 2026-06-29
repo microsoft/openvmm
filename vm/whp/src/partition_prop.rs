@@ -36,6 +36,7 @@ pp! {
     #[cfg(target_arch = "x86_64")]
     (ExceptionExitBitmap, WHvPartitionPropertyCodeExceptionExitBitmap, u64),
     (SeparateSecurityDomain, WHvPartitionPropertyCodeSeparateSecurityDomain, BOOL),
+    (NestedVirtualization, WHvPartitionPropertyCodeNestedVirtualization, BOOL),
     #[cfg(target_arch = "x86_64")]
     (X64MsrExitBitmap, WHvPartitionPropertyCodeX64MsrExitBitmap, abi::WHV_X64_MSR_EXIT_BITMAP),
     (PrimaryNumaNode, WHvPartitionPropertyCodePrimaryNumaNode, u16),

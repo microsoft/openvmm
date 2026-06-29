@@ -285,7 +285,15 @@ mod x86 {
             &mut self,
             value: &vp::SynicMessageQueues,
         ) -> Result<(), Self::Error> {
-            self.run.vplc(self.vtl).message_queues.restore(value);
+            let vplc = self.run.vplc(self.vtl);
+            vplc.message_queues.restore(value);
+            // Restoring the queues repopulates them directly, bypassing the
+            // `enqueue_message` path that rings the doorbell. If the restored
+            // queues are non-empty, ring the doorbell here.
+            if vplc.message_queues.pending_sints() != 0 {
+                vplc.check_queues
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(())
         }
 
@@ -378,6 +386,30 @@ mod x86 {
                         .for_op("set synic event flag page")?;
                 }
             }
+            Ok(())
+        }
+
+        fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+            let mut data = vec![0u8; whp::abi::WHV_X64_NESTED_STATE_SIZE];
+            let n = self
+                .run
+                .vp
+                .whp(self.vtl)
+                .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
+                .for_op("get nested state")?;
+            assert_eq!(n, data.len());
+            Ok(vp::NestedState { data })
+        }
+
+        fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
+            self.run
+                .vp
+                .whp(self.vtl)
+                .set_state(
+                    whp::abi::WHvVirtualProcessorStateTypeNestedState,
+                    &value.data,
+                )
+                .for_op("set nested state")?;
             Ok(())
         }
     }

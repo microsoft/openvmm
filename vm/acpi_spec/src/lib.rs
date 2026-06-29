@@ -11,12 +11,15 @@
 extern crate alloc;
 
 pub mod aspt;
+pub mod dmar;
 pub mod fadt;
 pub mod gtdt;
 pub mod iort;
+pub mod ivrs;
 pub mod madt;
 pub mod mcfg;
 pub mod pptt;
+pub mod slit;
 pub mod srat;
 
 #[expect(non_camel_case_types)]

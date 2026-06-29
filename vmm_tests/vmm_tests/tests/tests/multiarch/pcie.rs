@@ -1,22 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// All of the PCIe tests on Linux direct have been marked as unstable due to
-// what is presumed to be a bug in the guest kernel currently being used.
-// TODO: remove the unstable designations once the kernel is updated.
-
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
+use anyhow::Context;
 use guid::Guid;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
 use std::time::Duration;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test_with;
 
 /// List of MAC addresses for tests to use.
 const PCIE_NIC_MAC_ADDRESSES: [MacAddress; 2] = [
@@ -165,7 +164,7 @@ async fn parse_guest_pci_devices(
 /// Test PCIe root complex discovery and root port enumeration by
 /// guest software in a single segment topology.
 #[openvmm_test(
-    unstable_linux_direct_x64,
+    linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -196,9 +195,11 @@ async fn pcie_root_emulation_single_segment(
 }
 
 /// Test PCIe root complex discovery and root port enumeration by
-/// guest software in a topology with multiple segments.
+/// guest software in a topology with multiple segments. Uses 10
+/// ports per root complex to exercise multi-function packing across
+/// multiple PCI device slots.
 #[openvmm_test(
-    unstable_linux_direct_x64,
+    linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -209,7 +210,7 @@ async fn pcie_root_emulation_multi_segment(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 8))
+        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 10))
         .run()
         .await?;
 
@@ -221,7 +222,7 @@ async fn pcie_root_emulation_multi_segment(
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 32);
+    assert_eq!(root_port_count, 40);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -231,7 +232,7 @@ async fn pcie_root_emulation_multi_segment(
 /// Test PCIe switch enumeration when attached to both root
 /// ports and the downstream switch ports of other switches.
 #[openvmm_test(
-    unstable_linux_direct_x64,
+    linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -275,7 +276,7 @@ async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 ///
 /// NOTE: This test relies on device specific software (drivers,
 /// tooling) within the guest OS to perform the validation.
-#[openvmm_test(unstable_linux_direct_x64)]
+#[openvmm_test(linux_direct_x64)]
 async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
@@ -332,10 +333,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
 /// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
 /// guest sees it, then hot-remove it and verify it's gone.
-#[openvmm_test(
-    unstable_linux_direct_x64,
-    uefi_x64(vhd(windows_datacenter_core_2022_x64))
-)]
+#[openvmm_test(linux_direct_x64, uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 async fn pcie_hotplug(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
@@ -522,6 +520,15 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
         })
         .run()
         .await?;
@@ -550,71 +557,515 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         "IORT ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the SMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/")
-        .read()
-        .await
-        .unwrap_or_default();
-    tracing::info!(%iommu_groups, "IOMMU groups");
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(&sh, |l| l.contains("arm-smmu-v3") && l.contains("event"), 2)
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test AMD IOMMU emulation with a mixed topology:
+///
+/// - Root complex s0rc0 (segment 0): IOMMU enabled, virtio-net + NVMe behind it
+/// - Root complex s1rc0 (segment 1): no IOMMU, virtio-net behind it
+///
+/// Verifies:
+/// 1. Linux discovers the AMD IOMMU (dmesg shows AMD-Vi init)
+/// 2. IVRS ACPI table is present
+/// 3. Devices behind the IOMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interface)
+/// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
+///
+/// Restricted to AMD-vendor hosts: the AMD IOMMU emulator's IVHD entries
+/// surface a host-cpuid-derived AMD-Vi family/model that Linux's IOMMU
+/// driver only accepts when the boot CPU also reports as AMD.
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// IVRS ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(
+    openvmm,
+    amd,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
+async fn amd_iommu_mixed_topology(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_amd_iommu(&["s0rc0"]) // IOMMU only on segment 0's RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+                // Set real ACS capability bits on root ports so Linux creates
+                // per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify IOMMU is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
     assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the SMMU"
+        dmesg.contains("AMD-Vi") || dmesg.contains("AMD IOMMUv2") || dmesg.contains("AMD IOMMU"),
+        "Linux should discover the AMD IOMMU in dmesg. dmesg excerpt:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("IOMMU") || l.contains("iommu") || l.contains("AMD-Vi"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
-    // 4. Verify all NVMe devices enumerate and have block devices
+    // 2. Verify IVRS ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("IVRS"),
+        "IVRS ACPI table should be present. Tables: {acpi_tables}"
+    );
+
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "AMD-Vi", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("amd-vi")
+    })
+    .await?;
+
+    // 3–5. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(
+        &sh,
+        |l| l.contains("AMD-Vi: Event") || l.contains("IO_PAGE_FAULT"),
+        2,
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test Intel VT-d IOMMU emulation across a multi-segment topology:
+///
+/// - Root complex s0rc0 (segment 0): VT-d IOMMU enabled, NVMe + virtio-net
+/// - Root complex s1rc0 (segment 1): VT-d IOMMU enabled, NVMe + virtio-net
+///
+/// Every root complex has its own VT-d unit. Unlike AMD-Vi, Intel VT-d cannot
+/// have a device on a segment with no VT-d unit: enabling VT-d forces global
+/// interrupt remapping (x2APIC), under which Linux can't allocate MSIs for a
+/// device outside every DRHD's scope (so OpenVMM rejects that configuration).
+///
+/// Verifies:
+/// 1. Linux discovers the Intel IOMMU (dmesg shows DMAR/Intel IOMMU init)
+/// 2. DMAR ACPI table is present
+/// 3. Devices behind the IOMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interface)
+/// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
+///
+/// Runs under both Linux direct boot and UEFI (Ubuntu VHD) to verify the
+/// DMAR ACPI table is threaded through the UEFI firmware as well.
+#[vmm_test_with(
+    openvmm,
+    intel,
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+)]
+async fn intel_vtd_multi_segment(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_intel_vtd(&["s0rc0", "s1rc0"]) // VT-d on every RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+                // Linux's Intel IOMMU driver is off by default unless the
+                // kernel was built with CONFIG_INTEL_IOMMU_DEFAULT_ON.
+                // Also set real ACS capability bits on root ports so Linux
+                // creates per-device IOMMU groups (SV + RR + CR + UF).
+                .with_custom_config(|c| {
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" intel_iommu=on");
+                    }
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify Intel IOMMU is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
+    assert!(
+        dmesg.contains("DMAR") || dmesg.contains("Intel IOMMU") || dmesg.contains("intel-iommu"),
+        "Linux should discover the Intel IOMMU in dmesg. dmesg excerpt:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| {
+                l.contains("IOMMU")
+                    || l.contains("iommu")
+                    || l.contains("DMAR")
+                    || l.contains("dmar")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 2. Verify DMAR ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("DMAR"),
+        "DMAR ACPI table should be present. Tables: {acpi_tables}"
+    );
+
+    // 3b. Verify interrupt remapping is active for IOAPIC interrupts.
+    verify_ioapic_interrupt_remapping(&sh, &dmesg, "Intel VT-d", |l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("remap") || l.contains("dmar") || l.contains("intel-iommu")
+    })
+    .await?;
+
+    // 3–6. Common IOMMU validation: IOMMU groups, NVMe DMA, net, no faults.
+    verify_iommu_mixed_topology(
+        &sh,
+        |l| l.contains("DMAR: [DMA") || l.contains("DMAR: DRHD: handling fault"),
+        2,
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot a guest with VMBus entirely disabled.
+///
+/// Uses PCIe NVMe for the boot disk, virtio-vsock for pipette communication,
+/// and a second PCIe NVMe controller for the cidata agent disk. Validates
+/// that the guest boots and pipette is reachable without any VMBus devices.
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
+async fn boot_no_vmbus_pcie_nvme(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Common IOMMU validation for the mixed-topology tests.
+///
+/// After the platform-specific IOMMU discovery and ACPI table checks, this
+/// function verifies that DMA remapping is actually working:
+///
+/// 1. At least `min_iommu_groups` IOMMU groups exist (ensures all devices
+///    behind the IOMMU are scoped correctly, not just one).
+/// 2. NVMe DMA works on the IOMMU-backed segment.
+/// 3. Network interfaces are present on both segments.
+/// 4. No IOMMU faults in dmesg (using the caller-provided `fault_filter`).
+///    This is checked last, after exercising DMA/MSI, so that runtime faults
+///    triggered by the actual translation and interrupt-remapping paths are
+///    caught in addition to any boot-time faults.
+async fn verify_iommu_mixed_topology(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    fault_filter: impl Fn(&str) -> bool,
+    min_iommu_groups: usize,
+) -> anyhow::Result<()> {
+    // Verify IOMMU groups cover all devices behind the IOMMU RC.
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
+    let group_count = iommu_groups.split_whitespace().count();
+    tracing::info!(%iommu_groups, group_count, "IOMMU groups");
+    assert!(
+        group_count >= min_iommu_groups,
+        "expected at least {min_iommu_groups} IOMMU groups, got {group_count}"
+    );
+
+    // Verify NVMe DMA works through the IOMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(sh, 2, "0000").await?;
+
+    // Verify network interfaces exist on both RCs.
+    verify_net_interface_count(sh, 2).await?;
+
+    // Verify no IOMMU faults — faults indicate broken device scope, missing
+    // page table mappings, or devices not covered by the IOMMU. Re-read dmesg
+    // here (after the DMA exercise above) so faults from the actual
+    // translation/interrupt-remapping path are caught, not just boot-time ones.
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let faults: Vec<&str> = dmesg.lines().filter(|l| fault_filter(l)).collect();
+    assert!(
+        faults.is_empty(),
+        "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
+        faults.join("\n")
+    );
+
+    Ok(())
+}
+
+/// Verify that IOAPIC interrupts are routed through interrupt remapping.
+///
+/// Linux reports this path as `IR-IO-APIC` in `/proc/interrupts`. To prove the
+/// route is live, this captures the serial IRQ count, generates serial output,
+/// and confirms the count increases.
+async fn verify_ioapic_interrupt_remapping(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    dmesg: &str,
+    iommu: &str,
+    ir_dmesg_filter: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        iommu,
+        ir_dmesg = %dmesg
+            .lines()
+            .filter(|l| ir_dmesg_filter(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "interrupt remapping dmesg lines"
+    );
+
+    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
+    tracing::info!(%interrupts, "/proc/interrupts");
+
+    let serial_irq = interrupts
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) not present in /proc/interrupts")?;
+    assert!(
+        serial_irq.contains("IR-IO-APIC"),
+        "serial IRQ should route through the IR-IO-APIC chip once interrupt \
+         remapping is enabled, got: {serial_irq}"
+    );
+
+    let count_before = sum_irq_count(serial_irq);
+    cmd!(
+        sh,
+        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
+    )
+    .run()
+    .await?;
+    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
+    let serial_irq_after = interrupts_after
+        .lines()
+        .find(|l| l.contains("ttyS0"))
+        .context("serial port IRQ (ttyS0) disappeared from /proc/interrupts")?;
+    let count_after = sum_irq_count(serial_irq_after);
+    tracing::info!(count_before, count_after, "serial IOAPIC interrupt counts");
+    assert!(
+        count_after > count_before,
+        "serial (IOAPIC) interrupt count should increase after generating \
+         serial traffic with interrupt remapping enabled: \
+         before={count_before} after={count_after}"
+    );
+
+    Ok(())
+}
+
+/// Sum the per-CPU interrupt counts from a `/proc/interrupts` line.
+///
+/// A line looks like `" 4:   42    0   IR-IO-APIC   4-edge   ttyS0"`: the
+/// leading token is the IRQ label and the trailing tokens are the chip and
+/// device name, so only the numeric per-CPU columns in between are summed.
+fn sum_irq_count(line: &str) -> u64 {
+    line.split_whitespace()
+        .skip(1)
+        .map_while(|tok| tok.parse::<u64>().ok())
+        .sum()
+}
+
+/// Verify that NVMe block devices are visible in the guest and exercise DMA
+/// on the device whose PCI path falls in the given domain (segment).
+async fn verify_nvme_dma_on_segment(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    expected_count: usize,
+    pci_domain: &str,
+) -> anyhow::Result<()> {
     let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
-    let nvme_count = block_devs
-        .split_whitespace()
-        .filter(|d| d.starts_with("nvme"))
-        .count();
-    assert_eq!(
-        nvme_count, 2,
-        "both NVMe controllers should create block devices: {block_devs}"
-    );
-
-    // 5. Verify NVMe behind SMMU works: write and read back data.
-    //    Resolve each NVMe block device's PCI domain from sysfs to find the
-    //    one on segment 0 (the SMMU-covered root complex). This ensures we
-    //    exercise DMA through the SMMU, not the non-SMMU path.
     let nvme_devs: Vec<&str> = block_devs
         .split_whitespace()
         .filter(|d| d.starts_with("nvme"))
         .collect();
-    let mut smmu_nvme = None;
+    assert_eq!(
+        nvme_devs.len(),
+        expected_count,
+        "expected {expected_count} NVMe block devices, found {}: {block_devs}",
+        nvme_devs.len(),
+    );
+
+    // Find the NVMe device on the target PCI domain and exercise DMA.
+    let domain_prefix = format!("{pci_domain}:");
+    let mut target = None;
     for dev in &nvme_devs {
         let pci_path = cmd!(sh, "readlink -f /sys/block/{dev}/device")
             .read()
             .await?;
-        // PCI path looks like .../pci0000:00/0000:00:00.0/0000:01:00.0/nvme/nvme0
-        // Search all path segments for a BDF in PCI domain 0000.
-        if pci_path.split('/').any(|seg| seg.starts_with("0000:")) {
-            smmu_nvme = Some(*dev);
+        if pci_path
+            .split('/')
+            .any(|seg| seg.starts_with(&domain_prefix))
+        {
+            target = Some(*dev);
             break;
         }
     }
-    let smmu_nvme =
-        smmu_nvme.expect("should find an NVMe on PCI domain 0000 (SMMU-covered segment)");
-    tracing::info!(smmu_nvme, "exercising DMA through SMMU");
+    let target =
+        target.unwrap_or_else(|| panic!("no NVMe device found on PCI domain {pci_domain}"));
+
+    tracing::info!(target, pci_domain, "exercising DMA on NVMe device");
     cmd!(
         sh,
-        "dd if=/dev/urandom of=/dev/{smmu_nvme} bs=4096 count=16 oflag=direct"
+        "dd if=/dev/urandom of=/dev/{target} bs=4096 count=16 oflag=direct"
     )
     .read()
     .await?;
     cmd!(
         sh,
-        "dd if=/dev/{smmu_nvme} of=/dev/null bs=4096 count=16 iflag=direct"
+        "dd if=/dev/{target} of=/dev/null bs=4096 count=16 iflag=direct"
     )
     .read()
     .await?;
 
-    // 6. Verify virtio-net interfaces exist on both RCs
+    Ok(())
+}
+
+/// Assert that the guest has at least `min_count` non-loopback network
+/// interfaces.
+async fn verify_net_interface_count(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    min_count: usize,
+) -> anyhow::Result<()> {
     let net_devs = cmd!(sh, "ls /sys/class/net/").read().await?;
     let net_count = net_devs.split_whitespace().filter(|d| *d != "lo").count();
     tracing::info!(%net_devs, net_count, "network devices");
     assert!(
-        net_count >= 2,
-        "at least 2 network interfaces should exist (got {net_count}): {net_devs}"
+        net_count >= min_count,
+        "expected at least {min_count} network interfaces, got {net_count}: {net_devs}"
+    );
+    Ok(())
+}
+
+/// Boot Windows with VMBus entirely disabled.
+///
+/// Uses a prepped Windows image with NetKVM pre-installed and pipette
+/// configured for TCP transport. Boots from PCIe NVMe, uses virtio-net +
+/// consomme for TCP pipette communication.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
+async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_tcp_pipette_nic("s0rc0rp2")
+        })
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot Windows with a virtio-net NIC on PCIe, install the NetKVM driver
+/// online via pipette, and verify the NIC gets a DHCP address from consomme.
+///
+/// This validates that our virtio-net emulation works with the upstream
+/// virtio-win NetKVM driver on Windows.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WIN_DRIVERS])]
+async fn virtio_net_windows(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_virtio_nic("s0rc0rp0")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.windows_shell();
+
+    // Create the driver directory in the guest
+    cmd!(sh, "cmd.exe /c mkdir C:\\drivers").run().await?;
+
+    // Push driver files into the guest
+    let driver_files = [
+        "netkvm.cat",
+        "netkvm.inf",
+        "netkvm.sys",
+        "netkvmco.exe",
+        "netkvmp.exe",
+    ];
+    for filename in &driver_files {
+        let local_path = driver_dir.join(filename);
+        let file = fs_err::File::open(&local_path)?;
+        let guest_path = format!("C:/drivers/{filename}");
+        agent
+            .write_file(&guest_path, futures::io::AllowStdIo::new(file))
+            .await
+            .with_context(|| format!("failed to write {guest_path}"))?;
+    }
+
+    // Install the driver
+    let output = cmd!(sh, "pnputil.exe /add-driver C:/drivers/netkvm.inf /install")
+        .read()
+        .await?;
+    tracing::info!(%output, "pnputil output");
+
+    // Wait for the NIC to get a DHCP address from consomme.
+    // Consomme assigns 10.0.0.2 to the client.
+    let mut timer = PolledTimer::new(&driver);
+    let mut found = false;
+    for attempt in 0..30 {
+        let ipconfig = cmd!(sh, "ipconfig").read().await?;
+        if ipconfig.contains("10.0.0.2") {
+            tracing::info!(attempt, "virtio-net NIC got DHCP address");
+            found = true;
+            break;
+        }
+        tracing::debug!(attempt, "waiting for DHCP address...");
+        timer.sleep(Duration::from_secs(2)).await;
+    }
+    assert!(
+        found,
+        "virtio-net NIC did not get a DHCP address (expected 10.0.0.2)"
+    );
+
+    // Verify we can ping the gateway
+    let ping_output = cmd!(sh, "ping -n 1 10.0.0.1").read().await?;
+    tracing::info!(%ping_output, "ping output");
+    assert!(
+        ping_output.contains("Reply from 10.0.0.1"),
+        "ping to consomme gateway failed: {ping_output}"
     );
 
     agent.power_off().await?;

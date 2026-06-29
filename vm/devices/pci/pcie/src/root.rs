@@ -5,13 +5,13 @@
 
 use crate::BDF_BUS_SHIFT;
 use crate::BDF_DEVICE_FUNCTION_MASK;
-use crate::BDF_DEVICE_SHIFT;
 use crate::MAX_FUNCTIONS_PER_BUS;
 use crate::PAGE_OFFSET_MASK;
 use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::port::GenericPciePortDefinition;
 use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
 use chipset_device::ChipsetDevice;
@@ -32,10 +32,36 @@ use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
-use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
+use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use zerocopy::IntoBytes;
+
+/// Error returned when a root complex configuration is invalid.
+#[derive(Debug, Error)]
+pub enum InvalidRootComplexError {
+    /// Too many root ports were requested for the available device/function
+    /// slots.
+    #[error("requested {port_count} root ports, but only {max} are supported")]
+    TooManyPorts {
+        /// Number of root ports requested.
+        port_count: usize,
+        /// Maximum number of root ports supported.
+        max: usize,
+    },
+    /// A root port's devfn could not be assigned.
+    #[error(transparent)]
+    Devfn(#[from] crate::PortDevfnError),
+    /// A root port was assigned to a device number reserved for another use.
+    #[error("root port {port_index} would be placed at reserved device number {device:#x}")]
+    ReservedDeviceCollision {
+        /// Index of the root port that collided.
+        port_index: usize,
+        /// The reserved device number it would have occupied.
+        device: u8,
+    },
+}
 
 /// A generic PCI Express root complex emulator.
 #[derive(InspectMut)]
@@ -50,30 +76,47 @@ pub struct GenericPcieRootComplex {
     chbcr: Option<Box<dyn ControlMmioIntercept>>,
     /// CXL Component Registers backing CHBCR accesses in CXL mode.
     cxl_component_registers: Option<CxlComponentRegisters>,
-    /// Map of root ports attached to the root complex, indexed by combined device and function numbers.
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|(_, v)| v)")]
-    ports: HashMap<u8, (Arc<str>, RootPort)>,
+    /// Devices on the root complex bus, sorted by devfn
+    /// (device << 3 | function).
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|(k, v)| (k, v)))")]
+    devices: Vec<(u8, BusDevice)>,
+    /// Bitmask of reserved root-bus device numbers (bit N => device N).
+    reserved_device_numbers: u32,
+}
+
+/// A device occupying a slot on the root complex bus.
+enum BusDevice {
+    /// A root port providing downstream connectivity.
+    RootPort { name: Arc<str>, port: Box<RootPort> },
+    /// A Root Complex Integrated Endpoint (RCiEP).
+    Rciep {
+        name: Arc<str>,
+        dev: Box<dyn GenericPciBusDevice>,
+    },
+}
+
+impl Inspect for BusDevice {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        match self {
+            BusDevice::RootPort { port, .. } => {
+                port.as_ref().inspect(req);
+            }
+            BusDevice::Rciep { name, .. } => {
+                req.value(name.as_ref());
+            }
+        }
+    }
 }
 
 /// Information about a downstream port in a PCIe topology.
 pub struct DownstreamPortInfo {
-    /// The port number (device/function index).
-    pub port_number: u8,
+    /// The devfn (device << 3 | function) of this port on the root complex bus.
+    pub devfn: u8,
     /// The port name.
     pub name: Arc<str>,
     /// Shared bus range, updated by the config space emulator when the
     /// guest programs secondary/subordinate bus numbers.
     pub bus_range: AssignedBusRange,
-}
-
-/// A description of a generic PCIe root port.
-pub struct GenericPcieRootPortDefinition {
-    /// The name of the root port.
-    pub name: Arc<str>,
-    /// Whether hotplug is enabled for this root port.
-    pub hotplug: bool,
-    /// Express-level port settings (ACS, etc.).
-    pub settings: PciePortSettings,
 }
 
 /// A flat description of a PCIe switch without hierarchy.
@@ -114,27 +157,92 @@ enum DecodedEcamAccess<'a> {
     Unroutable,
     InternalBus(&'a mut RootPort, u16),
     DownstreamPort(&'a mut RootPort, u8, u8, u16),
+    /// A Root Complex Integrated Endpoint (RCiEP) on the start bus.
+    /// Fields: device, function, config offset.
+    Rciep(&'a mut dyn GenericPciBusDevice, u8, u16),
 }
 
-impl GenericPcieRootComplex {
-    /// Constructs a new `GenericPcieRootComplex` emulator.
+/// Builder for [`GenericPcieRootComplex`].
+///
+/// Obtain via [`GenericPcieRootComplex::builder`], configure optional
+/// settings, then call [`build`](GenericPcieRootComplexBuilder::build).
+pub struct GenericPcieRootComplexBuilder<'a> {
+    register_mmio: &'a mut dyn RegisterMmioIntercept,
+    bus_range: RangeInclusive<u8>,
+    ecam_range: MemoryRange,
+    root_ports: Option<(Vec<GenericPciePortDefinition>, &'a MsiTarget)>,
+    first_port_device_number: u8,
+    reserved_device_numbers: u32,
+    chbcr_range: Option<MemoryRange>,
+}
+
+fn device_number_is_reserved(reserved_device_numbers: u32, device: u8) -> bool {
+    let bit = 1u32 << device;
+    reserved_device_numbers & bit != 0
+}
+
+impl<'a> GenericPcieRootComplexBuilder<'a> {
+    /// Add root ports to the complex.
     ///
-    /// `msi_target` is the MSI target for all root ports in this complex.
-    /// The caller is responsible for creating the `MsiConnection` and
-    /// connecting it to the platform's interrupt controller.
-    pub fn new(
-        register_mmio: &mut dyn RegisterMmioIntercept,
-        start_bus: u8,
-        end_bus: u8,
-        chbcr_range: Option<MemoryRange>,
-        ecam_range: MemoryRange,
-        ports: Vec<GenericPcieRootPortDefinition>,
-        msi_target: &MsiTarget,
+    /// `msi_target` is the MSI target for all root ports; the caller is
+    /// responsible for creating the `MsiConnection` and connecting it to
+    /// the platform's interrupt controller.
+    pub fn root_ports(
+        mut self,
+        ports: Vec<GenericPciePortDefinition>,
+        msi_target: &'a MsiTarget,
     ) -> Self {
-        assert_eq!(
-            ecam_size_from_bus_numbers(start_bus, end_bus),
-            ecam_range.len()
-        );
+        self.root_ports = Some((ports, msi_target));
+        self
+    }
+
+    /// Set the first PCI device number to assign to root ports (default 0).
+    ///
+    /// Root ports are placed at consecutive device numbers starting from
+    /// this value. Use a non-zero value to reserve lower device numbers
+    /// for RCiEPs (e.g., an IOMMU at device 0).
+    pub fn first_port_device_number(mut self, device: u8) -> Self {
+        self.first_port_device_number = device;
+        self
+    }
+
+    /// Reserve root-bus device numbers via a bitmask.
+    ///
+    /// Root ports and RCiEPs are assigned into device/function slots; any
+    /// device number whose bit is set here is treated as occupied by another entity
+    /// (e.g. a phantom IOAPIC), and a configuration that would place a root
+    /// port on it is rejected at [`build`](Self::build) time.
+    pub fn reserved_device_numbers(mut self, mask: u32) -> Self {
+        self.reserved_device_numbers = mask;
+        self
+    }
+
+    /// Set the CHBCR (Component Register BAR) MMIO range for CXL mode.
+    ///
+    /// When set, CXL component registers are allocated and a CHBCR MMIO
+    /// region is mapped.
+    pub fn chbcr_range(mut self, range: Option<MemoryRange>) -> Self {
+        self.chbcr_range = range;
+        self
+    }
+
+    /// Build the root complex.
+    ///
+    /// Returns an error if the root port count exceeds the available
+    /// device/function slots (32 devices × 8 functions = 256 max).
+    pub fn build(self) -> Result<GenericPcieRootComplex, InvalidRootComplexError> {
+        let Self {
+            register_mmio,
+            bus_range,
+            ecam_range,
+            root_ports,
+            first_port_device_number,
+            reserved_device_numbers,
+            chbcr_range,
+        } = self;
+
+        let start_bus = *bus_range.start();
+        let end_bus = *bus_range.end();
 
         let mut ecam = register_mmio.new_io_region("ecam", ecam_range.len());
         ecam.map(ecam_range.start());
@@ -157,37 +265,90 @@ impl GenericPcieRootComplex {
             region
         });
 
-        let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
-            .into_iter()
-            .enumerate()
-            .map(|(i, definition)| {
-                let device_number: u8 = (i << BDF_DEVICE_SHIFT).try_into().expect("too many ports");
-                // Use the device number as the slot number for hotpluggable ports
+        let mut devices: Vec<(u8, BusDevice)> = Vec::new();
+
+        if let Some((ports, msi_target)) = root_ports {
+            let port_count = ports.len();
+            let max = 32usize.saturating_sub(first_port_device_number as usize) * 8;
+            if port_count > max {
+                return Err(InvalidRootComplexError::TooManyPorts { port_count, max });
+            }
+
+            // Assign each root port a devfn (honoring explicit requests and
+            // filling the rest from `first_port_device_number`), shared with
+            // the switch downstream-port assignment.
+            let placements = crate::assign_port_devfns(&ports, first_port_device_number)?;
+
+            for (i, (definition, placement)) in ports.into_iter().zip(placements).enumerate() {
+                let device = placement.devfn >> crate::BDF_DEVICE_SHIFT;
+                if device_number_is_reserved(reserved_device_numbers, device) {
+                    return Err(InvalidRootComplexError::ReservedDeviceCollision {
+                        port_index: i,
+                        device,
+                    });
+                }
                 let hotplug_slot_number = if definition.hotplug {
-                    Some((device_number as u32) + 1)
+                    Some(i as u32 + 1)
                 } else {
                     None
                 };
-                // Derive a per-port MSI target with this port's devfn.
-                let port_msi_target = msi_target.with_devfn(device_number);
+                let port_msi_target = msi_target.with_devfn(placement.devfn);
                 let root_port = RootPort::new(
                     register_mmio,
                     definition.name.clone(),
+                    placement.multi_function,
                     hotplug_slot_number,
                     &port_msi_target,
                     definition.settings,
                 );
-                (device_number, (definition.name, root_port))
-            })
-            .collect();
+                devices.push((
+                    placement.devfn,
+                    BusDevice::RootPort {
+                        name: definition.name,
+                        port: Box::new(root_port),
+                    },
+                ));
+            }
 
-        Self {
+            // `devices` is searched with `binary_search_by_key` on devfn, so it
+            // must be kept sorted. Explicit devfns may be assigned out of
+            // order, so sort here.
+            devices.sort_by_key(|(devfn, _)| *devfn);
+        }
+
+        Ok(GenericPcieRootComplex {
             start_bus,
             end_bus,
             ecam,
             chbcr,
             cxl_component_registers,
-            ports: port_map,
+            devices,
+            reserved_device_numbers,
+        })
+    }
+}
+
+impl GenericPcieRootComplex {
+    /// Returns a builder for constructing a new `GenericPcieRootComplex`.
+    pub fn builder<'a>(
+        register_mmio: &'a mut dyn RegisterMmioIntercept,
+        bus_range: RangeInclusive<u8>,
+        ecam_range: MemoryRange,
+    ) -> GenericPcieRootComplexBuilder<'a> {
+        assert_eq!(
+            ecam_size_from_bus_numbers(*bus_range.start(), *bus_range.end()),
+            ecam_range.len(),
+            "ECAM range size does not match bus range"
+        );
+
+        GenericPcieRootComplexBuilder {
+            register_mmio,
+            bus_range,
+            ecam_range,
+            root_ports: None,
+            first_port_device_number: 0,
+            reserved_device_numbers: 0,
+            chbcr_range: None,
         }
     }
 
@@ -225,43 +386,34 @@ impl GenericPcieRootComplex {
         }
     }
 
-    /// Attach the provided `GenericPciBusDevice` to the port identified.
+    /// Attach the provided `GenericPciBusDevice` to the port identified by
+    /// its devfn (device << 3 | function).
     pub fn add_pcie_device(
         &mut self,
-        port: u8,
+        port_devfn: u8,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
-            tracing::error!(
-                "GenericPcieRootComplex: port {:#x} not found for device '{}'",
-                port,
-                name.as_ref()
-            );
-            format!("Port {:#x} not found", port).into()
-        })?;
+        let root_port = match self.devices.iter_mut().find(|(d, _)| *d == port_devfn) {
+            Some((_, BusDevice::RootPort { port, .. })) => port,
+            Some((_, BusDevice::Rciep { name: existing, .. })) => return Err(existing.clone()),
+            None => return Err(format!("devfn {port_devfn} is not a root port").into()),
+        };
 
-        match root_port.connect_device(name, dev) {
-            Ok(()) => Ok(()),
-            Err(existing_device) => {
-                tracing::warn!(
-                    "GenericPcieRootComplex: failed to connect device to port {:#x}, existing device: '{}'",
-                    port,
-                    existing_device
-                );
-                Err(existing_device)
-            }
-        }
+        root_port.connect_device(name, dev)
     }
 
     /// Enumerate the downstream ports of the root complex.
     pub fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
-        self.ports
+        self.devices
             .iter()
-            .map(|(port, (name, rp))| DownstreamPortInfo {
-                port_number: *port,
-                name: name.clone(),
-                bus_range: rp.port.bus_range(),
+            .filter_map(|(devfn, d)| match d {
+                BusDevice::RootPort { name, port } => Some(DownstreamPortInfo {
+                    devfn: *devfn,
+                    name: name.clone(),
+                    bus_range: port.port.bus_range(),
+                }),
+                BusDevice::Rciep { .. } => None,
             })
             .collect()
     }
@@ -273,27 +425,71 @@ impl GenericPcieRootComplex {
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
     ) -> anyhow::Result<()> {
-        let (_, (_, root_port)) = self
-            .ports
+        let root_port = self
+            .devices
             .iter_mut()
-            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
             .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
         root_port.port.hotplug_add_device(device_name, device)
     }
 
     /// Hot-remove the device from a named port.
     pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
-        let (_, (_, root_port)) = self
-            .ports
+        let root_port = self
+            .devices
             .iter_mut()
-            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
             .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
         root_port.port.hotplug_remove_device()
     }
 
-    /// Returns the size of the ECAM MMIO region this root complex is emulating.
-    pub fn ecam_size(&self) -> u64 {
-        ecam_size_from_bus_numbers(self.start_bus, self.end_bus)
+    /// Attach a Root Complex Integrated Endpoint (RCiEP) at the given
+    /// devfn (device << 3 | function) on the start bus of this root complex.
+    ///
+    /// RCiEPs are Type 0 PCI functions that appear directly on the start
+    /// bus alongside root ports (e.g., an AMD IOMMU at device 0).
+    /// They do not sit behind a downstream port and have a fixed BDF.
+    ///
+    /// Most RCiEPs should be registered at function 0. Config space
+    /// accesses to other functions of the same device will be forwarded
+    /// to the function 0 device via
+    /// [`pci_cfg_read_with_routing`](GenericPciBusDevice::pci_cfg_read_with_routing),
+    /// whose default implementation returns all-1s (no device present).
+    /// A multi-function RCiEP should override `pci_cfg_read_with_routing`
+    /// and `pci_cfg_write_with_routing` to handle non-zero functions.
+    pub fn add_rciep(
+        &mut self,
+        devfn: u8,
+        name: impl Into<Arc<str>>,
+        dev: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Arc<str>> {
+        let device = devfn >> crate::BDF_DEVICE_SHIFT;
+        if device_number_is_reserved(self.reserved_device_numbers, device) {
+            return Err(format!("reserved device number {device:#x}").into());
+        }
+
+        let name = name.into();
+        match self.devices.binary_search_by_key(&devfn, |(d, _)| *d) {
+            Ok(i) => {
+                let existing = match &self.devices[i].1 {
+                    BusDevice::RootPort { name, .. } | BusDevice::Rciep { name, .. } => {
+                        name.clone()
+                    }
+                };
+                return Err(existing);
+            }
+            Err(i) => {
+                self.devices
+                    .insert(i, (devfn, BusDevice::Rciep { name, dev }));
+            }
+        }
+        Ok(())
     }
 
     fn decode_ecam_access<'a>(&'a mut self, addr: u64) -> DecodedEcamAccess<'a> {
@@ -310,26 +506,64 @@ impl GenericPcieRootComplex {
         let cfg_offset_within_function = (ecam_offset & PAGE_OFFSET_MASK) as u16;
 
         if bus_number == self.start_bus {
-            match self.ports.get_mut(&device_function) {
-                Some((_, port)) => {
+            let function = device_function & 0x7;
+            // Look up the exact devfn first; if not found, fall back to
+            // function 0 of the same device so that multi-function
+            // endpoints can handle the access via
+            // `pci_cfg_read_with_routing`.
+            let devfn_fn0 = device_function & !7;
+            let mut idx = None;
+            let mut exact = false;
+            for (i, (d, _)) in self.devices.iter().enumerate() {
+                if *d == device_function {
+                    idx = Some(i);
+                    exact = true;
+                    break;
+                }
+                if *d == devfn_fn0 {
+                    idx = Some(i);
+                }
+                if *d > device_function {
+                    break;
+                }
+            }
+            match idx.map(|i| (exact, &mut self.devices[i].1)) {
+                // Exact devfn match for a root port — return its config space.
+                Some((true, BusDevice::RootPort { port, .. })) => {
                     return DecodedEcamAccess::InternalBus(port, cfg_offset_within_function);
                 }
-                None => return DecodedEcamAccess::Unroutable,
-            }
-        } else if bus_number > self.start_bus && bus_number <= self.end_bus {
-            for (_, port) in self.ports.values_mut() {
-                if port
-                    .port
-                    .cfg_space
-                    .assigned_bus_range()
-                    .contains(&bus_number)
-                {
-                    return DecodedEcamAccess::DownstreamPort(
-                        port,
-                        bus_number,
-                        device_function,
+                // Fallback (fn0) match for a root port — the target function
+                // is not a root port, so this devfn is unroutable.
+                Some((false, BusDevice::RootPort { .. })) => {
+                    return DecodedEcamAccess::Unroutable;
+                }
+                Some((_, BusDevice::Rciep { dev, .. })) => {
+                    return DecodedEcamAccess::Rciep(
+                        dev.as_mut(),
+                        function,
                         cfg_offset_within_function,
                     );
+                }
+                _ => {
+                    return DecodedEcamAccess::Unroutable;
+                }
+            }
+        } else if bus_number > self.start_bus && bus_number <= self.end_bus {
+            for (_, d) in self.devices.iter_mut() {
+                if let BusDevice::RootPort { port, .. } = d {
+                    if port
+                        .port
+                        .cfg_space
+                        .assigned_bus_range()
+                        .contains(&bus_number)
+                    {
+                        return DecodedEcamAccess::DownstreamPort(
+                            port,
+                            bus_number,
+                            device_function,
+                            cfg_offset_within_function,
+                        );
+                    }
                 }
             }
             return DecodedEcamAccess::Unroutable;
@@ -349,14 +583,16 @@ impl GenericPcieRootComplex {
             }
         }
 
-        for (_, port) in self.ports.values_mut() {
-            if let Some((bar, offset)) = port.port.find_bar(addr) {
-                if let Err(err) =
-                    validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
-                {
-                    return Some(IoResult::Err(err));
+        for (_, d) in self.devices.iter_mut() {
+            if let BusDevice::RootPort { port, .. } = d {
+                if let Some((bar, offset)) = port.port.find_bar(addr) {
+                    if let Err(err) =
+                        validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
+                    {
+                        return Some(IoResult::Err(err));
+                    }
+                    return Some(port.port.bar_mmio_read(bar, offset, data));
                 }
-                return Some(port.port.bar_mmio_read(bar, offset, data));
             }
         }
 
@@ -373,14 +609,16 @@ impl GenericPcieRootComplex {
             }
         }
 
-        for (_, port) in self.ports.values_mut() {
-            if let Some((bar, offset)) = port.port.find_bar(addr) {
-                if let Err(err) =
-                    validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
-                {
-                    return Some(IoResult::Err(err));
+        for (_, d) in self.devices.iter_mut() {
+            if let BusDevice::RootPort { port, .. } = d {
+                if let Some((bar, offset)) = port.port.find_bar(addr) {
+                    if let Err(err) =
+                        validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
+                    {
+                        return Some(IoResult::Err(err));
+                    }
+                    return Some(port.port.bar_mmio_write(bar, offset, data));
                 }
-                return Some(port.port.bar_mmio_write(bar, offset, data));
             }
         }
 
@@ -400,8 +638,10 @@ impl ChangeDeviceState for GenericPcieRootComplex {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        for (_, (_, port)) in self.ports.iter_mut() {
-            port.port.cfg_space.reset();
+        for (_, d) in self.devices.iter_mut() {
+            if let BusDevice::RootPort { port, .. } = d {
+                port.port.cfg_space.reset();
+            }
         }
     }
 }
@@ -460,15 +700,24 @@ impl MmioIntercept for GenericPcieRootComplex {
 
         let dword_aligned_addr = addr & !3;
         let mut dword_value = !0;
+        let start_bus = self.start_bus;
         match self.decode_ecam_access(dword_aligned_addr) {
             DecodedEcamAccess::UnexpectedIntercept => {
-                tracing::error!("unexpected intercept at address 0x{:16x}", addr);
+                tracelimit::warn_ratelimited!(addr, "unexpected intercept at ECAM address");
             }
             DecodedEcamAccess::Unroutable => {
-                tracelimit::warn_ratelimited!("unroutable config space access");
+                tracing::trace!(addr, "unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
+            }
+            DecodedEcamAccess::Rciep(dev, function, cfg_offset) => {
+                let bus = start_bus;
+                if let Some(result) =
+                    dev.pci_cfg_read_with_routing(bus, bus, function, cfg_offset, &mut dword_value)
+                {
+                    check_result!(result);
+                }
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_read(
@@ -526,15 +775,24 @@ impl MmioIntercept for GenericPcieRootComplex {
             }
         };
 
+        let start_bus = self.start_bus;
         match self.decode_ecam_access(dword_aligned_addr) {
             DecodedEcamAccess::UnexpectedIntercept => {
-                tracing::error!("unexpected intercept at address 0x{:16x}", addr);
+                tracelimit::warn_ratelimited!(addr, "unexpected intercept at ECAM address");
             }
             DecodedEcamAccess::Unroutable => {
-                tracelimit::warn_ratelimited!("unroutable config space access");
+                tracing::trace!(addr, "unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
+            }
+            DecodedEcamAccess::Rciep(dev, function, cfg_offset) => {
+                let bus = start_bus;
+                if let Some(result) =
+                    dev.pci_cfg_write_with_routing(bus, bus, function, cfg_offset, write_dword)
+                {
+                    check_result!(result);
+                }
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
@@ -568,6 +826,7 @@ impl RootPort {
     pub fn new(
         register_mmio: &mut dyn RegisterMmioIntercept,
         name: impl Into<Arc<str>>,
+        multi_function: bool,
         hotplug_slot_number: Option<u32>,
         msi_target: &MsiTarget,
         settings: PciePortSettings,
@@ -589,7 +848,7 @@ impl RootPort {
             name_str.to_string(),
             hardware_ids,
             DevicePortType::RootPort,
-            false,
+            multi_function,
             hotplug_slot_number,
             msi_target,
             settings,
@@ -681,9 +940,9 @@ mod save_restore {
         #[derive(Protobuf)]
         #[mesh(package = "pcie.root")]
         pub struct PortSavedState {
-            /// The port number (device_function index in the ports HashMap).
+            /// The devfn (device << 3 | function) of this port.
             #[mesh(1)]
-            pub port_number: u8,
+            pub devfn: u8,
             /// The root port Type 1 configuration space state.
             #[mesh(2)]
             pub cfg_space: RootPortCfgSpaceSavedState,
@@ -715,16 +974,17 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            // Save all root ports and sort by port number for stable ordering.
-            let mut ports = Vec::with_capacity(self.ports.len());
-            for (&port_number, (_, root_port)) in self.ports.iter_mut() {
-                ports.push(state::PortSavedState {
-                    port_number,
-                    cfg_space: root_port.port.cfg_space.save()?,
-                    cxl_component_registers: root_port.port.save_cxl_component_registers_state()?,
-                });
+            // Save all root ports in devfn order.
+            let mut ports = Vec::new();
+            for (devfn, d) in self.devices.iter_mut() {
+                if let BusDevice::RootPort { port, .. } = d {
+                    ports.push(state::PortSavedState {
+                        devfn: *devfn,
+                        cfg_space: port.port.cfg_space.save()?,
+                        cxl_component_registers: port.port.save_cxl_component_registers_state()?,
+                    });
+                }
             }
-            ports.sort_by_key(|p| p.port_number);
 
             Ok(state::SavedState {
                 start_bus: self.start_bus,
@@ -758,35 +1018,47 @@ mod save_restore {
             }
 
             // Validate port count matches
-            if ports.len() != self.ports.len() {
+            let root_port_count = self
+                .devices
+                .iter()
+                .filter(|(_, d)| matches!(d, BusDevice::RootPort { .. }))
+                .count();
+            if ports.len() != root_port_count {
                 return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                     "root port count mismatch: saved {}, current {}",
                     ports.len(),
-                    self.ports.len()
+                    root_port_count
                 )));
             }
 
             let mut seen_ports = HashSet::with_capacity(ports.len());
 
-            // Restore each saved port by explicit port number.
+            // Restore each saved port by devfn.
             for port_state in ports {
-                if !seen_ports.insert(port_state.port_number) {
+                if !seen_ports.insert(port_state.devfn) {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
-                        "duplicate root port {} in saved state",
-                        port_state.port_number
+                        "duplicate root port devfn {} in saved state",
+                        port_state.devfn
                     )));
                 }
 
-                if let Some((_, root_port)) = self.ports.get_mut(&port_state.port_number) {
-                    root_port.port.cfg_space.restore(port_state.cfg_space)?;
-                    root_port.port.restore_cxl_component_registers_state(
-                        port_state.cxl_component_registers,
-                    )?;
-                } else {
-                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
-                        "root port {} not found",
-                        port_state.port_number
-                    )));
+                match self
+                    .devices
+                    .iter_mut()
+                    .find(|(d, _)| *d == port_state.devfn)
+                {
+                    Some((_, BusDevice::RootPort { port, .. })) => {
+                        port.port.cfg_space.restore(port_state.cfg_space)?;
+                        port.port.restore_cxl_component_registers_state(
+                            port_state.cxl_component_registers,
+                        )?;
+                    }
+                    Some((_, BusDevice::Rciep { .. })) | None => {
+                        return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                            "root port devfn {} not found",
+                            port_state.devfn
+                        )));
+                    }
                 }
             }
 
@@ -821,11 +1093,12 @@ mod tests {
     fn instantiate_root_complex(
         start_bus: u8,
         end_bus: u8,
-        port_count: u8,
+        port_count: u16,
     ) -> GenericPcieRootComplex {
         let port_defs = (0..port_count)
-            .map(|i| GenericPcieRootPortDefinition {
+            .map(|i| GenericPciePortDefinition {
                 name: format!("test-port-{}", i).into(),
+                devfn: None,
                 hotplug: false,
                 settings: PciePortSettings::default(),
             })
@@ -835,27 +1108,23 @@ mod tests {
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
-        GenericPcieRootComplex::new(
-            &mut register_mmio,
-            start_bus,
-            end_bus,
-            None,
-            ecam,
-            port_defs,
-            msi_conn.target(),
-        )
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
+            .build()
+            .unwrap()
     }
 
     fn instantiate_root_complex_with_chbcr(
         start_bus: u8,
         end_bus: u8,
-        port_count: u8,
+        port_count: u16,
         chbcr_start: u64,
     ) -> GenericPcieRootComplex {
         let port_defs = (0..port_count)
-            .map(|i| GenericPcieRootPortDefinition {
+            .map(|i| GenericPciePortDefinition {
                 name: format!("test-port-{}", i).into(),
+                devfn: None,
                 hotplug: false,
                 settings: PciePortSettings::default(),
             })
@@ -868,17 +1137,13 @@ mod tests {
         );
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);
-        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let msi_conn = pci_core::msi::MsiConnection::new();
 
-        GenericPcieRootComplex::new(
-            &mut register_mmio,
-            start_bus,
-            end_bus,
-            Some(chbcr),
-            ecam,
-            port_defs,
-            msi_conn.target(),
-        )
+        GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
+            .chbcr_range(Some(chbcr))
+            .build()
+            .unwrap()
     }
 
     #[test]
@@ -925,54 +1190,67 @@ mod tests {
                 .len(),
             32
         );
+
+        // Multi-function packing allows more than 32 ports.
+        assert_eq!(
+            instantiate_root_complex(0, 255, 64)
+                .downstream_ports()
+                .len(),
+            64
+        );
+        assert_eq!(
+            instantiate_root_complex(0, 255, 256)
+                .downstream_ports()
+                .len(),
+            256
+        );
     }
 
     #[test]
     fn test_ecam_size() {
         // Single bus
-        assert_eq!(instantiate_root_complex(0, 0, 0).ecam_size(), 0x10_0000);
-        assert_eq!(instantiate_root_complex(32, 32, 0).ecam_size(), 0x10_0000);
-        assert_eq!(instantiate_root_complex(255, 255, 0).ecam_size(), 0x10_0000);
+        assert_eq!(ecam_size_from_bus_numbers(0, 0), 0x10_0000);
+        assert_eq!(ecam_size_from_bus_numbers(32, 32), 0x10_0000);
+        assert_eq!(ecam_size_from_bus_numbers(255, 255), 0x10_0000);
 
         // Two bus
-        assert_eq!(instantiate_root_complex(0, 1, 0).ecam_size(), 0x20_0000);
-        assert_eq!(instantiate_root_complex(32, 33, 0).ecam_size(), 0x20_0000);
-        assert_eq!(instantiate_root_complex(254, 255, 0).ecam_size(), 0x20_0000);
+        assert_eq!(ecam_size_from_bus_numbers(0, 1), 0x20_0000);
+        assert_eq!(ecam_size_from_bus_numbers(32, 33), 0x20_0000);
+        assert_eq!(ecam_size_from_bus_numbers(254, 255), 0x20_0000);
 
         // Everything
-        assert_eq!(instantiate_root_complex(0, 255, 0).ecam_size(), 0x1000_0000);
+        assert_eq!(ecam_size_from_bus_numbers(0, 255), 0x1000_0000);
     }
 
     #[test]
     fn test_probe_ports_via_config_space() {
         let mut rc = instantiate_root_complex(0, 255, 4);
-        for device_number in 0..4 {
+        // With multi-function packing, 4 ports are at devfn 0..3
+        // (device 0, functions 0..3). ECAM offset = devfn * 4096.
+        for devfn in 0..4u64 {
             let mut vendor_device: u32 = 0;
-            rc.mmio_read((device_number << 3) * 4096, vendor_device.as_mut_bytes())
+            rc.mmio_read(devfn * 4096, vendor_device.as_mut_bytes())
                 .unwrap();
             assert_eq!(vendor_device, 0xC030_1414);
 
             let mut value_16: u16 = 0;
-            rc.mmio_read((device_number << 3) * 4096, value_16.as_mut_bytes())
-                .unwrap();
+            rc.mmio_read(devfn * 4096, value_16.as_mut_bytes()).unwrap();
             assert_eq!(value_16, 0x1414);
 
-            rc.mmio_read((device_number << 3) * 4096 + 2, value_16.as_mut_bytes())
+            rc.mmio_read(devfn * 4096 + 2, value_16.as_mut_bytes())
                 .unwrap();
             assert_eq!(value_16, 0xC030);
         }
 
-        for device_number in 4..10 {
+        for devfn in 4..10u64 {
             let mut value_32: u32 = 0;
-            rc.mmio_read((device_number << 3) * 4096, value_32.as_mut_bytes())
-                .unwrap();
+            rc.mmio_read(devfn * 4096, value_32.as_mut_bytes()).unwrap();
             assert_eq!(value_32, 0xFFFF_FFFF);
 
             let mut value_16: u16 = 0;
-            rc.mmio_read((device_number << 3) * 4096, value_16.as_mut_bytes())
-                .unwrap();
+            rc.mmio_read(devfn * 4096, value_16.as_mut_bytes()).unwrap();
             assert_eq!(value_16, 0xFFFF);
-            rc.mmio_read((device_number << 3) * 4096 + 2, value_16.as_mut_bytes())
+            rc.mmio_read(devfn * 4096 + 2, value_16.as_mut_bytes())
                 .unwrap();
             assert_eq!(value_16, 0xFFFF);
         }
@@ -1000,12 +1278,8 @@ mod tests {
 
         rc.add_pcie_device(0, "ep1", Box::new(endpoint1)).unwrap();
 
-        match rc.add_pcie_device(0, "ep2", Box::new(endpoint2)) {
-            Ok(()) => panic!("should have failed"),
-            Err(name) => {
-                assert_eq!(name, "ep1".into());
-            }
-        }
+        rc.add_pcie_device(0, "ep2", Box::new(endpoint2))
+            .expect_err("should fail: port already occupied");
     }
 
     #[test]
@@ -1171,7 +1445,7 @@ mod tests {
         const COMMAND_REG: u64 = 0x4;
         const COMMAND_REG_VALUE: u16 = 0x0004;
         const PORT0_ECAM: u64 = 0;
-        const PORT1_ECAM: u64 = (1 << 3) * 4096;
+        const PORT1_ECAM: u64 = 4096;
 
         let mut rc = instantiate_root_complex(0, 255, 2);
         let mut value_16: u16 = 0;
@@ -1215,12 +1489,13 @@ mod tests {
         // Test with hotplug disabled (None)
         let root_port_no_hotplug = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port-no-hotplug",
+                false,
                 None,
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1238,12 +1513,13 @@ mod tests {
         // Test with hotplug enabled (Some(slot_number))
         let root_port_with_hotplug = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port-hotplug",
+                false,
                 Some(5),
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1262,12 +1538,13 @@ mod tests {
     fn test_root_port_invalid_bus_range_handling() {
         let mut root_port = {
             let mut register_mmio = TestPcieMmioRegistration {};
-            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            let c = pci_core::msi::MsiConnection::new();
             RootPort::new(
                 &mut register_mmio,
                 "test-port",
+                false,
                 None,
-                c.target(),
+                &c.target(),
                 PciePortSettings::default(),
             )
         };
@@ -1322,8 +1599,8 @@ mod tests {
         rc.mmio_write(SECONDARY_BUS_NUM_REG, &[1]).unwrap();
         rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
 
-        // Configure bus numbers on port 1 (at device 1, so offset by 8*4096)
-        const PORT1_ECAM: u64 = (1 << 3) * 4096;
+        // Configure bus numbers on port 1 (at devfn 1 with multi-function packing)
+        const PORT1_ECAM: u64 = 4096;
         rc.mmio_write(PORT1_ECAM + SECONDARY_BUS_NUM_REG, &[11])
             .unwrap();
         rc.mmio_write(PORT1_ECAM + SUBORDINATE_BUS_NUM_REG, &[20])
@@ -1497,5 +1774,339 @@ mod tests {
         rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();
         rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[30]).unwrap();
         assert_eq!(bus_range.bus_range(), (20, 30));
+    }
+
+    #[test]
+    fn test_rciep_ecam_read_write() {
+        // Create a root complex with root ports starting at device 1,
+        // leaving device 0 free for an RCiEP.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let start_bus: u8 = 0;
+        let end_bus: u8 = 0;
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let port_defs = vec![GenericPciePortDefinition {
+            name: "port-0".into(),
+            devfn: None,
+            hotplug: false,
+            settings: PciePortSettings::default(),
+        }];
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
+            .first_port_device_number(1)
+            .build()
+            .unwrap();
+
+        // Attach an RCiEP at device 0 function 0 (devfn 0).
+        let rciep = TestPcieEndpoint::new(
+            |offset, value| {
+                if offset == 0 {
+                    *value = 0xDEAD_BEEF;
+                }
+                Some(IoResult::Ok)
+            },
+            |_, _| Some(IoResult::Ok),
+        );
+        rc.add_rciep(0, "rciep-0", Box::new(rciep)).unwrap();
+
+        // ECAM read at device 0, function 0 should hit the RCiEP.
+        let mut vendor_device: u32 = 0;
+        rc.mmio_read(0, vendor_device.as_mut_bytes()).unwrap();
+        assert_eq!(vendor_device, 0xDEAD_BEEF);
+
+        // ECAM write at device 0, function 0 should route to the RCiEP
+        // (the test endpoint accepts all writes).
+        rc.mmio_write(0, &0x1234_5678u32.to_le_bytes()).unwrap();
+
+        // Root port at device 1 should still be accessible.
+        let mut root_port_vendor: u32 = 0;
+        // device 1, function 0 → devfn 8 → offset 8 * 4096
+        rc.mmio_read(8 * 4096, root_port_vendor.as_mut_bytes())
+            .unwrap();
+        assert_eq!(root_port_vendor, 0xC030_1414);
+
+        // An unoccupied device slot should return all-1s.
+        let mut empty: u32 = 0;
+        // device 2, function 0 → devfn 16 → offset 16 * 4096
+        rc.mmio_read(16 * 4096, empty.as_mut_bytes()).unwrap();
+        assert_eq!(empty, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_rciep_function0_fallback() {
+        // Test that a config read to function 1 of an RCiEP device falls
+        // back to the function-0 device via pci_cfg_read_with_routing,
+        // which by default returns all-1s for non-zero functions.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let start_bus: u8 = 0;
+        let end_bus: u8 = 0;
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
+            .build()
+            .unwrap();
+
+        let rciep = TestPcieEndpoint::new(
+            |offset, value| {
+                if offset == 0 {
+                    *value = 0xCAFE_F00D;
+                }
+                Some(IoResult::Ok)
+            },
+            |_, _| Some(IoResult::Ok),
+        );
+        rc.add_rciep(0, "rciep-0", Box::new(rciep)).unwrap();
+
+        // Function 0 should return the device's vendor/device ID.
+        let mut val: u32 = 0;
+        rc.mmio_read(0, val.as_mut_bytes()).unwrap();
+        assert_eq!(val, 0xCAFE_F00D);
+
+        // Function 1 (devfn 1) falls back to the function-0 device's
+        // pci_cfg_read_with_routing, which returns all-1s by default.
+        let mut val_fn1: u32 = 0;
+        // devfn 1 → offset 1 * 4096
+        rc.mmio_read(4096, val_fn1.as_mut_bytes()).unwrap();
+        assert_eq!(val_fn1, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_rciep_collision_with_root_port() {
+        // Verify that adding an RCiEP at a devfn already occupied by a
+        // root port returns an error with the port's name.
+        let mut rc = instantiate_root_complex(0, 0, 1);
+
+        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        // Root port 0 sits at devfn 0; adding an RCiEP there should fail.
+        let err = rc
+            .add_rciep(0, "rciep-collision", Box::new(rciep))
+            .expect_err("should fail: devfn occupied by root port");
+        assert_eq!(err.as_ref(), "test-port-0");
+    }
+
+    #[test]
+    fn test_rciep_collision_with_rciep() {
+        // Verify that adding two RCiEPs at the same devfn returns an error.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .build()
+            .unwrap();
+
+        let rciep1 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        let rciep2 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        rc.add_rciep(0, "rciep-first", Box::new(rciep1)).unwrap();
+        let err = rc
+            .add_rciep(0, "rciep-second", Box::new(rciep2))
+            .expect_err("should fail: devfn already has an RCiEP");
+        assert_eq!(err.as_ref(), "rciep-first");
+    }
+
+    #[test]
+    fn test_rciep_collision_with_reserved_device_number() {
+        // Reserve device 0 and verify RCiEP insertion at devfn 0 is rejected.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .reserved_device_numbers(1 << 0)
+            .build()
+            .unwrap();
+
+        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        let err = rc
+            .add_rciep(0, "rciep-reserved", Box::new(rciep))
+            .expect_err("should fail: device 0 is reserved");
+        assert_eq!(err.as_ref(), "reserved device number 0x0");
+    }
+
+    #[test]
+    fn test_multi_function_header_bit() {
+        // With >1 port, bit 23 of register 0x0C (header type bit 7) must be set
+        // to indicate a multi-function device.
+        let mut rc = instantiate_root_complex(0, 255, 2);
+        let mut header_type_reg: u32 = 0;
+        // Register 0x0C for port 0 (devfn 0).
+        rc.mmio_read(0x0C, header_type_reg.as_mut_bytes()).unwrap();
+        // Bit 23 = multi-function flag in the header type byte (offset 0x0E).
+        assert_ne!(
+            header_type_reg & (1 << 23),
+            0,
+            "multi-function bit must be set"
+        );
+
+        // With exactly 1 port, the multi-function bit should NOT be set.
+        let mut rc_single = instantiate_root_complex(0, 255, 1);
+        let mut header_single: u32 = 0;
+        rc_single
+            .mmio_read(0x0C, header_single.as_mut_bytes())
+            .unwrap();
+        assert_eq!(
+            header_single & (1 << 23),
+            0,
+            "single-function: multi-function bit must be clear"
+        );
+    }
+
+    #[test]
+    fn test_multi_function_bit_is_per_device() {
+        // Two ports placed at explicit devfns on *distinct* devices (each the
+        // sole function of its device) must NOT advertise the multi-function
+        // bit, even though there is more than one port.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let port_defs = vec![
+            GenericPciePortDefinition {
+                name: "a".into(),
+                devfn: Some(8), // device 1, function 0
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            },
+            GenericPciePortDefinition {
+                name: "b".into(),
+                devfn: Some(16), // device 2, function 0
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            },
+        ];
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .root_ports(port_defs, &msi_conn.target())
+            .build()
+            .unwrap();
+
+        for devfn in [8u64, 16] {
+            let mut header: u32 = 0;
+            rc.mmio_read(devfn * 4096 + 0x0C, header.as_mut_bytes())
+                .unwrap();
+            assert_eq!(
+                header & (1 << 23),
+                0,
+                "devfn {devfn}: sole function of its device must not set the multi-function bit"
+            );
+        }
+    }
+
+    #[test]
+    fn test_too_many_ports_returns_error() {
+        // 257 ports starting at device 0 requires device 32, which is out of range.
+        let port_defs: Vec<GenericPciePortDefinition> = (0..257)
+            .map(|i| GenericPciePortDefinition {
+                name: format!("port-{}", i).into(),
+                devfn: None,
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            })
+            .collect();
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 255));
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(0, 255);
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let result = GenericPcieRootComplex::builder(&mut register_mmio, 0..=255u8, ecam)
+            .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
+            .build();
+        assert!(
+            result.is_err(),
+            "257 ports should exceed the 256-port limit"
+        );
+    }
+
+    /// Builds a root complex from explicit per-port devfn requests, returning
+    /// the assigned devfns in port-name order.
+    fn build_with_devfns(
+        ports: Vec<(&str, Option<u8>)>,
+        first_port_device_number: u8,
+    ) -> Result<Vec<(String, u8)>, InvalidRootComplexError> {
+        let port_defs: Vec<GenericPciePortDefinition> = ports
+            .into_iter()
+            .map(|(name, devfn)| GenericPciePortDefinition {
+                name: name.into(),
+                devfn,
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            })
+            .collect();
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .root_ports(port_defs, &msi_conn.target())
+            .first_port_device_number(first_port_device_number)
+            .build()?;
+        Ok(rc
+            .downstream_ports()
+            .into_iter()
+            .map(|p| (p.name.to_string(), p.devfn))
+            .collect())
+    }
+
+    #[test]
+    fn test_devfn_auto_allocation() {
+        // All-None ports pack onto consecutive devfns starting at 0.
+        let ports = build_with_devfns(vec![("a", None), ("b", None), ("c", None)], 0).unwrap();
+        assert_eq!(
+            ports,
+            vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]
+        );
+    }
+
+    #[test]
+    fn test_devfn_auto_allocation_respects_first_device() {
+        // None ports start at the first-port device number (device 1 → devfn 8).
+        let ports = build_with_devfns(vec![("a", None), ("b", None)], 1).unwrap();
+        assert_eq!(ports, vec![("a".into(), 8), ("b".into(), 9)]);
+    }
+
+    #[test]
+    fn test_devfn_explicit_and_auto_mix() {
+        // Explicit devfn is honored; subsequent None ports skip used devfns.
+        let ports =
+            build_with_devfns(vec![("a", Some(0)), ("b", None), ("c", Some(16))], 0).unwrap();
+        // Sorted by devfn: a@0, b@1, c@16.
+        assert_eq!(
+            ports,
+            vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 16)]
+        );
+    }
+
+    #[test]
+    fn test_devfn_none_then_explicit_zero_conflicts() {
+        // [None, Some(0)]: the None port takes devfn 0, so the explicit
+        // request for 0 collides and fails (allocation is in order).
+        let err = build_with_devfns(vec![("a", None), ("b", Some(0))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::DevfnInUse { devfn: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_explicit_duplicate_conflicts() {
+        let err = build_with_devfns(vec![("a", Some(5)), ("b", Some(5))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::DevfnInUse { devfn: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_nonzero_function_without_function_zero_fails() {
+        // device 5, function 1 (devfn 0x29) with no function 0 is undiscoverable.
+        let err = build_with_devfns(vec![("a", Some((5 << 3) | 1))], 0).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidRootComplexError::Devfn(crate::PortDevfnError::MissingFunctionZero {
+                device: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn test_devfn_function_zero_present_allows_higher_functions() {
+        // device 5 functions 0 and 1 present: discoverable, so this is allowed.
+        let ports =
+            build_with_devfns(vec![("a", Some(5 << 3)), ("b", Some((5 << 3) | 1))], 0).unwrap();
+        assert_eq!(ports, vec![("a".into(), 40), ("b".into(), 41)]);
     }
 }

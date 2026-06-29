@@ -4,6 +4,7 @@
 //! Update components in CCA emulation environment according to options specified.
 use crate::_jobs::local_install_cca_emu::build_cca_rootfs;
 use crate::_jobs::local_install_cca_emu::build_plane0_linux;
+use crate::_jobs::local_install_cca_emu::sync_shrinkwrap_overlay_assets;
 use flowey::node::prelude::*;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub struct SubCmds {
 flowey_request! {
     pub struct Params {
         pub test_root: PathBuf,
+        pub openvmm_root: PathBuf,
         pub sub_cmds: SubCmds,
         pub done: WriteVar<SideEffect>,
     }
@@ -33,6 +35,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             test_root,
+            openvmm_root,
             sub_cmds,
             done,
         } = request;
@@ -68,6 +71,7 @@ impl SimpleFlowNode for Node {
                 if rebuild_rootfs {
                     let shrinkwrap_dir = test_root.join("shrinkwrap");
                     let venv_dir = shrinkwrap_dir.join("venv");
+                    sync_shrinkwrap_overlay_assets(&openvmm_root, &shrinkwrap_dir)?;
                     build_cca_rootfs(rt, &test_root, &shrinkwrap_dir, &venv_dir)?;
                 }
 

@@ -707,12 +707,20 @@ impl ReadyState {
                 device_count: 1,
                 device: [],
             };
+            let (flags, numa_node) = if let Some(vnode) = dev.vnode {
+                (
+                    protocol::DeviceDescription2Flags::new().with_numa_affinity_specified(true),
+                    vnode,
+                )
+            } else {
+                (protocol::DeviceDescription2Flags::new(), 0)
+            };
             let device = protocol::DeviceDescription2 {
                 pnp_id,
                 slot: SlotNumber::new(),
                 serial_num: dev.serial_num,
-                flags: 0,
-                numa_node: 0,
+                flags,
+                numa_node,
                 rsvd: 0,
             };
 
@@ -1221,6 +1229,8 @@ pub struct VpciChannel {
     hardware_ids: HardwareIds,
     #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
+    /// NUMA node affinity reported to the guest in `DeviceDescription2`.
+    vnode: Option<u16>,
 
     // The underlying device.
     #[inspect(skip)]
@@ -1335,6 +1345,7 @@ impl VpciChannel {
         instance_id: Guid,
         config_space: VpciConfigSpace,
         msi_mapper: VpciInterruptMapper,
+        vnode: Option<u16>,
     ) -> Result<Self, NotPciDevice> {
         let (hardware_ids, bar_masks);
         {
@@ -1351,6 +1362,7 @@ impl VpciChannel {
             serial_num: instance_id.data1, // Use FIOV precedent of serial number from first block of GUID
             hardware_ids,
             bar_masks,
+            vnode,
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
@@ -1453,7 +1465,6 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
-    use pci_core::bus_range::AssignedBusRange;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1540,6 +1551,7 @@ mod tests {
             serial_num: 0x1234,
             hardware_ids,
             bar_masks,
+            vnode: None,
             device,
             bars_set: false,
             interrupts: Vec::new(),
@@ -1704,7 +1716,7 @@ mod tests {
             assert_eq!(device.pnp_id.sub_vendor_id, self.config.type0_sub_vendor_id);
             assert_eq!(device.pnp_id.sub_system_id, self.config.type0_sub_system_id);
             assert_eq!(device.slot, SlotNumber::new());
-            assert_eq!(device.flags, 0,);
+            assert_eq!(device.flags, protocol::DeviceDescription2Flags::new());
             assert_eq!(device.numa_node, 0);
             assert_eq!(device.rsvd, 0);
         }
@@ -1932,7 +1944,7 @@ mod tests {
 
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1944,7 +1956,7 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let (_msix, msix_capability) =
-            pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
+            pci_core::capabilities::msix::MsixEmulator::new(0, 64, &msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -1995,7 +2007,9 @@ mod tests {
 
         let mut value = 0;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0xfffff004);
+        assert_eq!(value & 0xfffffff0, 0xfffff000);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0xffffffff);
         pci.lock().pci_cfg_read(0x18, &mut value).unwrap();
@@ -2010,7 +2024,9 @@ mod tests {
         complete_write(pci.lock().pci_cfg_write(0x14, 0x20)).await;
         complete_write(pci.lock().pci_cfg_write(0x10, 0x0)).await;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
 
@@ -2028,7 +2044,9 @@ mod tests {
         complete_write(pci.lock().pci_cfg_write(0x14, 0xffffffff)).await;
         complete_write(pci.lock().pci_cfg_write(0x10, 0xffffffff)).await;
         pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
         pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
     }

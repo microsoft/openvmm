@@ -22,8 +22,11 @@ use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
+use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
+use chipset_resources::i440bx_host_pci_bridge::I440BxHostPciBridgeDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::ioapic::GenericIoApicDeviceHandle;
+use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
 use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
@@ -35,6 +38,12 @@ use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
+use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::HclCompatNvramQuirks;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
+use firmware_uefi_resources::UefiConfig;
+use firmware_uefi_resources::UefiDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -47,6 +56,8 @@ use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::IsaDmaControllerHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::SerialBackendHandle;
 pub use vmm_core_defs::LayoutConfig;
 use vmotherboard::ChipsetDeviceHandle;
@@ -67,7 +78,72 @@ pub struct VmManifestBuilder {
     guest_watchdog: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
+    uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
+    vmbus: bool,
+}
+
+/// Configuration for the Hyper-V UEFI helper device.
+pub struct UefiManifest {
+    /// Static configuration for the UEFI device.
+    pub config: UefiConfig,
+    /// Quirks for the NVRAM storage.
+    pub storage_quirks: Option<HclCompatNvramQuirks>,
+    /// Channel receiver for guest generation ID updates.
+    pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    /// NVRAM backing storage resource.
+    pub nvram_storage: Resource<NonVolatileStoreKind>,
+    /// Whether to wire up the platform VSM configuration resource.
+    pub vsm_config: bool,
+    /// Time source resource for UEFI time services.
+    pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+}
+
+impl UefiManifest {
+    /// Construct a [`UefiManifest`] with sensible defaults for the given
+    /// architecture:
+    ///
+    /// - `command_set` and `use_mmio` are derived from `arch`.
+    /// - `initial_generation_id` is randomized.
+    /// - `generation_id_recv` is a disconnected receiver (no host updates).
+    /// - `vsm_config` is disabled.
+    /// - `time_source` is a [`SystemTimeClockHandle`] with no delta.
+    ///
+    /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
+    pub fn new(
+        arch: MachineArch,
+        custom_uefi_vars: CustomVars,
+        secure_boot: bool,
+        diagnostics_log_level: LogLevel,
+        diagnostics_rate_limit: Option<u32>,
+        nvram_storage: Resource<NonVolatileStoreKind>,
+        storage_quirks: Option<HclCompatNvramQuirks>,
+    ) -> Self {
+        let mut initial_generation_id = [0; 16];
+        getrandom::fill(&mut initial_generation_id).expect("rng failure");
+        Self {
+            config: UefiConfig {
+                custom_uefi_vars,
+                secure_boot,
+                initial_generation_id,
+                use_mmio: !matches!(arch, MachineArch::X86_64),
+                command_set: match arch {
+                    MachineArch::X86_64 => UefiCommandSet::X64,
+                    MachineArch::Aarch64 => UefiCommandSet::Aarch64,
+                },
+                diagnostics_log_level,
+                diagnostics_rate_limit,
+            },
+            storage_quirks,
+            generation_id_recv: mesh::channel().1,
+            nvram_storage,
+            vsm_config: false,
+            time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+                delta_milliseconds: 0,
+            }
+            .into_resource(),
+        }
+    }
 }
 
 /// The VM's base chipset type, which determines the set of core devices (such
@@ -107,6 +183,8 @@ pub struct VmChipsetResult {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     /// The list of legacy PCI chipset devices with explicit placement metadata.
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    /// Optional ISA DMA controller resource handle.
+    pub isa_dma_controller: Option<Resource<IsaDmaControllerHandleKind>>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
 }
@@ -132,6 +210,7 @@ impl VmManifestBuilder {
     /// Create a new VM manifest builder for the given chipset type and
     /// architecture.
     pub fn new(ty: BaseChipsetType, arch: MachineArch) -> Self {
+        let vmbus = !matches!(ty, BaseChipsetType::UnenlightenedLinuxDirect);
         VmManifestBuilder {
             ty,
             arch,
@@ -144,7 +223,9 @@ impl VmManifestBuilder {
             guest_watchdog: false,
             psp: false,
             platform_pm_timer_assist: false,
+            uefi: None,
             debugcon: None,
+            vmbus,
         }
     }
 
@@ -242,18 +323,46 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Enable the Hyper-V UEFI helper device.
+    ///
+    /// All platform-specific dependencies (logger, NVRAM storage, watchdog
+    /// platform, optional VSM config, time source) are resolved via
+    /// [`vm_resource::PlatformResource`] resolvers that the caller must
+    /// register with the resource resolver.
+    ///
+    /// Only supported by [`BaseChipsetType::HypervGen2Uefi`]. Panics
+    /// otherwise.
+    pub fn with_uefi(mut self, uefi: UefiManifest) -> Self {
+        assert!(matches!(self.ty, BaseChipsetType::HypervGen2Uefi));
+        self.uefi = Some(uefi);
+        self
+    }
+
+    /// Mark this VM as not having VMBus.
+    ///
+    /// This affects the default memory layout: the chipset high MMIO region
+    /// (used for VMBus) is not allocated, while the low MMIO region is kept
+    /// for architecturally required address space.
+    pub fn without_vmbus(mut self) -> Self {
+        self.vmbus = false;
+        self
+    }
+
     /// Build the VM manifest.
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
             chipset_devices: Vec::new(),
             pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
+                with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
+                with_i440bx_host_pci_bridge: false,
             },
         };
 
@@ -271,8 +380,10 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_generic_isa_dma();
                 result.attach_piix4_pci_usb_uhci_stub();
                 result.attach_piix4_pci_isa_bridge();
+                result.attach_i440bx_host_pci_bridge();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
@@ -280,16 +391,13 @@ impl VmManifestBuilder {
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
-                    with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
-                    with_i440bx_host_pci_bridge: true,
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_underhill_vga_proxy: self.proxy_vga,
@@ -309,16 +417,13 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_underhill_vga_proxy: false,
@@ -353,16 +458,13 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
 
@@ -388,6 +490,12 @@ impl VmManifestBuilder {
                 }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
+                }
+                if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
+                    result.attach_uefi(
+                        self.uefi
+                            .expect("must have called .with_uefi to enable uefi"),
+                    );
                 }
             }
             BaseChipsetType::HclHost => {
@@ -429,12 +537,12 @@ impl VmManifestBuilder {
             | BaseChipsetType::HyperVGen2LinuxDirect
             | BaseChipsetType::UnenlightenedLinuxDirect => LayoutConfig {
                 chipset_low_mmio_size: default_low,
-                chipset_high_mmio_size: default_high,
+                chipset_high_mmio_size: if self.vmbus { default_high } else { 0 },
                 vtl2_chipset_mmio_size: 0,
             },
             BaseChipsetType::HclHost => LayoutConfig {
                 chipset_low_mmio_size: default_low,
-                chipset_high_mmio_size: default_high,
+                chipset_high_mmio_size: if self.vmbus { default_high } else { 0 },
                 vtl2_chipset_mmio_size: default_vtl2,
             },
         }
@@ -450,6 +558,12 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_generic_isa_dma(&mut self) -> &mut Self {
+        self.isa_dma_controller = Some(GenericIsaDmaDeviceHandle.into_resource());
+        self.capabilities.with_generic_isa_dma = true;
         self
     }
 
@@ -563,6 +677,46 @@ impl VmChipsetResult {
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PM_BDF,
         });
+        self
+    }
+
+    fn attach_uefi(&mut self, uefi: UefiManifest) -> &mut Self {
+        let UefiManifest {
+            config,
+            storage_quirks,
+            generation_id_recv,
+            nvram_storage,
+            vsm_config,
+            time_source,
+        } = uefi;
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "uefi".to_owned(),
+            resource: UefiDeviceHandle {
+                config,
+                storage_quirks,
+                generation_id_recv,
+                logger: PlatformResource.into_resource(),
+                nvram_storage,
+                watchdog_platform: PlatformResource.into_resource(),
+                vsm_config: vsm_config.then(|| PlatformResource.into_resource()),
+                time_source,
+            }
+            .into_resource(),
+        });
+        self
+    }
+
+    fn attach_i440bx_host_pci_bridge(&mut self) -> &mut Self {
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "440bx-host-pci-bridge".to_string(),
+            resource: I440BxHostPciBridgeDeviceHandle {
+                adjust_gpa_range: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: I440BX_HOST_PCI_BRIDGE_BDF,
+        });
+        self.capabilities.with_i440bx_host_pci_bridge = true;
         self
     }
 

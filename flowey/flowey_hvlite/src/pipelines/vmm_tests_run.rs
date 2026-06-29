@@ -16,6 +16,7 @@ use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelect
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
 use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::ArtifactListOutput;
 use std::collections::BTreeMap;
@@ -102,6 +103,28 @@ pub struct VmmTestsRunCli {
     /// Use when making changes to prep_steps
     #[clap(long)]
     no_reuse_prepped_vhds: bool,
+
+    /// Disable secure AVIC support for SNP. This adds the
+    /// `disable_secure_avic` cargo feature and sets `secure_avic` to
+    /// `disabled` in the IGVM manifest.
+    #[clap(long)]
+    pub disable_secure_avic: bool,
+
+    /// Run tests inside an emulated incubator.
+    ///
+    /// Pass `--incubator` on its own to use the default profile for the
+    /// selected `--target`, or `--incubator <PATH>` to point at a specific
+    /// profile TOML describing the emulated platform (e.g., AArch64 with
+    /// SMMUv3).
+    ///
+    /// When set, `--target` is required and must match the profile's
+    /// architecture; artifacts are cross-compiled for that target and tests
+    /// run inside the incubator.
+    ///
+    /// Example: `--incubator --target linux-aarch64-musl`
+    #[clap(long, num_args = 0..=1)]
+    #[expect(clippy::option_option)]
+    incubator: Option<Option<PathBuf>>,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -118,23 +141,21 @@ struct RustSuite {
 }
 
 /// Result of resolving artifact requirements to build/download selections
+#[derive(Default, Debug)]
 struct ResolvedArtifactSelections {
     /// What to build
     build: BuildSelections,
     /// What to download
     downloads: BTreeSet<KnownTestArtifacts>,
+    /// Downloads that must happen even when lazy fetch is enabled (e.g.
+    /// VHDs needed by prep_steps, which copies them to create prepped images).
+    force_downloads: BTreeSet<KnownTestArtifacts>,
     /// Whether any tests need release IGVM files from GitHub
     needs_release_igvm: bool,
-}
-
-impl Default for ResolvedArtifactSelections {
-    fn default() -> Self {
-        Self {
-            build: BuildSelections::none(),
-            downloads: BTreeSet::new(),
-            needs_release_igvm: false,
-        }
-    }
+    /// Whether any of the tests require Hyper-V
+    needs_hyperv: bool,
+    /// Whether any of the tests require hardware isolation
+    needs_hardware_isolation: bool,
 }
 
 impl IntoPipeline for VmmTestsRunCli {
@@ -159,7 +180,15 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_uefi_firmware,
             ci_profile,
             no_reuse_prepped_vhds,
+            disable_secure_avic,
+            incubator,
         } = self;
+
+        // When --incubator is set, --target must also be specified
+        // to indicate the cross-compilation target for the incubator.
+        if incubator.is_some() && target.is_none() {
+            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
+        }
 
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
@@ -172,6 +201,34 @@ impl IntoPipeline for VmmTestsRunCli {
         validate_output_dir(dir.as_deref(), target_os)?;
         let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
         std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
+
+        // Resolve the incubator profile path. `--incubator` with no value uses
+        // the default profile for the target; `--incubator <PATH>` overrides.
+        let incubator_profile = match incubator {
+            None => None,
+            Some(Some(path)) => Some(path),
+            Some(None) => Some(default_incubator_profile(&repo_root, &target).ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "no default incubator profile for target {target_str}; \
+                     pass an explicit path with --incubator <PATH>"
+                    )
+                },
+            )?),
+        };
+
+        // Artifact discovery only needs to execute the test binary far enough
+        // to dump its static artifact metadata (`--list-required-artifacts`),
+        // which never boots a VM. So we run it directly rather than through the
+        // incubator. The binary is built for the test target, so on a foreign
+        // host this relies on the binary being executable (natively, or via
+        // binfmt/user-mode emulation).
+        //
+        // Running outside the real guest means the per-test host capability
+        // checks (the source of nextest's `#[ignore]` flag) would wrongly drop
+        // incubator tests, so for the incubator path we enumerate ignored tests
+        // too — their artifacts still need to be built.
+        let include_ignored = build_only || incubator_profile.is_some();
 
         // Run artifact discovery inline at pipeline construction time since
         // flowey doesn't support conditional requests yet
@@ -190,7 +247,8 @@ impl IntoPipeline for VmmTestsRunCli {
             // When using build-only mode, we need to enumerate tests that could be
             // run on any system so that we build all necessary dependencies. By default
             // petri marks incompatible tests as ignored.
-            include_ignored: build_only,
+            //
+            include_ignored,
         })?;
 
         if suites.is_empty() {
@@ -208,6 +266,16 @@ impl IntoPipeline for VmmTestsRunCli {
         for artifact in artifacts {
             resolved.resolve_artifact(&artifact)?;
         }
+
+        // Determine whether we need hyper-v and/or hardware isolation
+        resolved.needs_hyperv = suites
+            .values()
+            .any(|s| s.testcases.iter().any(|name| name.contains("hyperv")));
+        resolved.needs_hardware_isolation = suites.values().any(|s| {
+            s.testcases
+                .iter()
+                .any(|name| name.contains("snp") || name.contains("tdx"))
+        });
 
         // Determine lazy fetch mode.
         //
@@ -231,7 +299,7 @@ impl IntoPipeline for VmmTestsRunCli {
                 let hyperv_testcases: Vec<_> = suite
                     .testcases
                     .iter()
-                    .filter(|name| name.contains("hyperv_"))
+                    .filter(|name| name.contains("hyperv"))
                     .cloned()
                     .collect();
 
@@ -245,6 +313,11 @@ impl IntoPipeline for VmmTestsRunCli {
             }
 
             resolved.downloads.retain(|a| !a.supports_blob_disk());
+
+            // Re-add force_downloads (prep_steps dependencies) that were removed.
+            resolved
+                .downloads
+                .extend(resolved.force_downloads.iter().cloned());
 
             if hyperv_tests == 0 {
                 log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
@@ -262,11 +335,7 @@ impl IntoPipeline for VmmTestsRunCli {
             }
         }
 
-        log::info!("Resolved build selections: {:?}", resolved.build);
-        log::info!(
-            "Resolved downloads: {:?}",
-            resolved.downloads.iter().collect::<Vec<_>>()
-        );
+        log::info!("Resolved selections: {:?}", resolved);
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(repo_root),
@@ -340,6 +409,8 @@ impl IntoPipeline for VmmTestsRunCli {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                    disable_secure_avic,
+                    incubator_profile,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -462,19 +533,22 @@ fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSui
 fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>> {
     log::info!("Using test binary: {}", suite.binary_path.display());
     log::info!("Querying artifacts for {} tests", suite.testcases.len());
-    let stdin_data = suite
-        .testcases
-        .iter()
-        .map(|n| format!("{n}\n"))
-        .collect::<String>();
-    let mut child = Command::new(&suite.binary_path)
-        .args(["--list-required-artifacts", "--tests-from-stdin"])
-        .stdin(Stdio::piped())
+
+    let mut command = Command::new(&suite.binary_path);
+    command.arg("--list-required-artifacts");
+    command.arg("--tests-from-stdin").stdin(Stdio::piped());
+
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn test binary")?;
 
+    let stdin_data = suite
+        .testcases
+        .iter()
+        .map(|n| format!("{n}\n"))
+        .collect::<String>();
     child
         .stdin
         .take()
@@ -513,6 +587,8 @@ enum VmmTestTargetCli {
     WindowsX64,
     /// Linux X64
     LinuxX64,
+    /// Linux Aarch64 (musl, for incubator cross-compilation)
+    LinuxAarch64Musl,
 }
 
 /// Resolve a CLI target option to a CommonTriple, defaulting to the host.
@@ -538,7 +614,23 @@ fn resolve_target(
         VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
         VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
         VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
+        VmmTestTargetCli::LinuxAarch64Musl => CommonTriple::AARCH64_LINUX_MUSL,
     })
+}
+
+/// Default incubator profile path for a target, used when `--incubator` is
+/// passed without an explicit profile path. Returns `None` for targets that
+/// have no incubator profile.
+fn default_incubator_profile(repo_root: &Path, target: &CommonTriple) -> Option<PathBuf> {
+    let name = match *target {
+        CommonTriple::AARCH64_LINUX_MUSL => "aarch64-tcg-pcie",
+        _ => return None,
+    };
+    Some(
+        repo_root
+            .join("petri/incubator/profiles")
+            .join(format!("{name}.toml")),
+    )
 }
 
 /// Validate the output directory path based on the current platform.
@@ -583,11 +675,13 @@ fn selections_from_resolved(
         artifacts: resolved.downloads.into_iter().collect(),
         build: resolved.build.clone(),
         deps: match target_os {
-            target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                hyperv: true,
-                whp: resolved.build.openvmm,
-                hardware_isolation: resolved.build.prep_steps,
-            },
+            target_lexicon::OperatingSystem::Windows => {
+                VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
+                    hyperv: resolved.needs_hyperv,
+                    whp: resolved.build.openvmm,
+                    hardware_isolation: resolved.needs_hardware_isolation,
+                })
+            }
             target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
             _ => unreachable!(),
         },
@@ -616,13 +710,22 @@ impl ResolvedArtifactSelections {
 
             // OpenHCL IGVM files
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID =>
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID =>
             {
-                self.build.openhcl = true;
+                self.build.openhcl_standard = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.openhcl_standard_dev = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
+             =>
+            {
+                self.build.openhcl_cvm = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.openhcl_linux_direct = true;
             }
 
             // Release IGVM files (downloaded, not built)
@@ -660,14 +763,21 @@ impl ResolvedArtifactSelections {
             }
 
             // VmgsTool
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.vmgstool = true;
             }
-            petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.vmgstool = true;
+
+            // VmgsTool-Dev
+            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmgstool_dev = true;
             }
 
             // TPM guest tests
@@ -715,7 +825,19 @@ impl ResolvedArtifactSelections {
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID =>
             {
-                self.build.prep_steps = true;
+                self.build.prep_steps_standard = true;
+                // prep_steps needs actual VHD files on disk to copy them.
+                // Force download even when lazy fetch is enabled.
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.prep_steps_no_vmbus = true;
+                self.force_downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Vhd);
@@ -761,11 +883,14 @@ impl ResolvedArtifactSelections {
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
             {
-                self.build.openhcl = true;
+                self.build.openhcl_linux_direct = true;
             }
 
             // Common artifacts (always available, no build needed)
             petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
+
+            // Virtio-win drivers (downloaded from openvmm-deps, always available)
+            petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS::GLOBAL_UNIQUE_ID => {}
 
             // Pipette binaries (from petri_artifacts_common)
             petri_artifacts_common::artifacts::PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID

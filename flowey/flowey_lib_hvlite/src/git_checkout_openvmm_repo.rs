@@ -30,6 +30,7 @@ impl FlowNodeWithConfig for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::git_checkout::Node>();
+        ctx.import::<flowey_lib_common::system_info::Node>();
     }
 
     fn emit(
@@ -56,7 +57,13 @@ impl FlowNodeWithConfig for Node {
             persist_credentials: false,
         });
 
+        // request system info here so that it is placed early in the pipeline
+        // in case something fails.
+        // TODO: add the ability to specify that some nodes should come early in flowey
+        let printed_system_info = ctx.reqv(|v| flowey_lib_common::system_info::Request { done: v });
+
         ctx.emit_minor_rust_step("resolve OpenVMM repo requests", move |ctx| {
+            printed_system_info.claim(ctx);
             let path = path.claim(ctx);
             let vars = reqs.claim(ctx);
             move |rt| {

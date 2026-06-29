@@ -25,15 +25,35 @@ impl hypervisor_resources::HypervisorProbe for KvmProbe {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err.into()),
         };
-        Ok(Some(KvmHandle { kvm: kvm.into() }.into_resource()))
+        Ok(Some(
+            KvmHandle {
+                kvm: kvm.into(),
+                nested_virt: false,
+            }
+            .into_resource(),
+        ))
     }
 
     fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
-        if let Some(&(key, _)) = params.first() {
-            anyhow::bail!("unknown kvm parameter: {key}");
+        let mut nested_virt = false;
+        for &(key, val) in params {
+            match key {
+                "nested_virt" => {
+                    if cfg!(guest_arch = "x86_64") {
+                        nested_virt = parse_bool_param(key, val)?;
+                    } else {
+                        anyhow::bail!("kvm parameter {key} is only supported for x86_64 guests");
+                    }
+                }
+                _ => anyhow::bail!("unknown kvm parameter: {key}"),
+            }
         }
         let kvm = open_kvm().context("KVM is not available")?;
-        Ok(KvmHandle { kvm: kvm.into() }.into_resource())
+        Ok(KvmHandle {
+            kvm: kvm.into(),
+            nested_virt,
+        }
+        .into_resource())
     }
 }
 
@@ -43,3 +63,5 @@ fn open_kvm() -> std::io::Result<fs_err::File> {
         .write(true)
         .open("/dev/kvm")
 }
+
+use crate::parse_bool_param;
