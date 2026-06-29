@@ -194,6 +194,13 @@ impl OpenhclIgvmOutput {
                             .filter(OpenhclIgvmEndorsements::is_complete)
                             .expect("missing endorsements"),
                     },
+                    OpenhclIgvmRecipe::X64CvmSivm => OpenhclIgvmOutput::X64Cvm {
+                        igvm_bin,
+                        endorsements: endorsements
+                            .take()
+                            .filter(OpenhclIgvmEndorsements::is_complete)
+                            .expect("missing endorsements"),
+                    },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
                         OpenhclIgvmOutput::Aarch64Devkern { igvm_bin }
@@ -336,6 +343,7 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
+            OpenhclIgvmRecipe::X64CvmSivm => Some("cvm-sivm"),
         }
     }
 
@@ -346,7 +354,8 @@ impl OpenhclIgvmRecipe {
             | OpenhclIgvmRecipe::X64TestLinuxDirect
             | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
             | OpenhclIgvmRecipe::X64Cvm
-            | OpenhclIgvmRecipe::X64CvmDevkern => "x64",
+            | OpenhclIgvmRecipe::X64CvmDevkern
+            | OpenhclIgvmRecipe::X64CvmSivm => "x64",
             OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => "aarch64",
         }
     }
