@@ -1994,8 +1994,7 @@ impl LocalApic {
             let tmr = remote_tmr.load(Ordering::Relaxed);
             let auto_eoi = remote_auto_eoi.load(Ordering::Relaxed);
             // Always accumulate staged interrupts into the IRR, even while the
-            // APIC is software-disabled, so that they are held (as the SDM
-            // requires) rather than discarded. Delivery is gated separately:
+            // APIC is software-disabled. Delivery is gated separately:
             // `next_irr` and `push_to_offload` both check the software-enable
             // state, so held interrupts only become deliverable once the APIC
             // is software-enabled again.
