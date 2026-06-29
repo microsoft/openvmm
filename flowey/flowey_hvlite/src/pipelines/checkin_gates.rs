@@ -582,12 +582,19 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-igvmfilegen"));
             let (pub_vmgs_lib, _use_vmgs_lib) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgs_lib"));
+            // ipmi_kcs is x86-only (the device is only wired up on x86_64), so
+            // only build/publish the FFI staticlib from the x64 windows job.
+            let pub_ipmi_kcs_ffi = matches!(arch, CommonArch::X86_64).then(|| {
+                let (pub_ipmi_kcs_ffi, _use_ipmi_kcs_ffi) =
+                    pipeline.new_typed_artifact(format!("{arch_tag}-windows-ipmi_kcs_ffi"));
+                pub_ipmi_kcs_ffi
+            });
             let (pub_hypestv, _use_hypestv) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
                     FlowArch::X86_64,
@@ -638,6 +645,19 @@ impl IntoPipeline for CheckinGatesCli {
                         ohcldiag_dev,
                     }
                 });
+
+            if let Some(pub_ipmi_kcs_ffi) = pub_ipmi_kcs_ffi {
+                job = job.publish(pub_ipmi_kcs_ffi, |ipmi_kcs_ffi| {
+                    flowey_lib_hvlite::build_ipmi_kcs_ffi::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        ipmi_kcs_ffi,
+                    }
+                });
+            }
 
             all_jobs.push(job.finish());
 
