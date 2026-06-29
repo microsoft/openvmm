@@ -7,8 +7,8 @@ use open_enum::open_enum;
 
 open_enum! {
     /// KCS interface states (encoded in status register S1:S0, bits 7:6).
-    #[allow(missing_docs)]
     pub enum KcsState: u8 {
+        #![expect(missing_docs)]
         IDLE_STATE  = 0x00,
         READ_STATE  = 0x40,
         WRITE_STATE = 0x80,
@@ -18,8 +18,8 @@ open_enum! {
 
 open_enum! {
     /// KCS commands written to the command register.
-    #[allow(missing_docs)]
     pub enum KcsCommand: u8 {
+        #![expect(missing_docs)]
         GET_STATUS_ABORT = 0x60,
         WRITE_START      = 0x61,
         WRITE_END        = 0x62,
@@ -29,8 +29,8 @@ open_enum! {
 
 open_enum! {
     /// IPMI Network Function codes (upper 6 bits of NetFn/LUN byte).
-    #[allow(missing_docs)]
     pub enum IpmiNetFn: u8 {
+        #![expect(missing_docs)]
         APP_REQUEST      = 0x06,
         APP_RESPONSE     = 0x07,
         STORAGE_REQUEST  = 0x0A,
@@ -40,8 +40,8 @@ open_enum! {
 
 open_enum! {
     /// IPMI command codes.
-    #[allow(missing_docs)]
     pub enum IpmiCommand: u8 {
+        #![expect(missing_docs)]
         GET_DEVICE_ID   = 0x01,
         GET_SEL_INFO    = 0x40,
         GET_SEL_ENTRY   = 0x43,
@@ -54,8 +54,8 @@ open_enum! {
 
 open_enum! {
     /// IPMI completion codes.
-    #[allow(missing_docs)]
     pub enum CompletionCode: u8 {
+        #![expect(missing_docs)]
         SUCCESS                      = 0x00,
         INVALID_COMMAND              = 0xC1,
         REQUEST_DATA_LENGTH_INVALID  = 0xC7,
