@@ -1424,29 +1424,40 @@ pub struct WinEvent {
     pub properties: Vec<String>,
 }
 
-/// Deserialize the `Properties` projection of a Windows event.
-///
-/// PowerShell's `ConvertTo-Json` renders a property array of length one as a
-/// bare scalar and an absent/empty array as `null`, so accept a string, an
-/// array of strings, or null.
+/// Deserialize the `Properties` projection of a Windows event into a flat list
+/// of stringified values.
 fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::Deserialize as _;
+    use serde_json::Value;
 
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        One(String),
-        Many(Vec<String>),
+    fn flatten(value: Value, out: &mut Vec<String>) {
+        match value {
+            Value::Null => out.push("<null>".to_string()),
+            Value::String(s) => out.push(s),
+            Value::Bool(b) => out.push(b.to_string()),
+            Value::Number(n) => out.push(n.to_string()),
+            Value::Array(items) => {
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            // PowerShell wraps the array as
+            // `{ "value": [...], "Count": N }` (and an empty array as `{}`).
+            // Pull the values out and ignore the bookkeeping `Count` field.
+            Value::Object(mut map) => {
+                if let Some(inner) = map.remove("value") {
+                    flatten(inner, out);
+                }
+            }
+        }
     }
 
-    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
-        None => Vec::new(),
-        Some(OneOrMany::One(value)) => vec![value],
-        Some(OneOrMany::Many(values)) => values,
-    })
+    let mut properties = Vec::new();
+    flatten(Value::deserialize(deserializer)?, &mut properties);
+    Ok(properties)
 }
 
 /// Get event logs
