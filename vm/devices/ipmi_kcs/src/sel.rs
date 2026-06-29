@@ -88,12 +88,6 @@ impl Inspect for SelStore {
 }
 
 impl SelStore {
-    /// Create a new empty SEL store with default (no-op sink, system clock)
-    /// dependencies.
-    pub fn new() -> Self {
-        Self::with_deps(SelDeps::default())
-    }
-
     /// Create a new empty SEL store with the given egress/clock dependencies.
     pub fn with_deps(deps: SelDeps) -> Self {
         Self {
@@ -307,6 +301,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use test_with_tracing::test;
+
+    impl SelStore {
+        /// Empty SEL store with default (no-op sink, system clock) deps.
+        fn new() -> Self {
+            Self::with_deps(SelDeps::default())
+        }
+    }
 
     /// Sink that records forwarded entries for assertions.
     #[derive(Default)]
