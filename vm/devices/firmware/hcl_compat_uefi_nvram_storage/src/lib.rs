@@ -42,6 +42,40 @@ use zerocopy::KnownLayout;
 const EFI_MAX_VARIABLE_NAME_SIZE: usize = 2 * 1024;
 const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 
+#[derive(Clone, Copy)]
+enum TrackedSecureBootVariable {
+    Kek,
+    Db,
+}
+
+impl TrackedSecureBootVariable {
+    /// Returns all Secure Boot variables tracked by rollout telemetry.
+    fn all() -> [Self; 2] {
+        [Self::Kek, Self::Db]
+    }
+
+    /// Finds a tracked Secure Boot variable by NVRAM identity.
+    fn from_nvram_identity(vendor: Guid, name: &Ucs2LeSlice) -> Option<Self> {
+        Self::all()
+            .into_iter()
+            .find(|tracked| (vendor, name) == tracked.nvram_identity())
+    }
+
+    fn nvram_identity(self) -> (Guid, &'static Ucs2LeSlice) {
+        match self {
+            Self::Kek => vars::KEK(),
+            Self::Db => vars::DB(),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Kek => "KEK",
+            Self::Db => "db",
+        }
+    }
+}
+
 // Max size allows two re-sizings, max size of 128K
 // TODO: how big required for secure boot with db/dbx?
 const INITIAL_NVRAM_SIZE: usize = 32768;
@@ -102,6 +136,10 @@ pub struct HclCompatNvram<S> {
 
     // whether the NVRAM has been loaded, either from storage or saved state
     loaded: bool,
+
+    // whether tracked Secure Boot variable state has been logged for the
+    // current in-memory NVRAM contents
+    logged_tracked_secure_boot_state: bool,
 }
 
 impl<S: StorageBackend> HclCompatNvram<S> {
@@ -119,11 +157,14 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             nvram_buf: Vec::new(),
 
             loaded: false,
+
+            logged_tracked_secure_boot_state: false,
         }
     }
 
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
         let res = self.lazy_load_from_storage_inner().await;
+
         if let Err(e) = &res {
             tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
             tracing::error!(
@@ -132,6 +173,14 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 "storage contains corrupt nvram state"
             );
         }
+
+        if res.is_ok() && !self.logged_tracked_secure_boot_state {
+            self.logged_tracked_secure_boot_state = true;
+            for variable in TrackedSecureBootVariable::all() {
+                self.log_tracked_secure_boot_variable_state(variable).await;
+            }
+        }
+
         res
     }
 
@@ -335,21 +384,23 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         Ok(self.in_memory.iter())
     }
 
-    /// Logs compact telemetry for Secure Boot variables this rollout tracks.
-    async fn log_secure_boot_variable_state_if_needed(
+    /// Logs compact telemetry for a Secure Boot variable this rollout tracks.
+    async fn log_tracked_secure_boot_variable_state(
         &mut self,
-        vendor: Guid,
-        name: &Ucs2LeSlice,
-    ) -> Result<(), NvramStorageError> {
-        let Some(variable) = tracked_secure_boot_variable_name(vendor, name) else {
-            return Ok(());
+        variable: TrackedSecureBootVariable,
+    ) {
+        let (vendor, name) = variable.nvram_identity();
+        let data = match self.in_memory.get_variable(name, vendor).await {
+            Ok(data) => data.map(|(_, data, _)| data),
+            Err(err) => {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    error = &err as &dyn std::error::Error,
+                    "failed to log secure boot variable state"
+                );
+                return;
+            }
         };
-
-        let data = self
-            .in_memory
-            .get_variable(name, vendor)
-            .await?
-            .map(|(_, data, _)| data);
         let present = data.is_some();
         let size = data.as_ref().map_or(0, Vec::len);
         let sha256 = data
@@ -358,25 +409,12 @@ impl<S: StorageBackend> HclCompatNvram<S> {
 
         tracing::info!(
             CVM_ALLOWED,
-            variable,
+            variable = variable.label(),
             present,
             size,
             sha256,
             "secure boot variable state"
         );
-
-        Ok(())
-    }
-}
-
-/// Returns the telemetry label for Secure Boot variables tracked by this crate.
-fn tracked_secure_boot_variable_name(vendor: Guid, name: &Ucs2LeSlice) -> Option<&'static str> {
-    if (vendor, name) == vars::KEK() {
-        Some("KEK")
-    } else if (vendor, name) == vars::DB() {
-        Some("db")
-    } else {
-        None
     }
 }
 
@@ -437,8 +475,10 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .set_variable(name, vendor, attr, data, timestamp)
             .await?;
         self.flush_storage().await?;
-        self.log_secure_boot_variable_state_if_needed(vendor, name)
-            .await?;
+
+        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+            self.log_tracked_secure_boot_variable_state(variable).await;
+        }
 
         Ok(())
     }
@@ -473,8 +513,9 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .append_variable(name, vendor, data, timestamp)
             .await?;
         self.flush_storage().await?;
-        self.log_secure_boot_variable_state_if_needed(vendor, name)
-            .await?;
+        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+            self.log_tracked_secure_boot_variable_state(variable).await;
+        }
 
         Ok(found)
     }
@@ -492,8 +533,9 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         let removed = self.in_memory.remove_variable(name, vendor).await?;
         self.flush_storage().await?;
-        self.log_secure_boot_variable_state_if_needed(vendor, name)
-            .await?;
+        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+            self.log_tracked_secure_boot_variable_state(variable).await;
+        }
 
         Ok(removed)
     }
