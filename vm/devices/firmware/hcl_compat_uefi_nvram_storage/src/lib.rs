@@ -160,19 +160,22 @@ impl<S: StorageBackend> HclCompatNvram<S> {
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
         let res = self.lazy_load_from_storage_inner().await;
 
-        if let Err(e) = &res {
-            tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
-            tracing::error!(
-                CVM_CONFIDENTIAL,
-                error = e as &dyn std::error::Error,
-                "storage contains corrupt nvram state"
-            );
-        }
-
-        if res.is_ok() && !self.logged_tracked_secure_boot_state {
-            self.logged_tracked_secure_boot_state = true;
-            for variable in tracked_secure_boot_variables() {
-                self.log_tracked_secure_boot_variable_state(variable, false);
+        match &res {
+            Ok(()) => {
+                if !self.logged_tracked_secure_boot_state {
+                    self.logged_tracked_secure_boot_state = true;
+                    for variable in tracked_secure_boot_variables() {
+                        self.log_tracked_secure_boot_variable_state(variable, false);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
+                tracing::error!(
+                    CVM_CONFIDENTIAL,
+                    error = e as &dyn std::error::Error,
+                    "storage contains corrupt nvram state"
+                );
             }
         }
 
