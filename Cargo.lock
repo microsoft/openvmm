@@ -3237,6 +3237,7 @@ dependencies = [
  "sha2",
  "static_assertions",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "ucs2 0.0.0",
  "uefi_nvram_storage",

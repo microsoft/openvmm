@@ -42,7 +42,7 @@ use zerocopy::KnownLayout;
 const EFI_MAX_VARIABLE_NAME_SIZE: usize = 2 * 1024;
 const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackedSecureBootVariable {
     Kek,
     Db,
@@ -407,7 +407,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             .as_deref()
             .map(|data| Sha256::digest(data).encode_hex::<String>());
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             CVM_ALLOWED,
             variable = variable.label(),
             present,
@@ -589,6 +589,28 @@ mod test {
     use ucs2::Ucs2LeVec;
     use uefi_nvram_storage::in_memory::impl_agnostic_tests;
     use wchar::wchz;
+
+    #[test]
+    fn tracked_secure_boot_variable_filter() {
+        let (vendor, name) = vars::KEK();
+        assert_eq!(
+            TrackedSecureBootVariable::from_nvram_identity(vendor, name),
+            Some(TrackedSecureBootVariable::Kek)
+        );
+
+        let (vendor, name) = vars::DB();
+        assert_eq!(
+            TrackedSecureBootVariable::from_nvram_identity(vendor, name),
+            Some(TrackedSecureBootVariable::Db)
+        );
+
+        let unrelated_name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "unrelated").as_bytes())
+            .expect("static string is nul-terminated");
+        assert_eq!(
+            TrackedSecureBootVariable::from_nvram_identity(Guid::new_random(), unrelated_name),
+            None
+        );
+    }
 
     /// An ephemeral implementation of [`StorageBackend`] backed by an in-memory
     /// buffer. Useful for tests, stateless VM scenarios.
