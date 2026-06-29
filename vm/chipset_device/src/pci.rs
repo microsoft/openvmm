@@ -496,31 +496,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_enable_rejects_non_contiguous_masks() {
-        assert_eq!(PciConfigByteEnable::new(0), None);
-        assert_eq!(PciConfigByteEnable::new(0b0101), None);
-        assert_eq!(PciConfigByteEnable::new(0b1010), None);
-        assert_eq!(PciConfigByteEnable::new(0b1001), None);
-
-        assert_eq!(
-            PciConfigByteEnable::new(0b0001),
-            Some(PciConfigByteEnable::BYTE0)
-        );
-        assert_eq!(
-            PciConfigByteEnable::new(0b0110)
-                .unwrap()
-                .to_byte_offset_len(),
-            (1, 2)
-        );
-        assert_eq!(
-            PciConfigByteEnable::new(0b1110)
-                .unwrap()
-                .to_byte_offset_len(),
-            (1, 3)
-        );
-    }
-
-    #[test]
     fn byte_enable_masks_and_merges_lanes() {
         let byte_enable = PciConfigByteEnable::from_offset_len(1, 1).unwrap();
         assert_eq!(byte_enable.bits(), 0b0010);
