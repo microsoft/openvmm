@@ -147,7 +147,7 @@ async fn copy_igvmfile_load_from_vmgs<T: PetriVmmBackend, D: IsVmfwDll>(
 /// succeeds. This exercises the `allow_overwrite` plumbing in
 /// `vmgstool`'s `copy-igvmfile` path without booting a VM, so it uses a
 /// guest-less (`none`) config.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 ))]
 async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
@@ -214,7 +214,7 @@ async fn copy_igvmfile_overwrite<T: PetriVmmBackend, D: IsVmfwDll>(
 /// panicking or writing garbage into the VMGS. Only the `vmgstool` binary
 /// is needed; the bogus input is synthesised on the fly, so no resource
 /// DLL artifact is required.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
 ))]
 async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
@@ -259,7 +259,7 @@ async fn copy_igvmfile_corrupt_dll<T: PetriVmmBackend>(
 /// produce a clean error and a nonzero exit code rather than panicking.
 /// Only the `vmgstool` binary is needed; the path is intentionally never
 /// created, so no resource DLL artifact is required.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
 ))]
 async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
@@ -306,7 +306,7 @@ async fn copy_igvmfile_missing_data_path<T: PetriVmmBackend>(
 /// anything is written, so file id 8 must remain empty — which we verify
 /// by then writing it with a `CUSTOM` copy that does *not* pass
 /// `--allow-overwrite`.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE, LATEST_CVM_VMFW_DLL_X64],
 ))]
 async fn copy_igvmfile_missing_resource<T: PetriVmmBackend, D: IsVmfwDll>(
