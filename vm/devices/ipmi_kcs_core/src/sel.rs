@@ -6,6 +6,9 @@
 use crate::protocol::CompletionCode;
 use crate::protocol::IpmiCommand;
 use crate::sink::SelDeps;
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(feature = "inspect")]
 use inspect::Inspect;
 
 /// Maximum number of SEL entries.
@@ -23,6 +26,7 @@ struct SelEntry {
     data: [u8; SEL_RECORD_SIZE],
 }
 
+#[cfg(feature = "inspect")]
 impl Inspect for SelEntry {
     fn inspect(&self, req: inspect::Request<'_>) {
         let d = &self.data;
@@ -46,8 +50,7 @@ impl Inspect for SelEntry {
                 .hex("event_data3", d[15]);
         } else if (0xC0..=0xDF).contains(&record_type) {
             // OEM Timestamped Record (IPMI v2.0, Section 32.2)
-            let manufacturer_id =
-                u32::from_le_bytes([d[7], d[8], d[9], 0]);
+            let manufacturer_id = u32::from_le_bytes([d[7], d[8], d[9], 0]);
             resp.field("manufacturer_id", manufacturer_id)
                 .hex("oem_data", u64::from_le_bytes([d[10], d[11], d[12], d[13], d[14], d[15], 0, 0]));
         } else if record_type >= 0xE0 {
@@ -70,6 +73,7 @@ pub struct SelStore {
     deps: SelDeps,
 }
 
+#[cfg(feature = "inspect")]
 impl Inspect for SelStore {
     fn inspect(&self, req: inspect::Request<'_>) {
         req.respond()
@@ -79,7 +83,7 @@ impl Inspect for SelStore {
             .child("entries", |req| {
                 let mut resp = req.respond();
                 for entry in &self.entries {
-                    resp.child(&format!("{}", entry.record_id), |req| {
+                    resp.child(&alloc::format!("{}", entry.record_id), |req| {
                         entry.inspect(req);
                     });
                 }
@@ -282,10 +286,7 @@ impl SelStore {
         }
 
         let new_time = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let now = self.deps.clock.now_unix_secs();
         self.time_offset = (new_time as i64) - now;
 
         vec![CompletionCode::SUCCESS.0]
@@ -296,18 +297,12 @@ impl SelStore {
 mod tests {
     use super::*;
     use crate::sink::BmcClock;
+    use crate::sink::NullSelSink;
     use crate::sink::SelDeps;
     use crate::sink::SelSink;
     use std::sync::Arc;
     use std::sync::Mutex;
     use test_with_tracing::test;
-
-    impl SelStore {
-        /// Empty SEL store with default (no-op sink, system clock) deps.
-        fn new() -> Self {
-            Self::with_deps(SelDeps::default())
-        }
-    }
 
     /// Sink that records forwarded entries for assertions.
     #[derive(Default)]
@@ -327,6 +322,13 @@ mod tests {
     impl BmcClock for FixedClock {
         fn now_unix_secs(&self) -> i64 {
             self.0
+        }
+    }
+
+    impl SelStore {
+        /// Empty SEL store with a no-op sink and a fixed (epoch) clock.
+        fn new() -> Self {
+            Self::with_deps(SelDeps::new(Arc::new(NullSelSink), Arc::new(FixedClock(0))))
         }
     }
 
@@ -491,23 +493,15 @@ mod tests {
     fn sel_time_get_and_set() {
         let mut store = SelStore::new();
 
-        // Get time (should be current time approximately).
-        let resp = store.handle_command(IpmiCommand::GET_SEL_TIME, &[]);
-        assert_eq!(resp[0], CompletionCode::SUCCESS.0);
-        assert_eq!(resp.len(), 5);
-        let time = u32::from_le_bytes([resp[1], resp[2], resp[3], resp[4]]);
-        assert!(time > 0);
-
         // Set time to a known value.
         let new_time: u32 = 1_000_000;
         let resp = store.handle_command(IpmiCommand::SET_SEL_TIME, &new_time.to_le_bytes());
         assert_eq!(resp[0], CompletionCode::SUCCESS.0);
 
-        // Get time should return approximately the same value.
+        // Get time should return the same value (fixed clock at epoch 0 + offset).
         let resp = store.handle_command(IpmiCommand::GET_SEL_TIME, &[]);
         let time = u32::from_le_bytes([resp[1], resp[2], resp[3], resp[4]]);
-        // Allow 2 seconds of drift for test execution time.
-        assert!((1_000_000..=1_000_002).contains(&time));
+        assert_eq!(time, 1_000_000);
     }
 
     #[test]
@@ -536,10 +530,7 @@ mod tests {
     #[test]
     fn sel_sink_receives_entries() {
         let sink = Arc::new(CapturingSink::default());
-        let deps = SelDeps {
-            sink: sink.clone(),
-            clock: Arc::new(FixedClock(1_700_000_000)),
-        };
+        let deps = SelDeps::new(sink.clone(), Arc::new(FixedClock(1_700_000_000)));
         let mut store = SelStore::with_deps(deps);
 
         let resp = store.handle_command(IpmiCommand::ADD_SEL_ENTRY, &make_sel_record());
@@ -557,10 +548,7 @@ mod tests {
 
     #[test]
     fn sel_injected_clock_used_for_time() {
-        let deps = SelDeps {
-            sink: Arc::new(crate::sink::NullSelSink),
-            clock: Arc::new(FixedClock(1_700_000_000)),
-        };
+        let deps = SelDeps::new(Arc::new(NullSelSink), Arc::new(FixedClock(1_700_000_000)));
         let mut store = SelStore::with_deps(deps);
         let resp = store.handle_command(IpmiCommand::GET_SEL_TIME, &[]);
         let time = u32::from_le_bytes([resp[1], resp[2], resp[3], resp[4]]);

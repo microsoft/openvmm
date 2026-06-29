@@ -3941,12 +3941,28 @@ dependencies = [
  "chipset_device",
  "chipset_device_resources",
  "inspect",
+ "ipmi_kcs_core",
  "ipmi_kcs_resources",
+ "test_with_tracing",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
+name = "ipmi_kcs_core"
+version = "0.0.0"
+dependencies = [
+ "inspect",
  "open_enum",
  "test_with_tracing",
  "tracelimit",
- "vm_resource",
- "vmcore",
+]
+
+[[package]]
+name = "ipmi_kcs_ffi"
+version = "0.0.0"
+dependencies = [
+ "ipmi_kcs_core",
 ]
 
 [[package]]
