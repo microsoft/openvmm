@@ -7,12 +7,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ipmi_kcs_core = { workspace = true, features = ["inspect", "trace"] }
+ipmi_kcs_resources.workspace = true
+
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 inspect.workspace = true
-ipmi_kcs_resources.workspace = true
-open_enum.workspace = true
-tracelimit.workspace = true
 vm_resource.workspace = true
 vmcore.workspace = true
 
