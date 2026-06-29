@@ -18,13 +18,12 @@
 
 pub mod storage_backend;
 
+use crypto::sha_256::sha_256;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
 use hex::ToHex;
-use sha2::Digest;
-use sha2::Sha256;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
@@ -42,38 +41,34 @@ use zerocopy::KnownLayout;
 const EFI_MAX_VARIABLE_NAME_SIZE: usize = 2 * 1024;
 const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrackedSecureBootVariable {
-    Kek,
-    Db,
+#[derive(Clone, Copy)]
+struct TrackedSecureBootVariable {
+    variable: &'static str,
+    nvram_identity: (Guid, &'static Ucs2LeSlice),
 }
 
-impl TrackedSecureBootVariable {
-    /// Returns all Secure Boot variables tracked by rollout telemetry.
-    fn all() -> [Self; 2] {
-        [Self::Kek, Self::Db]
-    }
+/// Returns all Secure Boot variables tracked by rollout telemetry.
+fn tracked_secure_boot_variables() -> [TrackedSecureBootVariable; 2] {
+    [
+        TrackedSecureBootVariable {
+            variable: "KEK",
+            nvram_identity: vars::KEK(),
+        },
+        TrackedSecureBootVariable {
+            variable: "db",
+            nvram_identity: vars::DB(),
+        },
+    ]
+}
 
-    /// Finds a tracked Secure Boot variable by NVRAM identity.
-    fn from_nvram_identity(vendor: Guid, name: &Ucs2LeSlice) -> Option<Self> {
-        Self::all()
-            .into_iter()
-            .find(|tracked| (vendor, name) == tracked.nvram_identity())
-    }
-
-    fn nvram_identity(self) -> (Guid, &'static Ucs2LeSlice) {
-        match self {
-            Self::Kek => vars::KEK(),
-            Self::Db => vars::DB(),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Kek => "KEK",
-            Self::Db => "db",
-        }
-    }
+/// Finds a tracked Secure Boot variable by NVRAM identity.
+fn tracked_secure_boot_variable(
+    vendor: Guid,
+    name: &Ucs2LeSlice,
+) -> Option<TrackedSecureBootVariable> {
+    tracked_secure_boot_variables()
+        .into_iter()
+        .find(|tracked| (vendor, name) == tracked.nvram_identity)
 }
 
 // Max size allows two re-sizings, max size of 128K
@@ -140,9 +135,6 @@ pub struct HclCompatNvram<S> {
     // whether tracked Secure Boot variable state has been logged for the
     // current in-memory NVRAM contents
     logged_tracked_secure_boot_state: bool,
-
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    tracked_secure_boot_state_rate_limiter: tracelimit::RateLimiter,
 }
 
 impl<S: StorageBackend> HclCompatNvram<S> {
@@ -162,8 +154,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             loaded: false,
 
             logged_tracked_secure_boot_state: false,
-
-            tracked_secure_boot_state_rate_limiter: tracelimit::RateLimiter::new_default(),
         }
     }
 
@@ -181,7 +171,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
 
         if res.is_ok() && !self.logged_tracked_secure_boot_state {
             self.logged_tracked_secure_boot_state = true;
-            for variable in TrackedSecureBootVariable::all() {
+            for variable in tracked_secure_boot_variables() {
                 self.log_tracked_secure_boot_variable_state(variable, false);
             }
         }
@@ -395,16 +385,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         variable: TrackedSecureBootVariable,
         rate_limit: bool,
     ) {
-        let dropped_ratelimited = if rate_limit {
-            match self.tracked_secure_boot_state_rate_limiter.event() {
-                Ok(dropped_ratelimited) => dropped_ratelimited,
-                Err(_) => return,
-            }
-        } else {
-            None
-        };
-
-        let (vendor, name) = variable.nvram_identity();
+        let (vendor, name) = variable.nvram_identity;
         let data = self
             .in_memory
             .iter()
@@ -412,17 +393,27 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             .map(|entry| entry.data);
         let present = data.is_some();
         let size = data.map_or(0, <[u8]>::len);
-        let sha256 = data.map(|data| Sha256::digest(data).encode_hex::<String>());
+        let sha256 = data.map(|data| sha_256(data).encode_hex::<String>());
 
-        tracing::info!(
-            CVM_ALLOWED,
-            dropped_ratelimited,
-            variable = variable.label(),
-            present,
-            size,
-            sha256,
-            "secure boot variable state"
-        );
+        if rate_limit {
+            tracelimit::info_ratelimited!(
+                CVM_ALLOWED,
+                variable = variable.variable,
+                present,
+                size,
+                sha256,
+                "secure boot variable state"
+            );
+        } else {
+            tracing::info!(
+                CVM_ALLOWED,
+                variable = variable.variable,
+                present,
+                size,
+                sha256,
+                "secure boot variable state"
+            );
+        }
     }
 }
 
@@ -484,7 +475,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .await?;
         self.flush_storage().await?;
 
-        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -521,7 +512,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .append_variable(name, vendor, data, timestamp)
             .await?;
         self.flush_storage().await?;
-        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -541,7 +532,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         let removed = self.in_memory.remove_variable(name, vendor).await?;
         self.flush_storage().await?;
-        if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
+        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -602,20 +593,21 @@ mod test {
     fn tracked_secure_boot_variable_filter() {
         let (vendor, name) = vars::KEK();
         assert_eq!(
-            TrackedSecureBootVariable::from_nvram_identity(vendor, name),
-            Some(TrackedSecureBootVariable::Kek)
+            tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
+            Some("KEK")
         );
 
         let (vendor, name) = vars::DB();
         assert_eq!(
-            TrackedSecureBootVariable::from_nvram_identity(vendor, name),
-            Some(TrackedSecureBootVariable::Db)
+            tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
+            Some("db")
         );
 
         let unrelated_name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "unrelated").as_bytes())
             .expect("static string is nul-terminated");
         assert_eq!(
-            TrackedSecureBootVariable::from_nvram_identity(Guid::new_random(), unrelated_name),
+            tracked_secure_boot_variable(Guid::new_random(), unrelated_name)
+                .map(|tracked| tracked.variable),
             None
         );
     }

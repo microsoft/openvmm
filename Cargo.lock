@@ -3227,6 +3227,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "crypto",
  "cvm_tracing",
  "guid",
  "hcl_compat_uefi_nvram_resources",
@@ -3234,7 +3235,6 @@ dependencies = [
  "inspect",
  "open_enum",
  "pal_async",
- "sha2",
  "static_assertions",
  "thiserror 2.0.16",
  "tracelimit",
