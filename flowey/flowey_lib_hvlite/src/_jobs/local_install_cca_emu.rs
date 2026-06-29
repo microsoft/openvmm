@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::thread;
 
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
+// Pinned shrinkwrap revision to keep local CCA emulation builds stable across upstream updates.
+const SHRINKWRAP_REV: &str = "206ea90cb7aa907168a4e7beca94771e2fb2b301";
 // The guest Linux kernel (with cca/plane driver) hasn't been upstreamed yet, fetch it from our private repo
 const PLANE0_LINUX_REPO: &str = "https://github.com/jiong-microsoft/OHCL-Linux-Kernel.git";
 const PLANE0_LINUX_BRANCH: &str = "cca-dev";
@@ -114,6 +116,28 @@ pub(crate) fn build_plane0_linux(
 
     log::info!("Plane0 Linux kernel compiled successfully");
     log::info!("Kernel image at: {}", plane0_image.display());
+    Ok(())
+}
+
+fn checkout_shrinkwrap_revision(
+    rt: &RustRuntimeServices<'_>,
+    shrinkwrap_dir: &Path,
+) -> anyhow::Result<()> {
+    if flowey::shell_cmd!(rt, "git -C {shrinkwrap_dir} cat-file -e {SHRINKWRAP_REV}")
+        .run()
+        .is_err()
+    {
+        flowey::shell_cmd!(rt, "git -C {shrinkwrap_dir} fetch origin")
+            .run()
+            .with_context(|| {
+                format!("failed to fetch shrinkwrap repo before checking out rev {SHRINKWRAP_REV}")
+            })?;
+    }
+
+    flowey::shell_cmd!(rt, "git -C {shrinkwrap_dir} checkout {SHRINKWRAP_REV}")
+        .run()
+        .with_context(|| format!("failed to checkout shrinkwrap rev {SHRINKWRAP_REV}"))?;
+
     Ok(())
 }
 
@@ -319,6 +343,8 @@ impl SimpleFlowNode for Node {
                 // components. This significantly reduces manual effort and the risk of errors.
                 let shrinkwrap_dir = rt.read(shrinkwrap_dir);
                 let venv_dir = shrinkwrap_dir.join("venv");
+                checkout_shrinkwrap_revision(rt, &shrinkwrap_dir)?;
+
                 if !venv_dir.exists() {
                     log::info!(
                         "Creating Python virtual environment at {}",
