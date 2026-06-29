@@ -68,6 +68,7 @@ pub enum GuestStateEncryptionPolicyCli {
     None,
     GspById,
     GspKey,
+    HardwareSealing,
 }
 
 impl FromStr for GuestStateEncryptionPolicyCli {
@@ -79,7 +80,28 @@ impl FromStr for GuestStateEncryptionPolicyCli {
             "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
             "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
             "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            "HARDWARE_SEALING" | "4" => Ok(GuestStateEncryptionPolicyCli::HardwareSealing),
             _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload)]
+pub enum HardwareSealingPolicyCli {
+    None,
+    Hash,
+    Signer,
+}
+
+impl FromStr for HardwareSealingPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<HardwareSealingPolicyCli, anyhow::Error> {
+        match s {
+            "NONE" | "0" => Ok(HardwareSealingPolicyCli::None),
+            "HASH" | "1" => Ok(HardwareSealingPolicyCli::Hash),
+            "SIGNER" | "2" => Ok(HardwareSealingPolicyCli::Signer),
+            _ => Err(anyhow::anyhow!("Invalid hardware sealing policy: {}", s)),
         }
     }
 }
@@ -283,6 +305,12 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_HARDWARE_SEALING_POLICY=\<HardwareSealingPolicyCli\>)
+    /// Specify which hardware sealing policy to use. Overrides the value in
+    /// DPS when set. Used by hosts that cannot yet plumb the sealing policy
+    /// through the WMI `GuestStateEncryptionPolicy` property.
+    pub hardware_sealing_policy: Option<HardwareSealingPolicyCli>,
 
     /// (HCL_EFI_DIAGNOSTICS_LOG_LEVEL=\<EfiDiagnosticsLogLevelCli\>)
     /// Specify the EFI diagnostics log level filter (DEFAULT, INFO, or FULL).
@@ -492,6 +520,12 @@ impl Options {
                     })
                     .ok()
             });
+        let hardware_sealing_policy = read_env("HCL_HARDWARE_SEALING_POLICY").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<HardwareSealingPolicyCli>()
+                .map_err(|e| tracing::warn!("failed to parse HCL_HARDWARE_SEALING_POLICY: {:#}", e))
+                .ok()
+        });
         let efi_diagnostics_log_level = read_env("HCL_EFI_DIAGNOSTICS_LOG_LEVEL").and_then(|x| {
             x.to_string_lossy()
                 .parse::<EfiDiagnosticsLogLevelCli>()
@@ -571,6 +605,7 @@ impl Options {
             default_boot_always_attempt,
             guest_state_lifetime,
             guest_state_encryption_policy,
+            hardware_sealing_policy,
             efi_diagnostics_log_level,
             efi_diagnostics_rate_limit,
             strict_encryption_policy,

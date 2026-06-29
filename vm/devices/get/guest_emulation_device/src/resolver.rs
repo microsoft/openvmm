@@ -196,6 +196,13 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 guest_state_lifetime,
                 guest_state_encryption_policy,
                 management_vtl_features,
+                // Hardware sealing requires real isolation hardware (e.g. SNP's
+                // `get_derived_key` via `/dev/sev-guest`), which the in-tree GED
+                // cannot provide. The resource-level `GuestStateEncryptionPolicy`
+                // does not expose `HardwareSealing` either, so the stateless
+                // hardware-sealing flow is exercised under Hyper-V rather than
+                // OpenVMM. Always report `None` here.
+                hardware_sealing_policy: get_protocol::dps_json::HardwareSealingPolicy::None,
                 efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
                     EfiDiagnosticsLogLevelType::Default => {
                         get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT

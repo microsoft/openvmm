@@ -1183,6 +1183,7 @@ impl PetriVmConfigSetupCore<'_> {
         if !self.firmware.is_openhcl()
             && let Some(TpmConfig {
                 no_persistent_secrets,
+                ..
             }) = self.tpm_config
         {
             let register_layout = match self.arch {
