@@ -59,7 +59,7 @@ const TRACKED_SECURE_BOOT_VARIABLES: [TrackedSecureBootVariable; 2] = [
 ];
 
 /// Finds a tracked Secure Boot variable by NVRAM identity.
-fn tracked_secure_boot_variable(
+fn find_tracked_secure_boot_variable(
     vendor: Guid,
     name: &Ucs2LeSlice,
 ) -> Option<TrackedSecureBootVariable> {
@@ -475,7 +475,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .await?;
         self.flush_storage().await?;
 
-        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
+        if let Some(variable) = find_tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -512,7 +512,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .append_variable(name, vendor, data, timestamp)
             .await?;
         self.flush_storage().await?;
-        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
+        if let Some(variable) = find_tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -532,7 +532,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         let removed = self.in_memory.remove_variable(name, vendor).await?;
         self.flush_storage().await?;
-        if let Some(variable) = tracked_secure_boot_variable(vendor, name) {
+        if let Some(variable) = find_tracked_secure_boot_variable(vendor, name) {
             self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
@@ -593,20 +593,20 @@ mod test {
     fn tracked_secure_boot_variable_filter() {
         let (vendor, name) = vars::KEK();
         assert_eq!(
-            tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
+            find_tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
             Some("KEK")
         );
 
         let (vendor, name) = vars::DB();
         assert_eq!(
-            tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
+            find_tracked_secure_boot_variable(vendor, name).map(|tracked| tracked.variable),
             Some("db")
         );
 
         let unrelated_name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "unrelated").as_bytes())
             .expect("static string is nul-terminated");
         assert_eq!(
-            tracked_secure_boot_variable(Guid::new_random(), unrelated_name)
+            find_tracked_secure_boot_variable(Guid::new_random(), unrelated_name)
                 .map(|tracked| tracked.variable),
             None
         );
