@@ -147,10 +147,26 @@ pub enum LoadMode {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
-        uefi: bool,
         com_serial: Option<SerialInformation>,
+        uefi_config: Option<IgvmUefiConfig>,
     },
     None,
+}
+
+#[derive(MeshPayload, Debug, Clone, Copy)]
+pub struct IgvmUefiConfig {
+    pub enable_debugging: bool,
+    pub enable_memory_protections: bool,
+    pub disable_frontpage: bool,
+    pub enable_tpm: bool,
+    pub enable_battery: bool,
+    pub enable_serial: bool,
+    pub enable_vpci_boot: bool,
+    pub uefi_console_mode: Option<UefiConsoleMode>,
+    pub default_boot_always_attempt: bool,
+    pub bios_guid: Guid,
+    pub enable_vmbus: bool,
+    pub force_dma_bounce: bool,
 }
 
 #[derive(Debug, Clone, Copy, MeshPayload)]

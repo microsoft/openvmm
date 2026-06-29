@@ -1037,6 +1037,7 @@ impl IntoPipeline for CheckinGatesCli {
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
                     OpenhclIgvmRecipe::X64Cvm,
+                    OpenhclIgvmRecipe::X64UefiCustom,
                 ],
                 (CommonArch::X86_64, true) => vec![
                     OpenhclIgvmRecipe::X64,
@@ -1074,6 +1075,9 @@ impl IntoPipeline for CheckinGatesCli {
                         use_openhcl_igvms.get(&OpenhclIgvmRecipe::X64Cvm).cloned();
                     vmm_tests_artifacts_windows_x86.use_openhcl_linux_direct = use_openhcl_igvms
                         .get(&OpenhclIgvmRecipe::X64TestLinuxDirect)
+                        .cloned();
+                    vmm_tests_artifacts_windows_x86.use_openhcl_uefi_custom = use_openhcl_igvms
+                        .get(&OpenhclIgvmRecipe::X64UefiCustom)
                         .cloned();
                 }
                 (CommonArch::X86_64, true) => {
@@ -1902,6 +1906,7 @@ pub mod vmm_tests_artifact_builders {
             // linux build machine
             openhcl_standard => OpenhclIgvmOutput,
             openhcl_cvm => OpenhclIgvmOutput,
+            openhcl_uefi_custom => OpenhclIgvmOutput,
             openhcl_linux_direct => OpenhclIgvmOutput,
             pipette_linux_musl => PipetteOutput,
             tmk_vmm_linux_musl => TmkVmmOutput,
