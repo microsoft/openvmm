@@ -160,19 +160,6 @@ impl GenericSwitchDefinition {
     }
 }
 
-/// The target of a PCIe configuration space access.
-enum CfgAccessTarget<'a> {
-    /// The access targets a Root Complex Integrated Endpoint (RCiEP) on
-    /// the internal bus of the root complex.
-    Rciep(&'a mut dyn GenericPciBusDevice),
-    /// The access targets a root port on the internal bus of the root
-    /// complex.
-    RootPort(&'a mut RootPort),
-    /// The access targets a device function assigned to the hierarchy
-    /// underneath of a root port.
-    DownstreamDevice(&'a mut RootPort),
-}
-
 /// Builder for [`GenericPcieRootComplex`].
 ///
 /// Obtain via [`GenericPcieRootComplex::builder`], configure optional
@@ -520,68 +507,6 @@ impl GenericPcieRootComplex {
         Ok((addr, byte_enable))
     }
 
-    fn route_cfg_access<'a>(&'a mut self, addr: PciConfigAddress) -> Option<CfgAccessTarget<'a>> {
-        if addr.bus == self.start_bus {
-            // Look up the exact devfn first; if not found, fall back to
-            // function 0 of the same device so that multi-function
-            // endpoints can handle the access via
-            // `pci_cfg_read_with_routing`.
-            let devfn_fn0 = addr.device_function & !7;
-            let mut idx = None;
-            let mut exact = false;
-            for (i, (d, _)) in self.devices.iter().enumerate() {
-                if *d == addr.device_function {
-                    idx = Some(i);
-                    exact = true;
-                    break;
-                }
-                if *d == devfn_fn0 {
-                    idx = Some(i);
-                }
-                if *d > addr.device_function {
-                    break;
-                }
-            }
-            match idx.map(|i| (exact, &mut self.devices[i].1)) {
-                // Exact devfn match for a root port — return its config space.
-                Some((true, BusDevice::RootPort { port, .. })) => {
-                    return Some(CfgAccessTarget::RootPort(port));
-                }
-                // Fallback (fn0) match for a root port — the target function
-                // is not a root port, so this devfn is unroutable.
-                Some((false, BusDevice::RootPort { .. })) => {
-                    return None;
-                }
-                Some((_, BusDevice::Rciep { dev, .. })) => {
-                    return Some(CfgAccessTarget::Rciep(dev.as_mut()));
-                }
-                _ => {
-                    return None;
-                }
-            }
-        } else if addr.bus > self.start_bus && addr.bus <= self.end_bus {
-            for (_, d) in self.devices.iter_mut() {
-                if let BusDevice::RootPort { port, .. } = d {
-                    if port.port.cfg_space.assigned_bus_range().contains(&addr.bus) {
-                        return Some(CfgAccessTarget::DownstreamDevice(port));
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn invoke_detached_cfg_handler<R>(
-        &mut self,
-        f: impl FnOnce(&mut PciBusCfgAccessHandler, &mut Self) -> R,
-    ) -> R {
-        let mut handler = std::mem::take(&mut self.bus_cfg_handler);
-        let result = f(&mut handler, self);
-        self.bus_cfg_handler = handler;
-        result
-    }
-
     fn mmio_read_non_ecam(&mut self, addr: u64, data: &mut [u8]) -> Option<IoResult> {
         if let Some(chbcr) = &self.chbcr {
             if let Some(offset) = chbcr.offset_of(addr) {
@@ -668,11 +593,157 @@ impl ChipsetDevice for GenericPcieRootComplex {
 
 impl PollDevice for GenericPcieRootComplex {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.poll(cx, callbacks));
+        let mut callback =
+            PciBusCfgAccessCallbackView::new(&self.start_bus, &self.end_bus, &mut self.devices);
+        self.bus_cfg_handler.poll(cx, &mut callback);
     }
 }
 
-impl PciBusCfgAccessCallbacks for GenericPcieRootComplex {
+const BAR_ALLOWED_ACCESS_SIZES: [usize; 4] = [1, 2, 4, 8];
+
+fn validate_aligned_access(
+    address: u64,
+    len: usize,
+    allowed_sizes: &[usize],
+) -> Result<(), IoError> {
+    if !allowed_sizes.contains(&len) {
+        return Err(IoError::InvalidAccessSize);
+    }
+
+    if !address.is_multiple_of(len as u64) {
+        return Err(IoError::UnalignedAccess);
+    }
+
+    Ok(())
+}
+
+impl MmioIntercept for GenericPcieRootComplex {
+    fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        if let Some(result) = self.mmio_read_non_ecam(addr, data) {
+            return result;
+        }
+
+        let (address, byte_enable) = match self.parse_ecam_access(addr, data.len()) {
+            Ok(result) => result,
+            Err(err) => return IoResult::Err(err),
+        };
+
+        let mut value_u32 = !0;
+        let mut value = ByteEnabledDwordRead::new(&mut value_u32, byte_enable);
+        let mut callback =
+            PciBusCfgAccessCallbackView::new(&self.start_bus, &self.end_bus, &mut self.devices);
+
+        let result = self
+            .bus_cfg_handler
+            .read(address, value.reborrow(), &mut callback);
+
+        if matches!(result, IoResult::Ok) {
+            value.fill_intercept_buffer(data);
+        }
+
+        result
+    }
+
+    fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        if let Some(result) = self.mmio_write_non_ecam(addr, data) {
+            return result;
+        }
+
+        let (address, byte_enable) = match self.parse_ecam_access(addr, data.len()) {
+            Ok(result) => result,
+            Err(err) => return IoResult::Err(err),
+        };
+
+        let value = ByteEnabledDwordWrite::from_intercept_buffer(byte_enable, data);
+        let mut callback =
+            PciBusCfgAccessCallbackView::new(&self.start_bus, &self.end_bus, &mut self.devices);
+        self.bus_cfg_handler.write(address, value, &mut callback)
+    }
+}
+
+/// The target of a PCIe configuration space access.
+enum CfgAccessTarget<'a> {
+    /// The access targets a Root Complex Integrated Endpoint (RCiEP) on
+    /// the internal bus of the root complex.
+    Rciep(&'a mut dyn GenericPciBusDevice),
+    /// The access targets a root port on the internal bus of the root
+    /// complex.
+    RootPort(&'a mut RootPort),
+    /// The access targets a device function assigned to the hierarchy
+    /// underneath of a root port.
+    DownstreamDevice(&'a mut RootPort),
+}
+
+struct PciBusCfgAccessCallbackView<'a> {
+    start_bus: &'a u8,
+    end_bus: &'a u8,
+    devices: &'a mut Vec<(u8, BusDevice)>,
+}
+
+impl<'a> PciBusCfgAccessCallbackView<'a> {
+    fn new(start_bus: &'a u8, end_bus: &'a u8, devices: &'a mut Vec<(u8, BusDevice)>) -> Self {
+        Self {
+            start_bus,
+            end_bus,
+            devices,
+        }
+    }
+
+    fn route_cfg_access<'b>(&'b mut self, addr: PciConfigAddress) -> Option<CfgAccessTarget<'b>> {
+        //fn route_cfg_access<'a>(&'a mut self, addr: PciConfigAddress) -> Option<CfgAccessTarget<'a>> {
+        if addr.bus == *self.start_bus {
+            // Look up the exact devfn first; if not found, fall back to
+            // function 0 of the same device so that multi-function
+            // endpoints can handle the access via
+            // `pci_cfg_read_with_routing`.
+            let devfn_fn0 = addr.device_function & !7;
+            let mut idx = None;
+            let mut exact = false;
+            for (i, (d, _)) in self.devices.iter().enumerate() {
+                if *d == addr.device_function {
+                    idx = Some(i);
+                    exact = true;
+                    break;
+                }
+                if *d == devfn_fn0 {
+                    idx = Some(i);
+                }
+                if *d > addr.device_function {
+                    break;
+                }
+            }
+            match idx.map(|i| (exact, &mut self.devices[i].1)) {
+                // Exact devfn match for a root port — return its config space.
+                Some((true, BusDevice::RootPort { port, .. })) => {
+                    return Some(CfgAccessTarget::RootPort(port));
+                }
+                // Fallback (fn0) match for a root port — the target function
+                // is not a root port, so this devfn is unroutable.
+                Some((false, BusDevice::RootPort { .. })) => {
+                    return None;
+                }
+                Some((_, BusDevice::Rciep { dev, .. })) => {
+                    return Some(CfgAccessTarget::Rciep(dev.as_mut()));
+                }
+                _ => {
+                    return None;
+                }
+            }
+        } else if addr.bus > *self.start_bus && addr.bus <= *self.end_bus {
+            for (_, d) in self.devices.iter_mut() {
+                if let BusDevice::RootPort { port, .. } = d {
+                    if port.port.cfg_space.assigned_bus_range().contains(&addr.bus) {
+                        return Some(CfgAccessTarget::DownstreamDevice(port));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
     fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
         let Some(target) = self.route_cfg_access(addr) else {
             tracing::trace!(?addr, "unroutable config space access");
@@ -721,66 +792,6 @@ impl PciBusCfgAccessCallbacks for GenericPcieRootComplex {
             }
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
-    }
-}
-
-const BAR_ALLOWED_ACCESS_SIZES: [usize; 4] = [1, 2, 4, 8];
-
-fn validate_aligned_access(
-    address: u64,
-    len: usize,
-    allowed_sizes: &[usize],
-) -> Result<(), IoError> {
-    if !allowed_sizes.contains(&len) {
-        return Err(IoError::InvalidAccessSize);
-    }
-
-    if !address.is_multiple_of(len as u64) {
-        return Err(IoError::UnalignedAccess);
-    }
-
-    Ok(())
-}
-
-impl MmioIntercept for GenericPcieRootComplex {
-    fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
-        if let Some(result) = self.mmio_read_non_ecam(addr, data) {
-            return result;
-        }
-
-        let (address, byte_enable) = match self.parse_ecam_access(addr, data.len()) {
-            Ok(result) => result,
-            Err(err) => return IoResult::Err(err),
-        };
-
-        let mut value_u32 = !0;
-        let mut value = ByteEnabledDwordRead::new(&mut value_u32, byte_enable);
-
-        let result = self.invoke_detached_cfg_handler(|handler, callbacks| {
-            handler.read(address, value.reborrow(), callbacks)
-        });
-
-        if matches!(result, IoResult::Ok) {
-            value.fill_intercept_buffer(data);
-        }
-
-        result
-    }
-
-    fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
-        if let Some(result) = self.mmio_write_non_ecam(addr, data) {
-            return result;
-        }
-
-        let (address, byte_enable) = match self.parse_ecam_access(addr, data.len()) {
-            Ok(result) => result,
-            Err(err) => return IoResult::Err(err),
-        };
-
-        let value = ByteEnabledDwordWrite::from_intercept_buffer(byte_enable, data);
-        self.invoke_detached_cfg_handler(|handler, callbacks| {
-            handler.write(address, value, callbacks)
-        })
     }
 }
 

@@ -133,16 +133,6 @@ impl VpciBusDevice {
     pub(crate) fn config_space_offset(&self) -> &VpciConfigSpaceOffset {
         &self.config_space_offset
     }
-
-    fn invoke_detached_cfg_handler<R>(
-        &mut self,
-        f: impl FnOnce(&mut PciBusCfgAccessHandler, &mut Self) -> R,
-    ) -> R {
-        let mut handler = std::mem::take(&mut self.bus_cfg_handler);
-        let result = f(&mut handler, self);
-        self.bus_cfg_handler = handler;
-        result
-    }
 }
 
 impl VpciBus {
@@ -222,25 +212,8 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl PollDevice for VpciBusDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.poll(cx, callbacks));
-    }
-}
-
-impl PciBusCfgAccessCallbacks for VpciBusDevice {
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
-        self.device
-            .lock()
-            .supports_pci()
-            .unwrap()
-            .pci_cfg_read(addr.byte_offset(), value)
-    }
-
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
-        self.device
-            .lock()
-            .supports_pci()
-            .unwrap()
-            .pci_cfg_write(addr.byte_offset(), value)
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+        self.bus_cfg_handler.poll(cx, &mut callback);
     }
 }
 
@@ -263,9 +236,10 @@ impl MmioIntercept for VpciBusDevice {
                     let mut value_u32 = 0;
                     let mut value = ByteEnabledDwordRead::new(&mut value_u32, byte_enable);
 
-                    let result = self.invoke_detached_cfg_handler(|handler, callbacks| {
-                        handler.read(address, value.reborrow(), callbacks)
-                    });
+                    let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+                    let result =
+                        self.bus_cfg_handler
+                            .read(address, value.reborrow(), &mut callback);
 
                     if matches!(result, IoResult::Ok) {
                         value.fill_intercept_buffer(data);
@@ -302,9 +276,8 @@ impl MmioIntercept for VpciBusDevice {
                 // FUTURE: support a bus with multiple devices.
                 if u32::from(self.current_slot) == 0 {
                     let value = ByteEnabledDwordWrite::from_intercept_buffer(byte_enable, data);
-                    return self.invoke_detached_cfg_handler(|handler, callbacks| {
-                        handler.write(address, value, callbacks)
-                    });
+                    let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+                    return self.bus_cfg_handler.write(address, value, &mut callback);
                 } else {
                     tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset = address.byte_offset(), "no device at slot for config space write");
                 }
@@ -358,6 +331,34 @@ impl VpciBusDevice {
         };
 
         Ok(reg)
+    }
+}
+
+struct PciBusCfgAccessCallbackView<'a> {
+    device: &'a mut Arc<CloseableMutex<dyn ChipsetDevice>>,
+}
+
+impl<'a> PciBusCfgAccessCallbackView<'a> {
+    fn new(device: &'a mut Arc<CloseableMutex<dyn ChipsetDevice>>) -> Self {
+        Self { device }
+    }
+}
+
+impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
+    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+        self.device
+            .lock()
+            .supports_pci()
+            .unwrap()
+            .pci_cfg_read(addr.byte_offset(), value)
+    }
+
+    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+        self.device
+            .lock()
+            .supports_pci()
+            .unwrap()
+            .pci_cfg_write(addr.byte_offset(), value)
     }
 }
 

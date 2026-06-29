@@ -266,16 +266,6 @@ impl GenericPcieSwitch {
         })
     }
 
-    fn invoke_detached_cfg_handler<R>(
-        &mut self,
-        f: impl FnOnce(&mut PciBusCfgAccessHandler, &mut Self) -> R,
-    ) -> R {
-        let mut handler = std::mem::take(&mut self.bus_cfg_handler);
-        let result = f(&mut handler, self);
-        self.bus_cfg_handler = handler;
-        result
-    }
-
     /// Get the name of this switch.
     pub fn name(&self) -> &Arc<str> {
         &self.name
@@ -332,60 +322,6 @@ impl GenericPcieSwitch {
                 .cfg_space
                 .write_u32(addr.byte_offset(), value),
         )
-    }
-
-    /// Route configuration space read to downstream ports for further forwarding.
-    fn route_read_to_downstream_port(
-        &mut self,
-        addr: PciConfigAddress,
-        value: &mut u32,
-    ) -> Option<IoResult> {
-        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
-            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
-
-            // Skip downstream ports with invalid/uninitialized bus configuration
-            if downstream_bus_range == (0..=0) {
-                continue;
-            }
-
-            if downstream_bus_range.contains(&addr.bus) {
-                return Some(
-                    downstream_port
-                        .port
-                        .forward_cfg_read_with_routing(addr, value),
-                );
-            }
-        }
-
-        // No downstream port could handle this bus number
-        None
-    }
-
-    /// Route configuration space write to downstream ports for further forwarding.
-    fn route_write_to_downstream_port(
-        &mut self,
-        addr: PciConfigAddress,
-        value: u32,
-    ) -> Option<IoResult> {
-        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
-            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
-
-            // Skip downstream ports with invalid/uninitialized bus configuration
-            if downstream_bus_range == (0..=0) {
-                continue;
-            }
-
-            if downstream_bus_range.contains(&addr.bus) {
-                return Some(
-                    downstream_port
-                        .port
-                        .forward_cfg_write_with_routing(addr, value),
-                );
-            }
-        }
-
-        // No downstream port could handle this bus number
-        None
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
@@ -507,7 +443,8 @@ impl PciConfigSpace for GenericPcieSwitch {
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let value = ByteEnabledDwordRead::with_all_bytes_enabled(value);
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.read(addr, value, callbacks))
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
+        self.bus_cfg_handler.read(addr, value, &mut callback)
     }
 
     fn pci_cfg_write_with_routing(
@@ -559,7 +496,8 @@ impl PciConfigSpace for GenericPcieSwitch {
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let value = ByteEnabledDwordWrite::with_all_bytes_enabled(value);
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.write(addr, value, callbacks))
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
+        self.bus_cfg_handler.write(addr, value, &mut callback)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -570,22 +508,62 @@ impl PciConfigSpace for GenericPcieSwitch {
 
 impl PollDevice for GenericPcieSwitch {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.poll(cx, callbacks));
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
+        self.bus_cfg_handler.poll(cx, &mut callback);
     }
 }
 
-impl PciBusCfgAccessCallbacks for GenericPcieSwitch {
+struct PciBusCfgAccessCallbackView<'a> {
+    downstream_ports: &'a mut Vec<(u8, Arc<str>, DownstreamSwitchPort)>,
+}
+
+impl<'a> PciBusCfgAccessCallbackView<'a> {
+    fn new(downstream_ports: &'a mut Vec<(u8, Arc<str>, DownstreamSwitchPort)>) -> Self {
+        Self { downstream_ports }
+    }
+}
+
+impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
     fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
-        self.route_read_to_downstream_port(addr, value)
-            .unwrap_or_else(|| {
-                *value = !0;
-                IoResult::Ok
-            })
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+
+            // Skip downstream ports with invalid/uninitialized bus configuration
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&addr.bus) {
+                return downstream_port
+                    .port
+                    .forward_cfg_read_with_routing(addr, value);
+            }
+        }
+
+        // No downstream port could handle this bus number
+        *value = !0;
+        IoResult::Ok
     }
 
+    /// Route configuration space write to downstream ports for further forwarding.
     fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
-        self.route_write_to_downstream_port(addr, value)
-            .unwrap_or_else(|| IoResult::Ok)
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+
+            // Skip downstream ports with invalid/uninitialized bus configuration
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&addr.bus) {
+                return downstream_port
+                    .port
+                    .forward_cfg_write_with_routing(addr, value);
+            }
+        }
+
+        // No downstream port could handle this bus number
+        IoResult::Ok
     }
 }
 

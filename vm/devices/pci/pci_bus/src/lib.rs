@@ -296,46 +296,8 @@ impl GenericPciBus {
             return IoResult::Ok;
         };
 
-        self.invoke_detached_cfg_handler(|handler, callbacks| {
-            handler.read(address, value, callbacks)
-        })
-    }
-
-    fn read_from_downstream_device(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
-        let address = PciAddr::from(addr);
-        match self.pci_devices.get_mut(&address) {
-            Some((name, device)) => {
-                let offset = addr.byte_offset();
-                let res = device.pci_cfg_read(offset, value);
-                if let Some(result) = res {
-                    tracing::trace!(
-                        device = &**name,
-                        %address,
-                        offset,
-                        value,
-                        "cfg space read"
-                    );
-                    result
-                } else {
-                    // TODO: should probably unregister from bus?
-                    // but then again, shouldn't the device do that as part of
-                    // its destructor?
-                    tracelimit::warn_ratelimited!(
-                        device = &**name,
-                        %address,
-                        offset,
-                        "cfg space read failed, device went away"
-                    );
-                    *value = !0;
-                    IoResult::Ok
-                }
-            }
-            None => {
-                tracing::trace!(%address, "no device found - returning F's");
-                *value = !0;
-                IoResult::Ok
-            }
-        }
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.pci_devices);
+        self.bus_cfg_handler.read(address, value, &mut callback)
     }
 
     /// Handler a write to the DATA register
@@ -352,44 +314,8 @@ impl GenericPciBus {
             return IoResult::Ok;
         };
 
-        self.invoke_detached_cfg_handler(|handler, callbacks| {
-            handler.write(address, value, callbacks)
-        })
-    }
-
-    fn write_to_downstream_device(&mut self, addr: PciConfigAddress, data: u32) -> IoResult {
-        let address = PciAddr::from(addr);
-        match self.pci_devices.get_mut(&address) {
-            Some((name, device)) => {
-                let offset = addr.byte_offset();
-                let res = device.pci_cfg_write(offset, data);
-                if let Some(result) = res {
-                    tracing::trace!(
-                        device = &**name,
-                        %address,
-                        offset,
-                        data,
-                        "cfg space write"
-                    );
-                    result
-                } else {
-                    // TODO: should probably unregister from bus?
-                    // but then again, shouldn't the device do that as part of
-                    // its destructor?
-                    tracelimit::warn_ratelimited!(
-                        device = &**name,
-                        %address,
-                        offset,
-                        "cfg space write failed, device went away"
-                    );
-                    IoResult::Ok
-                }
-            }
-            None => {
-                tracing::debug!(%address, "no device found");
-                IoResult::Ok
-            }
-        }
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.pci_devices);
+        self.bus_cfg_handler.write(address, value, &mut callback)
     }
 
     fn trace_error(&self, e: IoError, operation: &'static str) {
@@ -406,16 +332,6 @@ impl GenericPciBus {
             operation,
             error
         );
-    }
-
-    fn invoke_detached_cfg_handler<R>(
-        &mut self,
-        f: impl FnOnce(&mut PciBusCfgAccessHandler, &mut Self) -> R,
-    ) -> R {
-        let mut handler = std::mem::take(&mut self.bus_cfg_handler);
-        let result = f(&mut handler, self);
-        self.bus_cfg_handler = handler;
-        result
     }
 }
 
@@ -509,17 +425,94 @@ impl PortIoIntercept for GenericPciBus {
 
 impl PollDevice for GenericPciBus {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        self.invoke_detached_cfg_handler(|handler, callbacks| handler.poll(cx, callbacks));
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.pci_devices);
+        self.bus_cfg_handler.poll(cx, &mut callback);
     }
 }
 
-impl PciBusCfgAccessCallbacks for GenericPciBus {
+struct PciBusCfgAccessCallbackView<'a> {
+    pci_devices: &'a mut BTreeMap<PciAddr, (Arc<str>, Box<dyn GenericPciBusDevice>)>,
+}
+
+impl<'a> PciBusCfgAccessCallbackView<'a> {
+    fn new(
+        pci_devices: &'a mut BTreeMap<PciAddr, (Arc<str>, Box<dyn GenericPciBusDevice>)>,
+    ) -> Self {
+        Self { pci_devices }
+    }
+}
+
+impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
     fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
-        self.read_from_downstream_device(addr, value)
+        let address = PciAddr::from(addr);
+        match self.pci_devices.get_mut(&address) {
+            Some((name, device)) => {
+                let offset = addr.byte_offset();
+                let res = device.pci_cfg_read(offset, value);
+                if let Some(result) = res {
+                    tracing::trace!(
+                        device = &**name,
+                        %address,
+                        offset,
+                        value,
+                        "cfg space read"
+                    );
+                    result
+                } else {
+                    // TODO: should probably unregister from bus?
+                    // but then again, shouldn't the device do that as part of
+                    // its destructor?
+                    tracelimit::warn_ratelimited!(
+                        device = &**name,
+                        %address,
+                        offset,
+                        "cfg space read failed, device went away"
+                    );
+                    *value = !0;
+                    IoResult::Ok
+                }
+            }
+            None => {
+                tracing::trace!(%address, "no device found - returning F's");
+                *value = !0;
+                IoResult::Ok
+            }
+        }
     }
 
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
-        self.write_to_downstream_device(addr, value)
+    fn write(&mut self, addr: PciConfigAddress, data: u32) -> IoResult {
+        let address = PciAddr::from(addr);
+        match self.pci_devices.get_mut(&address) {
+            Some((name, device)) => {
+                let offset = addr.byte_offset();
+                let res = device.pci_cfg_write(offset, data);
+                if let Some(result) = res {
+                    tracing::trace!(
+                        device = &**name,
+                        %address,
+                        offset,
+                        data,
+                        "cfg space write"
+                    );
+                    result
+                } else {
+                    // TODO: should probably unregister from bus?
+                    // but then again, shouldn't the device do that as part of
+                    // its destructor?
+                    tracelimit::warn_ratelimited!(
+                        device = &**name,
+                        %address,
+                        offset,
+                        "cfg space write failed, device went away"
+                    );
+                    IoResult::Ok
+                }
+            }
+            None => {
+                tracing::debug!(%address, "no device found");
+                IoResult::Ok
+            }
+        }
     }
 }
 
