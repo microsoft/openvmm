@@ -377,13 +377,27 @@ impl PcieDownstreamPort {
         };
 
         let msi_capability = MsiCapability::new(0, true, false, msi_target);
+        let msi_interrupt_supported = msi_capability.interrupt().is_some();
+        let aer_root_interrupt_supported =
+            msi_interrupt_supported && matches!(port_type, DevicePortType::RootPort);
+        let pcie_interrupt_message_number =
+            msi_interrupt_supported.then(|| msi_capability.pcie_interrupt_message_number());
+        let aer_interrupt_message_number =
+            aer_root_interrupt_supported.then(|| msi_capability.aer_interrupt_message_number());
         let acs_supported =
             filter_acs_capabilities_for_bridge(&port_type, settings.acs_capabilities_supported);
         let aer_port_type = AerPortType::from(&port_type);
 
         let pcie_cap = if hotplug {
             let slot_num = slot_number.unwrap_or(0);
-            PciExpressCapability::new(port_type, None).with_hotplug_support(slot_num)
+            let cap = PciExpressCapability::new(port_type, None);
+            let cap = if let Some(interrupt_message_number) = pcie_interrupt_message_number {
+                cap.with_interrupt_message_number(interrupt_message_number.into())
+            } else {
+                cap
+            };
+
+            cap.with_hotplug_support(slot_num)
         } else {
             PciExpressCapability::new(port_type, None)
         };
@@ -403,6 +417,7 @@ impl PcieDownstreamPort {
                     correctable_mask: aer_settings.correctable_mask,
                     uncorrectable_mask: aer_settings.uncorrectable_mask,
                     uncorrectable_severity_mask: aer_settings.uncorrectable_severity_mask,
+                    root_error_interrupt_message_number: aer_interrupt_message_number,
                 },
             )));
         }

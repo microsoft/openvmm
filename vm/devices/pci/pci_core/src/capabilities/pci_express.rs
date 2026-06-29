@@ -109,6 +109,17 @@ impl PciExpressCapability {
         }
     }
 
+    /// Sets the PCIe Capability Interrupt Message Number field.
+    ///
+    /// This is the message number used for MSI/MSI-X based notifications from
+    /// PCIe capability logic (for example, hotplug events).
+    pub fn with_interrupt_message_number(mut self, interrupt_message_number: u16) -> Self {
+        self.pcie_capabilities = self
+            .pcie_capabilities
+            .with_interrupt_message_number(interrupt_message_number & 0x1f);
+        self
+    }
+
     fn handle_device_control_status_write(&mut self, val: ByteEnabledDwordWrite) {
         // Device Control (2 bytes) + Device Status (2 bytes)
         let mut state = self.state.lock();

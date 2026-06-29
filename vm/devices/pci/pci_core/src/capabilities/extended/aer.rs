@@ -34,6 +34,10 @@ pub struct AerCapabilityConfig {
     pub uncorrectable_mask: Option<u32>,
     /// Override for the Uncorrectable Error Severity register default.
     pub uncorrectable_severity_mask: Option<u32>,
+    /// Interrupt message number used by Root Ports for AER signaling.
+    ///
+    /// This corresponds to Root Error Status[31:27].
+    pub root_error_interrupt_message_number: Option<u8>,
 }
 
 impl From<DevicePortType> for AerPortType {
@@ -122,6 +126,15 @@ impl AerExtendedCapability {
         let default_uncorrectable_severity = config
             .uncorrectable_severity_mask
             .unwrap_or(aer_spec::DEFAULT_UNC_ERR_SEVERITY);
+        let root_error_interrupt_message_number =
+            config.root_error_interrupt_message_number.unwrap_or(0) & 0x1f;
+
+        let root_error_status = if matches!(port_type, AerPortType::RootPort) {
+            aer_spec::RootErrorStatus::new()
+                .with_advanced_error_interrupt_message_number(root_error_interrupt_message_number)
+        } else {
+            aer_spec::RootErrorStatus::new()
+        };
 
         Self {
             port_type,
@@ -135,7 +148,7 @@ impl AerExtendedCapability {
             aer_cap_ctl: aer_spec::AdvancedErrorCapabilitiesAndControl::new(),
             header_log: [0; 4],
             root_error_command: aer_spec::RootErrorCommand::new(),
-            root_error_status: aer_spec::RootErrorStatus::new(),
+            root_error_status,
             error_source_identification: aer_spec::ErrorSourceIdentification::new(),
             tlp_prefix_log: [0; 4],
             advanced_capabilities: AerAdvancedCapabilities::new(port_type),
@@ -636,6 +649,7 @@ mod tests {
                 correctable_mask: Some(0x0000_0021),
                 uncorrectable_mask: Some(0x0400_0000),
                 uncorrectable_severity_mask: Some(0x0001_3000),
+                root_error_interrupt_message_number: Some(3),
             },
         );
 
@@ -656,6 +670,10 @@ mod tests {
                 AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_SEVERITY.0
             ),
             0x0001_3000
+        );
+        assert_eq!(
+            read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0) >> 27,
+            3
         );
     }
 }
