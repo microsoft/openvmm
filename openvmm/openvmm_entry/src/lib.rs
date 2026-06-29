@@ -71,6 +71,7 @@ use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmUefiConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -85,6 +86,7 @@ use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -1254,7 +1256,25 @@ async fn vm_config_from_command_line(
             file,
             cmdline,
             vtl2_base_address: igvm_vtl2_relocation_type,
-            uefi: igvm.uefi,
+            uefi_config: igvm.uefi.then(|| IgvmUefiConfig {
+                enable_debugging: opt.uefi_debug,
+                enable_memory_protections: opt.uefi_enable_memory_protections,
+                disable_frontpage: opt.disable_frontpage,
+                enable_tpm: opt.tpm,
+                enable_battery: opt.battery,
+                enable_serial: any_serial_configured,
+                enable_vpci_boot: false,
+                uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
+                    UefiConsoleModeCli::Default => UefiConsoleMode::Default,
+                    UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
+                    UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
+                    UefiConsoleModeCli::None => UefiConsoleMode::None,
+                }),
+                default_boot_always_attempt: opt.default_boot_always_attempt,
+                bios_guid,
+                enable_vmbus: !opt.no_vmbus,
+                force_dma_bounce: opt.uefi_force_dma_bounce,
+            }),
             com_serial: has_com3.then(|| SerialInformation {
                 io_port: ComPort::Com3.io_port(),
                 irq: ComPort::Com3.irq().into(),

@@ -1470,7 +1470,11 @@ impl InitializedVm {
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
         match &cfg.load_mode {
-            LoadMode::Uefi { .. } | LoadMode::Igvm { uefi: true, .. } => {
+            LoadMode::Uefi { .. }
+            | LoadMode::Igvm {
+                uefi_config: Some(_),
+                ..
+            } => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
                 // device.
@@ -3303,7 +3307,7 @@ impl LoadedVmInner {
                 file: _,
                 ref cmdline,
                 vtl2_base_address,
-                uefi,
+                uefi_config,
                 com_serial,
             } => {
                 let madt = acpi_builder.build_madt();
@@ -3341,7 +3345,7 @@ impl LoadedVmInner {
                 // The non-isolated UEFI IGVM file path uses the same fixed UEFI
                 // config GPA as direct UEFI. Supply the config blob OpenVMM
                 // normally builds for direct UEFI.
-                if uefi {
+                if let Some(uefi_config) = uefi_config {
                     let acpi_tables = [
                         Some(madt.as_ref()),
                         Some(srat.as_ref()),
@@ -3357,19 +3361,19 @@ impl LoadedVmInner {
                         &self.mem_layout,
                         &self.pcie_host_bridges,
                         &super::vm_loaders::uefi::UefiLoadSettings {
-                            debugging: false,
-                            battery: false,
-                            memory_protections: false,
-                            frontpage: true,
-                            tpm: false,
+                            debugging: uefi_config.enable_debugging,
+                            battery: uefi_config.enable_battery,
+                            memory_protections: uefi_config.enable_memory_protections,
+                            frontpage: !uefi_config.disable_frontpage,
+                            tpm: uefi_config.enable_tpm,
                             guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
-                            vpci_boot: false,
-                            serial: com_serial.is_some(),
-                            uefi_console_mode: None,
-                            default_boot_always_attempt: false,
-                            bios_guid: guid::Guid::new_random(),
-                            vmbus: self.vmbus_server.is_some(),
-                            force_dma_bounce: false,
+                            vpci_boot: uefi_config.enable_vpci_boot,
+                            serial: uefi_config.enable_serial,
+                            uefi_console_mode: uefi_config.uefi_console_mode,
+                            default_boot_always_attempt: uefi_config.default_boot_always_attempt,
+                            bios_guid: uefi_config.bios_guid,
+                            vmbus: uefi_config.enable_vmbus,
+                            force_dma_bounce: uefi_config.force_dma_bounce,
                         },
                         &self.chipset_mmio,
                         &acpi_tables,
