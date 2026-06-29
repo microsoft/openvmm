@@ -22,6 +22,9 @@ use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
+use hex::ToHex;
+use sha2::Digest;
+use sha2::Sha256;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
@@ -30,6 +33,7 @@ use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::in_memory;
+use uefi_specs::uefi::nvram::vars;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -330,6 +334,50 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         self.lazy_load_from_storage().await?;
         Ok(self.in_memory.iter())
     }
+
+    /// Logs compact telemetry for Secure Boot variables this rollout tracks.
+    async fn log_secure_boot_variable_state_if_needed(
+        &mut self,
+        vendor: Guid,
+        name: &Ucs2LeSlice,
+    ) -> Result<(), NvramStorageError> {
+        let Some(variable) = tracked_secure_boot_variable_name(vendor, name) else {
+            return Ok(());
+        };
+
+        let data = self
+            .in_memory
+            .get_variable(name, vendor)
+            .await?
+            .map(|(_, data, _)| data);
+        let present = data.is_some();
+        let size = data.as_ref().map_or(0, Vec::len);
+        let sha256 = data
+            .as_deref()
+            .map(|data| Sha256::digest(data).encode_hex::<String>());
+
+        tracing::info!(
+            CVM_ALLOWED,
+            variable,
+            present,
+            size,
+            sha256,
+            "secure boot variable state"
+        );
+
+        Ok(())
+    }
+}
+
+/// Returns the telemetry label for Secure Boot variables tracked by this crate.
+fn tracked_secure_boot_variable_name(vendor: Guid, name: &Ucs2LeSlice) -> Option<&'static str> {
+    if (vendor, name) == vars::KEK() {
+        Some("KEK")
+    } else if (vendor, name) == vars::DB() {
+        Some("db")
+    } else {
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -389,6 +437,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .set_variable(name, vendor, attr, data, timestamp)
             .await?;
         self.flush_storage().await?;
+        self.log_secure_boot_variable_state_if_needed(vendor, name)
+            .await?;
 
         Ok(())
     }
@@ -423,6 +473,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .append_variable(name, vendor, data, timestamp)
             .await?;
         self.flush_storage().await?;
+        self.log_secure_boot_variable_state_if_needed(vendor, name)
+            .await?;
 
         Ok(found)
     }
@@ -440,6 +492,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         let removed = self.in_memory.remove_variable(name, vendor).await?;
         self.flush_storage().await?;
+        self.log_secure_boot_variable_state_if_needed(vendor, name)
+            .await?;
 
         Ok(removed)
     }
