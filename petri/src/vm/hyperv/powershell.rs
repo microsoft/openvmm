@@ -1418,6 +1418,35 @@ pub struct WinEvent {
     pub id: u32,
     /// Message content
     pub message: String,
+    /// Raw event data property values, stringified in template order. Empty
+    /// when the event carries no data.
+    #[serde(default, deserialize_with = "deserialize_event_properties")]
+    pub properties: Vec<String>,
+}
+
+/// Deserialize the `Properties` projection of a Windows event.
+///
+/// PowerShell's `ConvertTo-Json` renders a property array of length one as a
+/// bare scalar and an absent/empty array as `null`, so accept a string, an
+/// array of strings, or null.
+fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(OneOrMany::One(value)) => vec![value],
+        Some(OneOrMany::Many(values)) => values,
+    })
 }
 
 /// Get event logs
@@ -1467,6 +1496,15 @@ pub async fn run_get_winevent(
         ps::Value::new("Level"),
         ps::Value::new("Id"),
         ps::Value::new("Message"),
+        ps::Value::new(ps::HashTable::new([
+            ("label", ps::Value::new("Properties")),
+            (
+                "expression",
+                ps::Value::new(ps::Script::new(
+                    "@($_.Properties | ForEach-Object { [string]$_.Value })",
+                )),
+            ),
+        ])),
     ]);
 
     let output = run_host_cmd(
