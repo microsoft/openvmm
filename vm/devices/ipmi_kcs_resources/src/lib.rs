@@ -11,10 +11,13 @@ use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// Resource handle for the IPMI KCS device.
 ///
-/// No configuration fields — the device starts with an empty SEL
-/// and the guest populates it at runtime.
+/// The device starts with an empty SEL and the guest populates it at runtime.
 #[derive(MeshPayload)]
-pub struct IpmiKcsHandle;
+pub struct IpmiKcsHandle {
+    /// Forward each SEL entry as a trace event. In OpenHCL this is forwarded to
+    /// the host for diagnostics. Off for plain OpenVMM.
+    pub forward_sel: bool,
+}
 
 impl ResourceId<ChipsetDeviceHandleKind> for IpmiKcsHandle {
     const ID: &'static str = "ipmi_kcs";

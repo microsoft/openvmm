@@ -2611,6 +2611,20 @@ async fn new_underhill_vm(
         });
     }
 
+    // IPMI KCS BMC for SEL-based guest diagnostics (x86 UEFI only). Off in
+    // PCAT; enablement is gated by the host via DPS. SEL entries are forwarded
+    // to the host through the tracing pipeline.
+    #[cfg(guest_arch = "x86_64")]
+    let ipmi_chipset_device = if matches!(firmware_type, FirmwareType::Uefi) && dps.general.ipmi_enabled
+    {
+        Some(ChipsetDeviceHandle {
+            name: "ipmi_kcs".to_owned(),
+            resource: ipmi_kcs_resources::IpmiKcsHandle { forward_sel: true }.into_resource(),
+        })
+    } else {
+        None
+    };
+
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -3027,6 +3041,11 @@ async fn new_underhill_vm(
             .into_resource(),
         });
     };
+
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(ipmi) = ipmi_chipset_device {
+        chipset_devices.push(ipmi);
+    }
 
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,

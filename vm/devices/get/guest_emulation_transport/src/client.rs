@@ -286,6 +286,7 @@ impl GuestEmulationTransportClient {
                 com2_vmbus_redirector: json.v1.com2.enable_vmbus_redirector,
                 firmware_debugging_enabled: json.v1.enable_firmware_debugging,
                 hibernation_enabled: json.v1.enable_hibernation,
+                ipmi_enabled: json.v1.enable_ipmi,
 
                 suppress_attestation: Some(json.v2.r#static.no_persistent_secrets),
                 generation_id: {

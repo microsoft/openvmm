@@ -186,6 +186,7 @@ aarch64defs.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
+ipmi_kcs_resources.workspace = true
 
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }

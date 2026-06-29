@@ -13,6 +13,9 @@
 
 use std::sync::Arc;
 
+/// Size of a single SEL record in bytes (IPMI v2.0 Section 32).
+const SEL_RECORD_SIZE: usize = 16;
+
 /// Sink that receives SEL records as the guest adds them.
 ///
 /// The default implementation is a no-op; hosts that want to collect SEL
@@ -28,6 +31,25 @@ pub struct NullSelSink;
 
 impl SelSink for NullSelSink {
     fn log_sel_entry(&self, _record_id: u16, _record: &[u8]) {}
+}
+
+/// Sink that emits each SEL record as a trace event. In OpenHCL the tracing
+/// pipeline is forwarded to the host, so this is the forwarding path with no
+/// extra plumbing. The record is rendered as hex.
+pub struct TracingSelSink;
+
+impl SelSink for TracingSelSink {
+    fn log_sel_entry(&self, record_id: u16, record: &[u8]) {
+        // 16-byte record -> 32 hex chars; small fixed buffer, no alloc churn.
+        let mut hex = [0u8; SEL_RECORD_SIZE * 2];
+        for (i, b) in record.iter().take(SEL_RECORD_SIZE).enumerate() {
+            const LUT: &[u8; 16] = b"0123456789abcdef";
+            hex[i * 2] = LUT[(b >> 4) as usize];
+            hex[i * 2 + 1] = LUT[(b & 0xf) as usize];
+        }
+        let hex = core::str::from_utf8(&hex).unwrap_or("");
+        tracelimit::info_ratelimited!(record_id, record = hex, "ipmi sel entry");
+    }
 }
 
 /// Wall-clock source for SEL timestamps, abstracted for paravisor builds.

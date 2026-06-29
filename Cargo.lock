@@ -8794,6 +8794,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "ipmi_kcs_resources",
  "jiff",
  "kmsg",
  "kmsg_defs",
