@@ -140,6 +140,9 @@ pub struct HclCompatNvram<S> {
     // whether tracked Secure Boot variable state has been logged for the
     // current in-memory NVRAM contents
     logged_tracked_secure_boot_state: bool,
+
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    tracked_secure_boot_state_rate_limiter: tracelimit::RateLimiter,
 }
 
 impl<S: StorageBackend> HclCompatNvram<S> {
@@ -159,6 +162,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             loaded: false,
 
             logged_tracked_secure_boot_state: false,
+
+            tracked_secure_boot_state_rate_limiter: tracelimit::RateLimiter::new_default(),
         }
     }
 
@@ -177,7 +182,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         if res.is_ok() && !self.logged_tracked_secure_boot_state {
             self.logged_tracked_secure_boot_state = true;
             for variable in TrackedSecureBootVariable::all() {
-                self.log_tracked_secure_boot_variable_state(variable).await;
+                self.log_tracked_secure_boot_variable_state(variable, false);
             }
         }
 
@@ -385,30 +390,33 @@ impl<S: StorageBackend> HclCompatNvram<S> {
     }
 
     /// Logs compact telemetry for a Secure Boot variable this rollout tracks.
-    async fn log_tracked_secure_boot_variable_state(
+    fn log_tracked_secure_boot_variable_state(
         &mut self,
         variable: TrackedSecureBootVariable,
+        rate_limit: bool,
     ) {
-        let (vendor, name) = variable.nvram_identity();
-        let data = match self.in_memory.get_variable(name, vendor).await {
-            Ok(data) => data.map(|(_, data, _)| data),
-            Err(err) => {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    "failed to log secure boot variable state"
-                );
-                return;
+        let dropped_ratelimited = if rate_limit {
+            match self.tracked_secure_boot_state_rate_limiter.event() {
+                Ok(dropped_ratelimited) => dropped_ratelimited,
+                Err(_) => return,
             }
+        } else {
+            None
         };
-        let present = data.is_some();
-        let size = data.as_ref().map_or(0, Vec::len);
-        let sha256 = data
-            .as_deref()
-            .map(|data| Sha256::digest(data).encode_hex::<String>());
 
-        tracelimit::info_ratelimited!(
+        let (vendor, name) = variable.nvram_identity();
+        let data = self
+            .in_memory
+            .iter()
+            .find(|entry| (entry.vendor, entry.name) == (vendor, name))
+            .map(|entry| entry.data);
+        let present = data.is_some();
+        let size = data.map_or(0, <[u8]>::len);
+        let sha256 = data.map(|data| Sha256::digest(data).encode_hex::<String>());
+
+        tracing::info!(
             CVM_ALLOWED,
+            dropped_ratelimited,
             variable = variable.label(),
             present,
             size,
@@ -477,7 +485,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         self.flush_storage().await?;
 
         if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
-            self.log_tracked_secure_boot_variable_state(variable).await;
+            self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
         Ok(())
@@ -514,7 +522,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
             .await?;
         self.flush_storage().await?;
         if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
-            self.log_tracked_secure_boot_variable_state(variable).await;
+            self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
         Ok(found)
@@ -534,7 +542,7 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         let removed = self.in_memory.remove_variable(name, vendor).await?;
         self.flush_storage().await?;
         if let Some(variable) = TrackedSecureBootVariable::from_nvram_identity(vendor, name) {
-            self.log_tracked_secure_boot_variable_state(variable).await;
+            self.log_tracked_secure_boot_variable_state(variable, true);
         }
 
         Ok(removed)
