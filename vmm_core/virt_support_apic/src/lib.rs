@@ -938,7 +938,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 // staged interrupts while the APIC is software-enabled, so it
                 // must run on the enabled side of the transition: after the
                 // update when enabling, before the update when disabling.
-                if self.apic.software_enabled() {
+                if Svr::from(svr).enable() {
                     self.apic.svr = svr;
                     self.apic.pull_irr();
                 } else {
