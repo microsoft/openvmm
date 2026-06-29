@@ -7,14 +7,18 @@
 //! one `N => Variant(body::Body),` line to `define_product_policy!`
 //! below. `N` is a mesh wire tag and must never be reused.
 
-#![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
+/// Cwcow policy body and validation methods.
+pub mod cwcow;
+/// Shared helpers for product policy validation and serialization.
+pub mod product_policy_helpers;
+/// Sivm policy body and validation methods.
 pub mod sivm;
+/// UEFI enforced security settings.
+pub mod uefi_security_policy;
 
 use alloc::vec::Vec;
 
@@ -25,13 +29,11 @@ pub use paste::paste as __paste;
 ///
 /// `None` means no policy was installed; any `Some(_)` carries the
 /// decoded variant body.
-#[cfg(feature = "std")]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[cfg_attr(feature = "inspect", inspect(transparent))]
 pub struct MeasuredPolicy(Option<ProductPolicy>);
 
-#[cfg(feature = "std")]
 impl MeasuredPolicy {
     /// Wrap the decoded policy (or its absence).
     pub fn new(policy: Option<ProductPolicy>) -> Self {
@@ -88,7 +90,6 @@ macro_rules! define_product_policy {
 
         $crate::__paste! {
             $(
-                #[cfg(feature = "std")]
                 impl $crate::MeasuredPolicy {
                     #[doc = concat!(
                         "Run `f` over the `",
@@ -117,6 +118,9 @@ define_product_policy! {
 
     /// Sivm.
     1 => Sivm(sivm::SivmPolicy);
+
+    /// Cwcow.
+    2 => Cwcow(cwcow::CwcowPolicy);
 }
 
 // --- Codec ---
@@ -155,6 +159,8 @@ pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolic
     mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)
 }
 
+pub use uefi_security_policy::UefiSecurityPolicy;
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;
@@ -165,7 +171,7 @@ mod tests {
 
     fn sample_sivm_policy() -> SivmPolicy {
         SivmPolicy {
-            vmgs_read_only: true,
+            enforce_ephemeral_vmgs: true,
             require_secure_boot: true,
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
@@ -226,7 +232,7 @@ mod tests {
         fn deserialize_sivm_full() {
             let json = r#"{
                 "sivm": {
-                    "vmgs_read_only": true,
+                    "enforce_ephemeral_vmgs": true,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": true,
                     "require_bcd_integrity": true,
@@ -236,12 +242,13 @@ mod tests {
             let policy: ProductPolicy = from_json(json).unwrap();
             match policy {
                 ProductPolicy::Sivm(p) => {
-                    assert!(p.vmgs_read_only);
+                    assert!(p.enforce_ephemeral_vmgs);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
                     assert!(p.custom_uefi_json.is_empty());
                 }
+                _ => panic!("Expected Sivm policy"),
             }
         }
 
@@ -249,10 +256,10 @@ mod tests {
         fn deserialize_sivm_missing_custom_uefi_json_is_an_error() {
             let json = r#"{
                 "sivm": {
-                    "vmgs_read_only": false,
+                    "enforce_ephemeral_vmgs": false,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": false,
-                    "require_bcd_integrity": false,
+                    "require_bcd_integrity": false
                 }
             }"#;
             let err = from_json(json).unwrap_err();
@@ -270,7 +277,7 @@ mod tests {
             let json = alloc::format!(
                 r#"{{
                     "sivm": {{
-                        "vmgs_read_only": false,
+                        "enforce_ephemeral_vmgs": false,
                         "require_secure_boot": false,
                         "require_secure_boot_vars": false,
                         "require_bcd_integrity": false,
@@ -281,6 +288,7 @@ mod tests {
             let policy: ProductPolicy = from_json(&json).unwrap();
             match policy {
                 ProductPolicy::Sivm(p) => assert_eq!(p.custom_uefi_json, payload.to_vec()),
+                _ => panic!("Expected Sivm policy"),
             }
         }
 
@@ -288,7 +296,7 @@ mod tests {
         fn deserialize_sivm_invalid_base64_is_an_error() {
             let json = r#"{
                 "sivm": {
-                    "vmgs_read_only": false,
+                    "enforce_ephemeral_vmgs": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
@@ -302,7 +310,7 @@ mod tests {
         #[test]
         fn json_round_trip_is_byte_identical() {
             let original = ProductPolicy::Sivm(SivmPolicy {
-                vmgs_read_only: true,
+                enforce_ephemeral_vmgs: true,
                 require_secure_boot: true,
                 require_secure_boot_vars: true,
                 require_bcd_integrity: true,
@@ -336,7 +344,7 @@ mod tests {
         fn deserialize_rejects_unknown_field() {
             let err = from_json(
                 r#"{"sivm":{
-                    "vmgs_read_only": false,
+                    "enforce_ephemeral_vmgs": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
@@ -353,7 +361,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "std")]
     mod measured_policy_tests {
         use super::*;
 

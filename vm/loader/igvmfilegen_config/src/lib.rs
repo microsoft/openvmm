@@ -382,7 +382,7 @@ mod test {
                 "uefi": true,
                 "product_policy": {
                     "sivm": {
-                        "vmgs_read_only": true,
+                        "enforce_ephemeral_vmgs": true,
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
                         "require_bcd_integrity": true,
@@ -398,12 +398,13 @@ mod test {
                 ..
             } => match policy {
                 ProductPolicy::Sivm(p) => {
-                    assert!(p.vmgs_read_only);
+                    assert!(p.enforce_ephemeral_vmgs);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
                     assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
+                ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
             },
             other => panic!("unexpected parse: {other:?}"),
         }

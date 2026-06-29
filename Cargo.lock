@@ -6500,6 +6500,7 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+ "uefi_specs",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@
                     "uefi": true,
                     "product_policy": {
                         "sivm": {
-                            "vmgs_read_only": true,
+                            "enforce_ephemeral_vmgs": true,
                             "require_secure_boot": false,
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,
@@ -48,7 +48,7 @@
                     "uefi": true,
                     "product_policy": {
                         "sivm": {
-                            "vmgs_read_only": true,
+                            "enforce_ephemeral_vmgs": true,
                             "require_secure_boot": false,
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,
@@ -75,7 +75,7 @@
                     "uefi": true,
                     "product_policy": {
                         "sivm": {
-                            "vmgs_read_only": true,
+                            "enforce_ephemeral_vmgs": true,
                             "require_secure_boot": false,
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,

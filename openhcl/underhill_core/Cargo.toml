@@ -132,7 +132,7 @@ hvdef.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader_defs = { workspace = true, features = ["inspect"] }
-product_policy = { workspace = true, features = ["std", "inspect"] }
+product_policy = { workspace = true, features = ["inspect"] }
 loader.workspace = true
 memory_range.workspace = true
 vm_topology.workspace = true
