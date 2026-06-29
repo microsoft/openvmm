@@ -2003,7 +2003,7 @@ impl LocalApic {
             *local_tmr |= tmr & irr;
             *local_auto_eoi &= !irr;
             *local_auto_eoi |= auto_eoi & irr;
-            self.active_auto_eoi |= auto_eoi != 0;
+            self.active_auto_eoi |= (auto_eoi & irr) != 0;
             self.needs_offload_reeval = true;
         }
         self.recompute_next_irr();
@@ -2033,6 +2033,7 @@ impl LocalApic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
     use vm_topology::processor::VpInfo;
 
     /// Minimal [`ApicClient`] for driving register accesses in tests.
@@ -2178,5 +2179,45 @@ mod tests {
         // Re-enabling in software must still deliver the held interrupt.
         software_enable(&mut apic, &mut client);
         assert_eq!(apic.next_irr(), Some(TEST_VECTOR));
+    }
+
+    /// `active_auto_eoi` must reflect only the interrupts that were actually
+    /// pulled, not stale auto-EOI configuration left in `shared.auto_eoi`.
+    /// Otherwise a pending non-auto-EOI interrupt could spuriously block APIC
+    /// offload (`push_to_offload` returning `OffloadNotSupported`).
+    #[test]
+    fn active_auto_eoi_tracks_only_pulled_interrupts() {
+        // Reading an IRR register triggers `pull_irr` for all banks.
+        fn pull(apic: &mut LocalApic, client: &mut TestClient) {
+            let mut buf = [0u8; 4];
+            apic.access(client)
+                .mmio_read(((APIC_BASE_PAGE as u64) << 12) | 0x200, &mut buf);
+        }
+
+        const VEC_AUTO: u8 = 0xd0; // auto-EOI
+        const VEC_NORMAL: u8 = 0xd1; // not auto-EOI, same IRR bank
+
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+
+        // Request and deliver an auto-EOI interrupt. Its auto-EOI bit persists
+        // in `shared.auto_eoi` even though no auto-EOI interrupt stays pending.
+        set.synic_interrupt(VpIndex::new(0), VEC_AUTO, true, |_| {});
+        pull(&mut apic, &mut client);
+        assert_eq!(apic.next_irr(), Some(VEC_AUTO));
+        apic.acknowledge_interrupt(VEC_AUTO);
+        assert_eq!(apic.next_irr(), None);
+
+        // Request a normal (non-auto-EOI) interrupt in the same bank and pull it.
+        set.synic_interrupt(VpIndex::new(0), VEC_NORMAL, false, |_| {});
+        pull(&mut apic, &mut client);
+
+        // Only the non-auto-EOI interrupt is pending, so offload must still be
+        // supported; the stale auto-EOI bit must not block it.
+        apic.enable_offload();
+        assert!(apic.push_to_offload(|_, _, _| {}).is_ok());
     }
 }
