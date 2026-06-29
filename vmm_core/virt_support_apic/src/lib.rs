@@ -929,21 +929,15 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 self.apic.update_slot();
             }
             ApicRegister::SVR => {
-                // The APIC may be enabled or disabled by this, so we need to
-                // reevaluate offloading.
+                // The APIC may be disabled by this, so we need to reevaluate
+                // offloading.
                 self.ensure_state_local();
-                let svr = value & u32::from(Svr::new().with_vector(0xff).with_enable(true));
-                // Accumulate any interrupts staged in `new_irr` into the IRR
-                // while the APIC is software-enabled. `pull_irr` only retains
-                // staged interrupts while the APIC is software-enabled, so it
-                // must run on the enabled side of the transition: after the
-                // update when enabling, before the update when disabling.
-                if Svr::from(svr).enable() {
-                    self.apic.svr = svr;
-                    self.apic.pull_irr();
-                } else {
-                    self.apic.pull_irr();
-                    self.apic.svr = svr;
+                // Accumulate any requested interrupts before changing the
+                // enable state. `pull_irr` holds them in the IRR regardless of
+                // the enable state, so they survive a software enable/disable.
+                self.apic.pull_irr();
+                self.apic.svr = value & u32::from(Svr::new().with_vector(0xff).with_enable(true));
+                if !self.apic.software_enabled() {
                     // Mask all the LVTs.
                     for lvt in [
                         &mut self.apic.lvt_timer,
@@ -1777,9 +1771,10 @@ impl LocalApic {
         *esr = 0;
         *icr = 0;
         *next_irr = None;
-        // Leave any interrupts staged in `shared.new_irr` in place. If this is a
-        // transient hardware disable, they are accumulated into the IRR (and so
-        // become deliverable) once the APIC is software-enabled again.
+        // Leave any interrupts staged in `shared.new_irr` in place. On a
+        // transient hardware disable they are held: the next `pull_irr`
+        // accumulates them into the IRR, and they become deliverable once the
+        // APIC is software-enabled. A full `reset` clears them separately.
         *irr = [0; 8];
         *needs_offload_reeval = false;
         *scan_irr = false;
@@ -1998,15 +1993,19 @@ impl LocalApic {
             let irr = remote_irr.swap(0, Ordering::Acquire);
             let tmr = remote_tmr.load(Ordering::Relaxed);
             let auto_eoi = remote_auto_eoi.load(Ordering::Relaxed);
-            if Svr::from(self.svr).enable() {
-                *local_irr |= irr;
-                *local_tmr &= !irr;
-                *local_tmr |= tmr & irr;
-                *local_auto_eoi &= !irr;
-                *local_auto_eoi |= auto_eoi & irr;
-                self.active_auto_eoi |= auto_eoi != 0;
-                self.needs_offload_reeval = true;
-            }
+            // Always accumulate staged interrupts into the IRR, even while the
+            // APIC is software-disabled, so that they are held (as the SDM
+            // requires) rather than discarded. Delivery is gated separately:
+            // `next_irr` and `push_to_offload` both check the software-enable
+            // state, so held interrupts only become deliverable once the APIC
+            // is software-enabled again.
+            *local_irr |= irr;
+            *local_tmr &= !irr;
+            *local_tmr |= tmr & irr;
+            *local_auto_eoi &= !irr;
+            *local_auto_eoi |= auto_eoi & irr;
+            self.active_auto_eoi |= auto_eoi != 0;
+            self.needs_offload_reeval = true;
         }
         self.recompute_next_irr();
         self.scan_irr = false;
@@ -2147,5 +2146,38 @@ mod tests {
         software_enable(&mut apic, &mut client);
 
         assert_eq!(apic.next_irr(), None);
+    }
+
+    /// `pull_irr` can run while the APIC is software-disabled via paths other
+    /// than the `SVR` write (e.g. a guest reading the IRR, or `save`). Those
+    /// paths must also hold staged interrupts rather than discarding them.
+    #[test]
+    fn staged_irr_survives_pull_while_software_disabled() {
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+        set.synic_interrupt(VpIndex::new(0), TEST_VECTOR, false, |_| {});
+
+        // Hardware-disable then re-enable, leaving the APIC software-disabled
+        // with the interrupt still staged in `new_irr`.
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+
+        // A guest read of the IRR pulls staged interrupts while the APIC is
+        // still software-disabled; this must not drop the staged interrupt.
+        let irr_bank = u64::from(TEST_VECTOR) / 32;
+        let irr_addr = ((APIC_BASE_PAGE as u64) << 12) | (0x200 + irr_bank * 0x10);
+        let mut buf = [0u8; 4];
+        apic.access(&mut client).mmio_read(irr_addr, &mut buf);
+
+        // Re-enabling in software must still deliver the held interrupt.
+        software_enable(&mut apic, &mut client);
+        assert_eq!(apic.next_irr(), Some(TEST_VECTOR));
     }
 }
