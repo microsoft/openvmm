@@ -106,6 +106,7 @@ vnc_worker.workspace = true
 rusqlite = { workspace = true, features = ["bundled"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+ipmi_kcs.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true
 
