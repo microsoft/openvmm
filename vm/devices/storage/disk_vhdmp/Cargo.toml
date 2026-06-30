@@ -8,22 +8,20 @@ rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 disk_backend.workspace = true
-disk_file.workspace = true
 scsi_buffers.workspace = true
 vm_resource.workspace = true
 
+guestmem.workspace = true
 guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
 mesh.workspace = true
+pal_async.workspace = true
 
-futures.workspace = true
 thiserror.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhd1.workspace = true
-guestmem.workspace = true
-pal_async.workspace = true
 tempfile.workspace = true
 
 [lints]
