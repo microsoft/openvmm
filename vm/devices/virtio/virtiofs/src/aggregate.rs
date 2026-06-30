@@ -176,6 +176,7 @@ impl VirtioFs {
     /// dropped; this only stops further children from being added.
     pub fn begin_teardown(&self) {
         if let Some(aggregate) = self.inner.aggregate() {
+            let _children = aggregate.children.write();
             aggregate.tearing_down.store(true, Ordering::Release);
         }
     }
