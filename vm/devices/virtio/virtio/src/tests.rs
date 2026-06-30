@@ -13,6 +13,7 @@ use crate::QueueResources;
 use crate::VirtioDevice;
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::spec::pci::*;
@@ -4575,4 +4576,135 @@ async fn stop_during_failed_enable_resets_config_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
     verify_stop_during_failed_enable_resets_config(&mut transport).await;
+}
+
+/// Asserts that the queue rejected a descriptor with
+/// [`QueueError::InvalidIndirectSize`]. `try_next` wraps the underlying
+/// [`QueueError`] in an [`std::io::Error`], so unwrap the source to check the
+/// concrete variant rather than accepting any error.
+fn assert_invalid_indirect_size(result: Result<Option<VirtioQueueCallbackWork>, io::Error>) {
+    let Err(err) = result else {
+        panic!("indirect table with invalid size must be rejected");
+    };
+    let queue_err = err.get_ref().and_then(|e| e.downcast_ref::<QueueError>());
+    assert!(
+        matches!(queue_err, Some(QueueError::InvalidIndirectSize(_))),
+        "expected QueueError::InvalidIndirectSize, got {err:?}"
+    );
+}
+
+/// An indirect descriptor table byte length of zero is not a valid (non-zero)
+/// multiple of the descriptor size, so the device must reject it
+/// (virtio spec §2.7.5.3: the table length "MUST be a multiple of the size of
+/// the descriptor").
+#[async_test]
+async fn verify_indirect_zero_length_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let desc_index = 0u16;
+    let desc_base = guest.get_queue_descriptor(0, desc_index);
+    // Set INDIRECT flag.
+    test_mem.modify_memory_map(
+        desc_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    // Set length to 0.
+    test_mem.modify_memory_map(desc_base + 8, &0u32.to_le_bytes(), false);
+    // Point to a valid address.
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    test_mem.modify_memory_map(desc_base, &buffer_addr.to_le_bytes(), false);
+
+    guest.queue_available_desc(0, desc_index);
+
+    assert_invalid_indirect_size(queue.try_next());
+}
+
+/// An indirect descriptor table byte length that is not a multiple of the
+/// descriptor size (16 bytes) must be rejected rather than silently truncating
+/// the trailing partial descriptor via integer division (virtio spec §2.7.5.3).
+#[async_test]
+async fn verify_indirect_misaligned_length_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let desc_index = 0u16;
+    let desc_base = guest.get_queue_descriptor(0, desc_index);
+    // Set INDIRECT flag.
+    test_mem.modify_memory_map(
+        desc_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    // Set length to 17 (not a multiple of 16).
+    test_mem.modify_memory_map(desc_base + 8, &17u32.to_le_bytes(), false);
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    test_mem.modify_memory_map(desc_base, &buffer_addr.to_le_bytes(), false);
+
+    guest.queue_available_desc(0, desc_index);
+
+    assert_invalid_indirect_size(queue.try_next());
+}
+
+/// A packed indirect descriptor table whose entry count exceeds `u16::MAX`
+/// must be rejected rather than silently truncated.
+///
+/// The byte length is converted to an entry count (`length / 16`) that is
+/// tracked as a `u16`. A table of exactly `0x1_0000` entries (1 MiB) is one
+/// past `u16::MAX`, so without an explicit bound the `as u16` cast wrapped the
+/// count to 0. For packed indirect tables the entry count — not the NEXT flag —
+/// bounds how many descriptors are consumed (virtio spec §2.7.7), so this
+/// silently changed how much of the guest's table was processed. The oversized
+/// length must be rejected up front. Validation happens before the table is
+/// read, so the backing memory need not be populated.
+#[async_test]
+async fn verify_indirect_entry_count_overflow_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    // 0x1_0000 entries * 16 bytes == 1 MiB, i.e. u16::MAX + 1 descriptors.
+    guest.make_packed_descriptors_available(
+        0,
+        vec![DescriptorFlags::new().with_indirect(true)],
+        Some(0x1_0000),
+    );
+
+    assert_invalid_indirect_size(queue.try_next());
 }
