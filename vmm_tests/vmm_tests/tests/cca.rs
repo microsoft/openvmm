@@ -6,7 +6,6 @@
 #![forbid(unsafe_code)]
 
 use anyhow::Context as _;
-use std::ffi::OsStr;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
@@ -37,6 +36,7 @@ struct CcaRuntimeArtifacts {
     rootfs_file: petri::ResolvedArtifact,
     e2fsck_bin: petri::ResolvedArtifact,
     resize2fs_bin: petri::ResolvedArtifact,
+    debugfs_bin: petri::ResolvedArtifact,
     tmk_vmm_bin: petri::ResolvedArtifact,
     simple_tmk_bin: petri::ResolvedArtifact,
     guest_disk: petri::ResolvedArtifact,
@@ -58,13 +58,14 @@ impl CcaRuntimeArtifacts {
         Ok(())
     }
 
-    fn paths(&self) -> [(&'static str, &Path); 11] {
+    fn paths(&self) -> [(&'static str, &Path); 12] {
         [
             ("cca::SHRINKWRAP", self.shrinkwrap_exe.get()),
             ("cca::VENV", self.venv_dir.get()),
             ("cca::ROOTFS", self.rootfs_file.get()),
             ("cca::E2FSCK", self.e2fsck_bin.get()),
             ("cca::RESIZE2FS", self.resize2fs_bin.get()),
+            ("cca::DEBUGFS", self.debugfs_bin.get()),
             ("tmks::TMK_VMM_LINUX_AARCH64", self.tmk_vmm_bin.get()),
             ("tmks::SIMPLE_TMK_AARCH64", self.simple_tmk_bin.get()),
             ("cca::GUEST_DISK", self.guest_disk.get()),
@@ -91,6 +92,9 @@ fn resolve_cca_runtime(resolver: &petri::ArtifactResolver<'_>) -> Option<CcaRunt
             .erase(),
         resize2fs_bin: resolver
             .require(petri_artifacts_vmm_test::artifacts::cca::RESIZE2FS)
+            .erase(),
+        debugfs_bin: resolver
+            .require(petri_artifacts_vmm_test::artifacts::cca::DEBUGFS)
             .erase(),
         tmk_vmm_bin: resolver
             .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64)
@@ -182,7 +186,7 @@ fn prepare_cca_rootfs(artifacts: &CcaRuntimeArtifacts) -> anyhow::Result<Prepare
         (artifacts.kvmtool_efi.get(), "KVMTOOL_EFI.fd"),
         (artifacts.lkvm.get(), "lkvm"),
     ];
-    inject_files_into_cca_rootfs(&rootfs_path, &cca_files)?;
+    inject_files_into_cca_rootfs(artifacts.debugfs_bin.get(), &rootfs_path, &cca_files)?;
 
     tracing::info!(
         "rootfs.ext2 updated successfully with cca firmwares, paravisor, and tests injected"
@@ -224,112 +228,57 @@ fn resize_rootfs(resize2fs_bin: &Path, rootfs_file: &Path, size: &str) -> anyhow
     Ok(())
 }
 
-fn run_sudo(description: &str, args: &[&OsStr]) -> anyhow::Result<()> {
-    let status = Command::new("sudo")
-        .arg("-n")
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to execute sudo command to {description}"))?;
+fn inject_files_into_cca_rootfs(
+    debugfs_bin: &Path,
+    rootfs_file: &Path,
+    files: &[(&Path, &str)],
+) -> anyhow::Result<()> {
+    let command_file_dir =
+        tempfile::tempdir().context("failed to create debugfs command directory")?;
+    let command_file = command_file_dir.path().join("debugfs.commands");
+    let mut commands = String::from("mkdir /cca\n");
 
-    if !status.success() {
+    for (file, file_name) in files {
+        commands.push_str(&format!("write {} /cca/{}\n", file.display(), file_name));
+        if matches!(*file_name, "simple_tmk" | "tmk_vmm" | "lkvm") {
+            commands.push_str(&format!(
+                "set_inode_field /cca/{} mode 0100755\n",
+                file_name
+            ));
+        }
+    }
+
+    std::fs::write(&command_file, commands).with_context(|| {
+        format!(
+            "failed to write debugfs command file {}",
+            command_file.display()
+        )
+    })?;
+
+    let output = Command::new(debugfs_bin)
+        .arg("-w")
+        .arg("-f")
+        .arg(&command_file)
+        .arg(rootfs_file)
+        .output()
+        .with_context(|| format!("failed to execute {}", debugfs_bin.display()))?;
+
+    if !output.status.success() {
         anyhow::bail!(
-            "failed to {description}: exit status {status}; CCA tests require non-interactive sudo for rootfs mount/injection commands. Configure passwordless sudo for the required commands or run in an environment where sudo -n is allowed."
+            "debugfs failed to inject CCA payload into {}: status {}; stdout: {}; stderr: {}",
+            rootfs_file.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
+    tracing::info!(
+        "rootfs.ext2 updated successfully with cca firmwares, paravisor, and tests injected using debugfs"
+    );
+
     Ok(())
 }
-
-fn inject_files_into_cca_rootfs(rootfs_file: &Path, files: &[(&Path, &str)]) -> anyhow::Result<()> {
-    let mount_dir = tempfile::tempdir().context("failed to create guest rootfs mount directory")?;
-    let mnt_dir = mount_dir.path().to_path_buf();
-    let cca_dir = mnt_dir.join("cca");
-
-    let mut mounted = false;
-    let inject_result = (|| -> anyhow::Result<()> {
-        run_sudo(
-            "mount guest rootfs",
-            &[
-                OsStr::new("mount"),
-                OsStr::new("-o"),
-                OsStr::new("loop"),
-                rootfs_file.as_os_str(),
-                mnt_dir.as_os_str(),
-            ],
-        )?;
-        mounted = true;
-
-        run_sudo(
-            "create cca directory in guest rootfs",
-            &[OsStr::new("mkdir"), OsStr::new("-p"), cca_dir.as_os_str()],
-        )?;
-
-        for (file, file_name) in files {
-            let target_file = cca_dir.join(file_name);
-            run_sudo(
-                &format!(
-                    "copy {} into guest rootfs as {}",
-                    file.display(),
-                    target_file.display()
-                ),
-                &[OsStr::new("cp"), file.as_os_str(), target_file.as_os_str()],
-            )?;
-        }
-
-        run_sudo("sync guest rootfs writes", &[OsStr::new("sync")])?;
-
-        Ok(())
-    })();
-
-    if mounted {
-        if let Err(err) = run_sudo(
-            "unmount guest rootfs",
-            &[OsStr::new("umount"), mnt_dir.as_os_str()],
-        )
-        .or_else(|_| {
-            run_sudo(
-                "lazy unmount guest rootfs",
-                &[OsStr::new("umount"), OsStr::new("-l"), mnt_dir.as_os_str()],
-            )
-        }) {
-            tracing::warn!(error = err.as_ref() as &dyn std::error::Error, "{err:#}");
-        }
-    }
-
-    if let Err(err) = run_sudo("sync host writes", &[OsStr::new("sync")]) {
-        tracing::warn!(error = err.as_ref() as &dyn std::error::Error, "{err:#}");
-    }
-
-    thread::sleep(Duration::from_secs(1));
-    for _ in 0..5 {
-        if !mnt_dir.is_dir() {
-            break;
-        }
-
-        if run_sudo(
-            "remove guest rootfs mount directory",
-            &[OsStr::new("rmdir"), mnt_dir.as_os_str()],
-        )
-        .is_ok()
-        {
-            break;
-        }
-
-        thread::sleep(Duration::from_millis(500));
-    }
-
-    if mnt_dir.is_dir() {
-        if let Err(err) = run_sudo(
-            "force remove guest rootfs mount directory",
-            &[OsStr::new("rm"), OsStr::new("-rf"), mnt_dir.as_os_str()],
-        ) {
-            tracing::warn!(error = err.as_ref() as &dyn std::error::Error, "{err:#}");
-        }
-    }
-
-    inject_result.with_context(|| "failed to mount or inject files into guest rootfs")
-}
-
 fn run_shrinkwrap_cca_test(
     shrinkwrap_exe: &Path,
     venv_dir: &Path,

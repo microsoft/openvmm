@@ -710,6 +710,8 @@ pub mod artifacts {
             E2FSCK,
             /// Buildroot host resize2fs binary matching the CCA rootfs
             RESIZE2FS,
+            /// Buildroot host debugfs binary matching the CCA rootfs
+            DEBUGFS,
             /// Guest disk image passed into the Realm
             GUEST_DISK,
             /// Plane0 Linux kernel image
