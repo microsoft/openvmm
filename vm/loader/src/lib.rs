@@ -13,4 +13,5 @@ pub mod importer;
 pub mod linux;
 pub mod paravisor;
 pub mod pcat;
+pub mod smbios;
 pub mod uefi;
