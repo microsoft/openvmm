@@ -4,6 +4,7 @@
 //! A local-only job that builds everything needed and runs the VMM tests
 
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
+use crate::build_openhcl_igvm_from_recipe::IgvmManifestPath;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeType;
@@ -40,6 +41,7 @@ pub struct BuildSelections {
     pub openhcl_standard: bool,
     pub openhcl_standard_dev: bool,
     pub openhcl_cvm: bool,
+    pub openhcl_uefi_custom: bool,
     pub openhcl_linux_direct: bool,
     pub openvmm: bool,
     pub openvmm_vhost: bool,
@@ -182,6 +184,7 @@ impl SimpleFlowNode for Node {
         let build_openhcl = build.openhcl_standard
             || build.openhcl_standard_dev
             || build.openhcl_cvm
+            || build.openhcl_uefi_custom
             || build.openhcl_linux_direct;
 
         // Some things can only be built on linux
@@ -197,12 +200,13 @@ impl SimpleFlowNode for Node {
             );
         }
 
+        let openvmm_hcl_profile = if release {
+            OpenvmmHclBuildProfile::OpenvmmHclShip
+        } else {
+            OpenvmmHclBuildProfile::Debug
+        };
+
         let register_openhcl_igvm_files = if build_openhcl {
-            let openvmm_hcl_profile = if release {
-                OpenvmmHclBuildProfile::OpenvmmHclShip
-            } else {
-                OpenvmmHclBuildProfile::Debug
-            };
             let mut openhcl_recipes = Vec::new();
             match arch {
                 CommonArch::X86_64 => {
@@ -305,6 +309,42 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files
         } else {
             Vec::new()
+        };
+
+        let register_openhcl_uefi_custom_x64 = if build.openhcl_uefi_custom {
+            if arch != CommonArch::X86_64 {
+                anyhow::bail!("custom UEFI OpenHCL IGVM test is only supported on x64");
+            }
+
+            let (read_openhcl_igvm, openhcl_igvm) = ctx.new_var();
+            let (read_openhcl_igvm_extras, openhcl_igvm_extras) = ctx.new_var();
+            let mut details = OpenhclIgvmRecipe::X64.recipe_details(release);
+            details.igvm_manifest = IgvmManifestPath::InTree("uefi-x64.json".into());
+            assert!(details.local_only.is_none());
+            details.local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
+                openvmm_hcl_no_strip: false,
+                openhcl_initrd_extra_params: None,
+                custom_openvmm_hcl: None,
+                custom_openhcl_boot: None,
+                custom_kernel: None,
+                custom_sidecar: None,
+                custom_extra_rootfs: vec![],
+            });
+
+            ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
+                build_profile: openvmm_hcl_profile,
+                release_cfg: release,
+                recipe: OpenhclIgvmRecipeType::LocalOnlyCustom(details),
+                custom_target: None,
+                extra_features: BTreeSet::new(),
+                disable_secure_avic,
+                openhcl_igvm,
+                openhcl_igvm_extras,
+            });
+            read_openhcl_igvm_extras.claim_unused(ctx);
+            Some(read_openhcl_igvm)
+        } else {
+            None
         };
 
         let register_openvmm = build.openvmm.then(|| {
@@ -733,6 +773,7 @@ impl SimpleFlowNode for Node {
             register_test_igvm_agent_rpc_server,
             disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
+            register_openhcl_uefi_custom_x64,
             get_test_log_path: None,
             get_env: v,
             release_igvm_files,

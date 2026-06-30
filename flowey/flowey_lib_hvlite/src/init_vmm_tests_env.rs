@@ -39,6 +39,8 @@ flowey_request! {
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
         pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
+        /// Register the custom UEFI x64 OpenHCL IGVM file.
+        pub register_openhcl_uefi_custom_x64: Option<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -104,6 +106,7 @@ impl SimpleFlowNode for Node {
             register_test_igvm_agent_rpc_server,
             disk_images_dir,
             register_openhcl_igvm_files,
+            register_openhcl_uefi_custom_x64,
             get_test_log_path,
             get_env,
             release_igvm_files,
@@ -167,6 +170,7 @@ impl SimpleFlowNode for Node {
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
+            let openhcl_uefi_custom_x64 = register_openhcl_uefi_custom_x64.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
@@ -429,6 +433,14 @@ impl SimpleFlowNode for Node {
                     } else {
                         log::warn!("petri doesn't support custom OpenHCL files");
                     };
+                }
+
+                if let Some(openhcl_uefi_custom_x64) = openhcl_uefi_custom_x64 {
+                    let openhcl_uefi_custom_x64 = rt.read(openhcl_uefi_custom_x64);
+                    fs_err::copy(
+                        openhcl_uefi_custom_x64.igvm_bin(),
+                        test_content_dir.join("openhcl-uefi-x64-custom.bin"),
+                    )?;
                 }
 
                 if let Some(release_igvm_files) = release_igvm_files_dir {

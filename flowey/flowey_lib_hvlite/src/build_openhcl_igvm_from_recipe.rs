@@ -59,6 +59,12 @@ pub enum OpenhclIgvmOutput {
         #[serde(flatten)]
         endorsements: OpenhclIgvmEndorsements,
     },
+    X64UefiCustom {
+        #[serde(rename = "openhcl-uefi-x64-custom.bin")]
+        igvm_bin: PathBuf,
+        #[serde(flatten)]
+        endorsements: Option<OpenhclIgvmEndorsements>,
+    },
     X64CvmDevkern {
         #[serde(rename = "openhcl-x64-cvm-devkern.bin")]
         igvm_bin: PathBuf,
@@ -114,6 +120,7 @@ impl OpenhclIgvmOutput {
             | OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
             | OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
             | OpenhclIgvmOutput::X64Cvm { igvm_bin, .. }
+            | OpenhclIgvmOutput::X64UefiCustom { igvm_bin, .. }
             | OpenhclIgvmOutput::X64CvmDevkern { igvm_bin, .. }
             | OpenhclIgvmOutput::Aarch64 { igvm_bin }
             | OpenhclIgvmOutput::Aarch64Devkern { igvm_bin } => igvm_bin,
@@ -123,6 +130,7 @@ impl OpenhclIgvmOutput {
     pub fn endorsements(&self) -> Option<&OpenhclIgvmEndorsements> {
         match self {
             OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. } => endorsements.as_ref(),
+            OpenhclIgvmOutput::X64UefiCustom { endorsements, .. } => endorsements.as_ref(),
             OpenhclIgvmOutput::X64Cvm { endorsements, .. }
             | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => Some(endorsements),
             _ => None,
@@ -141,6 +149,7 @@ impl OpenhclIgvmOutput {
                 Some(OpenhclIgvmRecipe::X64TestLinuxDirectDevkern)
             }
             OpenhclIgvmOutput::X64Cvm { .. } => Some(OpenhclIgvmRecipe::X64Cvm),
+            OpenhclIgvmOutput::X64UefiCustom { .. } => Some(OpenhclIgvmRecipe::X64UefiCustom),
             OpenhclIgvmOutput::X64CvmDevkern { .. } => Some(OpenhclIgvmRecipe::X64CvmDevkern),
             OpenhclIgvmOutput::Aarch64 { .. } => Some(OpenhclIgvmRecipe::Aarch64),
             OpenhclIgvmOutput::Aarch64Devkern { .. } => Some(OpenhclIgvmRecipe::Aarch64Devkern),
@@ -186,6 +195,10 @@ impl OpenhclIgvmOutput {
                             .take()
                             .filter(OpenhclIgvmEndorsements::is_complete)
                             .expect("missing endorsements"),
+                    },
+                    OpenhclIgvmRecipe::X64UefiCustom => OpenhclIgvmOutput::X64UefiCustom {
+                        igvm_bin,
+                        endorsements: endorsements.take(),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
@@ -290,6 +303,7 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirect,
     X64TestLinuxDirectDevkern,
     X64Cvm,
+    X64UefiCustom,
     X64CvmDevkern,
     Aarch64,
     Aarch64Devkern,
@@ -333,6 +347,7 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64TestLinuxDirect => Some("test-linux-direct"),
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
+            OpenhclIgvmRecipe::X64UefiCustom => Some("uefi-custom"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
         }
     }
@@ -344,6 +359,7 @@ impl OpenhclIgvmRecipe {
             | OpenhclIgvmRecipe::X64TestLinuxDirect
             | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
             | OpenhclIgvmRecipe::X64Cvm
+            | OpenhclIgvmRecipe::X64UefiCustom
             | OpenhclIgvmRecipe::X64CvmDevkern => "x64",
             OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => "aarch64",
         }
@@ -482,6 +498,18 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: false,
+                max_trace_level,
+            },
+            Self::X64UefiCustom => OpenhclIgvmRecipeDetails {
+                local_only: None,
+                igvm_manifest: IgvmManifestPath::InTree("uefi-x64.json".into()),
+                openhcl_kernel_package: OpenhclKernelPackage::Main,
+                openvmm_hcl_features: base_openvmm_hcl_features(),
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                vtl0_kernel_type: None,
+                with_uefi: true,
+                with_interactive,
+                with_sidecar: true,
                 max_trace_level,
             },
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
