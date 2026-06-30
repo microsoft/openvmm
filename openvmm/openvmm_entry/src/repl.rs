@@ -134,8 +134,8 @@ fn parse_header_log_dwords(s: &str) -> Result<[u32; 4], String> {
     let mut dwords = [0u32; 4];
     for (i, value) in values.iter().enumerate() {
         let parsed = maybe_with_radix_u64(value)?;
-        dwords[i] = u32::try_from(parsed)
-            .map_err(|_| format!("log value {} out of u32 range", i))?;
+        dwords[i] =
+            u32::try_from(parsed).map_err(|_| format!("log value {} out of u32 range", i))?;
     }
 
     Ok(dwords)
@@ -305,14 +305,14 @@ enum InteractiveCommand {
     #[clap(visible_alias = "I")]
     InputMode,
 
-    /// Inject a PCIe AER event on a hotplug-capable root port.
+    /// Inject a PCIe AER event reported by a target device.
+    ///
+    /// The handling port is discovered automatically by walking the topology.
     InjectAer {
-        /// Root-port name.
-        #[clap(long)]
-        port: String,
-        /// Source in segment.bus.device.function format (for example: 0.1.0.0).
+        /// Target device in segment.bus.device.function format (for example:
+        /// 0.1.0.0) that generated the error.
         #[clap(long, value_parser=parse_segment_bus_device_function)]
-        source: u16,
+        target: u16,
         /// Error kind: "cor" for correctable or "unc" for uncorrectable.
         #[clap(long)]
         kind: String,
@@ -1032,8 +1032,7 @@ pub(crate) async fn run_repl(
                 vm_rpc.call(VmRpc::ClearHalt, ()).await.ok();
             }
             InteractiveCommand::InjectAer {
-                port,
-                source,
+                target,
                 kind,
                 status,
                 log,
@@ -1050,8 +1049,7 @@ pub(crate) async fn run_repl(
                         .call(
                             VmRpc::InjectPcieAer,
                             openvmm_defs::rpc::PcieAerInjectRequest {
-                                port_name: port,
-                                source_id: source,
+                                target,
                                 error_kind,
                                 status_bits,
                                 header_log: log,

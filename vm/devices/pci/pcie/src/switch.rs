@@ -21,6 +21,7 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::pci::PcieDpcRoutingAction;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_bus::GenericPciBusDevice;
@@ -434,6 +435,52 @@ impl GenericPcieSwitch {
         false
     }
 
+    /// Route a DPC action toward the target device, applying it at the first
+    /// DPC-capable port encountered walking back upstream from the device.
+    fn route_dpc_inject(&mut self, bus: u8, function: u8, action: PcieDpcRoutingAction) -> bool {
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            return false;
+        }
+
+        let secondary_bus = *upstream_bus_range.start();
+        let source_id = ((bus as u16) << 8) | function as u16;
+
+        // The target device is itself a downstream switch port on the
+        // secondary bus.
+        if bus == secondary_bus {
+            if let Some((_, _, downstream_port)) = self
+                .downstream_ports
+                .iter_mut()
+                .find(|(devfn, _, _)| *devfn == function)
+            {
+                return downstream_port.port.apply_dpc_action(source_id, action);
+            }
+            return false;
+        }
+
+        // The target device is further downstream behind one of the DSPs.
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&bus) {
+                // Deeper ports (closer to the device) get first chance to
+                // contain the error.
+                if downstream_port.port.route_child_dpc(bus, function, action) {
+                    return true;
+                }
+
+                // Otherwise this DSP is the closest port to the device.
+                return downstream_port.port.apply_dpc_action(source_id, action);
+            }
+        }
+
+        false
+    }
+
     /// Route configuration space write to downstream ports for further forwarding.
     fn route_write_to_downstream_ports(
         &mut self,
@@ -590,6 +637,16 @@ impl PciConfigSpace for GenericPcieSwitch {
         }
 
         false
+    }
+
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        action: PcieDpcRoutingAction,
+    ) -> bool {
+        self.route_dpc_inject(target_bus, function, action)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {

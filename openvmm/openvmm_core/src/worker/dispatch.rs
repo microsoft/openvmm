@@ -3784,25 +3784,22 @@ impl LoadedVm {
                     VmRpc::InjectPcieAer(rpc) => {
                         rpc.handle_failable(async |request: openvmm_defs::rpc::PcieAerInjectRequest| {
                             let openvmm_defs::rpc::PcieAerInjectRequest {
-                                port_name,
-                                source_id,
+                                target,
                                 error_kind,
                                 status_bits,
                                 header_log,
                             } = request;
 
+                            let target_bus = (target >> 8) as u8;
                             let rc = self
                                 .inner
                                 .pcie_root_complexes
                                 .iter()
-                                .find(|rc| {
-                                    rc.lock()
-                                        .downstream_ports()
-                                        .iter()
-                                        .any(|p| p.name.as_ref() == port_name.as_str())
-                                })
+                                .find(|rc| rc.lock().decodes_bus(target_bus))
                                 .ok_or_else(|| {
-                                    anyhow::anyhow!("port '{}' not found in any root complex", port_name)
+                                    anyhow::anyhow!(
+                                        "no root complex decodes bus {target_bus:#x} for target {target:#06x}"
+                                    )
                                 })?;
 
                             let kind = match error_kind {
@@ -3815,12 +3812,11 @@ impl LoadedVm {
                             };
 
                             rc.lock().inject_aer(
-                                &port_name,
+                                target,
                                 pcie::PcieAerInjectRequest {
                                     kind,
                                     status_bits,
                                     header_log,
-                                    source_id,
                                 },
                             )?;
 

@@ -9,6 +9,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciAerErrorKind;
 use chipset_device::pci::PciAerInjection;
+use chipset_device::pci::PcieDpcRoutingAction;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
 use cxl_spec::CxlPortDvsecExtendedCapability;
@@ -115,19 +116,6 @@ impl Default for PcieDpcSettings {
             dl_active_err_cor_signaling_supported: false,
         }
     }
-}
-
-/// Runtime AER injection request for a downstream-facing port.
-#[derive(Debug, Clone, Copy)]
-pub struct PcieAerInjectRequest {
-    /// Error kind.
-    pub kind: PciAerErrorKind,
-    /// Status bits to OR into the corresponding AER status register.
-    pub status_bits: u32,
-    /// Header log DWORDs.
-    pub header_log: [u32; 4],
-    /// Source Requester ID (Bus<<8 | DevFn).
-    pub source_id: u16,
 }
 
 /// A description of a generic PCIe port (a root-complex root port or a switch
@@ -320,6 +308,20 @@ enum PortInterruptKind {
     Hotplug,
     Aer,
     Dpc,
+}
+
+/// Convert a generic [`PciAerInjection`] into the AER capability's injection
+/// payload.
+fn to_aer_injection(injection: PciAerInjection) -> AerInjection {
+    AerInjection {
+        kind: match injection.kind {
+            PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
+            PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
+        },
+        status_bits: injection.status_bits,
+        header_log: injection.header_log,
+        source_id: injection.source_id,
+    }
 }
 
 impl PcieDownstreamPort {
@@ -995,126 +997,119 @@ impl PcieDownstreamPort {
         Ok(())
     }
 
-    /// Inject an AER event into this port.
+    /// Returns whether this port exposes a DPC capability.
+    pub fn has_dpc(&self) -> bool {
+        self.cfg_space
+            .extended_capabilities()
+            .iter()
+            .any(|cap| cap.as_dpc().is_some())
+    }
+
+    /// Record an AER event in this port's own AER capability (acting as the
+    /// error handler) and fire the AER interrupt when root-error reporting is
+    /// enabled.
     ///
-    /// This is only supported for root ports with AER capability present.
-    /// The source device update is best-effort through the routed child device.
-    pub fn inject_aer(&mut self, request: PcieAerInjectRequest) -> anyhow::Result<()> {
-        self.inject_aer_internal(request, true)
-    }
-
-    /// Inject DPC phase 1 on this port.
-    ///
-    /// Supported on ports that expose the DPC capability (root ports and
-    /// downstream switch ports). This also injects the corresponding AER event
-    /// onto this port and the routed source hierarchy.
-    pub fn inject_dpc_begin(&mut self, request: PcieAerInjectRequest) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            matches!(request.kind, PciAerErrorKind::Uncorrectable),
-            "DPC injection requires an uncorrectable AER event"
-        );
-
-        self.inject_aer_internal(request, false)?;
-
-        let mut found_dpc = false;
+    /// Returns whether this port had an AER capability.
+    pub fn report_aer(&mut self, injection: PciAerInjection) -> bool {
+        let mut found = false;
         let mut should_interrupt = false;
-        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
-            if let Some(dpc) = ext.as_dpc_mut() {
-                found_dpc = true;
-                let outcome = dpc.trigger_from_uncorrectable_begin(request.source_id);
-                should_interrupt = outcome.should_interrupt;
-                break;
-            }
-        }
-
-        anyhow::ensure!(
-            found_dpc,
-            "DPC injection is only supported for ports with a DPC capability"
-        );
-
-        if should_interrupt {
-            self.fire_port_interrupt(PortInterruptKind::Dpc);
-        }
-
-        Ok(())
-    }
-
-    /// Inject DPC phase 2 on this port by clearing RP busy.
-    pub fn inject_dpc_complete(&mut self) -> anyhow::Result<()> {
-        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
-            if let Some(dpc) = ext.as_dpc_mut() {
-                dpc.clear_rp_busy();
-                return Ok(());
-            }
-        }
-
-        anyhow::bail!("DPC completion is only supported for ports with a DPC capability")
-    }
-
-    fn inject_aer_internal(
-        &mut self,
-        request: PcieAerInjectRequest,
-        require_root_outcome: bool,
-    ) -> anyhow::Result<()> {
-        let mut injected_root = false;
-        let mut injected_local = false;
-        let mut should_interrupt = false;
-
         for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
             if let Some(aer) = ext.as_aer_mut() {
-                let injection = AerInjection {
-                    kind: match request.kind {
-                        PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
-                        PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
-                    },
-                    status_bits: request.status_bits,
-                    header_log: request.header_log,
-                    source_id: request.source_id,
-                };
-
-                if let Some(outcome) = aer.inject(injection) {
-                    injected_root = true;
+                found = true;
+                if let Some(outcome) = aer.inject(to_aer_injection(injection)) {
                     should_interrupt = outcome.should_interrupt;
                 }
-                injected_local = true;
                 break;
             }
-        }
-
-        if require_root_outcome {
-            anyhow::ensure!(
-                injected_root,
-                "AER injection is only supported for root ports with an AER capability"
-            );
-        } else {
-            anyhow::ensure!(
-                injected_local,
-                "AER injection requires an AER capability on the target port"
-            );
-        }
-
-        if let Some((_, device)) = &mut self.link {
-            let secondary_bus = *self.cfg_space.assigned_bus_range().start();
-            let target_bus = (request.source_id >> 8) as u8;
-            let function = (request.source_id & 0xff) as u8;
-            let _ = device.pci_inject_aer_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                PciAerInjection {
-                    kind: request.kind,
-                    status_bits: request.status_bits,
-                    header_log: request.header_log,
-                    source_id: request.source_id,
-                },
-            );
         }
 
         if should_interrupt {
             self.fire_port_interrupt(PortInterruptKind::Aer);
         }
 
-        Ok(())
+        found
+    }
+
+    /// Trigger DPC containment (phase 1) on this port and fire the DPC
+    /// interrupt when enabled.
+    ///
+    /// `source_id` identifies the device that generated the error. Returns
+    /// whether this port had a DPC capability.
+    pub fn trigger_dpc(&mut self, source_id: u16) -> bool {
+        let mut found = false;
+        let mut should_interrupt = false;
+        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
+            if let Some(dpc) = ext.as_dpc_mut() {
+                found = true;
+                let outcome = dpc.trigger_from_uncorrectable_begin(source_id);
+                should_interrupt = outcome.should_interrupt;
+                break;
+            }
+        }
+
+        if should_interrupt {
+            self.fire_port_interrupt(PortInterruptKind::Dpc);
+        }
+
+        found
+    }
+
+    /// Release DPC containment (phase 2) on this port by clearing RP busy.
+    ///
+    /// Returns whether this port had a DPC capability.
+    pub fn complete_dpc(&mut self) -> bool {
+        for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
+            if let Some(dpc) = ext.as_dpc_mut() {
+                dpc.clear_rp_busy();
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Apply a DPC routing action to this port if it has a DPC capability.
+    ///
+    /// `source_id` identifies the device that generated the error. Returns
+    /// `true` if this port handled the action.
+    pub fn apply_dpc_action(&mut self, source_id: u16, action: PcieDpcRoutingAction) -> bool {
+        if !self.has_dpc() {
+            return false;
+        }
+
+        match action {
+            PcieDpcRoutingAction::Begin { aer } => {
+                if let Some(aer) = aer {
+                    let _ = self.report_aer(aer);
+                }
+                self.trigger_dpc(source_id);
+            }
+            PcieDpcRoutingAction::Complete => {
+                self.complete_dpc();
+            }
+        }
+
+        true
+    }
+
+    /// Route a DPC action to the device reachable through this port.
+    ///
+    /// Returns `true` if a DPC-capable port further downstream handled the
+    /// action.
+    pub fn route_child_dpc(
+        &mut self,
+        target_bus: u8,
+        function: u8,
+        action: PcieDpcRoutingAction,
+    ) -> bool {
+        let Some((_, device)) = &mut self.link else {
+            return false;
+        };
+
+        let secondary_bus = *self.cfg_space.assigned_bus_range().start();
+        device
+            .pci_inject_dpc_with_routing(secondary_bus, target_bus, function, action)
+            .unwrap_or(false)
     }
 
     /// Inject AER state into this port's local AER capability.
@@ -1164,20 +1159,12 @@ impl PcieDownstreamPort {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::TestAerEndpoint;
     use crate::test_helpers::TestPcieMmioRegistration;
-    use crate::test_helpers::find_ext_cap_offset_type1;
-    use crate::test_helpers::read_aer_dword;
     use chipset_device::io::IoResult;
     use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
     use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::caps::ExtendedCapabilityId;
-    use pci_core::spec::caps::aer::AerExtendedCapabilityHeader;
-    use pci_core::spec::caps::aer::UncorrectableErrorStatus;
-    use pci_core::spec::caps::dpc::DpcControl;
-    use pci_core::spec::caps::dpc::DpcExtendedCapabilityHeader;
-    use pci_core::spec::caps::dpc::DpcStatus;
     use pci_core::spec::hwid::HardwareIds;
     use std::sync::Arc;
 
@@ -1636,291 +1623,6 @@ mod tests {
         );
         upstream.cfg_space.read_u32(0x100, &mut header).unwrap();
         assert_ne!((header & 0xffff) as u16, ExtendedCapabilityId::DPC.0);
-    }
-
-    #[test]
-    fn test_inject_dpc_two_phase_updates_aer_and_rp_busy() {
-        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
-
-        let hardware_ids = HardwareIds {
-            vendor_id: 0x1234,
-            device_id: 0x5678,
-            revision_id: 0,
-            prog_if: ProgrammingInterface::NONE,
-            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
-            base_class: ClassCode::BRIDGE,
-            type0_sub_vendor_id: 0,
-            type0_sub_system_id: 0,
-        };
-
-        let msi_target = MsiTarget::disconnected();
-        let mut port = PcieDownstreamPort::new(
-            "root",
-            hardware_ids,
-            DevicePortType::RootPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: Some(PcieDpcSettings::default()),
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-
-        let injected_unc_status = UncorrectableErrorStatus::new()
-            .with_data_link_protocol_error_status(true)
-            .into_bits();
-
-        port.inject_dpc_begin(PcieAerInjectRequest {
-            kind: PciAerErrorKind::Uncorrectable,
-            status_bits: injected_unc_status,
-            header_log: [1, 2, 3, 4],
-            source_id: 0x0100,
-        })
-        .unwrap();
-
-        let aer_off = find_ext_cap_offset_type1(&port.cfg_space, ExtendedCapabilityId::AER);
-        let dpc_off = find_ext_cap_offset_type1(&port.cfg_space, ExtendedCapabilityId::DPC);
-
-        let mut v = 0u32;
-        port.cfg_space
-            .read_u32(
-                aer_off + AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS.0,
-                &mut v,
-            )
-            .unwrap();
-        let unc_status = UncorrectableErrorStatus::from_bits(v);
-        assert!(unc_status.data_link_protocol_error_status());
-
-        port.cfg_space
-            .read_u32(
-                dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(status.dpc_trigger_status());
-        assert!(status.dpc_rp_busy());
-
-        port.inject_dpc_complete().unwrap();
-        port.cfg_space
-            .read_u32(
-                dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(status.dpc_trigger_status());
-        assert!(!status.dpc_rp_busy());
-    }
-
-    #[test]
-    fn test_inject_dpc_supported_on_root_and_downstream_only() {
-        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
-
-        let hardware_ids = HardwareIds {
-            vendor_id: 0x1234,
-            device_id: 0x5678,
-            revision_id: 0,
-            prog_if: ProgrammingInterface::NONE,
-            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
-            base_class: ClassCode::BRIDGE,
-            type0_sub_vendor_id: 0,
-            type0_sub_system_id: 0,
-        };
-
-        let msi_target = MsiTarget::disconnected();
-        let request = PcieAerInjectRequest {
-            kind: PciAerErrorKind::Uncorrectable,
-            status_bits: UncorrectableErrorStatus::new()
-                .with_data_link_protocol_error_status(true)
-                .into_bits(),
-            header_log: [0; 4],
-            source_id: 0x0100,
-        };
-
-        let mut root = PcieDownstreamPort::new(
-            "root",
-            hardware_ids,
-            DevicePortType::RootPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: Some(PcieDpcSettings::default()),
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-        assert!(root.inject_dpc_begin(request).is_ok());
-
-        let mut downstream = PcieDownstreamPort::new(
-            "dsp",
-            hardware_ids,
-            DevicePortType::DownstreamSwitchPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: Some(PcieDpcSettings::default()),
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-        assert!(downstream.inject_dpc_begin(request).is_ok());
-
-        let mut upstream = PcieDownstreamPort::new(
-            "usp",
-            hardware_ids,
-            DevicePortType::UpstreamSwitchPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: Some(PcieDpcSettings::default()),
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-        assert!(upstream.inject_dpc_begin(request).is_err());
-
-        let mut no_dpc = PcieDownstreamPort::new(
-            "root-no-dpc",
-            hardware_ids,
-            DevicePortType::RootPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: None,
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-        assert!(no_dpc.inject_dpc_begin(request).is_err());
-    }
-
-    #[test]
-    fn test_inject_dpc_downstream_port_containment_updates_endpoint_and_clears_busy() {
-        use pci_core::capabilities::extended::aer::AerExtendedCapability;
-        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
-        use std::sync::Mutex;
-
-        let hardware_ids = HardwareIds {
-            vendor_id: 0x1234,
-            device_id: 0x5678,
-            revision_id: 0,
-            prog_if: ProgrammingInterface::NONE,
-            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
-            base_class: ClassCode::BRIDGE,
-            type0_sub_vendor_id: 0,
-            type0_sub_system_id: 0,
-        };
-        let msi_target = MsiTarget::disconnected();
-
-        let endpoint_aer = Arc::new(Mutex::new(AerExtendedCapability::new(
-            &DevicePortType::Endpoint,
-        )));
-        let endpoint = TestAerEndpoint::new(0, endpoint_aer.clone());
-
-        let mut port = PcieDownstreamPort::new(
-            "dsp",
-            hardware_ids,
-            DevicePortType::DownstreamSwitchPort,
-            false,
-            None,
-            &msi_target,
-            PciePortSettings {
-                aer: Some(PcieAerSettings::default()),
-                dpc: Some(PcieDpcSettings::default()),
-                ..Default::default()
-            },
-            None,
-            None,
-        );
-        port.add_pcie_device("dsp", "ep0", Box::new(endpoint))
-            .unwrap();
-
-        // Enable DPC trigger + interrupt.
-        let dpc_off = find_ext_cap_offset_type1(&port.cfg_space, ExtendedCapabilityId::DPC);
-        let dpc_control = DpcControl::new()
-            .with_dpc_trigger_enable(1)
-            .with_dpc_interrupt_enable(true);
-        port.cfg_space
-            .write_u32(
-                dpc_off + DpcExtendedCapabilityHeader::CAPABILITY_CONTROL.0,
-                (dpc_control.into_bits() as u32) << 16,
-            )
-            .unwrap();
-
-        let header_log = [0xdead_0001, 0xbeef_0002, 0xcafe_0003, 0xfeed_0004];
-        let injected_unc_status = UncorrectableErrorStatus::new()
-            .with_data_link_protocol_error_status(true)
-            .into_bits();
-        port.inject_dpc_begin(PcieAerInjectRequest {
-            kind: PciAerErrorKind::Uncorrectable,
-            status_bits: injected_unc_status,
-            header_log,
-            source_id: 0,
-        })
-        .unwrap();
-
-        let mut v = 0u32;
-        port.cfg_space
-            .read_u32(
-                dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!((v & 0xffff) as u16, 0);
-        let status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(status.dpc_trigger_status());
-        assert!(status.dpc_rp_busy());
-
-        let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
-        let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
-            &endpoint_aer,
-            AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS,
-        ));
-        assert!(endpoint_unc_status.data_link_protocol_error_status());
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_0),
-            header_log[0]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_1),
-            header_log[1]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_2),
-            header_log[2]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_3),
-            header_log[3]
-        );
-
-        port.inject_dpc_complete().unwrap();
-        port.cfg_space
-            .read_u32(
-                dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(status.dpc_trigger_status());
-        assert!(!status.dpc_rp_busy());
     }
 
     #[test]

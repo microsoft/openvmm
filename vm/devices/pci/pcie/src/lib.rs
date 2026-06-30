@@ -5,10 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+pub(crate) mod error_inject;
 pub mod its;
 pub(crate) mod port;
+pub use error_inject::PcieAerInjectRequest;
 pub use port::GenericPciePortDefinition;
-pub use port::PcieAerInjectRequest;
 pub use port::PcieAerSettings;
 pub use port::PcieDpcSettings;
 pub use port::PciePortSettings;

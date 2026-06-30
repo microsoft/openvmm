@@ -263,6 +263,20 @@ pub struct PciAerInjection {
     pub source_id: u16,
 }
 
+/// Action applied to the first DPC-capable port found while walking back
+/// upstream from a target device toward the root complex.
+#[derive(Debug, Clone, Copy)]
+pub enum PcieDpcRoutingAction {
+    /// DPC phase 1: enter containment at the handler port. When `aer` is
+    /// `Some`, the handler port's local AER capability is also updated.
+    Begin {
+        /// Optional AER state to record on the handler port.
+        aer: Option<PciAerInjection>,
+    },
+    /// DPC phase 2: release containment (clear RP busy) at the handler port.
+    Complete,
+}
+
 impl PciConfigAddress {
     /// Create a new PCI configuration-space request.
     pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Option<Self> {
@@ -401,6 +415,23 @@ pub trait PciConfigSpace: ChipsetDevice {
         injection: PciAerInjection,
     ) -> bool {
         let _ = (secondary_bus, target_bus, function, injection);
+        false
+    }
+
+    /// Route a DPC action toward the device at `target_bus`/`function`,
+    /// applying it at the first DPC-capable port encountered while walking
+    /// back upstream from the device (i.e. the port closest to the device).
+    ///
+    /// Returns `true` when a DPC-capable port handled the action. The default
+    /// implementation does not support DPC routing.
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        action: PcieDpcRoutingAction,
+    ) -> bool {
+        let _ = (secondary_bus, target_bus, function, action);
         false
     }
 

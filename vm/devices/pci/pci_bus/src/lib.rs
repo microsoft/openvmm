@@ -20,12 +20,13 @@ use bitfield_struct::bitfield;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
-use chipset_device::pci::PciAerInjection;
 use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::pci::PciAerInjection;
+use chipset_device::pci::PcieDpcRoutingAction;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
@@ -164,6 +165,23 @@ pub trait GenericPciBusDevice: 'static + Send {
         _target_bus: u8,
         _function: u8,
         _injection: PciAerInjection,
+    ) -> Option<bool> {
+        Some(false)
+    }
+
+    /// Route a DPC action toward the device at `target_bus`/`function`,
+    /// applying it at the first DPC-capable port encountered while walking
+    /// back upstream from the device.
+    ///
+    /// Returns `Some(true)` if a DPC-capable port handled the action,
+    /// `Some(false)` if no DPC-capable port was found, and `None` if the
+    /// backing device is no longer responding.
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        _target_bus: u8,
+        _function: u8,
+        _action: PcieDpcRoutingAction,
     ) -> Option<bool> {
         Some(false)
     }

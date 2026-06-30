@@ -737,6 +737,23 @@ mod weak_mutex_pci {
                     .pci_inject_aer_with_routing(secondary_bus, target_bus, function, injection),
             )
         }
+
+        fn pci_inject_dpc_with_routing(
+            &mut self,
+            secondary_bus: u8,
+            target_bus: u8,
+            function: u8,
+            action: chipset_device::pci::PcieDpcRoutingAction,
+        ) -> Option<bool> {
+            Some(
+                self.0
+                    .upgrade()?
+                    .lock()
+                    .supports_pci()
+                    .expect("builder code ensures supports_pci.is_some()")
+                    .pci_inject_dpc_with_routing(secondary_bus, target_bus, function, action),
+            )
+        }
     }
 
     // wiring to enable using the generic PCI bus alongside the Arc+CloseableMutex device infra

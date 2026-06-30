@@ -25,9 +25,10 @@ pub enum PcieAerErrorKind {
 
 #[derive(Debug, MeshPayload, Clone)]
 pub struct PcieAerInjectRequest {
-    pub port_name: String,
-    /// Source Requester ID (Bus<<8 | DevFn).
-    pub source_id: u16,
+    /// Target device Requester ID (Bus<<8 | DevFn) that generated the error.
+    ///
+    /// The handling port is discovered automatically by walking the topology.
+    pub target: u16,
     pub error_kind: PcieAerErrorKind,
     /// Error status bits for COR/UNC status register based on `error_kind`.
     pub status_bits: u32,

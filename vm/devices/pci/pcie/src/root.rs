@@ -12,7 +12,6 @@ use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::GenericPciePortDefinition;
-use crate::port::PcieAerInjectRequest;
 use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
 use chipset_device::ChipsetDevice;
@@ -450,54 +449,48 @@ impl GenericPcieRootComplex {
         root_port.port.hotplug_remove_device()
     }
 
-    /// Inject an AER event on a named root port.
-    pub fn inject_aer(
-        &mut self,
-        port_name: &str,
-        request: PcieAerInjectRequest,
-    ) -> anyhow::Result<()> {
-        let root_port = self
-            .devices
-            .iter_mut()
-            .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
-                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-            })
-            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
-
-        root_port.port.inject_aer(request)
+    /// Returns whether this root complex decodes the given bus number.
+    pub fn decodes_bus(&self, bus: u8) -> bool {
+        (self.start_bus..=self.end_bus).contains(&bus)
     }
 
-    /// Inject DPC phase 1 on a named root port.
-    pub fn inject_dpc_begin(
-        &mut self,
-        port_name: &str,
-        request: PcieAerInjectRequest,
-    ) -> anyhow::Result<()> {
-        let root_port = self
-            .devices
-            .iter_mut()
-            .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
-                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-            })
-            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
-
-        root_port.port.inject_dpc_begin(request)
+    /// Find the root port whose downstream (secondary..=subordinate) bus range
+    /// decodes `bus`.
+    ///
+    /// This is the port through which a device on `bus` is reached, and acts as
+    /// the AER error handler for that device.
+    pub(crate) fn find_root_port_for_bus(&mut self, bus: u8) -> Option<&mut PcieDownstreamPort> {
+        self.devices.iter_mut().find_map(|(_, d)| match d {
+            BusDevice::RootPort { port, .. } => {
+                let range = port.port.cfg_space.assigned_bus_range();
+                (range != (0..=0) && range.contains(&bus)).then_some(&mut port.port)
+            }
+            BusDevice::Rciep { .. } => None,
+        })
     }
 
-    /// Inject DPC phase 2 on a named root port by clearing RP busy.
-    pub fn inject_dpc_complete(&mut self, port_name: &str) -> anyhow::Result<()> {
-        let root_port = self
-            .devices
-            .iter_mut()
+    /// Test-only accessor: borrow a root port's downstream port by name.
+    #[cfg(test)]
+    pub(crate) fn test_root_port(&self, name: &str) -> &PcieDownstreamPort {
+        self.devices
+            .iter()
             .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
+                BusDevice::RootPort { name: n, port } if n.as_ref() == name => Some(&port.port),
                 BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
             })
-            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+            .expect("root port should exist")
+    }
 
-        root_port.port.inject_dpc_complete()
+    /// Test-only accessor: mutably borrow a root port's downstream port by name.
+    #[cfg(test)]
+    pub(crate) fn test_root_port_mut(&mut self, name: &str) -> &mut PcieDownstreamPort {
+        self.devices
+            .iter_mut()
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name: n, port } if n.as_ref() == name => Some(&mut port.port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
+            .expect("root port should exist")
     }
 
     /// Attach a Root Complex Integrated Endpoint (RCiEP) at the given
@@ -677,7 +670,7 @@ impl GenericPcieRootComplex {
     }
 }
 
-fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
+pub(crate) fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
     assert!(end_bus >= start_bus);
     let bus_count = (end_bus as u16) - (start_bus as u16) + 1;
     (bus_count as u64) * (MAX_FUNCTIONS_PER_BUS as u64) * PAGE_SIZE64
@@ -1136,26 +1129,10 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PcieAerSettings;
-    use crate::PcieDpcSettings;
-    use crate::switch::GenericPcieSwitch;
-    use crate::switch::GenericPcieSwitchDefinition;
     use crate::test_helpers::*;
     use cxl_spec::CxlComponentRegisterType;
     use cxl_spec::component_registers::test_helper::TestCxlComponentRegisterBlock;
     use pal_async::async_test;
-    use pci_core::capabilities::extended::aer::AerExtendedCapability;
-    use pci_core::spec::caps::CapabilityId;
-    use pci_core::spec::caps::ExtendedCapabilityId;
-    use pci_core::spec::caps::aer::AerExtendedCapabilityHeader;
-    use pci_core::spec::caps::aer::CorrectableErrorStatus;
-    use pci_core::spec::caps::aer::RootErrorCommand;
-    use pci_core::spec::caps::aer::UncorrectableErrorStatus;
-    use pci_core::spec::caps::dpc::DpcControl;
-    use pci_core::spec::caps::dpc::DpcExtendedCapabilityHeader;
-    use pci_core::spec::caps::dpc::DpcStatus;
-    use pci_core::spec::caps::pci_express::DevicePortType;
-    use std::sync::Mutex;
 
     fn instantiate_root_complex(
         start_bus: u8,
@@ -1417,477 +1394,6 @@ mod tests {
         rc.mmio_read(2 * 256 * 4096, value_32.as_mut_bytes())
             .unwrap();
         assert_eq!(value_32, 0xDEAD_BEEF);
-    }
-
-    #[test]
-    fn test_inject_aer_root_switch_endpoint_propagates_state_and_interrupt() {
-        let recorder = Arc::new(RecordingSignalMsi::default());
-        let mut register_mmio = TestPcieMmioRegistration {};
-        let rc_bus_range = AssignedBusRange::new();
-        rc_bus_range.set_bus_range(0, 5);
-
-        let msi_conn = pci_core::msi::MsiConnection::new();
-        msi_conn.connect(recorder.clone());
-
-        let mut rc = GenericPcieRootComplex::builder(
-            &mut register_mmio,
-            0..=5,
-            MemoryRange::new(0..ecam_size_from_bus_numbers(0, 5)),
-        )
-        .root_ports(
-            vec![GenericPciePortDefinition {
-                name: "root-port".into(),
-                devfn: Some(0),
-                hotplug: false,
-                settings: PciePortSettings {
-                    aer: Some(PcieAerSettings::default()),
-                    ..Default::default()
-                },
-            }],
-            &msi_conn.msi_target(rc_bus_range, 0),
-        )
-        .build()
-        .unwrap();
-
-        let root_aer_off;
-        {
-            let root_port = rc
-                .devices
-                .iter_mut()
-                .find_map(|(_, d)| match d {
-                    BusDevice::RootPort { name, port } if name.as_ref() == "root-port" => {
-                        Some(port)
-                    }
-                    BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-                })
-                .expect("root port should exist");
-
-            // Root Port decodes bus 1..=5.
-            root_port
-                .port
-                .cfg_space
-                .write_u32(0x18, (5u32 << 16) | (1u32 << 8))
-                .unwrap();
-
-            // Enable MSI on the root port.
-            let msi_off = find_cap_offset_type1(&root_port.port.cfg_space, CapabilityId::MSI.0);
-            root_port
-                .port
-                .cfg_space
-                .write_u32(msi_off + 0x04, 0xfee0_0000)
-                .unwrap();
-            root_port
-                .port
-                .cfg_space
-                .write_u32(msi_off + 0x08, 0)
-                .unwrap();
-            root_port
-                .port
-                .cfg_space
-                .write_u32(msi_off + 0x0c, 0x0040)
-                .unwrap();
-            root_port
-                .port
-                .cfg_space
-                .write_u32(msi_off + 0x00, 1u32 << 16)
-                .unwrap();
-
-            // Enable root correctable-error reporting in AER Root Error Command.
-            root_aer_off =
-                find_ext_cap_offset_type1(&root_port.port.cfg_space, ExtendedCapabilityId::AER);
-            let root_error_command = RootErrorCommand::new()
-                .with_correctable_error_reporting_enable(true)
-                .into_bits();
-            root_port
-                .port
-                .cfg_space
-                .write_u32(
-                    root_aer_off + AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0,
-                    root_error_command,
-                )
-                .unwrap();
-        }
-
-        // Build switch and program bus topology:
-        // root bus1 -> switch upstream bus2 -> switch downstream bus3 -> endpoint fn0.
-        let mut switch = SwitchAdapter(
-            GenericPcieSwitch::new(GenericPcieSwitchDefinition {
-                name: "sw".into(),
-                downstream_ports: vec![GenericPciePortDefinition {
-                    name: "sw-downstream-0".into(),
-                    devfn: None,
-                    hotplug: false,
-                    settings: PciePortSettings {
-                        aer: Some(PcieAerSettings::default()),
-                        ..Default::default()
-                    },
-                }],
-                msi_target: MsiTarget::disconnected(),
-            })
-            .unwrap(),
-        );
-
-        // Program switch upstream (type-1) bus numbers.
-        chipset_device::pci::PciConfigSpace::pci_cfg_write(
-            &mut switch.0,
-            0x18,
-            (4u32 << 16) | (2u32 << 8) | 1,
-        )
-        .unwrap();
-        // Program downstream port 0 bus numbers via routed type-1 config write.
-        let _ = GenericPciBusDevice::pci_cfg_write_with_routing(
-            &mut switch,
-            2,
-            2,
-            0,
-            0x18,
-            (3u32 << 16) | (3u32 << 8) | 2,
-        )
-        .unwrap();
-
-        let endpoint_aer = Arc::new(Mutex::new(AerExtendedCapability::new(
-            &DevicePortType::Endpoint,
-        )));
-        switch
-            .0
-            .add_pcie_device(
-                0,
-                "ep0",
-                Box::new(TestAerEndpoint::new(0, endpoint_aer.clone())),
-            )
-            .unwrap();
-
-        rc.add_pcie_device(0, "switch", Box::new(switch)).unwrap();
-
-        let source_id = (3u16 << 8) | 0;
-        let header_log = [0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444];
-
-        let injected_cor_status = CorrectableErrorStatus::new()
-            .with_receiver_error_status(true)
-            .into_bits();
-        rc.inject_aer(
-            "root-port",
-            PcieAerInjectRequest {
-                kind: chipset_device::pci::PciAerErrorKind::Correctable,
-                status_bits: injected_cor_status,
-                header_log,
-                source_id,
-            },
-        )
-        .unwrap();
-
-        // Root AER status and source should be updated.
-        let mut v = 0u32;
-        let root_port = rc
-            .devices
-            .iter()
-            .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == "root-port" => Some(port),
-                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-            })
-            .expect("root port should exist");
-
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::CORRECTABLE_ERROR_STATUS.0,
-                &mut v,
-            )
-            .unwrap();
-        let root_cor_status = CorrectableErrorStatus::from_bits(v);
-        assert!(root_cor_status.receiver_error_status());
-
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_0.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[0]);
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_1.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[1]);
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_2.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[2]);
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_3.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[3]);
-
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::ERROR_SOURCE_IDENTIFICATION.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!((v & 0xffff) as u16, source_id);
-
-        // Endpoint local AER state should be updated with the same payload.
-        let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
-        let endpoint_cor_status = CorrectableErrorStatus::from_bits(read_aer_dword(
-            &endpoint_aer,
-            AerExtendedCapabilityHeader::CORRECTABLE_ERROR_STATUS,
-        ));
-        assert!(endpoint_cor_status.receiver_error_status());
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_0),
-            header_log[0]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_1),
-            header_log[1]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_2),
-            header_log[2]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_3),
-            header_log[3]
-        );
-
-        // Correctable root reporting was enabled, so an MSI should be signaled.
-        let msi = recorder.pop().expect("expected one MSI for root AER event");
-        assert_eq!(msi.1, 0xfee0_0000);
-        assert_eq!(msi.2 & 0xffff, 0x0040);
-    }
-
-    #[test]
-    fn test_inject_dpc_root_switch_endpoint_containment_at_root_port() {
-        let mut register_mmio = TestPcieMmioRegistration {};
-        let rc_bus_range = AssignedBusRange::new();
-        rc_bus_range.set_bus_range(0, 5);
-
-        let msi_conn = pci_core::msi::MsiConnection::new();
-        let mut rc = GenericPcieRootComplex::builder(
-            &mut register_mmio,
-            0..=5,
-            MemoryRange::new(0..ecam_size_from_bus_numbers(0, 5)),
-        )
-        .root_ports(
-            vec![GenericPciePortDefinition {
-                name: "root-port".into(),
-                devfn: Some(0),
-                hotplug: false,
-                settings: PciePortSettings {
-                    aer: Some(PcieAerSettings::default()),
-                    dpc: Some(PcieDpcSettings::default()),
-                    ..Default::default()
-                },
-            }],
-            &msi_conn.msi_target(rc_bus_range, 0),
-        )
-        .build()
-        .unwrap();
-
-        let root_aer_off;
-        let root_dpc_off;
-        {
-            let root_port = rc
-                .devices
-                .iter_mut()
-                .find_map(|(_, d)| match d {
-                    BusDevice::RootPort { name, port } if name.as_ref() == "root-port" => {
-                        Some(port)
-                    }
-                    BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-                })
-                .expect("root port should exist");
-
-            // Root Port decodes bus 1..=5.
-            root_port
-                .port
-                .cfg_space
-                .write_u32(0x18, (5u32 << 16) | (1u32 << 8))
-                .unwrap();
-
-            root_aer_off =
-                find_ext_cap_offset_type1(&root_port.port.cfg_space, ExtendedCapabilityId::AER);
-            root_dpc_off =
-                find_ext_cap_offset_type1(&root_port.port.cfg_space, ExtendedCapabilityId::DPC);
-
-            // Enable DPC trigger + interrupt.
-            let dpc_control = DpcControl::new()
-                .with_dpc_trigger_enable(1)
-                .with_dpc_interrupt_enable(true);
-            root_port
-                .port
-                .cfg_space
-                .write_u32(
-                    root_dpc_off + DpcExtendedCapabilityHeader::CAPABILITY_CONTROL.0,
-                    (dpc_control.into_bits() as u32) << 16,
-                )
-                .unwrap();
-        }
-
-        // root bus1 -> switch upstream bus2 -> switch downstream bus3 -> endpoint fn0.
-        let mut switch = SwitchAdapter(
-            GenericPcieSwitch::new(GenericPcieSwitchDefinition {
-                name: "sw".into(),
-                downstream_ports: vec![GenericPciePortDefinition {
-                    name: "sw-downstream-0".into(),
-                    devfn: None,
-                    hotplug: false,
-                    settings: PciePortSettings {
-                        aer: Some(PcieAerSettings::default()),
-                        dpc: Some(PcieDpcSettings::default()),
-                        ..Default::default()
-                    },
-                }],
-                msi_target: MsiTarget::disconnected(),
-            })
-            .unwrap(),
-        );
-
-        chipset_device::pci::PciConfigSpace::pci_cfg_write(
-            &mut switch.0,
-            0x18,
-            (4u32 << 16) | (2u32 << 8) | 1,
-        )
-        .unwrap();
-        let _ = GenericPciBusDevice::pci_cfg_write_with_routing(
-            &mut switch,
-            2,
-            2,
-            0,
-            0x18,
-            (3u32 << 16) | (3u32 << 8) | 2,
-        )
-        .unwrap();
-
-        let endpoint_aer = Arc::new(Mutex::new(AerExtendedCapability::new(
-            &DevicePortType::Endpoint,
-        )));
-        switch
-            .0
-            .add_pcie_device(
-                0,
-                "ep0",
-                Box::new(TestAerEndpoint::new(0, endpoint_aer.clone())),
-            )
-            .unwrap();
-
-        rc.add_pcie_device(0, "switch", Box::new(switch)).unwrap();
-
-        let source_id = (3u16 << 8) | 0;
-        let header_log = [0xaaaa_0001, 0xbbbb_0002, 0xcccc_0003, 0xdddd_0004];
-
-        let injected_unc_status = UncorrectableErrorStatus::new()
-            .with_data_link_protocol_error_status(true)
-            .into_bits();
-        rc.inject_dpc_begin(
-            "root-port",
-            PcieAerInjectRequest {
-                kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
-                status_bits: injected_unc_status,
-                header_log,
-                source_id,
-            },
-        )
-        .unwrap();
-
-        let root_port = rc
-            .devices
-            .iter()
-            .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == "root-port" => Some(port),
-                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-            })
-            .expect("root port should exist");
-
-        let mut v = 0u32;
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS.0,
-                &mut v,
-            )
-            .unwrap();
-        let root_unc_status = UncorrectableErrorStatus::from_bits(v);
-        assert!(root_unc_status.data_link_protocol_error_status());
-
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!((v & 0xffff) as u16, source_id);
-        let dpc_status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(dpc_status.dpc_trigger_status());
-        assert!(dpc_status.dpc_rp_busy());
-
-        let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
-        let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
-            &endpoint_aer,
-            AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS,
-        ));
-        assert!(endpoint_unc_status.data_link_protocol_error_status());
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_0),
-            header_log[0]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_1),
-            header_log[1]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_2),
-            header_log[2]
-        );
-        assert_eq!(
-            read_aer_dword(&endpoint_aer, AerExtendedCapabilityHeader::HEADER_LOG_3),
-            header_log[3]
-        );
-
-        rc.inject_dpc_complete("root-port").unwrap();
-
-        let root_port = rc
-            .devices
-            .iter()
-            .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == "root-port" => Some(port),
-                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
-            })
-            .expect("root port should exist");
-
-        root_port
-            .port
-            .cfg_space
-            .read_u32(
-                root_dpc_off + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-                &mut v,
-            )
-            .unwrap();
-        let dpc_status = DpcStatus::from_bits((v >> 16) as u16);
-        assert!(dpc_status.dpc_trigger_status());
-        assert!(!dpc_status.dpc_rp_busy());
     }
 
     #[test]

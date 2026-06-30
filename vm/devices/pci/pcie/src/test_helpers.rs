@@ -171,6 +171,19 @@ impl GenericPciBusDevice for SwitchAdapter {
                 .pci_inject_aer_with_routing(secondary_bus, target_bus, function, injection),
         )
     }
+
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        action: chipset_device::pci::PcieDpcRoutingAction,
+    ) -> Option<bool> {
+        Some(
+            self.0
+                .pci_inject_dpc_with_routing(secondary_bus, target_bus, function, action),
+        )
+    }
 }
 
 #[derive(Default, Debug)]
