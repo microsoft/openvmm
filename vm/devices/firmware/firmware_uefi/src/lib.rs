@@ -331,14 +331,39 @@ impl UefiDevice {
             Result::<_, std::convert::Infallible>::Ok(output.unwrap_or_else(|| USAGE.to_string()))
         });
     }
+
+    /// Process diagnostics if a GPA has been configured but logs have not yet
+    /// been processed.
+    fn process_pending_diagnostics(&mut self, trigger: &'static str) {
+        if self.service.diagnostics.has_unprocessed_diagnostics() {
+            tracing::info!(%trigger, "processing pending UEFI diagnostics");
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                Some(LogLevel::make_info()),
+            );
+        }
+    }
+}
+
+impl Drop for UefiDevice {
+    fn drop(&mut self) {
+        // Best-effort fallback for teardown paths that do not invoke explicit
+        // ChangeDeviceState::stop/reset transitions.
+        self.process_pending_diagnostics("drop");
+    }
 }
 
 impl ChangeDeviceState for UefiDevice {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.process_pending_diagnostics("stop");
+    }
 
     async fn reset(&mut self) {
+        self.process_pending_diagnostics("reset");
+
         self.address = 0;
 
         self.service.nvram.reset();
