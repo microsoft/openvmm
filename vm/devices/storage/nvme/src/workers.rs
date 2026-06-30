@@ -7,9 +7,13 @@ mod admin;
 mod coordinator;
 mod io;
 
-pub use admin::NsidConflict;
+pub use admin::AddNamespaceError;
+pub use admin::SriovAdminConfig;
+pub use coordinator::EnablePoll;
 pub use coordinator::NvmeControllerClient;
 pub use coordinator::NvmeWorkers;
+
+pub(crate) use admin::PF_CONTROLLER_ID;
 
 use crate::PAGE_SIZE;
 use inspect::Inspect;

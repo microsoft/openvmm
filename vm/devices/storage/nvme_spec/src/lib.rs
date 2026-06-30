@@ -444,7 +444,7 @@ pub struct IdentifyController {
     pub fr: AsciiString<8>,
     pub rab: u8,
     pub ieee: [u8; 3],
-    pub cmic: u8,
+    pub cmic: Cmic,
     /// Maximum data transfer size (in minimum page size units, as power of
     /// two).
     pub mdts: u8,
@@ -851,3 +851,136 @@ open_enum! {
         ENDURANCE_GROUP_EVENT_AGGREGATE_LOG_PAGE_CHANGE = 6,
     }
 }
+
+// Virtualization Management command (opcode 0x1C)
+
+#[bitfield(u32)]
+pub struct Cdw10VirtualizationManagement {
+    #[bits(4)]
+    pub act: u8,
+    #[bits(4)]
+    _rsvd1: u8,
+    #[bits(3)]
+    pub rt: u8,
+    #[bits(5)]
+    _rsvd2: u8,
+    pub cntlid: u16,
+}
+
+#[bitfield(u32)]
+pub struct Cdw11VirtualizationManagement {
+    pub nr: u16,
+    _rsvd: u16,
+}
+
+open_enum! {
+    pub enum VirtualizationManagementAction: u8 {
+        PRIMARY_FLEXIBLE_RESOURCES = 0x01,
+        SECONDARY_OFFLINE = 0x07,
+        SECONDARY_ASSIGN = 0x08,
+        SECONDARY_ONLINE = 0x09,
+    }
+}
+
+open_enum! {
+    pub enum VirtualizationResourceType: u8 {
+        VQ = 0x00,
+        VI = 0x01,
+    }
+}
+
+// Namespace Attachment command (opcode 0x15)
+
+#[bitfield(u32)]
+pub struct Cdw10NamespaceAttachment {
+    #[bits(4)]
+    pub sel: u8,
+    #[bits(28)]
+    pub rsvd: u32,
+}
+
+open_enum! {
+    pub enum NamespaceAttachmentSelection: u8 {
+        ATTACH = 0x00,
+        DETACH = 0x01,
+    }
+}
+
+/// Controller list structure — used by Namespace Attachment and
+/// Identify CNS 0x12/0x13.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ControllerList {
+    pub num_identifiers: u16,
+    pub identifiers: [u16; 2047],
+}
+const _: () = assert!(size_of::<ControllerList>() == 4096);
+
+// Identify CNS 0x14 — Primary Controller Capabilities
+
+/// Controller Multi-path I/O and Namespace Sharing Capabilities (CMIC)
+#[derive(Inspect)]
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct Cmic {
+    pub multi_port: bool,
+    pub multi_controller: bool,
+    pub vf: bool,
+    pub asymmetric_namespace_access: bool,
+    #[bits(4)]
+    pub rsvd: u8,
+}
+
+/// Primary Controller Capabilities structure (4096 bytes).
+/// Returned by Identify with CNS 0x14.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PrimaryControllerCapabilities {
+    pub cntlid: u16,
+    pub portid: u16,
+    pub crt: u8,
+    pub rsvd1: [u8; 27],
+    pub vqfrt: u32,
+    pub vqrfa: u32,
+    pub vqrfap: u16,
+    pub vqprt: u16,
+    pub vqfrsm: u16,
+    pub vqgran: u16,
+    pub rsvd2: [u8; 16],
+    pub vifrt: u32,
+    pub virfa: u32,
+    pub virfap: u16,
+    pub viprt: u16,
+    pub vifrsm: u16,
+    pub vigran: u16,
+    pub rsvd3: [u8; 4016],
+}
+const _: () = assert!(size_of::<PrimaryControllerCapabilities>() == 4096);
+
+// Identify CNS 0x15 — Secondary Controller List
+
+/// Secondary Controller Entry (32 bytes).
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
+pub struct SecondaryControllerEntry {
+    pub scid: u16,
+    pub pcid: u16,
+    pub scs: u8,
+    pub rsvd1: [u8; 3],
+    pub vfn: u16,
+    pub nvq: u16,
+    pub nvi: u16,
+    pub rsvd2: [u8; 18],
+}
+const _: () = assert!(size_of::<SecondaryControllerEntry>() == 32);
+
+/// Secondary Controller List (4096 bytes).
+/// Returned by Identify with CNS 0x15.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SecondaryControllerList {
+    pub num_entries: u8,
+    pub rsvd: [u8; 31],
+    pub entries: [SecondaryControllerEntry; 127],
+}
+const _: () = assert!(size_of::<SecondaryControllerList>() == 4096);

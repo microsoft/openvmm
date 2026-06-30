@@ -15,6 +15,7 @@ use ide_resources::IdePath;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use nvme_resources::NvmeControllerRequest;
+use nvme_resources::NvmeSriovConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
@@ -80,6 +81,12 @@ struct NvmeControllerEntry {
     namespaces: Vec<NamespaceDefinition>,
     /// Optional pre-created channel for runtime namespace add/remove.
     requests: Option<mesh::Receiver<NvmeControllerRequest>>,
+    /// Number of MSI-X vectors for the PF.
+    msix_count: u16,
+    /// Maximum number of IO queues for the PF.
+    max_io_queues: u16,
+    /// Optional SR-IOV configuration.
+    sriov: Option<NvmeSriovConfig>,
 }
 
 struct ScsiControllerEntry {
@@ -219,6 +226,9 @@ impl StorageBuilder {
         vtl: DeviceVtl,
         transport: NvmeControllerTransport,
         requests: Option<mesh::Receiver<NvmeControllerRequest>>,
+        msix_count: u16,
+        max_io_queues: u16,
+        sriov: Option<NvmeSriovConfig>,
     ) -> anyhow::Result<()> {
         if let Some(existing) = self.controllers.get(&name) {
             let kind = match existing {
@@ -236,6 +246,9 @@ impl StorageBuilder {
                 transport,
                 namespaces: Vec::new(),
                 requests,
+                msix_count,
+                max_io_queues,
+                sriov,
             }),
         );
         Ok(())
@@ -748,6 +761,9 @@ impl StorageBuilder {
                 }
                 ControllerEntry::Nvme(ctrl) => {
                     let subsystem_id = deterministic_guid(&name);
+                    let sriov = ctrl.sriov;
+                    let msix_count = ctrl.msix_count;
+                    let max_io_queues = ctrl.max_io_queues;
                     match ctrl.transport {
                         NvmeControllerTransport::Pcie(port_name) => {
                             config.pcie_devices.push(PcieDeviceConfig {
@@ -755,9 +771,10 @@ impl StorageBuilder {
                                 resource: NvmeControllerHandle {
                                     subsystem_id,
                                     namespaces: ctrl.namespaces,
-                                    max_io_queues: 64,
-                                    msix_count: 64,
+                                    max_io_queues,
+                                    msix_count,
                                     requests: ctrl.requests,
+                                    sriov,
                                 }
                                 .into_resource(),
                             });
@@ -769,9 +786,10 @@ impl StorageBuilder {
                                 resource: NvmeControllerHandle {
                                     subsystem_id,
                                     namespaces: ctrl.namespaces,
-                                    max_io_queues: 64,
-                                    msix_count: 64,
+                                    max_io_queues,
+                                    msix_count,
                                     requests: ctrl.requests,
+                                    sriov,
                                 }
                                 .into_resource(),
                                 vnode: None,
@@ -802,6 +820,7 @@ impl StorageBuilder {
                     max_io_queues: 64,
                     msix_count: 64,
                     requests: None,
+                    sriov: None,
                 }
                 .into_resource(),
                 vnode: None,
@@ -840,6 +859,7 @@ impl StorageBuilder {
                     max_io_queues: 64,
                     msix_count: 64,
                     requests: Some(recv),
+                    sriov: None,
                 }
                 .into_resource(),
                 vnode: None,

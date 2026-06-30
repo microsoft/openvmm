@@ -53,7 +53,7 @@ mod tests;
 
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
-pub use workers::NsidConflict;
+pub use workers::AddNamespaceError;
 pub use workers::NvmeControllerClient;
 
 use guestmem::ranges::PagedRange;
@@ -65,8 +65,15 @@ const DOORBELL_STRIDE_BITS: u8 = 2;
 const VENDOR_ID: u16 = 0x1414;
 /// Device ID allocated to the OpenVMM NVMe emulator.
 const DEVICE_ID: u16 = 0xc03e;
+/// Device ID allocated to the OpenVMM NVMe VF emulator.
+const VF_DEVICE_ID: u16 = 0xc03f;
 const NVME_VERSION: u32 = 0x00020000;
 const MAX_QES: u16 = 256;
+/// Maximum valid namespace ID for the NVM subsystem, reported in the `NN`
+/// field of Identify Controller. This is a fixed property of the subsystem
+/// (the size of the NSID address space), identical across all controllers,
+/// and is independent of how many namespaces are currently present.
+const MAX_NSID: u32 = 1024;
 const BAR0_LEN: u64 = 0x10000;
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;

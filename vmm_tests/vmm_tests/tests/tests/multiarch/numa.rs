@@ -370,6 +370,7 @@ async fn pcie_device_numa_affinity(
                             read_only: false,
                         }],
                         requests: None,
+                        sriov: None,
                     }
                     .into_resource(),
                 });

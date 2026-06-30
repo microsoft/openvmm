@@ -948,7 +948,8 @@ impl std::fmt::Debug for BarMemoryKind {
 }
 
 impl BarMemoryKind {
-    fn map_to_guest(&mut self, gpa: u64) -> std::io::Result<()> {
+    /// Map this BAR memory to the given guest physical address.
+    pub(crate) fn map_to_guest(&mut self, gpa: u64) -> std::io::Result<()> {
         match self {
             BarMemoryKind::Intercept(control) => {
                 control.map(gpa);
@@ -959,7 +960,8 @@ impl BarMemoryKind {
         }
     }
 
-    fn unmap_from_guest(&mut self) {
+    /// Unmap this BAR memory from the guest.
+    pub(crate) fn unmap_from_guest(&mut self) {
         match self {
             BarMemoryKind::Intercept(control) => control.unmap(),
             BarMemoryKind::SharedMem(control) => control.unmap_from_guest(),

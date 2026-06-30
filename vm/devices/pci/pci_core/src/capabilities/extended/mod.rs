@@ -9,6 +9,7 @@ use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
 pub mod acs;
+pub mod sriov;
 
 /// A generic PCIe extended capability structure.
 pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {

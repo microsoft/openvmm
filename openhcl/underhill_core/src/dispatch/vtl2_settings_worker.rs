@@ -1458,6 +1458,7 @@ async fn make_nvme_controller_config(
             max_io_queues: 64,
             msix_count: 64,
             requests: None,
+            sriov: None,
         }
         .into_resource(),
     })

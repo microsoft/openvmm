@@ -3,10 +3,11 @@
 
 //! Resource resolver for the nvme controller.
 
-use crate::NsidConflict;
+use crate::AddNamespaceError;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::NvmeControllerClient;
+use crate::pci::NvmeSriovCaps;
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -44,7 +45,13 @@ pub enum Error {
         source: ResolveError,
     },
     #[error(transparent)]
-    NsidConflict(NsidConflict),
+    AddNamespace(AddNamespaceError),
+    #[error("invalid total_vfs {0}: must be in range 1..=7 (ARI not supported)")]
+    InvalidTotalVfs(u16),
+    #[error("invalid vf_msix_count {0}: must be >= 2 (admin queue needs one vector)")]
+    InvalidVfMsixCount(u16),
+    #[error("invalid vf_max_io_queues {0}: must be >= 1")]
+    InvalidVfMaxIoQueues(u16),
 }
 
 #[async_trait]
@@ -58,6 +65,26 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
         resource: NvmeControllerHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        let sriov = resource
+            .sriov
+            .map(|cfg| {
+                if !(1..=7).contains(&cfg.total_vfs) {
+                    return Err(Error::InvalidTotalVfs(cfg.total_vfs));
+                }
+                if cfg.vf_msix_count < 2 {
+                    return Err(Error::InvalidVfMsixCount(cfg.vf_msix_count));
+                }
+                if cfg.vf_max_io_queues == 0 {
+                    return Err(Error::InvalidVfMaxIoQueues(cfg.vf_max_io_queues));
+                }
+                Ok(NvmeSriovCaps {
+                    total_vfs: cfg.total_vfs,
+                    vf_msix_count: cfg.vf_msix_count,
+                    vf_max_io_queues: cfg.vf_max_io_queues,
+                })
+            })
+            .transpose()?;
+
         let controller = NvmeController::new(
             input.driver_source,
             input.dma_target,
@@ -66,6 +93,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 msix_count: resource.msix_count,
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
+                sriov,
             },
         );
         for NamespaceDefinition {
@@ -88,7 +116,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 .client()
                 .add_namespace(nsid, disk.0)
                 .await
-                .map_err(Error::NsidConflict)?;
+                .map_err(Error::AddNamespace)?;
         }
 
         if let Some(requests) = resource.requests {

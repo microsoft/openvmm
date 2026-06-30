@@ -33,6 +33,22 @@ pub struct NvmeControllerHandle {
     pub namespaces: Vec<NamespaceDefinition>,
     /// Runtime request channel for hot add/remove of namespaces.
     pub requests: Option<mesh::Receiver<NvmeControllerRequest>>,
+    /// Optional SR-IOV configuration. When set, the controller exposes an
+    /// SR-IOV extended capability and can create VFs.
+    pub sriov: Option<NvmeSriovConfig>,
+}
+
+/// SR-IOV configuration for the NVMe controller resource layer.
+#[derive(MeshPayload)]
+pub struct NvmeSriovConfig {
+    /// Total number of VFs the PF can support (1..=7 without ARI).
+    pub total_vfs: u16,
+    /// Number of MSI-X vectors per VF. Must be >= 2 (one for admin, rest
+    /// for IO). Independent of `vf_max_io_queues` — the VF guest will
+    /// share vectors across queues if there are more queues than vectors.
+    pub vf_msix_count: u16,
+    /// Maximum number of IO queues each VF can create.
+    pub vf_max_io_queues: u16,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {

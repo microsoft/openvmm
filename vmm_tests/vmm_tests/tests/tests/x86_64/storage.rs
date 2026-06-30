@@ -74,6 +74,7 @@ pub(crate) fn new_test_vtl2_nvme_device(
                 read_only: false,
             }],
             requests: None,
+            sriov: None,
         }
         .into_resource(),
         vnode: None,
@@ -806,6 +807,7 @@ async fn storvsp_dynamic_add_disk(
                             })
                             .collect(),
                         requests: None,
+                        sriov: None,
                     }
                     .into_resource(),
                     vnode: None,

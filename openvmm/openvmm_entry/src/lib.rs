@@ -466,7 +466,23 @@ async fn vm_config_from_command_line(
                 storage_builder::NvmeControllerTransport::Vpci(guid)
             }
         };
-        storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
+        let sriov = ctrl
+            .sriov
+            .as_ref()
+            .map(|s| nvme_resources::NvmeSriovConfig {
+                total_vfs: s.total_vfs,
+                vf_msix_count: s.vf_msix_count,
+                vf_max_io_queues: s.vf_max_io_queues,
+            });
+        storage.add_nvme_controller(
+            ctrl.id.clone(),
+            ctrl.vtl,
+            transport,
+            None,
+            ctrl.msix_count,
+            ctrl.max_io_queues,
+            sriov,
+        )?;
     }
 
     for ctrl in &opt.vmbus_scsi {
@@ -579,6 +595,9 @@ async fn vm_config_from_command_line(
                         port.clone(),
                         DeviceVtl::Vtl0,
                         storage_builder::NvmeControllerTransport::Pcie(port.clone()),
+                        None,
+                        64,
+                        64,
                         None,
                     ).with_context(|| format!(
                         "legacy --nvme flag conflicts with an explicit controller named '{port}'; \

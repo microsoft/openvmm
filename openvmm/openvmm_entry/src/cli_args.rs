@@ -399,6 +399,11 @@ options:
     `pcie_port=<port>`             present on PCIe under the specified port
     `vpci[=<guid>]`                present via VPCI; optional instance GUID
     `vtl2`                         assign to VTL2 (default VTL0)
+    `msix=<N>`                     MSI-X vectors for the PF (default 64)
+    `io_queues=<N>`                max IO queues for the PF (default 64)
+    `vfs=<N>`                      enable SR-IOV with N virtual functions (1-7)
+    `vf_msix=<N>`                  MSI-X vectors per VF (default 64; requires `vfs`)
+    `vf_io_queues=<N>`             max IO queues per VF (default 64; requires `vfs`)
 
 Exactly one of `pcie_port` or `vpci` must be specified.
 
@@ -406,6 +411,7 @@ Examples:
     --nvme-pci id=nvme0,pcie_port=p0
     --nvme-pci id=nvme1,vpci
     --nvme-pci id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
+    --nvme-pci id=nvme3,pcie_port=p0,vfs=4
 "#)]
     #[clap(long = "nvme-pci")]
     pub nvme_pci: Vec<NvmeControllerCli>,
@@ -2166,6 +2172,17 @@ pub enum NvmeControllerTransport {
     Vpci(Option<Guid>),
 }
 
+/// SR-IOV configuration for a named NVMe controller.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NvmeSriovCli {
+    /// Total number of VFs the PF can support (1..=7 without ARI).
+    pub total_vfs: u16,
+    /// Number of MSI-X vectors per VF.
+    pub vf_msix_count: u16,
+    /// Maximum number of IO queues each VF can create.
+    pub vf_max_io_queues: u16,
+}
+
 /// CLI arguments for a named NVMe controller.
 #[derive(Clone, Debug)]
 pub struct NvmeControllerCli {
@@ -2175,6 +2192,12 @@ pub struct NvmeControllerCli {
     pub transport: NvmeControllerTransport,
     /// VTL assignment (default VTL0).
     pub vtl: DeviceVtl,
+    /// Number of MSI-X vectors for the PF.
+    pub msix_count: u16,
+    /// Maximum number of IO queues for the PF.
+    pub max_io_queues: u16,
+    /// Optional SR-IOV configuration.
+    pub sriov: Option<NvmeSriovCli>,
 }
 
 impl FromStr for NvmeControllerCli {
@@ -2186,6 +2209,12 @@ impl FromStr for NvmeControllerCli {
         let mut vpci = None;
         let mut vpci_set = false;
         let mut vtl = DeviceVtl::Vtl0;
+        let mut msix_count = 64u16;
+        let mut max_io_queues = 64u16;
+        let mut vfs = None;
+        let mut vf_msix_count = 64u16;
+        let mut vf_max_io_queues = 64u16;
+        let mut vf_options_set = false;
 
         for part in s.split(',') {
             let mut kv = part.split('=');
@@ -2216,6 +2245,59 @@ impl FromStr for NvmeControllerCli {
                 "vtl2" => {
                     vtl = DeviceVtl::Vtl2;
                 }
+                "msix" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`msix` requires a value");
+                    }
+                    msix_count = val
+                        .unwrap()
+                        .parse::<u16>()
+                        .context("invalid value for `msix`")?;
+                }
+                "io_queues" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`io_queues` requires a value");
+                    }
+                    max_io_queues = val
+                        .unwrap()
+                        .parse::<u16>()
+                        .context("invalid value for `io_queues`")?;
+                }
+                "vfs" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`vfs` requires a value");
+                    }
+                    vfs = Some(
+                        val.unwrap()
+                            .parse::<u16>()
+                            .context("invalid value for `vfs`")?,
+                    );
+                }
+                "vf_msix" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`vf_msix` requires a value");
+                    }
+                    vf_msix_count = val
+                        .unwrap()
+                        .parse::<u16>()
+                        .context("invalid value for `vf_msix`")?;
+                    vf_options_set = true;
+                }
+                "vf_io_queues" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`vf_io_queues` requires a value");
+                    }
+                    vf_max_io_queues = val
+                        .unwrap()
+                        .parse::<u16>()
+                        .context("invalid value for `vf_io_queues`")?;
+                    vf_options_set = true;
+                }
                 other => anyhow::bail!("unknown option: '{other}'"),
             }
         }
@@ -2233,7 +2315,24 @@ impl FromStr for NvmeControllerCli {
             }
         };
 
-        Ok(NvmeControllerCli { id, transport, vtl })
+        if vfs.is_none() && vf_options_set {
+            anyhow::bail!("`vf_msix`/`vf_io_queues` require `vfs`");
+        }
+
+        let sriov = vfs.map(|total_vfs| NvmeSriovCli {
+            total_vfs,
+            vf_msix_count,
+            vf_max_io_queues,
+        });
+
+        Ok(NvmeControllerCli {
+            id,
+            transport,
+            vtl,
+            msix_count,
+            max_io_queues,
+            sriov,
+        })
     }
 }
 

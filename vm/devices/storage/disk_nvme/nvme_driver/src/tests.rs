@@ -233,6 +233,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            sriov: None,
         },
     );
 
@@ -270,6 +271,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            sriov: None,
         },
     );
 
@@ -326,6 +328,7 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            sriov: None,
         },
     );
 

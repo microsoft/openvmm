@@ -1172,6 +1172,120 @@ pub mod caps {
         }
     }
 
+    /// Single Root I/O Virtualization (SR-IOV) Extended Capability
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod sriov {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        /// Total size of the SR-IOV extended capability structure in bytes.
+        ///
+        /// Header (4) + Capabilities (4) + Control/Status (4) + InitialVFs/TotalVFs (4)
+        /// + NumVFs/FuncDepLink (4) + FirstVFOffset/VFStride (4) + VFDeviceID (4)
+        /// + SupportedPageSizes (4) + SystemPageSize (4) + VF BAR0-5 (24) = 60 bytes,
+        ///   rounded up to 64 for 4-byte alignment.
+        pub const SRIOV_CAP_LEN: usize = 64;
+
+        open_enum::open_enum! {
+            /// Offsets into the SR-IOV Extended Capability structure.
+            ///
+            /// PCIe Base Specification, Section 9.3.3 (SR-IOV Extended Capability)
+            ///
+            /// | Offset    | Bits 31-16              | Bits 15-0                |
+            /// |-----------|-------------------------|--------------------------|
+            /// | Ext + 0x00| Next Cap Ptr + Version  | Extended Capability ID   |
+            /// | Ext + 0x04| SR-IOV Capabilities                                |
+            /// | Ext + 0x08| SR-IOV Status           | SR-IOV Control           |
+            /// | Ext + 0x0C| TotalVFs                | InitialVFs               |
+            /// | Ext + 0x10| Function Dependency Link| NumVFs                   |
+            /// | Ext + 0x14| VF Stride               | First VF Offset          |
+            /// | Ext + 0x18| VF Device ID            | Reserved                 |
+            /// | Ext + 0x1C| Supported Page Sizes                               |
+            /// | Ext + 0x20| System Page Size                                   |
+            /// | Ext + 0x24| VF BAR0                                            |
+            /// | Ext + 0x28| VF BAR1                                            |
+            /// | Ext + 0x2C| VF BAR2                                            |
+            /// | Ext + 0x30| VF BAR3                                            |
+            /// | Ext + 0x34| VF BAR4                                            |
+            /// | Ext + 0x38| VF BAR5                                            |
+            /// | Ext + 0x3C| Reserved (padding to 64 bytes)                     |
+            pub enum SriovExtendedCapabilityHeader: u16 {
+                HEADER              = 0x00,
+                CAPABILITIES        = 0x04,
+                CONTROL_STATUS      = 0x08,
+                INITIAL_TOTAL_VFS   = 0x0C,
+                NUM_VFS_DEP_LINK    = 0x10,
+                VF_OFFSET_STRIDE    = 0x14,
+                VF_DEVICE_ID        = 0x18,
+                SUPPORTED_PAGE_SIZE = 0x1C,
+                SYSTEM_PAGE_SIZE    = 0x20,
+                VF_BAR0             = 0x24,
+                VF_BAR1             = 0x28,
+                VF_BAR2             = 0x2C,
+                VF_BAR3             = 0x30,
+                VF_BAR4             = 0x34,
+                VF_BAR5             = 0x38,
+                RESERVED_PADDING    = 0x3C,
+            }
+        }
+
+        /// SR-IOV Capabilities Register (offset 0x04).
+        ///
+        /// PCIe Base Specification, Section 9.3.3.2
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SriovCapabilities {
+            /// VF Migration Capable — always 0 (deprecated in PCIe 4.0+).
+            pub vf_migration_capable: bool,
+            /// ARI Capable Hierarchy — if set, device can locate VFs using
+            /// ARI-based function numbering.
+            pub ari_capable_hierarchy: bool,
+            /// VF 10-Bit Tag Requester Supported.
+            pub vf_10bit_tag_requester_supported: bool,
+            #[bits(18)]
+            _reserved: u32,
+            /// VF Migration Interrupt Message Number (deprecated).
+            #[bits(11)]
+            pub vf_migration_message_number: u32,
+        }
+
+        /// SR-IOV Control Register (lower 16 bits of offset 0x08).
+        ///
+        /// PCIe Base Specification, Section 9.3.3.3
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SriovControl {
+            /// VF Enable — when set, VFs are visible on the bus.
+            pub vf_enable: bool,
+            /// VF Migration Enable (deprecated, must be 0).
+            pub vf_migration_enable: bool,
+            /// VF Migration Interrupt Enable (deprecated, must be 0).
+            pub vf_migration_interrupt_enable: bool,
+            /// VF MSE (Memory Space Enable) — controls VF memory space decoding.
+            pub vf_mse: bool,
+            /// ARI Capable Hierarchy — enables ARI-aware VF function numbering.
+            pub ari_capable_hierarchy: bool,
+            #[bits(11)]
+            _reserved: u16,
+        }
+
+        /// SR-IOV Status Register (upper 16 bits of offset 0x08).
+        ///
+        /// PCIe Base Specification, Section 9.3.3.4
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SriovStatus {
+            /// VF Migration Status (deprecated).
+            pub vf_migration_status: bool,
+            #[bits(15)]
+            _reserved: u16,
+        }
+    }
+
     /// Designated Vendor-Specific Extended Capability (DVSEC)
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
     pub mod dvsec {
@@ -1227,41 +1341,6 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct DvsecHeader2 {
             pub dvsec_id: u16,
-        }
-    }
-
-    /// SR-IOV Extended Capability
-    ///
-    /// Source: PCI Express Base Specification, "Single Root I/O Virtualization"
-    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
-    pub mod sriov {
-        open_enum::open_enum! {
-            /// Offsets into the SR-IOV Extended Capability structure.
-            ///
-            /// | Offset    | Bits 31-16              | Bits 15-0               |
-            /// |-----------|-------------------------|-------------------------|
-            /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
-            /// | Ext + 0x4 | SR-IOV Control          | SR-IOV Capabilities     |
-            /// | Ext + 0x8 | Total VFs               | Initial VFs             |
-            /// | Ext + 0xC | Num VFs                 | Function Dep Link       |
-            /// | Ext + 0x10| First VF Offset         | VF Stride               |
-            /// | Ext + 0x14| VF Device ID            | Reserved                |
-            /// | Ext + 0x18| Supported Page Sizes                              |
-            /// | Ext + 0x1C| System Page Size                                  |
-            /// | Ext + 0x20| VF BAR0                                           |
-            /// | Ext + 0x24| VF BAR1                                           |
-            /// | Ext + 0x28| VF BAR2                                           |
-            /// | Ext + 0x2C| VF BAR3                                           |
-            /// | Ext + 0x30| VF BAR4                                           |
-            /// | Ext + 0x34| VF BAR5                                           |
-            /// | Ext + 0x38| VF Migration State Array Offset                   |
-            pub enum SriovExtendedCapabilityHeader: u16 {
-                HEADER = 0x00,
-                CAPS_CONTROL = 0x04,
-                INITIAL_TOTAL_VFS = 0x0C,
-                VF_OFFSET_STRIDE = 0x14,
-                VF_BAR0 = 0x24,
-            }
         }
     }
 }

@@ -5,9 +5,11 @@
 
 use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
+use super::NvmeControllerClient;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::MAX_NSID;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
@@ -58,6 +60,8 @@ const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
 const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
+/// PF controller ID used in identify and virtualization management.
+pub(crate) const PF_CONTROLLER_ID: u16 = 1;
 
 #[derive(Inspect)]
 pub struct AdminConfig {
@@ -74,6 +78,81 @@ pub struct AdminConfig {
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
+    /// SR-IOV configuration. When set, the PF advertises virtualization
+    /// management in Identify and processes VM/NS Attachment commands.
+    pub sriov: Option<SriovAdminConfig>,
+    /// Controller ID reported in Identify Controller. 0 for standalone,
+    /// PF_CONTROLLER_ID for PF, secondary IDs for VFs.
+    pub controller_id: u16,
+}
+
+/// SR-IOV configuration passed from the PCI layer to the admin handler.
+#[derive(Debug, Inspect)]
+pub struct SriovAdminConfig {
+    /// Total number of VFs (secondary controllers).
+    pub total_vfs: u16,
+    /// Routing table mapping VF index to that secondary controller's client.
+    /// Built once at PF construction; used by the admin handler to route
+    /// online/offline and namespace attach/detach to each secondary.
+    #[inspect(skip)]
+    pub vf_clients: Vec<NvmeControllerClient>,
+}
+
+/// Per-secondary-controller resource state tracked by the admin handler.
+#[derive(Debug, Clone, Inspect)]
+struct SecondaryControllerState {
+    /// Whether this secondary controller is online. Owned by the PF for
+    /// Secondary Controller List (CNS 0x15) reporting; the authoritative
+    /// enable-gate lives in the VF coordinator and is updated via messages.
+    online: bool,
+}
+
+/// SR-IOV admin state tracking secondary controller state.
+/// Owned by `AdminHandler`.
+#[derive(Debug, Inspect)]
+struct SriovAdminState {
+    /// Per-secondary-controller state, indexed by VF index (0-based).
+    #[inspect(iter_by_index)]
+    controllers: Vec<SecondaryControllerState>,
+}
+
+impl SriovAdminState {
+    fn new(total_vfs: u16) -> Self {
+        let controllers = (0..total_vfs)
+            .map(|_| SecondaryControllerState { online: false })
+            .collect();
+        Self { controllers }
+    }
+
+    /// Looks up a secondary controller by its controller ID (1-based VF
+    /// index + PF_CONTROLLER_ID + 1).
+    fn secondary_index(&self, cntlid: u16) -> Option<usize> {
+        let idx = cntlid.checked_sub(PF_CONTROLLER_ID + 1)? as usize;
+        if idx < self.controllers.len() {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the controller ID for a secondary controller at the given
+    /// 0-based VF index.
+    fn secondary_cntlid(vf_index: usize) -> u16 {
+        PF_CONTROLLER_ID + 1 + vf_index as u16
+    }
+}
+
+/// A namespace allocated in the NVM subsystem. Tracked only by the PF in its
+/// subsystem-wide allocated set, separate from each controller's attached
+/// (active) namespace set. Records the backing disk and which controller the
+/// namespace is currently attached to, if any. Namespaces are private, so a
+/// namespace is attached to at most one controller at a time.
+#[derive(Inspect)]
+struct AllocatedNamespace {
+    disk: Disk,
+    /// Controller ID this namespace is currently attached to, or `None` if it
+    /// is allocated but not attached to any controller.
+    attached_to: Option<u16>,
 }
 
 #[derive(Inspect)]
@@ -82,6 +161,14 @@ pub struct AdminHandler {
     config: AdminConfig,
     #[inspect(iter_by_key)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
+    /// Subsystem-wide allocated namespace set, tracked only by the PF (present
+    /// only when SR-IOV is configured). This is the authoritative record of
+    /// which namespaces exist in the subsystem and where each is attached,
+    /// separate from the per-controller attached set in `namespaces`.
+    #[inspect(with = "|x| x.as_ref().map(|m| inspect::iter_by_key(m.iter()))")]
+    allocated: Option<BTreeMap<u32, AllocatedNamespace>>,
+    /// SR-IOV admin state — present only when `config.sriov` is Some.
+    sriov_state: Option<SriovAdminState>,
 }
 
 #[derive(Inspect)]
@@ -344,51 +431,205 @@ enum Event {
     NamespaceChange(u32),
 }
 
-/// Error returned when adding a namespace with a conflicting ID.
+/// Error returned when a namespace cannot be added.
 #[derive(Debug, Error)]
-#[error("namespace id conflict for {0}")]
-pub struct NsidConflict(u32);
+pub enum AddNamespaceError {
+    /// A namespace with this ID already exists.
+    #[error("namespace id conflict for {0}")]
+    Conflict(u32),
+    /// The namespace ID is outside the valid range supported by the
+    /// subsystem (see the `NN` field of Identify Controller).
+    #[error("namespace id {0} is out of range (must be 1..={MAX_NSID})")]
+    OutOfRange(u32),
+}
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
+        let sriov_state = config
+            .sriov
+            .as_ref()
+            .map(|s| SriovAdminState::new(s.total_vfs));
+        let allocated = config.sriov.as_ref().map(|_| BTreeMap::new());
         Self {
             driver,
             config,
-            namespaces: Default::default(),
+            namespaces: BTreeMap::new(),
+            allocated,
+            sriov_state,
         }
     }
 
+    /// Adds a namespace to this controller. On the PF this records the
+    /// namespace in the subsystem-wide allocated set and attaches it to the
+    /// PF; on a VF or standalone controller there is no allocated set, so it
+    /// simply attaches the namespace.
     pub async fn add_namespace(
         &mut self,
         state: Option<&mut AdminState>,
         nsid: u32,
         disk: Disk,
-    ) -> Result<(), NsidConflict> {
-        let namespace = &*match self.namespaces.entry(nsid) {
-            btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
+    ) -> Result<(), AddNamespaceError> {
+        if nsid == 0 || nsid > MAX_NSID {
+            return Err(AddNamespaceError::OutOfRange(nsid));
+        }
+        // On the PF, claim the allocation up front so the allocated set is the
+        // single conflict gate. If the subsequent attach fails, roll it back.
+        if let Some(allocated) = &mut self.allocated {
+            match allocated.entry(nsid) {
+                btree_map::Entry::Vacant(entry) => {
+                    entry.insert(AllocatedNamespace {
+                        disk: disk.clone(),
+                        attached_to: Some(PF_CONTROLLER_ID),
+                    });
+                }
+                btree_map::Entry::Occupied(_) => return Err(AddNamespaceError::Conflict(nsid)),
+            }
+        }
+        if !self.attach_local(state, nsid, disk).await {
+            if let Some(allocated) = &mut self.allocated {
+                allocated.remove(&nsid);
+            }
+            return Err(AddNamespaceError::Conflict(nsid));
+        }
+        Ok(())
+    }
+
+    /// Removes a namespace. On the PF this deletes the namespace from the
+    /// subsystem entirely: it is first detached from whichever controller
+    /// currently holds it, then deallocated. On a VF or standalone controller
+    /// this just detaches the namespace from that controller.
+    pub async fn remove_namespace(&mut self, state: Option<&mut AdminState>, nsid: u32) -> bool {
+        if let Some(allocated) = &mut self.allocated {
+            let Some(alloc) = allocated.remove(&nsid) else {
+                return false;
+            };
+            match alloc.attached_to {
+                Some(PF_CONTROLLER_ID) => {
+                    self.detach_local(state, nsid).await;
+                }
+                Some(cntlid) => {
+                    // Attached to a VF: route the detach to its controller.
+                    if let Some(idx) = self
+                        .sriov_state
+                        .as_ref()
+                        .expect("allocated set implies PF")
+                        .secondary_index(cntlid)
+                    {
+                        if let Some(client) = self.vf_client(idx) {
+                            client.remove_namespace(nsid).await;
+                        }
+                    }
+                }
+                None => {}
+            }
+            true
+        } else {
+            self.detach_local(state, nsid).await
+        }
+    }
+
+    /// Marks every secondary controller offline in the PF's CNS-15h online
+    /// mirror, called when VFs are deactivated (VF Enable=0 / NumVFs shrink).
+    ///
+    /// Namespace attachments are deliberately left intact: per NVMe Base 2.1,
+    /// Namespace Attachment operations are persistent across Virtualization
+    /// Management commands that set a secondary offline (and across all reset
+    /// events). The secondary controllers themselves persist, so their
+    /// attachments remain valid and become active again when the VF is
+    /// re-activated and brought online. A no-op on non-PF controllers, which
+    /// have no secondary state.
+    pub(crate) fn mark_secondaries_offline(&mut self) {
+        if let Some(sriov) = self.sriov_state.as_mut() {
+            for controller in &mut sriov.controllers {
+                controller.online = false;
+            }
+        }
+    }
+
+    /// Restores the configured namespace topology: every allocated namespace is
+    /// returned to the PF (its configured home), undoing any guest-initiated
+    /// Namespace Attachment that moved it to a secondary controller.
+    ///
+    /// Called on a full device reset. The controller models no non-volatile
+    /// configuration storage, so a subsystem-wide reset returns to the
+    /// host-configured topology (all namespaces on the PF, as established by
+    /// the resolver) rather than preserving guest runtime attachment changes.
+    /// This differs from a Controller Level Reset / Virtualization Management
+    /// offline, across which attachments persist. A no-op on non-SR-IOV
+    /// controllers, which have no `allocated` set and cannot detach namespaces
+    /// from the PF in the first place.
+    pub(crate) async fn restore_default_topology(&mut self, mut state: Option<&mut AdminState>) {
+        let Some(allocated) = self.allocated.as_ref() else {
+            return;
+        };
+        // Collect the namespaces currently held by a secondary; their backing
+        // disks are re-attached to the PF below.
+        let mut to_restore: Vec<(u32, u16, Disk)> = Vec::new();
+        for (&nsid, ns) in allocated {
+            if let Some(cntlid) = ns.attached_to {
+                if cntlid != PF_CONTROLLER_ID {
+                    to_restore.push((nsid, cntlid, ns.disk.clone()));
+                }
+            }
+        }
+
+        for (nsid, cntlid, disk) in to_restore {
+            // Detach from the secondary. Best-effort: the secondary owns its
+            // namespace set and may already have shed it during its own reset.
+            if let Some(idx) = self
+                .sriov_state
+                .as_ref()
+                .and_then(|s| s.secondary_index(cntlid))
+            {
+                if let Some(client) = self.vf_client(idx) {
+                    let _ = client.remove_namespace(nsid).await;
+                }
+            }
+            // Re-attach to the PF and record it as the namespace's home. The
+            // PF is disabled during reset, so `state` is `None` and this just
+            // updates the persistent handler set that a later enable re-reads.
+            self.attach_local(state.as_deref_mut(), nsid, disk).await;
+            self.allocated
+                .as_mut()
+                .unwrap()
+                .get_mut(&nsid)
+                .unwrap()
+                .attached_to = Some(PF_CONTROLLER_ID);
+        }
+    }
+
+    /// Attaches a namespace to this controller's active set, wiring it into
+    /// the IO queues and starting capacity-change polling. Returns `false` if
+    /// a namespace with this ID is already attached to this controller.
+    async fn attach_local(
+        &mut self,
+        state: Option<&mut AdminState>,
+        nsid: u32,
+        disk: Disk,
+    ) -> bool {
+        let namespace = match self.namespaces.entry(nsid) {
+            btree_map::Entry::Vacant(entry) => &*entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
                 nsid,
                 disk,
             ))),
-            btree_map::Entry::Occupied(_) => return Err(NsidConflict(nsid)),
+            btree_map::Entry::Occupied(_) => return false,
         };
-
         if let Some(state) = state {
             state.add_namespace(&self.driver, nsid, namespace).await;
         }
-
-        Ok(())
+        true
     }
 
-    pub async fn remove_namespace(&mut self, state: Option<&mut AdminState>, nsid: u32) -> bool {
+    /// Detaches a namespace from this controller's active set. Returns `false`
+    /// if no namespace with this ID was attached to this controller.
+    async fn detach_local(&mut self, state: Option<&mut AdminState>, nsid: u32) -> bool {
         if self.namespaces.remove(&nsid).is_none() {
             return false;
         }
-
         if let Some(state) = state {
             state.remove_namespace(nsid).await;
         }
-
         true
     }
 
@@ -507,6 +748,15 @@ impl AdminHandler {
                             .await
                             .map(|()| Some(Default::default()))
                     }
+                    spec::AdminOpcode::VIRTUALIZATION_MANAGEMENT if self.sriov_state.is_some() => {
+                        self.handle_virtualization_management(&command)
+                            .await
+                            .map(|()| Some(Default::default()))
+                    }
+                    spec::AdminOpcode::NAMESPACE_ATTACHMENT if self.sriov_state.is_some() => self
+                        .handle_namespace_attachment(state, &command)
+                        .await
+                        .map(|()| Some(Default::default())),
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
                         Err(spec::Status::INVALID_COMMAND_OPCODE.into())
@@ -583,26 +833,80 @@ impl AdminHandler {
                 let nsids = <[u32]>::mut_from_bytes(buf).unwrap();
                 for (ns, nsid) in self
                     .namespaces
-                    .keys()
-                    .filter(|&ns| *ns > command.nsid)
+                    .range(command.nsid + 1..)
+                    .map(|(ns, _)| ns)
                     .zip(nsids)
                 {
                     *nsid = *ns;
                 }
             }
             spec::Cns::NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
+            }
+            spec::Cns::ALLOCATED_NAMESPACE_LIST if let Some(allocated) = &mut self.allocated => {
+                if command.nsid >= 0xfffffffe {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
+                let nsids = <[u32]>::mut_from_bytes(buf).unwrap();
+                for (ns, slot) in allocated
+                    .range(command.nsid + 1..)
+                    .map(|(ns, _)| ns)
+                    .zip(nsids)
+                {
+                    *slot = *ns;
+                }
+            }
+            spec::Cns::ALLOCATED_NAMESPACE if let Some(allocated) = &mut self.allocated => {
+                if let Some(alloc) = allocated.get(&command.nsid) {
+                    // Identify the namespace from its backing disk; it need not
+                    // be attached to this controller.
+                    Namespace::new(self.config.mem.clone(), command.nsid, alloc.disk.clone())
+                        .identify(buf);
+                } else {
+                    // Valid but unallocated namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "unallocated namespace id");
+                }
+            }
+            spec::Cns::CONTROLLER_LIST_OF_NSID if let Some(allocated) = &mut self.allocated => {
+                let list = spec::ControllerList::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                let min_cntlid = cdw10.cntid();
+                if let Some(cntlid) = allocated
+                    .get(&command.nsid)
+                    .and_then(|alloc| alloc.attached_to)
+                {
+                    if cntlid >= min_cntlid {
+                        list.num_identifiers = 1;
+                        list.identifiers[0] = cntlid;
+                    }
+                }
+            }
+            spec::Cns::PRIMARY_CONTROLLER_CAPABILITIES if self.sriov_state.is_some() => {
+                self.identify_primary_controller_capabilities(buf);
+            }
+            spec::Cns::SECONDARY_CONTROLLER_LIST if self.sriov_state.is_some() => {
+                self.identify_secondary_controller_list(command, buf)?;
             }
             cns => {
                 tracelimit::warn_ratelimited!(?cns, "unsupported cns");
@@ -614,6 +918,8 @@ impl AdminHandler {
     }
 
     fn identify_controller(&self, state: &AdminState) -> spec::IdentifyController {
+        let is_pf = self.sriov_state.is_some();
+        let is_vf = !is_pf && self.config.controller_id > PF_CONTROLLER_ID;
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
@@ -628,7 +934,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.namespaces.keys().copied().max().unwrap_or(0),
+            nn: MAX_NSID,
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
@@ -644,8 +950,16 @@ impl AdminHandler {
                 .with_present(true)
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
+            cntlid: self.config.controller_id,
+            // CMIC bit 1 (multi_controller): set for all controllers in an
+            // SR-IOV subsystem (PF and VFs), since they share a subsystem NQN.
+            // CMIC bit 2 (vf): set only for VFs (associated with an SR-IOV VF).
+            cmic: spec::Cmic::new()
+                .with_multi_controller(is_pf || is_vf)
+                .with_vf(is_vf),
             oacs: spec::OptionalAdminCommandSupport::new()
-                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state)),
+                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state))
+                .with_virtualization_management(is_pf),
             ..FromZeros::new_zeroed()
         }
     }
@@ -1054,6 +1368,270 @@ impl AdminHandler {
             .map_err(|err| NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err))?;
 
         Ok(())
+    }
+
+    /// Fill the Primary Controller Capabilities structure (CNS 0x14).
+    fn identify_primary_controller_capabilities(&self, buf: &mut [u8]) {
+        let pcc = spec::PrimaryControllerCapabilities::mut_from_prefix(buf)
+            .unwrap()
+            .0;
+        pcc.cntlid = PF_CONTROLLER_ID;
+        pcc.portid = 0;
+        // CRT=0: no flexible resources supported. All VQ/VI resources are
+        // private (fixed at construction time).
+        pcc.crt = 0;
+        pcc.vqprt = self.config.max_sqs;
+        pcc.viprt = self.config.max_cqs;
+    }
+
+    /// Fill the Secondary Controller List (CNS 0x15).
+    fn identify_secondary_controller_list(
+        &self,
+        command: &spec::Command,
+        buf: &mut [u8],
+    ) -> Result<(), NvmeError> {
+        let sriov = self
+            .sriov_state
+            .as_ref()
+            .expect("SR-IOV must be configured");
+        let cdw10: spec::Cdw10Identify = command.cdw10.into();
+        let start_cntlid = cdw10.cntid();
+
+        let page = spec::SecondaryControllerList::mut_from_prefix(buf)
+            .unwrap()
+            .0;
+
+        let mut count = 0u8;
+        for (idx, sc) in sriov.controllers.iter().enumerate() {
+            let cntlid = SriovAdminState::secondary_cntlid(idx);
+            if cntlid < start_cntlid {
+                continue;
+            }
+            if count as usize >= page.entries.len() {
+                break;
+            }
+            let entry = &mut page.entries[count as usize];
+            entry.scid = cntlid;
+            entry.pcid = PF_CONTROLLER_ID;
+            entry.scs = if sc.online { 1 } else { 0 };
+            entry.vfn = idx as u16 + 1; // VF number is 1-based.
+            count += 1;
+        }
+        page.num_entries = count;
+        Ok(())
+    }
+
+    /// Handle the Virtualization Management admin command (opcode 0x1C).
+    async fn handle_virtualization_management(
+        &mut self,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
+        let cdw10: spec::Cdw10VirtualizationManagement = command.cdw10.into();
+        let act = spec::VirtualizationManagementAction(cdw10.act());
+        let cntlid = cdw10.cntlid();
+
+        let online = match act {
+            spec::VirtualizationManagementAction::PRIMARY_FLEXIBLE_RESOURCES => {
+                // CRT=0: flexible resources not supported.
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+            spec::VirtualizationManagementAction::SECONDARY_OFFLINE => false,
+            spec::VirtualizationManagementAction::SECONDARY_ONLINE => true,
+            spec::VirtualizationManagementAction::SECONDARY_ASSIGN => {
+                // CRT=0: flexible resources not supported.
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(?act, "unsupported virtualization management action");
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+        };
+
+        let sriov = self
+            .sriov_state
+            .as_mut()
+            .expect("SR-IOV must be configured");
+        let idx = sriov
+            .secondary_index(cntlid)
+            .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+        // Update the PF's administrative online bit (used for CNS 0x15).
+        sriov.controllers[idx].online = online;
+
+        // Route the online change to the VF coordinator. Await so the change
+        // is committed before the guest observes this command's completion,
+        // preserving happens-before ordering with a subsequent VF CC.EN.
+        if let Some(client) = self.vf_client(idx) {
+            client.set_online(online).await;
+        } else {
+            tracelimit::warn_ratelimited!(
+                idx,
+                "virtualization management for a VF that is not enabled"
+            );
+        }
+        Ok(())
+    }
+
+    /// Handle the Namespace Attachment admin command (opcode 0x15).
+    ///
+    /// Namespaces are private, so each is attached to at most one controller
+    /// at a time. The controller list may name the PF itself or any VF; the
+    /// PF's allocated set is the authority for where a namespace is currently
+    /// attached.
+    async fn handle_namespace_attachment(
+        &mut self,
+        state: &mut AdminState,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
+        let cdw10: spec::Cdw10NamespaceAttachment = command.cdw10.into();
+        let sel = spec::NamespaceAttachmentSelection(cdw10.sel());
+        let nsid = command.nsid;
+
+        if nsid == 0 || nsid == 0xffffffff {
+            return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+        }
+
+        // The namespace must be allocated in the subsystem. Grab its backing
+        // disk for attachment.
+        let disk = self
+            .allocated
+            .as_ref()
+            .expect("attachment command only handled by the PF")
+            .get(&nsid)
+            .ok_or(spec::Status::INVALID_NAMESPACE_OR_FORMAT)?
+            .disk
+            .clone();
+
+        // Read the controller list from the data buffer.
+        let mut controller_list = spec::ControllerList::new_zeroed();
+        PrpRange::parse(
+            &self.config.mem,
+            controller_list.as_bytes().len(),
+            command.dptr,
+        )?
+        .read(&self.config.mem, controller_list.as_mut_bytes())?;
+
+        for &cntlid in controller_list
+            .identifiers
+            .iter()
+            .take(controller_list.num_identifiers as usize)
+        {
+            // Re-read the current attachment each iteration: a private
+            // namespace can attach to only one controller, so a list that
+            // tries to attach the same namespace to a second controller fails
+            // on the second entry.
+            let current = self
+                .allocated
+                .as_ref()
+                .unwrap()
+                .get(&nsid)
+                .unwrap()
+                .attached_to;
+
+            match sel {
+                spec::NamespaceAttachmentSelection::ATTACH => {
+                    if current == Some(cntlid) {
+                        return Err(spec::Status::NAMESPACE_ALREADY_ATTACHED.into());
+                    }
+                    if current.is_some() {
+                        // Private namespace already attached to another
+                        // controller.
+                        return Err(spec::Status::NAMESPACE_IS_PRIVATE.into());
+                    }
+                    self.attach_to_controller(state, cntlid, nsid, disk.clone())
+                        .await?;
+                    self.allocated
+                        .as_mut()
+                        .unwrap()
+                        .get_mut(&nsid)
+                        .unwrap()
+                        .attached_to = Some(cntlid);
+                }
+                spec::NamespaceAttachmentSelection::DETACH => {
+                    if current != Some(cntlid) {
+                        return Err(spec::Status::NAMESPACE_NOT_ATTACHED.into());
+                    }
+                    self.detach_from_controller(state, cntlid, nsid).await?;
+                    self.allocated
+                        .as_mut()
+                        .unwrap()
+                        .get_mut(&nsid)
+                        .unwrap()
+                        .attached_to = None;
+                }
+                _ => return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Attaches an allocated namespace to the controller identified by
+    /// `cntlid`, which may be the PF itself or a VF.
+    async fn attach_to_controller(
+        &mut self,
+        state: &mut AdminState,
+        cntlid: u16,
+        nsid: u32,
+        disk: Disk,
+    ) -> Result<(), NvmeError> {
+        if cntlid == PF_CONTROLLER_ID {
+            let newly = self.attach_local(Some(state), nsid, disk).await;
+            assert!(newly, "allocated set and PF attached set are inconsistent");
+        } else {
+            let idx = self
+                .sriov_state
+                .as_ref()
+                .expect("SR-IOV must be configured")
+                .secondary_index(cntlid)
+                .ok_or(spec::Status::CONTROLLER_LIST_INVALID)?;
+            // The VF coordinator owns its namespace set; route the change to
+            // it. A long-lived VF worker fed via the client raises the
+            // Attached Namespace Attribute Changed AEN automatically.
+            let client = self
+                .vf_client(idx)
+                .ok_or(spec::Status::CONTROLLER_LIST_INVALID)?;
+            client
+                .add_namespace(nsid, disk)
+                .await
+                .map_err(|_| spec::Status::NAMESPACE_ALREADY_ATTACHED)?;
+        }
+        Ok(())
+    }
+
+    /// Detaches a namespace from the controller identified by `cntlid`, which
+    /// may be the PF itself or a VF.
+    async fn detach_from_controller(
+        &mut self,
+        state: &mut AdminState,
+        cntlid: u16,
+        nsid: u32,
+    ) -> Result<(), NvmeError> {
+        if cntlid == PF_CONTROLLER_ID {
+            let detached = self.detach_local(Some(state), nsid).await;
+            assert!(
+                detached,
+                "allocated set and PF attached set are inconsistent"
+            );
+        } else {
+            let idx = self
+                .sriov_state
+                .as_ref()
+                .expect("SR-IOV must be configured")
+                .secondary_index(cntlid)
+                .ok_or(spec::Status::CONTROLLER_LIST_INVALID)?;
+            let client = self
+                .vf_client(idx)
+                .ok_or(spec::Status::CONTROLLER_LIST_INVALID)?;
+            if !client.remove_namespace(nsid).await {
+                return Err(spec::Status::NAMESPACE_NOT_ATTACHED.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns a clone of the routing client for the VF at the given 0-based
+    /// index, if that VF index is within range.
+    fn vf_client(&self, idx: usize) -> Option<NvmeControllerClient> {
+        self.config.sriov.as_ref()?.vf_clients.get(idx).cloned()
     }
 }
 

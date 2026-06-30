@@ -9,7 +9,9 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
+use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::petritools::PETRITOOLS_EROFS_X64;
 use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
@@ -361,6 +363,7 @@ async fn pcie_hotplug(
         max_io_queues: 1,
         namespaces: vec![],
         requests: None,
+        sriov: None,
     });
     vm.add_pcie_device("s0rc0rp0".into(), nvme_resource).await?;
 
@@ -999,7 +1002,7 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 #[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WIN_DRIVERS])]
 async fn virtio_net_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
+    (virtio_win,): (ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");
@@ -1067,6 +1070,235 @@ async fn virtio_net_windows(
         ping_output.contains("Reply from 10.0.0.1"),
         "ping to consomme gateway failed: {ping_output}"
     );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test NVMe SR-IOV: enable VFs, bring secondary controller online,
+/// attach namespaces, perform IO through a VF, then tear down.
+///
+/// Uses petritools erofs for nvme-cli access.
+#[openvmm_test(linux_direct_x64[PETRITOOLS_EROFS_X64])]
+async fn pcie_nvme_sriov<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let total_vfs: u16 = 2;
+    let (erofs_artifact,) = extra_deps;
+
+    // Open the petritools erofs image to attach as a virtio-blk device.
+    let erofs_file = std::fs::File::open(&erofs_artifact)?;
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            use disk_backend_resources::FileDiskHandle;
+            use openvmm_defs::config::PcieDeviceConfig;
+            use vm_resource::IntoResource;
+
+            b.with_pcie_root_topology(1, 1, 4)
+                .with_pcie_nvme_sriov("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0], total_vfs)
+                .with_custom_config(|c| {
+                    // Attach petritools erofs as a read-only virtio-blk on rp1.
+                    c.pcie_devices.push(PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: virtio_resources::VirtioPciDeviceHandle(
+                            virtio_resources::blk::VirtioBlkHandle {
+                                disk: FileDiskHandle(erofs_file).into_resource(),
+                                read_only: true,
+                            }
+                            .into_resource(),
+                        )
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    // Mount petritools erofs and prepare chroot for nvme-cli access.
+    agent
+        .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
+        .await?;
+    agent.prepare_chroot("/perf").await?;
+
+    let sh = agent.unix_shell();
+
+    // Confirm the PF NVMe controller enumerates and has a block device.
+    let nsid_output = cmd!(sh, "cat /sys/block/nvme0n1/nsid").read().await?;
+    assert_eq!(nsid_output.trim(), "1");
+
+    // Find the PF's PCI BDF (e.g. "0000:01:00.0").
+    let pf_pci_path = cmd!(sh, "readlink -f /sys/block/nvme0n1/device")
+        .read()
+        .await?;
+    let pf_bdf = pf_pci_path
+        .split('/')
+        .rev()
+        .find(|seg| seg.len() == 12 && seg.chars().nth(4) == Some(':'))
+        .expect("should find PF BDF in sysfs path");
+    let pf_sysfs = format!("/sys/bus/pci/devices/{pf_bdf}");
+    tracing::info!(pf_bdf, "PF PCI device found");
+
+    // Find the PF's NVMe character device (e.g. /dev/nvme0).
+    let pf_dev = "/dev/nvme0";
+
+    // Prevent the kernel from auto-probing the VFs with the nvme driver as
+    // soon as they are created. A VF's secondary controller comes up offline,
+    // and probing an offline controller stalls (it never reaches CSTS.RDY),
+    // leaving a wedged controller that never becomes /dev/nvme1. Instead we
+    // bring the secondary online first and then bind the VF explicitly.
+    agent
+        .write_file(
+            &format!("{pf_sysfs}/sriov_drivers_autoprobe"),
+            b"0".as_slice(),
+        )
+        .await?;
+
+    // 1. Enable VFs.
+    let num_vfs = total_vfs.to_string();
+    agent
+        .write_file(&format!("{pf_sysfs}/sriov_numvfs"), num_vfs.as_bytes())
+        .await?;
+
+    // 2. Verify VF PCI devices appear.
+    let guest_devices = parse_guest_pci_devices(OsFlavor::Linux, &agent).await?;
+    let nvme_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    tracing::info!(nvme_count, "NVMe devices after VF enable");
+    assert_eq!(
+        nvme_count,
+        1 + total_vfs as usize,
+        "expected PF + {total_vfs} VFs"
+    );
+
+    // 3. Bring secondary controller online and attach namespace.
+    //    Secondary controller IDs start at 2 (PF is 1).
+    //    nvme virt-mgmt: action 9 = secondary online
+    let pf_cntlid = "1";
+    let sec_cntlid = "2";
+
+    // Use chroot for nvme-cli commands (nvme-cli is in petritools).
+    let mut chroot_sh = agent.unix_shell();
+    chroot_sh.chroot("/perf");
+
+    // Bring secondary controller online.
+    cmd!(
+        chroot_sh,
+        "nvme virt-mgmt {pf_dev} --cntlid={sec_cntlid} --act=9"
+    )
+    .read()
+    .await?;
+
+    // 4. Move private namespace 1 from the PF to the secondary controller.
+    //    Namespaces are private, so the namespace must first be detached from
+    //    the PF (controller ID 1) before it can be attached to the secondary.
+    //    The nvme-cli subcommands are `detach-ns` / `attach-ns`.
+    cmd!(
+        chroot_sh,
+        "nvme detach-ns {pf_dev} --namespace-id=1 --controllers={pf_cntlid}"
+    )
+    .read()
+    .await?;
+    cmd!(
+        chroot_sh,
+        "nvme attach-ns {pf_dev} --namespace-id=1 --controllers={sec_cntlid}"
+    )
+    .read()
+    .await?;
+
+    // Now that secondary controller 2 is online, bind its VF to the nvme
+    // driver. virtfn0 is the first VF (secondary controller 2); binding it
+    // triggers a fresh probe, which now succeeds and creates /dev/nvme1.
+    let vf0_link = cmd!(sh, "readlink -f {pf_sysfs}/virtfn0").read().await?;
+    let vf0_bdf = vf0_link
+        .trim()
+        .rsplit('/')
+        .next()
+        .expect("virtfn0 symlink resolves to a VF BDF");
+    // Disabling sriov_drivers_autoprobe cleared the VF's `match_driver` flag,
+    // so an explicit bind alone returns ENODEV (the PCI core refuses to probe
+    // a device that has neither match_driver nor a driver_override). Set a
+    // driver_override to nvme so the bind probes the VF.
+    agent
+        .write_file(
+            &format!("/sys/bus/pci/devices/{vf0_bdf}/driver_override"),
+            b"nvme".as_slice(),
+        )
+        .await?;
+    agent
+        .write_file("/sys/bus/pci/drivers/nvme/bind", vf0_bdf.as_bytes())
+        .await?;
+
+    // 5. Verify nvme list shows the VF controller.
+    let nvme_list = cmd!(chroot_sh, "nvme list").read().await?;
+    tracing::info!(%nvme_list, "nvme list output");
+
+    // 6. Wait for the VF namespace block device to appear. Attachment is
+    //    asynchronous: the VF controller raises an Attached Namespace Attribute
+    //    Changed AEN and the guest rescans. The VF (secondary controller 2) is
+    //    nvme1, so its namespace surfaces as /dev/nvme1n1.
+    let mut timer = PolledTimer::new(&driver);
+    let mut vf_ready = false;
+    for _ in 0..50 {
+        // Nudge a rescan of the VF controller (best effort), then check sysfs.
+        let _ = cmd!(chroot_sh, "nvme ns-rescan /dev/nvme1")
+            .ignore_status()
+            .run()
+            .await;
+        if cmd!(sh, "cat /sys/block/nvme1n1/nsid")
+            .ignore_status()
+            .read()
+            .await
+            .is_ok_and(|nsid| nsid.trim() == "1")
+        {
+            vf_ready = true;
+            break;
+        }
+        timer.sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        vf_ready,
+        "VF namespace /dev/nvme1n1 did not appear after attach"
+    );
+
+    // 7. IO through the VF: write a known payload, read it back, and compare
+    //    against that payload. The namespace is no longer attached to the PF,
+    //    so the PF block device cannot be used for comparison.
+    cmd!(sh, "dd if=/dev/urandom of=/tmp/vf_payload bs=4096 count=16")
+        .read()
+        .await?;
+    cmd!(
+        sh,
+        "dd if=/tmp/vf_payload of=/dev/nvme1n1 bs=4096 count=16 oflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(
+        sh,
+        "dd if=/dev/nvme1n1 of=/tmp/vf_readback bs=4096 count=16 iflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(sh, "cmp /tmp/vf_payload /tmp/vf_readback")
+        .run()
+        .await?;
+
+    // 8. Cleanup: disable VFs, verify they disappear.
+    agent
+        .write_file(&format!("{pf_sysfs}/sriov_numvfs"), b"0".as_slice())
+        .await?;
+
+    let guest_devices = parse_guest_pci_devices(OsFlavor::Linux, &agent).await?;
+    let nvme_after = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    assert_eq!(nvme_after, 1, "only PF should remain after VF disable");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
