@@ -28,38 +28,69 @@ pub mod wrapped_key;
 
 base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 
-#[expect(missing_docs)] // self-explanatory fields
+/// Errors returned by IGVM attest request preparation and response parsing.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The attestation report supplied to the request helper does not match
+    /// the expected size for the active TEE.
     #[error(
         "the size of the attestation report {report_size} is invalid, expected {expected_size}"
     )]
     InvalidAttestationReportSize {
+        /// Actual size of the report blob in bytes.
         report_size: usize,
+        /// Expected size of the report blob in bytes.
         expected_size: usize,
     },
+    /// The attestation response is shorter than the minimum header size.
     #[error("the size of the attestation response {response_size} is too small to parse")]
-    ResponseSizeTooSmall { response_size: usize },
+    ResponseSizeTooSmall {
+        /// Length of the response that failed to parse.
+        response_size: usize,
+    },
+    /// The attestation response header could not be deserialized.
     #[error(
         "the header of the attestation response (size {response_size}) is not in correct format"
     )]
-    ResponseHeaderInvalidFormat { response_size: usize },
+    ResponseHeaderInvalidFormat {
+        /// Length of the response whose header is malformed.
+        response_size: usize,
+    },
+    /// The size declared in the response header does not match the actual
+    /// length of the buffer received from the host.
     #[error(
         "response size {specified_size} specified in the header not match the actual size {size}"
     )]
-    ResponseSizeMismatch { size: usize, specified_size: usize },
+    ResponseSizeMismatch {
+        /// Actual length of the response buffer.
+        size: usize,
+        /// Length declared inside the header.
+        specified_size: usize,
+    },
+    /// The response header advertises a version newer than this build supports.
     #[error("response header version {version:?} larger than current version {latest_version:?}")]
     InvalidResponseHeaderVersion {
+        /// Version reported in the response header.
         version: IgvmAttestResponseVersion,
+        /// Latest version known to this build.
         latest_version: IgvmAttestResponseVersion,
     },
+    /// The host-side IGVM agent reported an attestation failure. The
+    /// `retry_signal` and `skip_hw_unsealing_signal` fields convey hints
+    /// from the agent about how the caller should proceed.
     #[error(
         "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
     Attestation {
+        /// IGVM-specific error code returned by the agent.
         igvm_error_code: u32,
+        /// HTTP status code from the underlying call to the attestation
+        /// service, when applicable.
         http_status_code: u32,
+        /// Hint from the agent that the operation may succeed on retry.
         retry_signal: bool,
+        /// Hint from the agent that hardware key unsealing should be skipped
+        /// because the protected secret is no longer recoverable.
         skip_hw_unsealing_signal: bool,
     },
 }
@@ -92,9 +123,16 @@ impl ReportType {
 }
 
 /// Helper struct to create `IgvmAttestRequest` in raw bytes.
+///
+/// The helper captures the immutable runtime-claims context (report type,
+/// serialized runtime claims, claims hash, and hash type). The specific
+/// `IgvmAttestRequestType` for each call is passed to [`create_request`] so
+/// that the same helper can be reused across multiple related requests
+/// (e.g. the wrapped-key flow issues both a `WRAPPED_KEY_REQUEST` and a
+/// `KEY_RELEASE_REQUEST` from the same helper).
+///
+/// [`create_request`]: IgvmAttestRequestHelper::create_request
 pub struct IgvmAttestRequestHelper {
-    /// The request type.
-    request_type: IgvmAttestRequestType,
     /// The report type.
     report_type: ReportType,
     /// Raw bytes of `RuntimeClaims`.
@@ -134,7 +172,6 @@ impl IgvmAttestRequestHelper {
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
         Self {
-            request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
             report_type,
             runtime_claims,
             runtime_claims_hash,
@@ -178,7 +215,6 @@ impl IgvmAttestRequestHelper {
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
         Self {
-            request_type: IgvmAttestRequestType::AK_CERT_REQUEST,
             report_type,
             runtime_claims,
             runtime_claims_hash,
@@ -191,20 +227,20 @@ impl IgvmAttestRequestHelper {
         &self.runtime_claims_hash
     }
 
-    /// Set the `request_type`.
-    pub fn set_request_type(&mut self, request_type: IgvmAttestRequestType) {
-        self.request_type = request_type
-    }
-
-    /// Create the request in raw bytes.
+    /// Create the request in raw bytes for the given `request_type`.
+    ///
+    /// The runtime claims captured by this helper are shared across all
+    /// requests built from it; only `request_type` and `attestation_report`
+    /// vary per call.
     pub fn create_request(
         &self,
         version: IgvmAttestRequestVersion,
+        request_type: IgvmAttestRequestType,
         attestation_report: &[u8],
     ) -> Result<Vec<u8>, Error> {
         create_request(
             version,
-            self.request_type,
+            request_type,
             &self.runtime_claims,
             attestation_report,
             &self.report_type,
@@ -225,16 +261,16 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
 
     // Check header data_size and version
     if header.data_size as usize > response.len() {
-        Err(Error::ResponseSizeMismatch {
+        return Err(Error::ResponseSizeMismatch {
             size: response.len(),
             specified_size: header.data_size as usize,
-        })?
+        });
     }
     if header.version > IGVM_ATTEST_RESPONSE_CURRENT_VERSION {
-        Err(Error::InvalidResponseHeaderVersion {
+        return Err(Error::InvalidResponseHeaderVersion {
             version: header.version,
             latest_version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-        })?
+        });
     }
 
     // IgvmErrorInfo is added in response header since version 2
@@ -249,12 +285,12 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
         .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         if 0 != igvm_error_info.error_code {
-            Err(Error::Attestation {
+            return Err(Error::Attestation {
                 igvm_error_code: igvm_error_info.error_code,
                 http_status_code: igvm_error_info.http_status_code,
                 retry_signal: igvm_error_info.igvm_signal.retry(),
                 skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
-            })?
+            });
         }
     }
     Ok(IgvmAttestCommonResponseHeader {
@@ -281,10 +317,10 @@ fn create_request(
 
     let expected_report_size = get_report_size(report_type);
     if attestation_report.len() != expected_report_size {
-        Err(Error::InvalidAttestationReportSize {
+        return Err(Error::InvalidAttestationReportSize {
             report_size: attestation_report.len(),
             expected_size: expected_report_size,
-        })?
+        });
     }
 
     let runtime_claims_len = runtime_claims.len();
@@ -353,8 +389,7 @@ fn attestation_vm_config_with_time(
 fn runtime_claims_to_bytes(
     runtime_claims: &openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims,
 ) -> Vec<u8> {
-    let runtime_claims = serde_json::to_string(runtime_claims).expect("JSON serialization failed");
-    runtime_claims.as_bytes().to_vec()
+    serde_json::to_vec(runtime_claims).expect("JSON serialization failed")
 }
 
 #[cfg(test)]

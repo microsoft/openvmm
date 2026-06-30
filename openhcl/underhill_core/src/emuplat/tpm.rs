@@ -5,6 +5,7 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
@@ -97,7 +98,11 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         };
 
         let request = ak_cert_request_helper
-            .create_request(version, &attestation_report)
+            .create_request(
+                version,
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                &attestation_report,
+            )
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
         Ok(request)

@@ -5,6 +5,7 @@
 //! encryption keys.
 
 use crate::IgvmAttestRequestHelper;
+use crate::Retryable;
 use crate::igvm_attest;
 use crypto::HashAlgorithm;
 use crypto::rsa::RsaKeyPair;
@@ -60,8 +61,13 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
-    #[error("expected wrapped AES key blob to be {0} bytes, but found {1} bytes")]
-    UndersizedWrappedAesKey(usize, usize),
+    #[error(
+        "expected wrapped AES key blob to be {expected_size} bytes, but found {actual_size} bytes"
+    )]
+    UndersizedWrappedAesKey {
+        expected_size: usize,
+        actual_size: usize,
+    },
     #[error("wrapped RSA key blob cannot be empty")]
     EmptyWrappedRsaKey,
     #[error("RSA unwrap failed")]
@@ -82,10 +88,10 @@ fn pkcs11_rsa_aes_key_unwrap(
 
     let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
         .split_at_checked(modulus_size)
-        .ok_or(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
-            modulus_size,
-            wrapped_key_blob.len(),
-        ))?;
+        .ok_or(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey {
+            expected_size: modulus_size,
+            actual_size: wrapped_key_blob.len(),
+        })?;
 
     if wrapped_rsa_key.is_empty() {
         return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);
@@ -130,16 +136,12 @@ pub async fn request_vmgs_encryption_keys(
     vmgs: &Vmgs,
     attestation_vm_config: &AttestationVmConfig,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
-) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
+) -> Result<VmgsEncryptionKeys, Retryable<RequestVmgsEncryptionKeysError>> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
     // Generate an ephemeral transfer key
-    let transfer_key = RsaKeyPair::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
-        (
-            RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
-            false,
-        )
-    })?;
+    let transfer_key = RsaKeyPair::generate(TRANSFER_RSA_KEY_BITS)
+        .map_err(|e| Retryable::fatal(RequestVmgsEncryptionKeysError::GenerateTransferKey(e)))?;
 
     let components = transfer_key.to_components();
     let host_time = get.host_time().await.to_jiff().timestamp().as_second();
@@ -159,12 +161,7 @@ pub async fn request_vmgs_encryption_keys(
     // Get attestation report each time this function is called. Failures here are fatal.
     let result = tee_call
         .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
-        .map_err(|e| {
-            (
-                RequestVmgsEncryptionKeysError::GetAttestationReport(e),
-                false,
-            )
-        })?;
+        .map_err(|e| Retryable::fatal(RequestVmgsEncryptionKeysError::GetAttestationReport(e)))?;
 
     // Get tenant keys based on attestation results, this might fail.
     match make_igvm_attest_requests(
@@ -182,7 +179,9 @@ pub async fn request_vmgs_encryption_keys(
             wrapped_des_key,
         }) => {
             let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
+                .map_err(|e| {
+                    Retryable::fatal(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e))
+                })?;
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),
@@ -210,7 +209,7 @@ pub async fn request_vmgs_encryption_keys(
                 error = &wrapped_key_attest_error as &dyn std::error::Error,
                 "VMGS key-encryption failed due to igvm attest error"
             );
-            Err((wrapped_key_attest_error, retry_signal))
+            Err(Retryable::with_retry(wrapped_key_attest_error, retry_signal))
         }
         Err(
             key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
@@ -233,7 +232,7 @@ pub async fn request_vmgs_encryption_keys(
                 error = &key_release_attest_error as &dyn std::error::Error,
                 "VMGS key-encryption failed due to igvm attest error"
             );
-            Err((key_release_attest_error, retry_signal))
+            Err(Retryable::with_retry(key_release_attest_error, retry_signal))
         }
         Err(e) => {
             tracing::error!(
@@ -241,8 +240,17 @@ pub async fn request_vmgs_encryption_keys(
                 error = &e as &dyn std::error::Error,
                 "VMGS key-encryption key request failed due to error",
             );
-            Err((e, true))
+            Err(Retryable::with_retry(e, true))
         }
+    }
+}
+
+/// Notify the host that the WRAPPED_KEY response was required for diagnosis but
+/// could not be obtained or parsed. No-op if `required` is false.
+async fn notify_wrapped_key_required(get: &GuestEmulationTransportClient, required: bool) {
+    if required {
+        get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
+            .await;
     }
 }
 
@@ -260,9 +268,12 @@ async fn make_igvm_attest_requests(
     let wrapped_key_required = vmgs_encrypted && agent_data.iter().all(|&x| x == 0);
 
     // Attempt to get wrapped DiskEncryptionSettings key
-    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::WRAPPED_KEY_REQUEST);
     let request = igvm_attest_request_helper
-        .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, attestation_report)
+        .create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            attestation_report,
+        )
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
     let response = match get
@@ -271,11 +282,7 @@ async fn make_igvm_attest_requests(
     {
         Ok(response) => response,
         Err(e) => {
-            if wrapped_key_required {
-                // Notify host if WrappedKey is required for diagnosis.
-                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
-                    .await;
-            }
+            notify_wrapped_key_required(get, wrapped_key_required).await;
 
             return Err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest(e));
         }
@@ -284,19 +291,19 @@ async fn make_igvm_attest_requests(
     let wrapped_des_key = match igvm_attest::wrapped_key::parse_response(&response.response) {
         Ok(parsed_response) => {
             if parsed_response.wrapped_key.is_empty() {
-                Err(RequestVmgsEncryptionKeysError::EmptyWrappedKey)?
+                return Err(RequestVmgsEncryptionKeysError::EmptyWrappedKey);
             }
 
             // Update the key reference data to the response contents
             if parsed_response.key_reference.is_empty() {
-                Err(RequestVmgsEncryptionKeysError::EmptyKeyReference)?
+                return Err(RequestVmgsEncryptionKeysError::EmptyKeyReference);
             }
 
             if parsed_response.key_reference.len() > AGENT_DATA_MAX_SIZE {
-                Err(RequestVmgsEncryptionKeysError::InvalidKeyReferenceSize {
+                return Err(RequestVmgsEncryptionKeysError::InvalidKeyReferenceSize {
                     key_reference_size: parsed_response.key_reference.len(),
                     expected_size: AGENT_DATA_MAX_SIZE,
-                })?
+                });
             }
 
             // Make sure rewriting the whole `agent_data` buffer
@@ -321,9 +328,7 @@ async fn make_igvm_attest_requests(
             // The request does not succeed.
             // Return an error if WrappedKey is required, otherwise ignore the error and set the `wrapped_des_key` to None.
             if wrapped_key_required {
-                // Notify host if WrappedKey is required for diagnosis.
-                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
-                    .await;
+                notify_wrapped_key_required(get, true).await;
 
                 return Err(
                     RequestVmgsEncryptionKeysError::RequiredButInvalidIgvmAttestWrappedKeyResponse,
@@ -333,19 +338,18 @@ async fn make_igvm_attest_requests(
             }
         }
         Err(e) => {
-            if wrapped_key_required {
-                // Notify host if WrappedKey is required for diagnosis.
-                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
-                    .await;
-            }
+            notify_wrapped_key_required(get, wrapped_key_required).await;
 
             return Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e));
         }
     };
 
-    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::KEY_RELEASE_REQUEST);
     let request = igvm_attest_request_helper
-        .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, attestation_report)
+        .create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            attestation_report,
+        )
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
 
     // Get tenant keys based on attestation results
@@ -394,9 +398,10 @@ mod tests {
         let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
         assert!(matches!(
             result,
-            Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
-                256, 255
-            ))
+            Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey {
+                expected_size: 256,
+                actual_size: 255,
+            })
         ));
 
         // empty rsa key blob

@@ -8,23 +8,49 @@ use crate::igvm_attest::parse_response_header;
 
 use thiserror::Error;
 
-/// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
+/// Errors returned when parsing an `AK_CERT_REQUEST` response.
+///
+/// Returned by [`parse_response`], which is re-exported from the crate root
+/// as `parse_ak_cert_response` and used by `emuplat/tpm.rs`.
 #[derive(Debug, Error)]
 pub enum AkCertError {
+    /// The response buffer is shorter than the minimum expected size to fit
+    /// the response header.
     #[error(
         "AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}"
     )]
-    SizeTooSmall { size: usize, minimum_size: usize },
+    SizeTooSmall {
+        /// Actual length of the response buffer in bytes.
+        size: usize,
+        /// Minimum size in bytes required to parse the response header.
+        minimum_size: usize,
+    },
+    /// The size declared in the response header is larger than the actual
+    /// length of the response buffer received from the host.
     #[error(
-        "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
+        "AK cert response size {specified_size} specified in the header is larger than the actual size {size}"
     )]
-    SizeMismatch { size: usize, specified_size: usize },
+    SizeMismatch {
+        /// Actual length of the response buffer in bytes.
+        size: usize,
+        /// Length declared inside the response header.
+        specified_size: usize,
+    },
+    /// The response header version does not match the version expected by
+    /// this build.
     #[error(
-        "AK cert response header version {version} does match the expected version {expected_version}"
+        "AK cert response header version {version} does not match the expected version {expected_version}"
     )]
-    HeaderVersionMismatch { version: u32, expected_version: u32 },
+    HeaderVersionMismatch {
+        /// Header version reported in the response.
+        version: u32,
+        /// Header version expected by this build.
+        expected_version: u32,
+    },
+    /// Parsing the common response header failed.
     #[error("error in parsing response header")]
     ParseHeader(#[source] CommonError),
+    /// The response header version is not a value recognized by this build.
     #[error("invalid response header version: {0}")]
     InvalidResponseVersion(u32),
 }

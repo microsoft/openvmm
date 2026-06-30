@@ -24,18 +24,18 @@ pub(crate) enum HardwareDerivedKeysError {
 pub(crate) enum HardwareKeySealingError {
     #[error("failed to encrypt the egress key")]
     EncryptEgressKey(#[source] crypto::aes_256_cbc::Aes256CbcError),
-    #[error("invalid egress key encryption size {0}, expected {1}")]
-    InvalidEgressKeyEncryptionSize(usize, usize),
+    #[error("invalid egress key encryption size {size}, expected {expected_size}")]
+    InvalidEgressKeyEncryptionSize { size: usize, expected_size: usize },
     #[error("HMAC-SHA-256 after encryption failed")]
     HmacAfterEncrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
-    #[error("HMAC-SHA-256 before ecryption failed")]
+    #[error("HMAC-SHA-256 before decryption failed")]
     HmacBeforeDecrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
-    #[error("Hardware key protector HMAC verification failed")]
+    #[error("hardware key protector HMAC verification failed")]
     HardwareKeyProtectorHmacVerificationFailed,
     #[error("failed to decrypt the ingress key")]
     DecryptIngressKey(#[source] crypto::aes_256_cbc::Aes256CbcError),
-    #[error("invalid ingress key decryption size {0}, expected {1}")]
-    InvalidIngressKeyDecryptionSize(usize, usize),
+    #[error("invalid ingress key decryption size {size}, expected {expected_size}")]
+    InvalidIngressKeyDecryptionSize { size: usize, expected_size: usize },
 }
 
 /// Hold the hardware-derived keys.
@@ -89,7 +89,7 @@ pub trait HardwareKeyProtectorExt: Sized {
         egress_key: &[u8],
     ) -> Result<Self, HardwareKeySealingError>;
 
-    /// Unseal the `inress_key` with verify-mac-then-decrypt.
+    /// Unseal the `ingress_key` with verify-mac-then-decrypt.
     fn unseal_key(
         &self,
         hardware_derived_keys: &HardwareDerivedKeys,
@@ -115,10 +115,10 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
             .and_then(|aes| aes.encrypt()?.cipher(&iv, egress_key))
             .map_err(HardwareKeySealingError::EncryptEgressKey)?;
         if output.len() != vmgs::AES_GCM_KEY_LENGTH {
-            Err(HardwareKeySealingError::InvalidEgressKeyEncryptionSize(
-                output.len(),
-                vmgs::AES_GCM_KEY_LENGTH,
-            ))?
+            return Err(HardwareKeySealingError::InvalidEgressKeyEncryptionSize {
+                size: output.len(),
+                expected_size: vmgs::AES_GCM_KEY_LENGTH,
+            });
         }
         encrypted_egress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
@@ -152,7 +152,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
 
         if !constant_time_eq::constant_time_eq_32(&hmac, &self.hmac) {
-            Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
+            return Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed);
         }
 
         let mut decrypted_ingress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
@@ -160,10 +160,10 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
             .and_then(|aes| aes.decrypt()?.cipher(&self.iv, &self.ciphertext))
             .map_err(HardwareKeySealingError::DecryptIngressKey)?;
         if output.len() != vmgs::AES_GCM_KEY_LENGTH {
-            Err(HardwareKeySealingError::InvalidIngressKeyDecryptionSize(
-                output.len(),
-                vmgs::AES_GCM_KEY_LENGTH,
-            ))?
+            return Err(HardwareKeySealingError::InvalidIngressKeyDecryptionSize {
+                size: output.len(),
+                expected_size: vmgs::AES_GCM_KEY_LENGTH,
+            });
         }
         decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
@@ -179,7 +179,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::MockTeeCall;
+    use crate::test_helpers::MockTeeCall;
     use zerocopy::FromBytes;
 
     #[test]
