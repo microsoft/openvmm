@@ -3147,34 +3147,33 @@ impl LoadedVmInner {
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
+                    snp_isolation: self.hypervisor_cfg.with_isolation
+                        == Some(openvmm_defs::config::IsolationType::Snp),
                 };
-                let regs =
-                    super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                        let tables = if let Some(dsdt) = custom_dsdt {
-                            acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
-                        } else {
-                            acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                                add_devices_to_dsdt_x64(
-                                    dsdt,
-                                    &self.chipset_cfg,
-                                    &self.chipset_capabilities,
-                                    enable_serial,
-                                    self.vmbus_server.is_some(),
-                                    &self.chipset_mmio,
-                                    self.virtio_mmio_region,
-                                    self.virtio_mmio_irq,
-                                    &self.pci_legacy_interrupts,
-                                )
-                            })
-                        };
+                super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
+                    let tables = if let Some(dsdt) = custom_dsdt {
+                        acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
+                    } else {
+                        acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                            add_devices_to_dsdt_x64(
+                                dsdt,
+                                &self.chipset_cfg,
+                                &self.chipset_capabilities,
+                                enable_serial,
+                                self.vmbus_server.is_some(),
+                                &self.chipset_mmio,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
+                                &self.pci_legacy_interrupts,
+                            )
+                        })
+                    };
 
-                        super::vm_loaders::linux::AcpiTables {
-                            rdsp: tables.rdsp,
-                            tables: tables.tables,
-                        }
-                    })?;
-
-                (regs, Vec::new())
+                    super::vm_loaders::linux::AcpiTables {
+                        rdsp: tables.rdsp,
+                        tables: tables.tables,
+                    }
+                })?
             }
             #[cfg(guest_arch = "aarch64")]
             &LoadMode::Linux {
@@ -3192,6 +3191,7 @@ impl LoadedVmInner {
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
+                    snp_isolation: false,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3215,7 +3215,7 @@ impl LoadedVmInner {
                         IommuDevices::Smmu(devices) => &devices.configs,
                         IommuDevices::None => &[],
                     };
-                let regs = super::vm_loaders::linux::load_linux_arm64(
+                super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
                     enable_serial,
@@ -3224,9 +3224,7 @@ impl LoadedVmInner {
                     smmu_configs,
                     &self.chipset_mmio,
                     build_acpi,
-                )?;
-
-                (regs, Vec::new())
+                )?
             }
             &LoadMode::Uefi {
                 ref firmware,
@@ -3352,15 +3350,6 @@ impl LoadedVmInner {
             ));
         }
 
-        // Only set initial page visibility on isolated partitions.
-        if self.hypervisor_cfg.with_isolation.is_some() {
-            tracing::debug!(?initial_page_vis, "initial_page_vis");
-            self.partition_unit
-                .set_initial_page_visibility(initial_page_vis)
-                .await
-                .context("failed to set initial page visibility")?;
-        }
-
         let initial_regs = initial_regs(
             &regs,
             self.partition.caps(),
@@ -3379,6 +3368,22 @@ impl LoadedVmInner {
             )
             .await
             .context("failed to set initial register state")?;
+
+        // Only finalize initial page imports on isolated partitions.
+        //
+        // TODO: Today with SNP guests, this issues a SNP_LAUNCH_FINISH on the
+        // only supported backend KVM, so load the initial registers before
+        // finalizing the imported pages. We should revisit this in the future
+        // when KVM supports loading VMSA pages, which would probably be
+        // imported as a page, not registers, along with revisiting other
+        // isolation architectures and backends.
+        if self.hypervisor_cfg.with_isolation.is_some() {
+            tracing::debug!(?initial_page_vis, "initial_page_imports");
+            self.partition_unit
+                .accept_initial_pages(initial_page_vis)
+                .await
+                .context("failed to finalize initial page imports")?;
+        }
 
         Ok(())
     }

@@ -39,7 +39,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory::MemoryMapper;
-use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -53,7 +52,6 @@ use std::task::Waker;
 use thiserror::Error;
 use virt::IsolationType;
 use virt::NeedsYield;
-use virt::PageVisibility;
 use virt::PartitionAccessState;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
@@ -554,17 +552,18 @@ impl virt::ScrubVtl for WhpPartition {
 impl virt::AcceptInitialPages for WhpPartition {
     type Error = Error;
 
-    fn accept_initial_pages(&self, pages: &[(MemoryRange, PageVisibility)]) -> Result<(), Error> {
+    fn accept_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), Error> {
         assert!(self.inner.isolation.is_isolated());
 
-        for (range, vis) in pages {
+        for page in pages {
             self.inner
                 .vtl0
-                .accept_pages(range, *vis)
+                .accept_pages(&page.range, page.visibility)
                 .map_err(Error::AcceptPages)?;
 
             if let Some(vtl2) = &self.inner.vtl2 {
-                vtl2.accept_pages(range, *vis).map_err(Error::AcceptPages)?;
+                vtl2.accept_pages(&page.range, page.visibility)
+                    .map_err(Error::AcceptPages)?;
             }
         }
 
@@ -587,7 +586,7 @@ impl virt::Partition for WhpPartition {
         (!self.inner.isolation.is_isolated()).then_some(self)
     }
 
-    fn supports_initial_accept_pages(
+    fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as virt::Hv1>::Error>> {
         self.inner.isolation.is_isolated().then_some(self)
