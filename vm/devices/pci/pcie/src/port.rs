@@ -9,6 +9,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciAerErrorKind;
 use chipset_device::pci::PciAerInjection;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PcieDpcRoutingAction;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
@@ -802,9 +803,7 @@ impl PcieDownstreamPort {
     /// Supports routing components for multi-level hierarchies.
     pub fn forward_cfg_read_with_routing(
         &mut self,
-        bus: &u8,
-        function: &u8,
-        cfg_offset: u16,
+        addr: PciConfigAddress,
         value: &mut u32,
     ) -> IoResult {
         if self
@@ -820,46 +819,52 @@ impl PcieDownstreamPort {
 
         let bus_range = self.cfg_space.assigned_bus_range();
 
-        // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
+        // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration,
+        // and the access should not have been routed to this port.
         if bus_range == (0..=0) {
             tracelimit::warn_ratelimited!("invalid access: port bus number range not configured");
+            *value = !0;
             return IoResult::Ok;
         }
 
-        if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                let secondary_bus = *bus_range.start();
-                let result = device.pci_cfg_read_with_routing(
-                    secondary_bus,
-                    *bus,
-                    *function,
-                    cfg_offset,
-                    value,
-                );
-
-                if let Some(result) = result {
-                    match result {
-                        IoResult::Ok => (),
-                        res => return res,
-                    }
-                }
-            } else if *bus != *bus_range.start() {
-                tracelimit::warn_ratelimited!(
-                    "invalid access: bus number to access not within port's bus number range"
-                );
-            }
+        // If the bus number is not within the port's bus range, the access should not have been
+        // routed to this port.
+        if !bus_range.contains(&addr.bus) {
+            tracelimit::warn_ratelimited!(
+                "bus number to access not within port's bus number range"
+            );
+            *value = !0;
+            return IoResult::Ok;
         }
 
-        IoResult::Ok
+        // If there is no device connected to the port, then we should return all-1s.
+        let Some((_, device)) = &mut self.link else {
+            tracing::trace!("no device connected to port");
+            *value = !0;
+            return IoResult::Ok;
+        };
+
+        let secondary_bus = *bus_range.start();
+        device
+            .pci_cfg_read_with_routing(
+                secondary_bus,
+                addr.bus,
+                addr.device_function,
+                addr.byte_offset(),
+                value,
+            )
+            .unwrap_or_else(|| {
+                tracelimit::warn_ratelimited!("failed to read from connected device");
+                *value = !0;
+                IoResult::Ok
+            })
     }
 
     /// Forward a configuration space write to the connected device.
     /// Supports routing components for multi-level hierarchies.
     pub fn forward_cfg_write_with_routing(
         &mut self,
-        bus: &u8,
-        function: &u8,
-        cfg_offset: u16,
+        addr: PciConfigAddress,
         value: u32,
     ) -> IoResult {
         if self
@@ -874,37 +879,41 @@ impl PcieDownstreamPort {
 
         let bus_range = self.cfg_space.assigned_bus_range();
 
-        // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
+        // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration,
+        // and the access should not have been routed to this port.
         if bus_range == (0..=0) {
             tracelimit::warn_ratelimited!("invalid access: port bus number range not configured");
             return IoResult::Ok;
         }
 
-        if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                let secondary_bus = *bus_range.start();
-                let result = device.pci_cfg_write_with_routing(
-                    secondary_bus,
-                    *bus,
-                    *function,
-                    cfg_offset,
-                    value,
-                );
-
-                if let Some(result) = result {
-                    match result {
-                        IoResult::Ok => (),
-                        res => return res,
-                    }
-                }
-            } else if *bus != *bus_range.start() {
-                tracelimit::warn_ratelimited!(
-                    "invalid access: bus number to access not within port's bus number range"
-                );
-            }
+        // If the bus number is not within the port's bus range, the access should not have been
+        // routed to this port.
+        if !bus_range.contains(&addr.bus) {
+            tracelimit::warn_ratelimited!(
+                "bus number to access not within port's bus number range"
+            );
+            return IoResult::Ok;
         }
 
-        IoResult::Ok
+        // If there is no device connected to the port, then we should just drop the access.
+        let Some((_, device)) = &mut self.link else {
+            tracelimit::warn_ratelimited!("no device connected to port");
+            return IoResult::Ok;
+        };
+
+        let secondary_bus = *bus_range.start();
+        device
+            .pci_cfg_write_with_routing(
+                secondary_bus,
+                addr.bus,
+                addr.device_function,
+                addr.byte_offset(),
+                value,
+            )
+            .unwrap_or_else(|| {
+                tracelimit::warn_ratelimited!("failed to write to connected device");
+                IoResult::Ok
+            })
     }
 
     /// Connect a device to this specific port by exact name match.
@@ -1417,11 +1426,17 @@ mod tests {
         // pci_cfg_read_with_routing — the linked device is responsible
         // for dispatching function 0 to its own config space.
         assert!(matches!(
-            port.forward_cfg_read_with_routing(&1, &0, 0x10, &mut value),
+            port.forward_cfg_read_with_routing(
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                &mut value
+            ),
             IoResult::Ok
         ));
         assert!(matches!(
-            port.forward_cfg_read_with_routing(&1, &3, 0x14, &mut value),
+            port.forward_cfg_read_with_routing(
+                PciConfigAddress::new(1, 3, 0x14 / 4).unwrap(),
+                &mut value
+            ),
             IoResult::Ok
         ));
 
@@ -1474,11 +1489,17 @@ mod tests {
         // pci_cfg_write_with_routing — the linked device is responsible
         // for dispatching function 0 to its own config space.
         assert!(matches!(
-            port.forward_cfg_write_with_routing(&1, &0, 0x10, 0xAAAA_0000),
+            port.forward_cfg_write_with_routing(
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                0xAAAA_0000
+            ),
             IoResult::Ok
         ));
         assert!(matches!(
-            port.forward_cfg_write_with_routing(&1, &2, 0x14, 0xBBBB_0000),
+            port.forward_cfg_write_with_routing(
+                PciConfigAddress::new(1, 2, 0x14 / 4).unwrap(),
+                0xBBBB_0000
+            ),
             IoResult::Ok
         ));
 
@@ -1540,13 +1561,19 @@ mod tests {
 
         let mut value = 0;
         assert!(matches!(
-            port.forward_cfg_read_with_routing(&1, &0, 0x10, &mut value),
+            port.forward_cfg_read_with_routing(
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                &mut value
+            ),
             IoResult::Ok
         ));
         assert_eq!(value, !0);
 
         assert!(matches!(
-            port.forward_cfg_write_with_routing(&1, &0, 0x10, 0xAAAA_0000),
+            port.forward_cfg_write_with_routing(
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                0xAAAA_0000
+            ),
             IoResult::Ok
         ));
 

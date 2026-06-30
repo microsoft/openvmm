@@ -1418,6 +1418,46 @@ pub struct WinEvent {
     pub id: u32,
     /// Message content
     pub message: String,
+    /// Raw event data property values, stringified in template order. Empty
+    /// when the event carries no data.
+    #[serde(default, deserialize_with = "deserialize_event_properties")]
+    pub properties: Vec<String>,
+}
+
+/// Deserialize the `Properties` projection of a Windows event into a flat list
+/// of stringified values.
+fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    use serde_json::Value;
+
+    fn flatten(value: Value, out: &mut Vec<String>) {
+        match value {
+            Value::Null => out.push("<null>".to_string()),
+            Value::String(s) => out.push(s),
+            Value::Bool(b) => out.push(b.to_string()),
+            Value::Number(n) => out.push(n.to_string()),
+            Value::Array(items) => {
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            // PowerShell wraps the array as
+            // `{ "value": [...], "Count": N }` (and an empty array as `{}`).
+            // Pull the values out and ignore the bookkeeping `Count` field.
+            Value::Object(mut map) => {
+                if let Some(inner) = map.remove("value") {
+                    flatten(inner, out);
+                }
+            }
+        }
+    }
+
+    let mut properties = Vec::new();
+    flatten(Value::deserialize(deserializer)?, &mut properties);
+    Ok(properties)
 }
 
 /// Get event logs
@@ -1467,6 +1507,15 @@ pub async fn run_get_winevent(
         ps::Value::new("Level"),
         ps::Value::new("Id"),
         ps::Value::new("Message"),
+        ps::Value::new(ps::HashTable::new([
+            ("label", ps::Value::new("Properties")),
+            (
+                "expression",
+                ps::Value::new(ps::Script::new(
+                    "@($_.Properties | ForEach-Object { [string]$_.Value })",
+                )),
+            ),
+        ])),
     ]);
 
     let output = run_host_cmd(

@@ -549,9 +549,10 @@ mod tests {
         )
         .unwrap();
         // Program downstream port 0 bus numbers via routed type-1 config write.
+        // `secondary_bus` is the parent (root port) secondary bus.
         let _ = GenericPciBusDevice::pci_cfg_write_with_routing(
             &mut switch,
-            2,
+            1,
             2,
             0,
             0x18,
@@ -759,9 +760,10 @@ mod tests {
             (4u32 << 16) | (2u32 << 8) | 1,
         )
         .unwrap();
+        // `secondary_bus` is the parent (root port) secondary bus.
         let _ = GenericPciBusDevice::pci_cfg_write_with_routing(
             &mut switch,
-            2,
+            1,
             2,
             0,
             0x18,
@@ -941,9 +943,10 @@ mod tests {
             (4u32 << 16) | (2u32 << 8) | 1,
         )
         .unwrap();
+        // `secondary_bus` is the parent (root port) secondary bus.
         let _ = GenericPciBusDevice::pci_cfg_write_with_routing(
             &mut switch,
-            2,
+            1,
             2,
             0,
             0x18,

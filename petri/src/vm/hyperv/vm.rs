@@ -158,8 +158,13 @@ impl HyperVVM {
                 _ => Level::INFO,
             },
             format_args!(
-                "[{}] {}: ({}, {}) {}",
-                event.time_created, event.provider_name, event.level, event.id, event.message,
+                "[{}] {}: ({}, {}) {} ({})",
+                event.time_created,
+                event.provider_name,
+                event.level,
+                event.id,
+                event.message,
+                event.properties.join(",")
             ),
         );
 
