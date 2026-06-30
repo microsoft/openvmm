@@ -10,6 +10,7 @@ pub(crate) mod port;
 pub use port::GenericPciePortDefinition;
 pub use port::PcieAerInjectRequest;
 pub use port::PcieAerSettings;
+pub use port::PcieDpcSettings;
 pub use port::PciePortSettings;
 pub use port::PortBarDefinition;
 pub use port::PortBarSubregionDefinition;

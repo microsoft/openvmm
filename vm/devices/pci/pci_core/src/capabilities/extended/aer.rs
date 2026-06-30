@@ -13,19 +13,6 @@ use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 
 #[derive(Debug, Clone, Copy, Inspect)]
-/// PCIe function/port class that determines AER register behavior.
-pub enum AerPortType {
-    /// Endpoint Function.
-    Endpoint,
-    /// Root Port.
-    RootPort,
-    /// Upstream Switch Port.
-    UpstreamSwitchPort,
-    /// Downstream Switch Port.
-    DownstreamSwitchPort,
-}
-
-#[derive(Debug, Clone, Copy, Inspect)]
 /// Type of injected AER event.
 pub enum AerInjectedErrorKind {
     /// Inject a correctable error.
@@ -71,28 +58,6 @@ pub struct AerCapabilityConfig {
     pub root_error_interrupt_message_number: Option<u8>,
 }
 
-impl From<DevicePortType> for AerPortType {
-    fn from(value: DevicePortType) -> Self {
-        match value {
-            DevicePortType::Endpoint => Self::Endpoint,
-            DevicePortType::RootPort => Self::RootPort,
-            DevicePortType::UpstreamSwitchPort => Self::UpstreamSwitchPort,
-            DevicePortType::DownstreamSwitchPort => Self::DownstreamSwitchPort,
-        }
-    }
-}
-
-impl From<&DevicePortType> for AerPortType {
-    fn from(value: &DevicePortType) -> Self {
-        match value {
-            DevicePortType::Endpoint => Self::Endpoint,
-            DevicePortType::RootPort => Self::RootPort,
-            DevicePortType::UpstreamSwitchPort => Self::UpstreamSwitchPort,
-            DevicePortType::DownstreamSwitchPort => Self::DownstreamSwitchPort,
-        }
-    }
-}
-
 #[derive(Debug, Inspect)]
 struct AerAdvancedCapabilities {
     ecrc_generation_capable: bool,
@@ -104,10 +69,9 @@ struct AerAdvancedCapabilities {
 }
 
 impl AerAdvancedCapabilities {
-    fn new(port_type: AerPortType) -> Self {
+    fn new() -> Self {
         // Keep defaults conservative: no ECRC engines, no multi-header logging,
         // no End-End TLP Prefix logging capability advertised.
-        let _ = port_type;
         Self {
             ecrc_generation_capable: false,
             ecrc_check_capable: false,
@@ -123,7 +87,7 @@ impl AerAdvancedCapabilities {
 #[derive(Debug, Inspect)]
 /// PCIe Advanced Error Reporting (AER) extended capability emulator.
 pub struct AerExtendedCapability {
-    port_type: AerPortType,
+    supports_root_registers: bool,
     unc_err_status: aer_spec::UncorrectableErrorStatus,
     unc_err_mask: aer_spec::UncorrectableErrorMask,
     unc_err_severity: aer_spec::UncorrectableErrorSeverity,
@@ -142,12 +106,12 @@ pub struct AerExtendedCapability {
 
 impl AerExtendedCapability {
     /// Creates a new AER extended capability for the given PCIe port type.
-    pub fn new(port_type: AerPortType) -> Self {
+    pub fn new(port_type: &DevicePortType) -> Self {
         Self::with_config(port_type, AerCapabilityConfig::default())
     }
 
     /// Creates a new AER extended capability with explicit register defaults.
-    pub fn with_config(port_type: AerPortType, config: AerCapabilityConfig) -> Self {
+    pub fn with_config(port_type: &DevicePortType, config: AerCapabilityConfig) -> Self {
         let default_correctable_mask = config
             .correctable_mask
             .unwrap_or(aer_spec::DEFAULT_COR_ERR_MASK);
@@ -160,7 +124,8 @@ impl AerExtendedCapability {
         let root_error_interrupt_message_number =
             config.root_error_interrupt_message_number.unwrap_or(0) & 0x1f;
 
-        let root_error_status = if matches!(port_type, AerPortType::RootPort) {
+        let supports_root_registers = matches!(port_type, DevicePortType::RootPort);
+        let root_error_status = if supports_root_registers {
             aer_spec::RootErrorStatus::new()
                 .with_advanced_error_interrupt_message_number(root_error_interrupt_message_number)
         } else {
@@ -168,7 +133,7 @@ impl AerExtendedCapability {
         };
 
         Self {
-            port_type,
+            supports_root_registers,
             unc_err_status: aer_spec::UncorrectableErrorStatus::new(),
             unc_err_mask: aer_spec::UncorrectableErrorMask::from_bits(default_uncorrectable_mask),
             unc_err_severity: aer_spec::UncorrectableErrorSeverity::from_bits(
@@ -182,12 +147,12 @@ impl AerExtendedCapability {
             root_error_status,
             error_source_identification: aer_spec::ErrorSourceIdentification::new(),
             tlp_prefix_log: [0; 4],
-            advanced_capabilities: AerAdvancedCapabilities::new(port_type),
+            advanced_capabilities: AerAdvancedCapabilities::new(),
         }
     }
 
     fn supports_root_registers(&self) -> bool {
-        matches!(self.port_type, AerPortType::RootPort)
+        self.supports_root_registers
     }
 
     /// Returns the configured AER interrupt message number for root ports.
@@ -582,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_aer_defaults_and_header_contract() {
-        let cap = AerExtendedCapability::new(AerPortType::Endpoint);
+        let cap = AerExtendedCapability::new(&DevicePortType::Endpoint);
 
         assert_eq!(cap.label(), "aer");
         assert_eq!(cap.extended_capability_id(), ExtendedCapabilityId::AER.0);
@@ -612,12 +577,18 @@ mod tests {
 
     #[test]
     fn test_aer_endpoint_drops_root_register_writes() {
-        let mut cap = AerExtendedCapability::new(AerPortType::Endpoint);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::Endpoint);
+
+        let root_command_all = aer_spec::RootErrorCommand::new()
+            .with_correctable_error_reporting_enable(true)
+            .with_non_fatal_error_reporting_enable(true)
+            .with_fatal_error_reporting_enable(true)
+            .into_bits();
 
         write_extended_cap_u32(
             &mut cap,
             AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0,
-            0x7,
+            root_command_all,
         );
         write_extended_cap_u32(
             &mut cap,
@@ -637,7 +608,13 @@ mod tests {
 
     #[test]
     fn test_aer_root_port_root_command_writable() {
-        let mut cap = AerExtendedCapability::new(AerPortType::RootPort);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::RootPort);
+
+        let root_command_all = aer_spec::RootErrorCommand::new()
+            .with_correctable_error_reporting_enable(true)
+            .with_non_fatal_error_reporting_enable(true)
+            .with_fatal_error_reporting_enable(true)
+            .into_bits();
 
         write_extended_cap_u32(
             &mut cap,
@@ -647,13 +624,13 @@ mod tests {
 
         assert_eq!(
             read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0),
-            aer_spec::ROOT_ERR_COMMAND_RW_MASK
+            root_command_all
         );
     }
 
     #[test]
     fn test_aer_advanced_cap_control_masks_unsupported_bits() {
-        let mut cap = AerExtendedCapability::new(AerPortType::RootPort);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::RootPort);
 
         write_extended_cap_u32(
             &mut cap,
@@ -672,7 +649,13 @@ mod tests {
 
     #[test]
     fn test_aer_reset_restores_defaults() {
-        let mut cap = AerExtendedCapability::new(AerPortType::RootPort);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::RootPort);
+
+        let root_command_all = aer_spec::RootErrorCommand::new()
+            .with_correctable_error_reporting_enable(true)
+            .with_non_fatal_error_reporting_enable(true)
+            .with_fatal_error_reporting_enable(true)
+            .into_bits();
 
         write_extended_cap_u32(
             &mut cap,
@@ -687,7 +670,7 @@ mod tests {
         write_extended_cap_u32(
             &mut cap,
             AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0,
-            0x7,
+            root_command_all,
         );
 
         cap.reset();
@@ -711,7 +694,13 @@ mod tests {
 
     #[test]
     fn test_aer_save_restore_roundtrip() {
-        let mut cap = AerExtendedCapability::new(AerPortType::RootPort);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::RootPort);
+
+        let root_command_all = aer_spec::RootErrorCommand::new()
+            .with_correctable_error_reporting_enable(true)
+            .with_non_fatal_error_reporting_enable(true)
+            .with_fatal_error_reporting_enable(true)
+            .into_bits();
 
         write_extended_cap_u32(
             &mut cap,
@@ -721,7 +710,7 @@ mod tests {
         write_extended_cap_u32(
             &mut cap,
             AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0,
-            0x7,
+            root_command_all,
         );
 
         let saved = cap.save().expect("save should succeed");
@@ -743,18 +732,24 @@ mod tests {
         );
         assert_eq!(
             read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0),
-            0x7
+            root_command_all
         );
     }
 
     #[test]
     fn test_aer_switch_port_shape_uses_non_root_behavior() {
-        let mut cap = AerExtendedCapability::new(AerPortType::DownstreamSwitchPort);
+        let mut cap = AerExtendedCapability::new(&DevicePortType::DownstreamSwitchPort);
+
+        let root_command_all = aer_spec::RootErrorCommand::new()
+            .with_correctable_error_reporting_enable(true)
+            .with_non_fatal_error_reporting_enable(true)
+            .with_fatal_error_reporting_enable(true)
+            .into_bits();
 
         write_extended_cap_u32(
             &mut cap,
             AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0,
-            0x7,
+            root_command_all,
         );
         assert_eq!(
             read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::ROOT_ERROR_COMMAND.0),
@@ -765,7 +760,7 @@ mod tests {
     #[test]
     fn test_aer_with_config_overrides_default_masks() {
         let cap = AerExtendedCapability::with_config(
-            AerPortType::RootPort,
+            &DevicePortType::RootPort,
             AerCapabilityConfig {
                 correctable_mask: Some(0x0000_0021),
                 uncorrectable_mask: Some(0x0400_0000),
@@ -793,7 +788,11 @@ mod tests {
             0x0001_3000
         );
         assert_eq!(
-            read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0) >> 27,
+            aer_spec::RootErrorStatus::from_bits(read_extended_cap_u32(
+                &cap,
+                AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0,
+            ))
+            .advanced_error_interrupt_message_number(),
             3
         );
     }

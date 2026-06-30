@@ -382,6 +382,7 @@ impl PetriVmConfigOpenVmm {
                         hotplug: true,
                         acs_capabilities_supported: Some(0),
                         aer: None,
+                        dpc: None,
                         cxl: false,
                     })
                     .collect();
@@ -428,6 +429,7 @@ impl PetriVmConfigOpenVmm {
                     hotplug,
                     acs_capabilities_supported: Some(0),
                     aer: None,
+                    dpc: None,
                     cxl: false,
                 })
                 .collect(),

@@ -77,8 +77,9 @@ use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
-use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieAerConfig;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieDpcConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -224,6 +225,13 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
                         correctable_mask: aer.correctable_mask,
                         uncorrectable_mask: aer.uncorrectable_mask,
                         uncorrectable_severity_mask: aer.uncorrectable_severity_mask,
+                    }),
+                    dpc: switch_cli.dpc.map(|dpc| PcieDpcConfig {
+                        software_trigger_supported: dpc.software_trigger_supported,
+                        poisoned_tlp_egress_blocking_supported: dpc
+                            .poisoned_tlp_egress_blocking_supported,
+                        dl_active_err_cor_signaling_supported: dpc
+                            .dl_active_err_cor_signaling_supported,
                     }),
                     cxl: false,
                 })
@@ -873,6 +881,13 @@ async fn vm_config_from_command_line(
                     correctable_mask: aer.correctable_mask,
                     uncorrectable_mask: aer.uncorrectable_mask,
                     uncorrectable_severity_mask: aer.uncorrectable_severity_mask,
+                }),
+                dpc: port_cli.dpc.map(|dpc| PcieDpcConfig {
+                    software_trigger_supported: dpc.software_trigger_supported,
+                    poisoned_tlp_egress_blocking_supported: dpc
+                        .poisoned_tlp_egress_blocking_supported,
+                    dl_active_err_cor_signaling_supported: dpc
+                        .dl_active_err_cor_signaling_supported,
                 }),
                 cxl: port_cli.cxl,
             })

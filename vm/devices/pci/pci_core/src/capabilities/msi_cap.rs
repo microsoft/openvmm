@@ -163,6 +163,13 @@ impl MsiCapability {
         0
     }
 
+    /// Returns the MSI message number used by the DPC capability path.
+    ///
+    /// This currently returns the default DPC mapping value of 0.
+    pub fn dpc_interrupt_message_number(&self) -> u8 {
+        0
+    }
+
     fn len_bytes(&self) -> usize {
         let mut len = 8; // Base: ID + Next + Control + Message Address Low
         if self.addr_64bit {

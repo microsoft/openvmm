@@ -456,6 +456,7 @@ pub mod caps {
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
+            DPC   = 0x1D,
             DVSEC = 0x23,
         }
     }
@@ -1436,6 +1437,114 @@ pub mod caps {
         pub const AER_CAP_CTL_WRITABLE_MASK: u32 = AER_CAP_CTL_ECRC_GEN_ENABLE_BIT
             | AER_CAP_CTL_ECRC_CHK_ENABLE_BIT
             | AER_CAP_CTL_MULTI_HEADER_RECORDING_ENABLE_BIT;
+    }
+
+    /// Downstream Port Containment (DPC) extended capability.
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod dpc {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the DPC Extended Capability structure (non-Flit).
+            pub enum DpcExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPABILITY_CONTROL = 0x04,
+                STATUS_SOURCE_ID = 0x08,
+                RP_PIO_STATUS = 0x0C,
+                RP_PIO_MASK = 0x10,
+                RP_PIO_SEVERITY = 0x14,
+                RP_PIO_SYSERROR = 0x18,
+                RP_PIO_EXCEPTION = 0x1C,
+                RP_PIO_HEADER_LOG_0 = 0x20,
+                RP_PIO_HEADER_LOG_1 = 0x24,
+                RP_PIO_HEADER_LOG_2 = 0x28,
+                RP_PIO_HEADER_LOG_3 = 0x2C,
+                RP_PIO_IMPSPEC_LOG = 0x30,
+                RP_PIO_TLP_PREFIX_LOG_0 = 0x34,
+                RP_PIO_TLP_PREFIX_LOG_1 = 0x38,
+                RP_PIO_TLP_PREFIX_LOG_2 = 0x3C,
+                RP_PIO_TLP_PREFIX_LOG_3 = 0x40,
+            }
+        }
+
+        /// DPC Capability register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcCapability {
+            #[bits(5)]
+            pub dpc_interrupt_message_number: u8,
+            pub rp_extensions_for_dpc: bool,
+            pub poisoned_tlp_egress_blocking_supported: bool,
+            pub dpc_software_triggering_supported: bool,
+            #[bits(4)]
+            pub rp_pio_log_size_3_0: u8,
+            pub dl_active_err_cor_signaling_supported: bool,
+            pub rp_pio_log_size_4: bool,
+            #[bits(2)]
+            _reserved: u8,
+        }
+
+        /// DPC Control register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcControl {
+            #[bits(2)]
+            pub dpc_trigger_enable: u8,
+            pub dpc_completion_control: bool,
+            pub dpc_interrupt_enable: bool,
+            pub dpc_err_cor_enable: bool,
+            pub poisoned_tlp_egress_blocking_enable: bool,
+            pub dpc_software_trigger: bool,
+            pub dl_active_err_cor_enable: bool,
+            pub dpc_sig_sfw_enable: bool,
+            #[bits(7)]
+            _reserved: u8,
+        }
+
+        /// DPC Status register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcStatus {
+            pub dpc_trigger_status: bool,
+            #[bits(2)]
+            pub dpc_trigger_reason: u8,
+            pub dpc_interrupt_status: bool,
+            pub dpc_rp_busy: bool,
+            #[bits(2)]
+            pub dpc_trigger_reason_extension: u8,
+            pub _reserved0: bool,
+            #[bits(5)]
+            pub rp_pio_first_error_pointer: u8,
+            pub dpc_sig_sfw_status: bool,
+            #[bits(2)]
+            _reserved1: u8,
+        }
+
+        /// DPC Error Source ID register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcErrorSourceId {
+            pub dpc_error_source_id: u16,
+        }
+
+        pub const DPC_CONTROL_TRIGGER_ENABLE_MASK: u16 = 0x0003;
+        pub const DPC_CONTROL_INTERRUPT_ENABLE_BIT: u16 = 1 << 3;
+        pub const DPC_CONTROL_POISONED_TLP_EGRESS_BLOCKING_ENABLE_BIT: u16 = 1 << 5;
+        pub const DPC_CONTROL_SOFTWARE_TRIGGER_BIT: u16 = 1 << 6;
+        pub const DPC_CONTROL_DL_ACTIVE_ERR_COR_ENABLE_BIT: u16 = 1 << 7;
+        pub const DPC_CONTROL_SIG_SFW_ENABLE_BIT: u16 = 1 << 8;
+
+        pub const DPC_CONTROL_RW_MASK_BASE: u16 = 0x011f;
+        pub const DPC_STATUS_RW1C_MASK: u16 = (1 << 0) | (1 << 3) | (1 << 13);
+
+        pub const DPC_TRIGGER_REASON_UNMASKED_UNCORRECTABLE: u8 = 0b00;
+        pub const DPC_TRIGGER_REASON_EXTENSION: u8 = 0b11;
+        pub const DPC_TRIGGER_REASON_EXTENSION_SOFTWARE_TRIGGER: u8 = 0b01;
     }
 
     /// Designated Vendor-Specific Extended Capability (DVSEC)

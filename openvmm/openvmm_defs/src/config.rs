@@ -252,6 +252,8 @@ pub struct PciePortConfig {
     pub acs_capabilities_supported: Option<u16>,
     /// Optional AER configuration to expose on this port.
     pub aer: Option<PcieAerConfig>,
+    /// Optional DPC configuration to expose on this port.
+    pub dpc: Option<PcieDpcConfig>,
     /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
@@ -268,6 +270,17 @@ pub struct PcieAerConfig {
     pub uncorrectable_mask: Option<u32>,
     /// Default value for the AER Uncorrectable Error Severity register.
     pub uncorrectable_severity_mask: Option<u32>,
+}
+
+/// Optional DPC capability configuration for a PCIe port.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub struct PcieDpcConfig {
+    /// Advertise software trigger support in DPC Capability.
+    pub software_trigger_supported: bool,
+    /// Advertise poisoned TLP egress blocking support in DPC Capability.
+    pub poisoned_tlp_egress_blocking_supported: bool,
+    /// Advertise DL_Active ERR_COR signaling support in DPC Capability.
+    pub dl_active_err_cor_signaling_supported: bool,
 }
 
 #[derive(Debug, MeshPayload)]

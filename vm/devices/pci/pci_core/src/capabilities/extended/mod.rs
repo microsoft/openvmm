@@ -10,6 +10,7 @@ use vmcore::save_restore::ProtobufSaveRestore;
 
 pub mod acs;
 pub mod aer;
+pub mod dpc;
 
 /// A generic PCIe extended capability structure.
 pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {
@@ -50,6 +51,16 @@ pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
     /// Downcast to AER capability (mutable).
     fn as_aer_mut(&mut self) -> Option<&mut aer::AerExtendedCapability> {
+        None
+    }
+
+    /// Downcast to DPC capability.
+    fn as_dpc(&self) -> Option<&dpc::DpcExtendedCapability> {
+        None
+    }
+
+    /// Downcast to DPC capability (mutable).
+    fn as_dpc_mut(&mut self) -> Option<&mut dpc::DpcExtendedCapability> {
         None
     }
 }
