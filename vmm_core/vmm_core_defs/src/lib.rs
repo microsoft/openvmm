@@ -60,4 +60,6 @@ pub enum HaltReason {
         #[inspect(skip)]
         breakpoint: virt::x86::HardwareBreakpoint,
     },
+    /// The guest watchdog timer expired without being petted.
+    Watchdog,
 }

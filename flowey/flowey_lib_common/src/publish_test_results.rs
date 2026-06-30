@@ -74,17 +74,16 @@ impl FlowNode for Node {
             let step_name = format!("publish test results: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
 
-            let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
-            let junit_xml = junit_xml.map(ctx, |p| p.unwrap_or_default());
-
             match ctx.backend() {
                 FlowBackend::Ado => {
+                    let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
+                    let results_file = junit_xml.map(ctx, |p| p.unwrap_or_default());
                     use_side_effects.push(ctx.reqv(|v| {
                         crate::ado_task_publish_test_results::Request {
                             step_name,
                             format:
                                 crate::ado_task_publish_test_results::AdoTestResultsFormat::JUnit,
-                            results_file: junit_xml,
+                            results_file,
                             test_title: label.clone(),
                             condition: Some(has_junit_xml),
                             done: v,
@@ -92,8 +91,10 @@ impl FlowNode for Node {
                     }));
                 }
                 FlowBackend::Github => {
+                    let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
                     let junit_xml = junit_xml.map(ctx, |p| {
-                        p.absolute().expect("invalid path").display().to_string()
+                        p.map(|p| p.absolute().expect("invalid path").display().to_string())
+                            .unwrap_or_default()
                     });
 
                     // Note: usually flowey's built-in artifact publishing API
@@ -112,15 +113,13 @@ impl FlowNode for Node {
                     if let Some(output_dir) = output_dir.clone() {
                         use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                             let output_dir = output_dir.claim(ctx);
-                            let has_junit_xml = has_junit_xml.claim(ctx);
                             let junit_xml = junit_xml.claim(ctx);
 
                             move |rt| {
                                 let output_dir = rt.read(output_dir);
-                                let has_junit_xml = rt.read(has_junit_xml);
                                 let junit_xml = rt.read(junit_xml);
 
-                                if has_junit_xml {
+                                if let Some(junit_xml) = junit_xml {
                                     fs_err::copy(
                                         junit_xml,
                                         output_dir.join(format!("{artifact_name}.xml")),
@@ -131,7 +130,6 @@ impl FlowNode for Node {
                             }
                         }));
                     } else {
-                        use_side_effects.push(has_junit_xml.into_side_effect());
                         use_side_effects.push(junit_xml.into_side_effect());
                     }
                 }

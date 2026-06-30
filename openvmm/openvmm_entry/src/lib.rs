@@ -31,6 +31,7 @@ use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
+use cli_args::GuestPowerAction;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
@@ -78,8 +79,8 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
@@ -154,7 +155,7 @@ pub fn openvmm_main() {
 
     let mut pidfile_guard: Option<pidfile::Pidfile> = None;
     let exit_code = match do_main(&mut pidfile_guard) {
-        Ok(_) => 0,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
             1
@@ -188,6 +189,7 @@ struct VmResources {
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
+    consomme_rpc: Option<mesh::Sender<net_backend_resources::consomme::ConsommeRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     /// Receives dirty rectangles from the synthetic video device for the VNC worker.
@@ -210,10 +212,16 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .iter()
         .map(|switch_cli| PcieSwitchConfig {
             name: switch_cli.name.clone(),
-            num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
-            hotplug: switch_cli.hotplug,
-            acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+            ports: (0..switch_cli.num_downstream_ports)
+                .map(|i| PciePortConfig {
+                    name: format!("{}-downstream-{}", switch_cli.name, i),
+                    devfn: None,
+                    hotplug: switch_cli.hotplug,
+                    acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+                    cxl: false,
+                })
+                .collect(),
         })
         .collect()
 }
@@ -516,6 +524,12 @@ async fn vm_config_from_command_line(
         } else if pcie_port.is_some() {
             anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
         } else {
+            if opt.no_vmbus {
+                anyhow::bail!(
+                    "`--disk` without `on=` attaches to the default VMBus SCSI controller and \
+                     cannot be used with `--no-vmbus`; use `on=<name>` to attach to a named controller"
+                );
+            }
             storage_builder::DiskLocation::Scsi(None)
         };
 
@@ -793,6 +807,7 @@ async fn vm_config_from_command_line(
                     },
                     instance_id,
                     resource: handle.into_resource(),
+                    vnode: None,
                 })
             }),
     );
@@ -821,14 +836,31 @@ async fn vm_config_from_command_line(
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
 
+    #[cfg(guest_arch = "x86_64")]
+    anyhow::ensure!(
+        opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
+        "--amd-iommu and --intel-vtd cannot both be used in the same VM"
+    );
+
+    #[cfg(guest_arch = "aarch64")]
+    let mut smmu_names: std::collections::HashSet<&str> =
+        opt.smmu.iter().map(|s| s.as_str()).collect();
+    #[cfg(guest_arch = "x86_64")]
+    let mut amd_iommu_names: std::collections::HashSet<&str> =
+        opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+    #[cfg(guest_arch = "x86_64")]
+    let mut vtd_names: std::collections::HashSet<&str> =
+        opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports: Vec<PcieRootPortConfig> = opt
+        let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
-            .map(|port_cli| PcieRootPortConfig {
+            .map(|port_cli| PciePortConfig {
                 name: port_cli.name.clone(),
+                devfn: port_cli.devfn,
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
                 cxl: port_cli.cxl,
@@ -860,47 +892,67 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            low_mmio: PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
+            low_mmio: if let Some(base) = rc_cli.low_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: low_mmio_size,
+                }
             },
-            high_mmio: PcieMmioRangeConfig::Dynamic {
-                size: high_mmio_size,
+            high_mmio: if let Some(base) = rc_cli.high_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: high_mmio_size,
+                }
             },
             cxl,
             ports,
             #[cfg(guest_arch = "aarch64")]
-            iommu: opt
-                .smmu
-                .iter()
-                .any(|s| s == &rc_cli.name)
+            iommu: smmu_names
+                .remove(rc_cli.name.as_str())
                 .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
             #[cfg(guest_arch = "x86_64")]
-            iommu: opt
-                .amd_iommu
-                .iter()
-                .any(|s| s == &rc_cli.name)
-                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            iommu: if amd_iommu_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::AmdVi)
+            } else if vtd_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
+            } else {
+                None
+            },
+            vnode: rc_cli.vnode,
+            preserve_bars: rc_cli.preserve_bars,
         });
     }
 
-    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
     #[cfg(guest_arch = "aarch64")]
-    for name in &opt.smmu {
-        anyhow::ensure!(
-            pcie_root_complexes.iter().any(|rc| rc.name == *name),
-            "--smmu refers to unknown root complex '{name}'"
-        );
+    if let Some(name) = smmu_names.into_iter().next() {
+        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
     }
     #[cfg(guest_arch = "x86_64")]
-    for name in &opt.amd_iommu {
-        anyhow::ensure!(
-            pcie_root_complexes.iter().any(|rc| rc.name == *name),
-            "--amd-iommu refers to unknown root complex '{name}'"
-        );
+    if let Some(name) = amd_iommu_names.into_iter().next() {
+        anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
+    }
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(name) = vtd_names.into_iter().next() {
+        anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
+    let pcie_generic_initiators = opt
+        .pcie_generic_initiator
+        .iter()
+        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
+            port_name: gi.port_name.clone(),
+            node: gi.node,
+        })
+        .collect();
     #[cfg(target_os = "linux")]
     let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
         use std::collections::HashMap;
@@ -971,6 +1023,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -997,6 +1050,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
+                            bar_pt: cli_cfg.bar_pt,
                         }
                         .into_resource(),
                     })
@@ -1152,6 +1206,7 @@ async fn vm_config_from_command_line(
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
+            None,
             nvram_storage,
             None,
         ));
@@ -1239,6 +1294,7 @@ async fn vm_config_from_command_line(
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
             enable_vmbus: !opt.no_vmbus,
+            force_dma_bounce: opt.uefi_force_dma_bounce,
         };
     } else {
         // Linux Direct
@@ -1417,7 +1473,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
-                    hv_sint_enabled: false,
+                    force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
                 }
                 .into_resource(),
             ),
@@ -1621,6 +1677,7 @@ async fn vm_config_from_command_line(
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
+                vnode: None,
             });
         }
     };
@@ -1823,6 +1880,7 @@ async fn vm_config_from_command_line(
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
+        pcie_generic_initiators,
         vpci_devices,
         ide_disks: Vec::new(),
         numa: {
@@ -1842,6 +1900,7 @@ async fn vm_config_from_command_line(
                                 host_numa_node: n.host_numa_node,
                             }),
                             vps: match &n.vps {
+                                Some(vps) if vps.is_empty() => VpAssignment::Empty,
                                 Some(vps) => VpAssignment::Explicit(vps.clone()),
                                 None => VpAssignment::FromTopology,
                             },
@@ -1937,7 +1996,10 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
-        automatic_guest_reset: !opt.halt_on_reset,
+        // Only let the partition auto-reset when the reset action is `reset`.
+        // For `halt` or `exit`, the guest reset must surface as a halt event so
+        // the controller can hold the VM or exit instead of rebooting in place.
+        automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
         efi_diagnostics_log_level: {
             match opt.efi_diagnostics_log_level.unwrap_or_default() {
                 EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
@@ -2023,9 +2085,20 @@ fn parse_endpoint(
                     }
                 })
                 .collect();
+            // Only wire the bind/unbind RPC channel to the first consomme
+            // endpoint. Additional consomme NICs work normally but cannot be
+            // targeted by runtime bind/unbind commands.
+            let recv = if resources.consomme_rpc.is_none() {
+                let (send, recv) = mesh::channel();
+                resources.consomme_rpc = Some(send);
+                Some(recv)
+            } else {
+                None
+            };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
                 ports,
+                recv,
             }
             .into_resource()
         }
@@ -2369,7 +2442,7 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2385,7 +2458,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
-        return Ok(());
+        return Ok(0);
     }
 
     if let Some(ref path) = opt.pidfile {
@@ -2394,7 +2467,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
 
     if let Some(path) = opt.relay_console_path {
         let console_title = opt.relay_console_title.unwrap_or_default();
-        return console_relay::relay_console(&path, console_title.as_str());
+        return console_relay::relay_console(&path, console_title.as_str()).map(|()| 0);
     }
 
     #[cfg(any(feature = "grpc", feature = "ttrpc"))]
@@ -2425,7 +2498,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
 
             handle.join().await?;
 
-            Ok(())
+            Ok(0)
         });
     }
 
@@ -2441,7 +2514,7 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<()> {
+async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32> {
     let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
     let result = run_control_inner(driver, &mut mesh, opt).await;
     // If setup failed before the mesh was handed to the controller, shut it
@@ -2456,7 +2529,7 @@ async fn run_control_inner(
     driver: &DefaultDriver,
     mesh_slot: &mut Option<VmmMesh>,
     opt: Options,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
@@ -2660,6 +2733,12 @@ async fn run_control_inner(
         memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
+        guest_power_actions: vm_controller::GuestPowerActions {
+            shutdown: opt.guest_shutdown_action,
+            reset: opt.guest_reset_action,
+            crash: opt.guest_crash_action,
+            watchdog: opt.guest_watchdog_action,
+        },
     };
 
     // Spawn the VmController as a task.
@@ -2677,6 +2756,7 @@ async fn run_control_inner(
             vm_controller_events: vm_controller_event_recv,
             scsi_rpc: resources.scsi_rpc,
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
+            consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
@@ -2689,6 +2769,8 @@ async fn run_control_inner(
     // shuts down the mesh).
     controller_task.await;
 
+    // run_repl returns the exit status: the code the guest drove via an opt-in
+    // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.
     repl_result
 }
 

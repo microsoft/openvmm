@@ -4,20 +4,22 @@
 //! Implements the VA mapper, which maintains a linear virtual address space for
 //! all memory mapped into a partition.
 //!
-//! The VA mapper sends messages to the mapping manager to request mappings for
-//! specific address ranges, on demand. The mapping manager later sends
-//! invalidation requests back when tearing down mappings, e.g. when some device
-//! memory is unmapped from the partition.
+//! VA mappers come in two modes:
 //!
-//! This lazy approach is taken to avoid having to keep each VA mapper
-//! up-to-date with all mappings at all times.
+//! - **Eager**: mappings are pushed by the mapping manager when they are added
+//!   and replayed when the mapper is created. Page faults on file-backed ranges
+//!   fail immediately — the mapping should already be established. This is the
+//!   right mode for the VP process, where hypervisors like KVM do not forward
+//!   page faults back to the VMM.
 //!
-//! TODO: This is a bit dubious because the backing hypervisor will not
-//! necessarily propagate a page fault. E.g., KVM will just fail the VP. So at
-//! least for the mapper used by the partition itself, this optimization
-//! probably needs to be removed and replaced with a guarantee that replacement
-//! mappings are established immediately (and atomically?) instead of just by
-//! invalidating the existing mappings.
+//! - **Lazy**: mappings are not pushed proactively. Instead, page faults
+//!   trigger an on-demand request to the mapping manager, which finds the
+//!   backing mapping and pushes it to the mapper via Rpc. This avoids the cost
+//!   of notifying processes that rarely access certain mappings (e.g.,
+//!   device-emulation processes with virtio-fs DAX).
+//!
+//! In both modes, private memory ranges use commit-on-fault (Windows) or are
+//! handled transparently by the kernel (Linux).
 
 // UNSAFETY: Implementing the unsafe GuestMemoryAccess trait by calling unsafe
 // low level memory manipulation functions.
@@ -26,6 +28,7 @@
 use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
+use super::manager::MappingError;
 use super::manager::MappingParams;
 use super::manager::MappingRequest;
 use crate::RemoteProcess;
@@ -35,14 +38,21 @@ use guestmem::GuestMemorySharing;
 use guestmem::PageFaultAction;
 use guestmem::PageFaultError;
 use memory_range::MemoryRange;
+use mesh::error::RemoteError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("unexpected page fault")]
+struct UnexpectedPageFault;
 
 /// A virtual address space mapper for guest memory.
 ///
@@ -50,6 +60,7 @@ use thiserror::Error;
 /// into it as directed by the mapping manager.
 pub struct VaMapper {
     inner: Arc<MapperInner>,
+    id: MapperId,
     process: Option<RemoteProcess>,
     /// Ranges backed by private anonymous memory.
     /// Page faults in these ranges commit pages directly instead of
@@ -67,14 +78,38 @@ impl std::fmt::Debug for VaMapper {
     }
 }
 
+impl Drop for VaMapper {
+    fn drop(&mut self) {
+        // Do not join the mapper thread here. The mapping manager must process
+        // this request before the mapper request channel closes, and joining in
+        // Drop could deadlock if the manager task needs the current executor to
+        // make progress. Once the manager removes its sender, the mapper thread
+        // exits naturally.
+        self.inner
+            .req_send
+            .send(MappingRequest::RemoveMapper(self.id));
+    }
+}
+
 #[derive(Debug)]
 struct MapperInner {
     mapping: SparseMapping,
+    /// Waiters for lazy mapping requests. `None` after the mapper task exits.
     waiters: Mutex<Option<Vec<MapWaiter>>>,
+    /// Whether this mapper receives mappings eagerly (pushed by the
+    /// mapping manager) or lazily (on demand via page faults).
+    /// Set by the mapping manager task after replay is complete.
+    ///
+    /// `Relaxed` ordering is sufficient: this flag is only read by the
+    /// page-fault handler to decide between eager-fail and lazy-request
+    /// paths. A stale `false` (lazy) is harmless — the lazy path
+    /// succeeds because the mapping is already established. The flag
+    /// is eventually updated after `SetEager` is processed.
+    eager: AtomicBool,
     req_send: mesh::Sender<MappingRequest>,
-    id: MapperId,
 }
 
+/// A pending lazy mapping request.
 #[derive(Debug)]
 struct MapWaiter {
     range: MemoryRange,
@@ -83,6 +118,10 @@ struct MapWaiter {
 }
 
 impl MapWaiter {
+    /// Check whether the established mapping satisfies this waiter.
+    /// Returns `Some(true)` if fully satisfied, `Some(false)` if the
+    /// mapping doesn't meet requirements (e.g., read-only when write
+    /// needed), or `None` if the waiter still has remaining range.
     fn complete(&mut self, range: MemoryRange, writable: Option<bool>) -> Option<bool> {
         if range.contains_addr(self.range.start()) {
             if writable.is_none() || (self.writable && writable == Some(false)) {
@@ -115,22 +154,37 @@ impl MapperTask {
                         .unmap(range.start() as usize, range.len() as usize)
                         .expect("invalidate request should be valid");
                 }),
-                MapperRequest::Map(params) => {
-                    tracing::debug!(range = %params.range, "mapping received for range");
-
+                MapperRequest::MapEager(rpc) => {
+                    rpc.handle_failable_sync(|params| {
+                        tracing::debug!(range = %params.range, "eager mapping received");
+                        self.map_file(params)
+                    });
+                }
+                MapperRequest::MapLazy(params) => {
+                    tracing::debug!(range = %params.range, "lazy mapping received");
                     let (range, writable) = (params.range, params.writable);
-                    if self.map_file(params) {
-                        self.wake_waiters(range, Some(writable));
-                    } else {
-                        self.wake_waiters(range, None);
+                    match self.map_file(params) {
+                        Ok(()) => self.wake_waiters(range, Some(writable)),
+                        Err(e) => {
+                            tracing::error!(
+                                error = &e as &dyn std::error::Error,
+                                %range,
+                                "failed to map file for range"
+                            );
+                            self.wake_waiters(range, None);
+                        }
                     }
                 }
                 MapperRequest::NoMapping(range) => {
-                    // Wake up waiters. They'll see a failure when they try to
-                    // access the VA.
+                    // Wake up waiters. They'll see a failure when they try
+                    // to access the VA.
                     tracing::debug!(%range, "no mapping received for range");
                     self.wake_waiters(range, None);
                 }
+                MapperRequest::SetEager(rpc) => rpc.handle_sync(|()| {
+                    tracing::debug!("mapper upgraded to eager");
+                    self.inner.eager.store(true, Ordering::Relaxed);
+                }),
             }
         }
         // Don't allow more waiters.
@@ -140,8 +194,8 @@ impl MapperTask {
     }
 
     /// Maps a file-backed region into the VA space, applying NUMA policy where
-    /// supported. Returns `true` on success.
-    fn map_file(&self, params: MappingParams) -> bool {
+    /// supported.
+    fn map_file(&self, params: MappingParams) -> Result<(), MappingError> {
         let MappingParams {
             range,
             mappable,
@@ -174,12 +228,7 @@ impl MapperTask {
         };
 
         if let Err(e) = map_result {
-            tracing::error!(
-                error = &e as &dyn std::error::Error,
-                %range,
-                "failed to map file for range"
-            );
-            return false;
+            return Err(MappingError::new(range, e));
         }
 
         cfg_select! {
@@ -208,7 +257,7 @@ impl MapperTask {
             }
         }
 
-        true
+        Ok(())
     }
 
     fn wake_waiters(&mut self, range: MemoryRange, writable: Option<bool>) {
@@ -230,18 +279,31 @@ impl MapperTask {
 pub enum VaMapperError {
     #[error("failed to communicate with the memory manager")]
     MemoryManagerGone(#[source] RpcError),
+    #[error("failed to register mapper")]
+    Registration(#[source] RemoteError),
     #[error("failed to reserve address space")]
     Reserve(#[source] std::io::Error),
     #[error("remote mappers are not supported when any RAM backing uses private memory")]
     RemoteWithPrivateMemory,
 }
 
+/// Error returned when a lazy mapping request cannot be fulfilled.
 #[derive(Debug, Error)]
 #[error("no mapping for {0}")]
 pub struct NoMapping(MemoryRange);
 
 impl MapperInner {
-    async fn request_mapping(&self, range: MemoryRange, writable: bool) -> Result<(), NoMapping> {
+    /// Request that the mapping manager send mappings for the given range.
+    ///
+    /// Registers a waiter, sends `SendMappings` (fire-and-forget), and
+    /// awaits the waiter oneshot. The mapping manager will send `MapLazy`
+    /// or `NoMapping` messages to the mapper task, which wakes the waiter.
+    async fn request_mapping(
+        &self,
+        id: MapperId,
+        range: MemoryRange,
+        writable: bool,
+    ) -> Result<(), NoMapping> {
         let (send, recv) = mesh::oneshot();
         self.waiters
             .lock()
@@ -254,8 +316,7 @@ impl MapperInner {
             });
 
         tracing::debug!(%range, "waiting for mappings");
-        self.req_send
-            .send(MappingRequest::SendMappings(self.id, range));
+        self.req_send.send(MappingRequest::SendMappings(id, range));
         match recv.await {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(NoMapping(range)),
@@ -270,6 +331,7 @@ impl VaMapper {
         remote_process: Option<RemoteProcess>,
         private_ranges: Vec<MemoryRange>,
         minimum_alignment: Option<usize>,
+        eager: bool,
     ) -> Result<Self, VaMapperError> {
         let mapping = match &remote_process {
             None => SparseMapping::new_with_minimum_alignment(
@@ -293,18 +355,18 @@ impl VaMapper {
         mapping.set_name(0, mapping.len(), "guest-memory");
 
         let (send, req_recv) = mesh::channel();
-        let id = req_send
-            .call(MappingRequest::AddMapper, send)
-            .await
-            .map_err(VaMapperError::MemoryManagerGone)?;
 
         let inner = Arc::new(MapperInner {
             mapping,
             waiters: Mutex::new(Some(Vec::new())),
+            eager: AtomicBool::new(eager),
             req_send,
-            id,
         });
 
+        // Spawn the mapper thread *before* the AddMapper RPC. The manager
+        // replays existing mappings to eager mappers during AddMapper, so
+        // the mapper thread must be running to respond to those RPCs.
+        //
         // FUTURE: use a task once we resolve the block_ons in the
         // GuestMemoryAccess implementation.
         let thread = std::thread::Builder::new()
@@ -317,8 +379,31 @@ impl VaMapper {
             })
             .unwrap();
 
+        let id = match inner
+            .req_send
+            .call(
+                MappingRequest::AddMapper,
+                super::manager::AddMapperParams { send, eager },
+            )
+            .await
+        {
+            Ok(Ok(id)) => id,
+            Ok(Err(e)) => {
+                // Drop inner to shut down the mapper thread (closes req_recv).
+                drop(inner);
+                let _ = thread.join();
+                return Err(VaMapperError::Registration(e));
+            }
+            Err(e) => {
+                drop(inner);
+                let _ = thread.join();
+                return Err(VaMapperError::MemoryManagerGone(e));
+            }
+        };
+
         Ok(VaMapper {
             inner,
+            id,
             process: remote_process,
             private_ranges,
             _thread: thread,
@@ -330,11 +415,6 @@ impl VaMapper {
         self.private_ranges.iter().any(|r| r.contains_addr(addr))
     }
 
-    /// Ensures a mapping has been established for the given range.
-    pub async fn ensure_mapped(&self, range: MemoryRange) -> Result<(), NoMapping> {
-        self.inner.request_mapping(range, false).await
-    }
-
     /// Returns the base pointer of the VA reservation.
     pub fn as_ptr(&self) -> *mut u8 {
         self.inner.mapping.as_ptr().cast()
@@ -343,6 +423,16 @@ impl VaMapper {
     /// Returns the length of the VA reservation in bytes.
     pub fn len(&self) -> usize {
         self.inner.mapping.len()
+    }
+
+    /// Returns true if this mapper receives mappings eagerly.
+    pub fn is_eager(&self) -> bool {
+        self.inner.eager.load(Ordering::Relaxed)
+    }
+
+    /// Returns the mapper's ID, used internally for upgrade requests.
+    pub(crate) fn mapper_id(&self) -> MapperId {
+        self.id
     }
 
     /// Returns the remote process, if this mapper maps into a remote process.
@@ -461,22 +551,24 @@ unsafe impl GuestMemoryAccess for VaMapper {
                 // If we get here, something is wrong.
                 return PageFaultAction::Fail(PageFaultError::new(
                     guestmem::GuestMemoryErrorKind::Other,
-                    std::io::Error::other("unexpected page fault in private RAM range on Linux"),
+                    UnexpectedPageFault,
                 ));
             }
         }
 
-        // File-backed path: request mapping from MappingManager.
-        // `block_on` is OK to call here (will not deadlock) because this is
-        // never called from the page fault handler thread or any threads it
-        // depends on.
-        //
-        // Removing this `block_on` would make all guest memory access `async`,
-        // which would be a difficult change.
-        if let Err(err) = block_on(
-            self.inner
-                .request_mapping(MemoryRange::bounding(address..address + len as u64), write),
-        ) {
+        if self.inner.eager.load(Ordering::Relaxed) {
+            // Eager mapper: file-backed mappings are established proactively.
+            // If we get a page fault, the mapping was never set up or was
+            // torn down.
+            return PageFaultAction::Fail(PageFaultError::new(
+                guestmem::GuestMemoryErrorKind::OutOfRange,
+                UnexpectedPageFault,
+            ));
+        }
+
+        // Lazy mapper: request the mapping on demand from the mapping manager.
+        let range = MemoryRange::bounding(address..address + len as u64);
+        if let Err(err) = block_on(self.inner.request_mapping(self.id, range, write)) {
             return PageFaultAction::Fail(PageFaultError::new(
                 guestmem::GuestMemoryErrorKind::OutOfRange,
                 err,

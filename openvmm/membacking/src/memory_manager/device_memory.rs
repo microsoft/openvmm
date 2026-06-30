@@ -111,13 +111,15 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         }
 
         if let Some(handle) = &state.handle {
-            block_on(handle.add_mapping(
+            if let Err(e) = block_on(handle.add_mapping(
                 new_mapping.range,
                 new_mapping.mappable.clone(),
                 new_mapping.file_offset,
                 new_mapping.writable,
                 None,
-            ));
+            )) {
+                return Err(io::Error::other(e));
+            }
         }
         state.mappings.push(new_mapping);
         Ok(())
@@ -159,10 +161,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     MemoryRange::try_from(gpa..gpa.wrapping_add(self.0.len as u64))
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?,
                     DEVICE_PRIORITY,
-                    false, // not a DMA target: excludes device BARs from
-                           // GuestMemorySharing (vhost-user). IOMMU consumers
-                           // get notified of these mappings via the DmaMapper
-                           // path regardless of this flag.
+                    crate::region_manager::MappingType::Device,
                 )
                 .await
                 .map_err(io::Error::other)?;
@@ -176,7 +175,8 @@ impl MappableGuestMemory for DeviceMemoryControl {
                         mapping.writable,
                         None,
                     )
-                    .await;
+                    .await
+                    .map_err(io::Error::other)?;
             }
 
             handle
@@ -185,7 +185,8 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     executable: true,
                     prefetch: false,
                 })
-                .await;
+                .await
+                .map_err(io::Error::other)?;
 
             state.handle = Some(handle);
             Ok(())

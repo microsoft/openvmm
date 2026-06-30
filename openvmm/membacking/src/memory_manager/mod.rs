@@ -116,6 +116,24 @@ pub enum MemoryBuildError {
     /// Couldn't allocate VA mapper.
     #[error("failed to create VA mapper")]
     VaMapper(#[source] VaMapperError),
+    /// Failed to map RAM into VA space.
+    #[error("failed to map RAM range {range}")]
+    RamMapping {
+        /// The GPA range that failed to map.
+        range: MemoryRange,
+        /// The mapping error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
+    /// Failed to enable RAM region.
+    #[error("failed to enable RAM region {range}")]
+    RamRegionEnable {
+        /// The GPA range that failed.
+        range: MemoryRange,
+        /// The error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
     /// Memory layout incompatible with VTL0 alias map.
     #[error("not enough guest address space available for the vtl0 alias map")]
     AliasMapWontFit,
@@ -532,7 +550,7 @@ impl GuestMemoryBuilder {
 
         let va_mapper = mapping_manager
             .client()
-            .new_mapper()
+            .new_mapper(true)
             .await
             .map_err(MemoryBuildError::VaMapper)?;
 
@@ -564,7 +582,12 @@ impl GuestMemoryBuilder {
                 for sub_range in &sub_ranges {
                     let region = region_manager
                         .client()
-                        .new_region("ram".into(), *sub_range, RAM_PRIORITY, true)
+                        .new_region(
+                            "ram".into(),
+                            *sub_range,
+                            RAM_PRIORITY,
+                            crate::region_manager::MappingType::Ram,
+                        )
                         .await
                         .expect("regions cannot overlap yet");
 
@@ -577,11 +600,11 @@ impl GuestMemoryBuilder {
                                 true,
                                 backing.host_numa_node,
                             )
-                            .await;
-                        // TODO: file-backed RAM mappings are established lazily
-                        // via page faults, so NUMA binding errors are not
-                        // caught here. Replace lazy mapping with eager push
-                        // model to propagate errors at build time.
+                            .await
+                            .map_err(|error| MemoryBuildError::RamMapping {
+                                range: *sub_range,
+                                error,
+                            })?;
                     } else {
                         va_mapper
                             .alloc_range(
@@ -617,7 +640,11 @@ impl GuestMemoryBuilder {
                             executable: true,
                             prefetch: backing.prefetch && backing.mappable.is_some(),
                         })
-                        .await;
+                        .await
+                        .map_err(|error| MemoryBuildError::RamRegionEnable {
+                            range: *sub_range,
+                            error,
+                        })?;
 
                     ram_regions.push(RamRegion {
                         range: *sub_range,
@@ -676,7 +703,7 @@ impl GuestMemoryClient {
     pub async fn guest_memory(&self) -> Result<GuestMemory, VaMapperError> {
         Ok(GuestMemory::new(
             "ram",
-            self.mapping_manager.new_mapper().await?,
+            self.mapping_manager.new_mapper(false).await?,
         ))
     }
 }
@@ -805,8 +832,20 @@ pub enum RamVisibility {
 
 /// An error returned by [`RamVisibilityControl::set_ram_visibility`].
 #[derive(Debug, Error)]
-#[error("{0} is not a controllable RAM range")]
-pub struct InvalidRamRegion(MemoryRange);
+pub enum RamVisibilityError {
+    /// The range is not a controllable RAM region.
+    #[error("{0} is not a controllable RAM range")]
+    InvalidRange(MemoryRange),
+    /// Failed to map the region.
+    #[error("failed to map RAM range {range}")]
+    Map {
+        /// The range that failed.
+        range: MemoryRange,
+        /// The error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
+}
 
 impl RamVisibilityControl {
     /// Sets the visibility of a RAM region.
@@ -819,12 +858,12 @@ impl RamVisibilityControl {
         &self,
         range: MemoryRange,
         visibility: RamVisibility,
-    ) -> Result<(), InvalidRamRegion> {
+    ) -> Result<(), RamVisibilityError> {
         let region = self
             .regions
             .iter()
             .find(|region| region.range == range)
-            .ok_or(InvalidRamRegion(range))?;
+            .ok_or(RamVisibilityError::InvalidRange(range))?;
 
         match visibility {
             RamVisibility::ReadWrite | RamVisibility::ReadOnly => {
@@ -836,6 +875,7 @@ impl RamVisibilityControl {
                         prefetch: false,
                     })
                     .await
+                    .map_err(|error| RamVisibilityError::Map { range, error })?;
             }
             RamVisibility::Unmapped => region.handle.unmap().await,
         }

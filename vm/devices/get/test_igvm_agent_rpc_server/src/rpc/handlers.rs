@@ -44,6 +44,9 @@ pub unsafe extern "C" fn MIDL_user_free(ptr: *mut c_void) {
 const GSP_MAX_CLEAR_SIZE: usize = 64;
 const GSP_MAX_CIPHER_SIZE: usize = 512;
 const GSP_MAX_COUNT: usize = 2;
+/// IDL `StatusFlagStateRefreshRequest` — request a TPM state refresh.
+/// Maps to `GspExtendedStatusFlags::state_refresh_request` (bit 0).
+const STATUS_FLAG_STATE_REFRESH_REQUEST: u32 = 0x1;
 
 /// GSP clear text buffer (matches IDL GspClear)
 #[repr(C)]
@@ -219,7 +222,8 @@ pub extern "system" fn rpc_igvm_attest(
     );
 
     let vm_name_ref = vm_name_str.as_deref().unwrap_or("");
-    let payload = match igvm_agent::process_igvm_attest(vm_name_ref, report_slice) {
+    let payload = match igvm_agent::process_igvm_attest(read_guid(vm_id), vm_name_ref, report_slice)
+    {
         Ok(payload) => payload,
         Err(err) => {
             tracing::error!(?err, "igvm_agent::process_igvm_attest failed");
@@ -261,7 +265,24 @@ pub extern "system" fn rpc_igvm_attest(
 
 /// Entry point that services `RpcVmGspRequest` calls for the test agent.
 ///
-/// This function is currently disabled and will raise RPC_S_SERVER_UNAVAILABLE.
+/// By default this is disabled and raises `RPC_S_SERVER_UNAVAILABLE`, so the
+/// host falls back to its own GSP handling (the original behavior).
+///
+/// When the VM's resolved test config is `IgvmAttestTestConfig::StateRefresh`,
+/// the handler instead returns `S_OK` with `response_status_flags` carrying
+/// `StatusFlagStateRefreshRequest`. OpenHCL propagates this into
+/// `refresh_tpm_seeds`, regenerating the vTPM seeds (and the AK) on the next
+/// boot.
+///
+/// NOTE: This is a test stub that acts as the GSP authority using an *identity
+/// cipher*: the new cleartext seed is echoed back verbatim as the "encrypted"
+/// blob, and each previously-stored "encrypted" blob is echoed back verbatim as
+/// its "decrypted" seed. This is self-consistent across boots because this stub
+/// is the sole producer and consumer of those blobs. Returning real, non-empty
+/// GSP seed data is required: OpenHCL treats an empty `encrypted_gsp` as
+/// "GSP-by-key unavailable" (`no_gsp_available = encrypted_gsp.length == 0`),
+/// which would both drop the `state_refresh_request` flag from the GSP-by-key
+/// response and prevent the VMGS from being unlocked across boots.
 // SAFETY: FFI
 #[unsafe(export_name = "RpcVmGspRequest")]
 pub extern "system" fn rpc_vm_gsp_request(
@@ -271,8 +292,9 @@ pub extern "system" fn rpc_vm_gsp_request(
     request_data: *const GspRequestInfo,
     response_data: *mut GspResponseInfo,
 ) -> HRESULT {
-    // Log the request parameters before raising the exception
-    let vm_id_str = read_guid(_vm_id).map(|g| g.to_string());
+    // Log the request parameters
+    let vm_id = read_guid(_vm_id);
+    let vm_id_str = vm_id.map(|g| g.to_string());
     let vm_name_str = read_utf16(_vm_name);
 
     // Now we can safely dereference the structures since they match the IDL definitions
@@ -293,42 +315,98 @@ pub extern "system" fn rpc_vm_gsp_request(
         (0, 0, 0)
     };
 
-    let (response_encrypted_len, response_decrypted_count, response_flags) =
-        if !response_data.is_null() {
-            // SAFETY: memory access
-            let response = unsafe { &*response_data };
-            let decrypted_count = response
-                .decrypted_gsp
-                .iter()
-                .filter(|gsp| gsp.length > 0)
-                .count();
-            (
-                response.encrypted_gsp.length,
-                decrypted_count,
-                response.response_status_flags,
-            )
-        } else {
-            (0, 0, 0)
-        };
+    // Determine whether the resolved test config wants a state refresh.
+    //
+    // The GSP RPC's `VmName` is the VM's runtime GUID rather than the
+    // descriptive Hyper-V name, so the config is looked up by `VmId` (recorded
+    // by the IGVM attest path, which runs earlier in the same boot).
+    let gsp_state_refresh = vm_id
+        .as_ref()
+        .is_some_and(igvm_agent::gsp_state_refresh_requested);
 
-    tracing::warn!(
+    if !gsp_state_refresh {
+        tracing::warn!(
+            vm_id = vm_id_str.as_deref().unwrap_or("<null>"),
+            vm_name = vm_name_str.as_deref().unwrap_or("<unknown>"),
+            new_gsp_length = new_gsp_len,
+            encrypted_gsp_count = encrypted_gsp_count,
+            supported_status_flags = supported_flags,
+            "RpcVmGspRequest called but support is disabled - raising RPC_S_SERVER_UNAVAILABLE"
+        );
+
+        // Raise RPC_S_SERVER_UNAVAILABLE exception
+        // SAFETY: Make an FFI call
+        unsafe {
+            RpcRaiseException(RPC_S_SERVER_UNAVAILABLE);
+        }
+
+        // This line is never reached due to RpcRaiseException
+        unreachable!();
+    }
+
+    if request_data.is_null() {
+        tracing::error!("request_data pointer is null");
+        return E_POINTER;
+    }
+
+    if response_data.is_null() {
+        tracing::error!("response_data pointer is null");
+        return E_POINTER;
+    }
+
+    // Build a self-consistent GSP-by-key response using an identity cipher so
+    // that OpenHCL sees GSP-by-key as available, carries the state-refresh flag
+    // through the GSP-by-key response, and can unlock the VMGS across boots.
+    //
+    // A real IGVM agent encrypts the request's `new_gsp` seed and decrypts the
+    // request's stored `encrypted_gsp` blobs. Here we use an identity transform
+    // (ciphertext == cleartext), which round-trips correctly because this stub
+    // is the only entity that produces and consumes these blobs.
+    //
+    // SAFETY: The RPC runtime provides valid, correctly-sized `request_data`
+    // and `response_data` pointers (both verified non-null above) matching the
+    // IDL `GspRequestInfo` / `GspResponseInfo` layouts.
+    unsafe {
+        let request = &*request_data;
+        let response = &mut *response_data;
+
+        response.encrypted_gsp.length = 0;
+        response.encrypted_gsp.buffer = [0; GSP_MAX_CIPHER_SIZE];
+        for clear in response.decrypted_gsp.iter_mut() {
+            clear.length = 0;
+            clear.buffer = [0; GSP_MAX_CLEAR_SIZE];
+        }
+
+        // "Encrypt" the new cleartext seed: echo it back verbatim as the
+        // ciphertext blob that OpenHCL persists and replays next boot.
+        let new_gsp_copy_len = (request.new_gsp.length as usize).min(GSP_MAX_CLEAR_SIZE);
+        response.encrypted_gsp.length = new_gsp_copy_len as u32;
+        response.encrypted_gsp.buffer[..new_gsp_copy_len]
+            .copy_from_slice(&request.new_gsp.buffer[..new_gsp_copy_len]);
+
+        // "Decrypt" each previously-stored ciphertext back into its
+        // cleartext seed (identity transform).
+        for (clear, cipher) in response
+            .decrypted_gsp
+            .iter_mut()
+            .zip(request.encrypted_gsp.iter())
+        {
+            let len = (cipher.length as usize).min(GSP_MAX_CLEAR_SIZE);
+            clear.length = len as u32;
+            clear.buffer[..len].copy_from_slice(&cipher.buffer[..len]);
+        }
+
+        response.response_status_flags = STATUS_FLAG_STATE_REFRESH_REQUEST;
+    }
+
+    tracing::info!(
         vm_id = vm_id_str.as_deref().unwrap_or("<null>"),
         vm_name = vm_name_str.as_deref().unwrap_or("<unknown>"),
         new_gsp_length = new_gsp_len,
         encrypted_gsp_count = encrypted_gsp_count,
         supported_status_flags = supported_flags,
-        response_encrypted_length = response_encrypted_len,
-        response_decrypted_count = response_decrypted_count,
-        response_status_flags = response_flags,
-        "RpcVmGspRequest called but support is disabled - raising RPC_S_SERVER_UNAVAILABLE"
+        "RpcVmGspRequest returning state_refresh_request per test config"
     );
 
-    // Raise RPC_S_SERVER_UNAVAILABLE exception
-    // SAFETY: Make an FFI call
-    unsafe {
-        RpcRaiseException(RPC_S_SERVER_UNAVAILABLE);
-    }
-
-    // This line is never reached due to RpcRaiseException
-    unreachable!();
+    S_OK
 }

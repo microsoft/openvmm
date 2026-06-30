@@ -158,7 +158,8 @@ enum CoordinatorMessage {
     Update(CoordinatorMessageUpdateType),
     /// Restart endpoints and resume processing. This will also attempt to set VF and data path state to match current
     /// expectations.
-    Restart,
+    /// Identifies the channel that requested the restart. 0 = primary; >0 = sub-channel
+    Restart { channel_idx: u16 },
     /// Start a timer.
     StartTimer(Instant),
 }
@@ -202,7 +203,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 worker.channel.can_use_ring_size_opt,
             );
 
-            if let WorkerState::Ready(state) = &worker.state {
+            if let Some(state) = worker.state.ready() {
                 resp.field(
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
@@ -238,18 +239,16 @@ enum WorkerState {
 
 impl WorkerState {
     fn ready(&self) -> Option<&ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 
     fn ready_mut(&mut self) -> Option<&mut ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 }
@@ -692,6 +691,9 @@ struct PrimaryChannelState {
     tx_spread_sent: bool,
     guest_link_up: bool,
     pending_link_action: PendingLinkAction,
+    /// The serial number sent in the most recent VF association message, so
+    /// that the matching disassociation message uses the same serial number.
+    advertised_vf_serial_number: Option<u32>,
 }
 
 impl Inspect for PrimaryChannelState {
@@ -898,6 +900,7 @@ impl PrimaryChannelState {
             tx_spread_sent: false,
             guest_link_up: true,
             pending_link_action: PendingLinkAction::Default,
+            advertised_vf_serial_number: None,
         }
     }
 
@@ -906,6 +909,7 @@ impl PrimaryChannelState {
         rndis_state: &saved_state::RndisState,
         offload_config: &saved_state::OffloadConfig,
         pending_offload_change: bool,
+        advertised_vf_serial_number: Option<u32>,
         num_queues: u16,
         indirection_table_size: u16,
         rx_bufs: &RxBuffers,
@@ -1007,6 +1011,7 @@ impl PrimaryChannelState {
             tx_spread_sent,
             guest_link_up: !guest_link_down,
             pending_link_action,
+            advertised_vf_serial_number,
         })
     }
 }
@@ -1694,6 +1699,7 @@ impl Nic {
                         guest_link_down,
                         pending_link_action,
                         packet_filter,
+                        advertised_vf_serial_number,
                     } = ready;
 
                     // If saved state does not have a packet filter set, default to directed, multicast, and broadcast.
@@ -1751,6 +1757,7 @@ impl Nic {
                                 &rndis_state,
                                 &offload_config,
                                 pending_offload_change,
+                                advertised_vf_serial_number,
                                 channels.len() as u16,
                                 self.adapter.indirection_table_size,
                                 &active.rx_bufs,
@@ -1981,6 +1988,7 @@ impl Nic {
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
                         packet_filter: Some(worker_0_packet_filter),
+                        advertised_vf_serial_number: primary.advertised_vf_serial_number,
                     })
                 }
                 WorkerState::WaitingForCoordinator(None) => {
@@ -2703,26 +2711,32 @@ impl<T: RingMem> NetChannel<T> {
 
     /// Notify the adapter that the guest VF state has changed and it may
     /// need to send a message to the guest.
+    /// Pass `vfid: Some(id)` to advertise VF availability; if an association
+    /// message is queued successfully, its serial number is stored in
+    /// `primary.advertised_vf_serial_number`.
+    /// Pass `vfid: None` to send a disassociation; the stored serial number
+    /// from the most recent association is reused.
     fn guest_vf_is_available(
         &mut self,
-        guest_vf_id: Option<u32>,
+        primary: &mut PrimaryChannelState,
+        vfid: Option<u32>,
         version: Version,
         config: NdisConfig,
     ) -> Result<bool, WorkerError> {
-        let serial_number = guest_vf_id.map(|vfid| self.adapter.get_guest_vf_serial_number(vfid));
+        let (serial_number, available) = if let Some(vfid) = vfid {
+            (self.adapter.get_guest_vf_serial_number(vfid), true)
+        } else {
+            (primary.advertised_vf_serial_number.unwrap_or(0), false)
+        };
         if version >= Version::V4 && config.capabilities.sriov() {
-            tracing::info!(
-                available = serial_number.is_some(),
-                serial_number,
-                "sending VF association message"
-            );
+            tracing::info!(available, serial_number, "sending VF association message");
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
                 self.message(
                     protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
                     protocol::Message4SendVfAssociation {
-                        vf_allocated: if serial_number.is_some() { 1 } else { 0 },
-                        serial_number: serial_number.unwrap_or(0),
+                        vf_allocated: if available { 1 } else { 0 },
+                        serial_number,
                     },
                 )
             };
@@ -2742,10 +2756,17 @@ impl<T: RingMem> NetChannel<T> {
                     }
                     queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
                 })?;
+
+            // Update the advertised VF serial number once the message has been successfully queued.
+            if available {
+                primary.advertised_vf_serial_number = Some(serial_number);
+            } else {
+                primary.advertised_vf_serial_number = None;
+            }
             Ok(true)
         } else {
             tracing::info!(
-                available = serial_number.is_some(),
+                available,
                 serial_number,
                 major = version.major(),
                 minor = version.minor(),
@@ -2862,7 +2883,12 @@ impl<T: RingMem> NetChannel<T> {
         if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
             // Notify guest that a VF capability has recently arrived.
             if primary.rndis_state == RndisState::Operational {
-                if self.guest_vf_is_available(Some(vfid), buffers.version, buffers.ndis_config)? {
+                if self.guest_vf_is_available(
+                    primary,
+                    Some(vfid),
+                    buffers.version,
+                    buffers.ndis_config,
+                )? {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::Update(
                         CoordinatorMessageUpdateType {
@@ -2883,7 +2909,12 @@ impl<T: RingMem> NetChannel<T> {
                 PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                     // Notify guest that the VF is unavailable. It has already been surprise removed.
                     if primary.rndis_state == RndisState::Operational {
-                        self.guest_vf_is_available(None, buffers.version, buffers.ndis_config)?;
+                        self.guest_vf_is_available(
+                            primary,
+                            None,
+                            buffers.version,
+                            buffers.ndis_config,
+                        )?;
                     }
                     PrimaryChannelGuestVfState::Unavailable
                 }
@@ -2998,6 +3029,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
                 if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
                     if self.guest_vf_is_available(
+                        primary,
                         Some(vfid),
                         buffers.version,
                         buffers.ndis_config,
@@ -3066,7 +3098,7 @@ impl<T: RingMem> NetChannel<T> {
                         // Restart the endpoint if the OID changed some critical
                         // endpoint property.
                         if restart_endpoint {
-                            self.restart = Some(CoordinatorMessage::Restart);
+                            self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
                         }
                         if let Some(filter) = packet_filter {
                             if self.packet_filter != filter {
@@ -3268,7 +3300,7 @@ impl<T: RingMem> NetChannel<T> {
                 guest_vf_state: guest_vf,
                 filter_state: packet_filter,
             }));
-        } else if let Some(CoordinatorMessage::Restart) = self.restart {
+        } else if let Some(CoordinatorMessage::Restart { .. }) = self.restart {
             // If a restart message is pending, do nothing.
             // A restart will try to switch the data path based on primary.guest_vf_state.
             // A restart will apply packet filter changes.
@@ -4054,30 +4086,12 @@ impl Coordinator {
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
         loop {
+            // `self.restart` is set in a prior iteration when:
+            // `CoordinatorMessage::Restart` from Primary or sub-channel worker.
+            // `EndpointAction::RestartRequired`.
+            // Or in `insert_coordinator` when Restoring from saved state.
             if self.restart {
-                stop.until_stopped(self.stop_workers()).await?;
-                // The queue restart operation is not restartable, so do not
-                // poll on `stop` here.
-                if let Err(err) = self
-                    .restart_queues(state)
-                    .instrument(tracing::info_span!("netvsp_restart_queues"))
-                    .await
-                {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to restart queues"
-                    );
-                }
-                if let Some(primary) = self.primary_mut() {
-                    primary.is_data_path_switched =
-                        state.endpoint.get_data_path_to_guest_vf().await.ok();
-                    tracing::info!(
-                        is_data_path_switched = primary.is_data_path_switched,
-                        "Query data path state"
-                    );
-                }
-                self.restore_guest_vf_state(state).await;
-                self.restart = false;
+                self.restart_worker_queues(stop, state).await?;
             }
 
             // Ensure that all workers except the primary are started. The
@@ -4172,6 +4186,10 @@ impl Coordinator {
             match message {
                 Message::Internal(msg) => {
                     self.handle_coordinator_message(msg, state).await;
+                    // If a restart message has been queued, handle it now
+                    // to ensure worker queues are restarted prior to
+                    // `worker.start()` in the next loop.
+                    self.handle_queued_coordinator_messages(state).await;
                 }
                 Message::UpdateFromVf(rpc) => {
                     rpc.handle(async |_| {
@@ -4180,7 +4198,7 @@ impl Coordinator {
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    self.workers[0].stop().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -4193,11 +4211,12 @@ impl Coordinator {
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                 }
                 Message::PendingVfStateComplete => {
+                    // Worker state unchanged, no worker needs to be stopped.
                     state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
                 }
                 Message::TimerExpired => {
                     // Kick the worker as requested.
-                    self.workers[0].stop().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if let PendingLinkAction::Delay(up) = primary.pending_link_action {
                             primary.pending_link_action = PendingLinkAction::Active(up);
@@ -4205,23 +4224,8 @@ impl Coordinator {
                     }
                     self.sleep_deadline = None;
                 }
-                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
-                Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    self.workers[0].stop().await;
-
-                    // These are the only link state transitions that are tracked.
-                    // 1. up -> down or down -> up
-                    // 2. up -> down -> up or down -> up -> down.
-                    // All other state transitions are coalesced into one of the above cases.
-                    // For example, up -> down -> up -> down is treated as up -> down.
-                    // N.B - Always queue up the incoming state to minimize the effects of loss
-                    //       of any notifications (for example, during vtl2 servicing).
-                    if let Some(primary) = self.primary_mut() {
-                        primary.pending_link_action = PendingLinkAction::Active(connect);
-                    }
-
-                    // If there is any existing sleep timer running, cancel it out.
-                    self.sleep_deadline = None;
+                Message::UpdateFromEndpoint(endpoint_action) => {
+                    self.handle_endpoint_action(endpoint_action).await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4231,12 +4235,101 @@ impl Coordinator {
         Ok(())
     }
 
+    async fn handle_endpoint_action(&mut self, action: EndpointAction) {
+        match action {
+            EndpointAction::RestartRequired => self.restart = true,
+            EndpointAction::LinkStatusNotify(connect) => {
+                self.stop_primary_worker().await;
+                // These are the only link state transitions that are tracked.
+                // 1. up -> down or down -> up
+                // 2. up -> down -> up or down -> up -> down.
+                // All other state transitions are coalesced into one of the above cases.
+                // For example, up -> down -> up -> down is treated as up -> down.
+                // N.B - Always queue up the incoming state to minimize the effects of loss
+                //       of any notifications (for example, during vtl2 servicing).
+                if let Some(primary) = self.primary_mut() {
+                    primary.pending_link_action = PendingLinkAction::Active(connect);
+                }
+
+                // If there is any existing sleep timer running, cancel it out.
+                self.sleep_deadline = None;
+            }
+        }
+    }
+
+    /// Called from the [`Self::process`] loop when either `CoordinatorMessage::Restart`
+    /// or `EndpointAction::RestartRequired` is observed.
+    async fn restart_worker_queues(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut CoordinatorState,
+    ) -> Result<(), task_control::Cancelled> {
+        stop.until_stopped(self.stop_workers()).await?;
+
+        // All workers are stopped and cannot push new messages.
+        // Drain any messages that arrived prior to or during the stop.
+        // Coalesce restart messages. Handle non-restart Primary messages.
+        self.handle_queued_coordinator_messages(state).await;
+
+        // Best-effort attempt to coalesce any `RestartRequired` endpoint
+        // action into this restart operation.
+        while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
+            self.handle_endpoint_action(action).await;
+        }
+
+        // The queue restart operation is not restartable; do not poll on stop here.
+        if let Err(err) = self
+            .restart_queues(state)
+            .instrument(tracing::info_span!("netvsp_restart_queues"))
+            .await
+        {
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "failed to restart queues"
+            );
+        }
+        if let Some(primary) = self.primary_mut() {
+            primary.is_data_path_switched = state.endpoint.get_data_path_to_guest_vf().await.ok();
+            tracing::info!(
+                is_data_path_switched = primary.is_data_path_switched,
+                "Query data path state"
+            );
+        }
+        self.restore_guest_vf_state(state).await;
+        self.restart = false;
+        Ok(())
+    }
+
+    async fn handle_queued_coordinator_messages(&mut self, state: &mut CoordinatorState) {
+        while let Ok(Some(msg)) = self.recv.try_next() {
+            self.handle_coordinator_message(msg, state).await;
+        }
+    }
+
     async fn handle_coordinator_message(
         &mut self,
         msg: CoordinatorMessage,
         state: &mut CoordinatorState,
     ) {
-        self.workers[0].stop().await;
+        match msg {
+            CoordinatorMessage::Restart { channel_idx } if channel_idx != 0 => {
+                tracelimit::event_ratelimited!(
+                    tracing::Level::DEBUG,
+                    channel_idx,
+                    "sub-channel triggered restart"
+                );
+                self.restart = true;
+            }
+            _ => self.handle_primary_message(msg, state).await,
+        }
+    }
+
+    async fn handle_primary_message(
+        &mut self,
+        msg: CoordinatorMessage,
+        state: &mut CoordinatorState,
+    ) {
+        self.stop_primary_worker().await;
         if let Some(worker) = self.workers[0].state_mut() {
             if matches!(worker.state, WorkerState::WaitingForCoordinator(_)) {
                 let WorkerState::WaitingForCoordinator(Some(ready)) =
@@ -4272,7 +4365,10 @@ impl Coordinator {
             CoordinatorMessage::StartTimer(deadline) => {
                 self.sleep_deadline = Some(deadline);
             }
-            CoordinatorMessage::Restart => self.restart = true,
+            CoordinatorMessage::Restart { channel_idx } => {
+                assert_eq!(channel_idx, 0);
+                self.restart = true;
+            }
         }
     }
 
@@ -4280,6 +4376,10 @@ impl Coordinator {
         for worker in &mut self.workers {
             worker.stop().await;
         }
+    }
+
+    async fn stop_primary_worker(&mut self) {
+        self.workers[0].stop().await;
     }
 
     async fn restore_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
@@ -4756,7 +4856,7 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        self.workers[0].stop().await;
+        self.stop_primary_worker().await;
         self.restore_guest_vf_state(c_state).await;
     }
 }
@@ -4809,7 +4909,16 @@ impl<T: RingMem + 'static> Worker<T> {
                     };
 
                     // Wake up the coordinator task to start the queues.
-                    let _ = self.coordinator_send.try_send(CoordinatorMessage::Restart);
+                    if let Err(err) = self
+                        .coordinator_send
+                        .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
+                    {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            channel_idx = self.channel_idx,
+                            "failed to send restart message to coordinator"
+                        );
+                    }
 
                     tracelimit::info_ratelimited!("network initialized");
                     self.state = WorkerState::WaitingForCoordinator(Some(state));
@@ -4849,23 +4958,30 @@ impl<T: RingMem + 'static> Worker<T> {
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
                                 err = err.as_ref() as &dyn std::error::Error,
+                                channel_idx = self.channel_idx,
                                 "Endpoint requires queues to restart",
                             );
-                            CoordinatorMessage::Restart
+                            CoordinatorMessage::Restart {
+                                channel_idx: self.channel_idx,
+                            }
                         }
                         Err(err) => return Err(err),
                     };
 
-                    let WorkerState::Ready(ready) = std::mem::replace(
-                        &mut self.state,
-                        WorkerState::WaitingForCoordinator(None),
-                    ) else {
-                        unreachable!("must be running in ready state")
-                    };
-                    let _ = std::mem::replace(
-                        &mut self.state,
-                        WorkerState::WaitingForCoordinator(Some(ready)),
-                    );
+                    // Only the Primary channel transitions to `WaitingForCoordinator`.
+                    // Sub-channels stay in `Ready(_)`.
+                    if self.channel_idx == 0 {
+                        let WorkerState::Ready(ready) = std::mem::replace(
+                            &mut self.state,
+                            WorkerState::WaitingForCoordinator(None),
+                        ) else {
+                            unreachable!("must be running in ready state")
+                        };
+                        let _ = std::mem::replace(
+                            &mut self.state,
+                            WorkerState::WaitingForCoordinator(Some(ready)),
+                        );
+                    }
                     self.coordinator_send
                         .try_send(msg)
                         .map_err(WorkerError::CoordinatorMessageSendFailed)?;
@@ -5640,7 +5756,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         let primary = state.primary.as_mut().unwrap();
                         primary.requested_num_queues = subchannel_count as u16 + 1;
                         primary.tx_spread_sent = false;
-                        self.restart = Some(CoordinatorMessage::Restart);
+                        self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
                     }
                 }
                 PacketData::RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer { id })

@@ -9,10 +9,9 @@ rust-version.workspace = true
 [features]
 # Without this feature, the crate is a no-op. Disable it by default
 # to avoid requiring openssl on Windows.
-tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
+tpm = ["dep:ms-tpm-20-ref"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
 tpm_resources.workspace = true
@@ -40,6 +39,13 @@ tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 base64.workspace = true
+
+[target.'cfg(target_env = "musl")'.dependencies]
+# TODO: Change this to symcrypt if the OSS TPM can be made to work with it
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [lints]
 workspace = true

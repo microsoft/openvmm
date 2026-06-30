@@ -8,10 +8,10 @@
 //! This module handles instantiating AMD IOMMU chipset devices on each
 //! requested root complex.
 
+use super::ioapic_iommu_wiring::IoapicIommuSelection;
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
-use std::collections::HashMap;
 use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
@@ -19,6 +19,8 @@ use vmotherboard::ChipsetBuilder;
 /// Resolved resources for a single AMD IOMMU instance, combining the
 /// topology-specified RC name with the MMIO range from the layout engine.
 pub(super) struct ResolvedIommuResources {
+    /// Index into `pcie_host_bridges` / `cfg.pcie_root_complexes`.
+    pub rc_idx: usize,
     /// Name of the PCIe root complex this IOMMU covers.
     pub rc_name: String,
     /// MMIO base address (from the memory layout allocator).
@@ -33,9 +35,11 @@ pub(super) fn resolve_iommu_resources(
 ) -> Vec<ResolvedIommuResources> {
     root_complexes
         .iter()
-        .filter(|rc| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::AmdVi)))
+        .enumerate()
+        .filter(|(_, rc)| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::AmdVi)))
         .zip(mmio_ranges)
-        .map(|(rc, range)| ResolvedIommuResources {
+        .map(|((idx, rc), range)| ResolvedIommuResources {
+            rc_idx: idx,
             rc_name: rc.name.clone(),
             mmio_base: range.start(),
         })
@@ -49,6 +53,11 @@ pub(super) struct IommuDevicesResult {
     /// Per-RC IOMMU shared state, indexed parallel to `pcie_host_bridges`.
     /// `None` for root complexes without an AMD IOMMU.
     pub shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>>,
+    /// The IOMMU that covers the southbridge IOAPIC (segment 0, bus 0), if
+    /// any. Used to wire IOAPIC interrupt remapping and publish the IVRS
+    /// DEV_SPECIAL(IOAPIC) entry. `None` if no AMD IOMMU covers that
+    /// location, in which case IOAPIC interrupt remapping stays disabled.
+    pub ioapic_iommu: Option<IoapicIommuSelection>,
 }
 
 /// Instantiate AMD IOMMU chipset devices.
@@ -60,7 +69,6 @@ pub(super) struct IommuDevicesResult {
 pub(super) fn setup_amd_iommu(
     resolved_resources: &[ResolvedIommuResources],
     pcie_host_bridges: &[PcieHostBridge],
-    pcie_rc_name_to_idx: &HashMap<String, usize>,
     chipset_builder: &ChipsetBuilder<'_>,
     partition: &dyn HvlitePartition,
     gm: &GuestMemory,
@@ -68,19 +76,11 @@ pub(super) fn setup_amd_iommu(
     let mut shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>> =
         vec![None; pcie_host_bridges.len()];
     let mut acpi_configs: Vec<vmm_core::acpi_builder::AmdIommuAcpiConfig> = Vec::new();
+    let mut ioapic_iommu: Option<IoapicIommuSelection> = None;
 
     for res in resolved_resources {
+        let rc_pos = res.rc_idx;
         let rc_name = &res.rc_name;
-        let rc_pos = match pcie_rc_name_to_idx.get(rc_name.as_str()) {
-            Some(&i) => i,
-            None => {
-                let available: Vec<_> = pcie_rc_name_to_idx.keys().collect();
-                anyhow::bail!(
-                    "--amd-iommu references unknown root complex '{rc_name}'. \
-                     Available: {available:?}"
-                );
-            }
-        };
 
         if shared_states[rc_pos].is_some() {
             anyhow::bail!("duplicate AMD IOMMU for root complex '{rc_name}'");
@@ -104,15 +104,19 @@ pub(super) fn setup_amd_iommu(
 
         let iommu_bus_range = pci_core::bus_range::AssignedBusRange::new();
         iommu_bus_range.set_bus_range(hb.start_bus, hb.start_bus);
-        let iommu_msi_conn = pci_core::msi::MsiConnection::new(iommu_bus_range, 0);
+        let iommu_msi_conn = pci_core::msi::MsiConnection::new();
         let iommu_dev = builder.add(|_services| {
-            amd_iommu::AmdIommuDevice::new(gm.clone(), iommu_config, iommu_msi_conn.target())
+            amd_iommu::AmdIommuDevice::new(
+                gm.clone(),
+                iommu_config,
+                &iommu_msi_conn.msi_target(iommu_bus_range, 0),
+            )
         })?;
         if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
             iommu_msi_conn.connect(signal_msi);
         }
         let shared = iommu_dev.lock().shared_state().clone();
-        shared_states[rc_pos] = Some(shared);
+        shared_states[rc_pos] = Some(shared.clone());
 
         acpi_configs.push(vmm_core::acpi_builder::AmdIommuAcpiConfig {
             device_id: (hb.start_bus as u16) << 8, // device 0, function 0
@@ -123,10 +127,29 @@ pub(super) fn setup_amd_iommu(
             start_bus: hb.start_bus,
             end_bus: hb.end_bus,
         });
+
+        // The southbridge IOAPIC lives at segment 0, bus 0. Select the IOMMU
+        // covering it so the RID and the remapper come from the same IOMMU,
+        // keeping the IVRS entry and runtime remapping in agreement.
+        if hb.segment == 0 && hb.start_bus == 0 {
+            let ioapic_rid = (hb.start_bus as u16) << 8
+                | super::ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
+            ioapic_iommu = Some(IoapicIommuSelection {
+                remapper: shared,
+                ioapic_rid,
+            });
+        }
+    }
+
+    // At least one IOMMU exists but none covers the IOAPIC, so interrupt
+    // remapping can't be enabled (breaks nested PCI device assignment).
+    if ioapic_iommu.is_none() && !acpi_configs.is_empty() {
+        tracing::warn!("no AMD IOMMU covers segment 0 bus 0; IOAPIC interrupt remapping disabled");
     }
 
     Ok(IommuDevicesResult {
         acpi_configs,
         shared_states,
+        ioapic_iommu,
     })
 }

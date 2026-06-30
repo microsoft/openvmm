@@ -135,7 +135,7 @@ pub mod platform_settings {
         pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
         #[inspect(debug)]
         pub management_vtl_features: ManagementVtlFeatures,
-        pub hv_sint_enabled: bool,
+        pub force_dma_bounce_enabled: bool,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

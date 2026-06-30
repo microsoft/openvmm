@@ -191,8 +191,6 @@ struct WhpVp {
     vtl2_enable: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    scan_irr: AtomicBool,
 }
 
 #[derive(InspectMut)]
@@ -362,7 +360,6 @@ impl WhpVp {
             vtl2_enable: vtl2_enabled.into(),
             vp_info: vp,
             waker: Default::default(),
-            scan_irr: true.into(),
         }
     }
 }
@@ -372,15 +369,37 @@ type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
 #[cfg(guest_arch = "aarch64")]
 type InitialVpContext = hvdef::hypercall::InitialVpContextArm64;
 
+/// Which hypercall is requesting that a VP's initial VTL context be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+enum VpStartOperation {
+    /// `HvCallEnableVpVtl`: install the VTL's initial register context, but do
+    /// not change the active VTL (i.e. do not start the VP running the VTL).
+    EnableVpVtl,
+    /// `HvCallStartVirtualProcessor`: install the context and start the VP
+    /// running the target VTL. This is the only way to start a VP in a
+    /// non-zero VTL.
+    StartVirtualProcessor,
+}
+
+/// A pending `HvCallEnableVpVtl` / `HvCallStartVirtualProcessor` request for a
+/// VTL on a VP, set by the issuing VP and consumed by the target VP's run loop.
+#[derive(Debug)]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+struct VpStartRequest {
+    operation: VpStartOperation,
+    context: Box<InitialVpContext>,
+}
+
 #[derive(Debug, Inspect)]
 struct Vplc {
     message_queues: MessageQueues,
     check_queues: AtomicBool,
     extint_pending: AtomicBool,
     #[inspect(with = "|x| x.lock().is_some()")]
-    start_vp_context: Mutex<Option<Box<InitialVpContext>>>,
-    #[inspect(skip)]
+    start_vp_request: Mutex<Option<VpStartRequest>>,
     start_vp: AtomicBool,
+    scan_irr: AtomicBool,
 }
 
 impl Vplc {
@@ -390,7 +409,8 @@ impl Vplc {
             check_queues: false.into(),
             extint_pending: false.into(),
             start_vp: false.into(),
-            start_vp_context: Default::default(),
+            start_vp_request: Default::default(),
+            scan_irr: false.into(),
         }
     }
 
@@ -404,14 +424,16 @@ impl Vplc {
             message_queues,
             check_queues,
             extint_pending,
-            start_vp_context,
+            start_vp_request,
             start_vp,
+            scan_irr,
         } = self;
         message_queues.clear();
         check_queues.store(false, Ordering::Relaxed);
         extint_pending.store(false, Ordering::Relaxed);
-        *start_vp_context.lock() = None;
+        *start_vp_request.lock() = None;
         start_vp.store(false, Ordering::Relaxed);
+        scan_irr.store(false, Ordering::Relaxed);
     }
 }
 
@@ -454,6 +476,12 @@ impl<'a> WhpVpRef<'a> {
         if let Some(waker) = &*self.vp().waker.read() {
             waker.wake_by_ref();
         }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn wake_for_apic(&self, vtl: Vtl) {
+        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
+        self.wake();
     }
 
     // Enqueues a message to be posted when the associated message slot is free.
@@ -1743,10 +1771,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
         self.state.reset(false, is_bsp);
 
-        // For each enabled VTL: apply arch fixups that WHP doesn't handle
-        // and clear any pending `start_vp_context` (via `finish_reset`),
-        // then clear stale pending per-VTL VP signal flags (via
-        // `Vplc::reset`).
+        // For each enabled VTL: apply arch fixups that WHP doesn't handle (via
+        // `finish_reset`), then clear stale pending per-VTL VP signal flags,
+        // including any pending `start_vp_request` (via `Vplc::reset`).
         // VTL0 is always present.
         self.finish_reset(Vtl::Vtl0);
         self.vplc(Vtl::Vtl0).reset();
@@ -1770,28 +1797,24 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
 
-        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2 will
-        // re-issue `HvCallEnableVpVtl` on each AP to program its startup
-        // context (RIP/RSP/CR3/GDT/IDT)
-        //
-        // Leave `enabled_vtls` alone so that `state.reset` keeps `active_vtl`
-        // at VTL2 on the AP, allowing it to idle in VTL2 (in startup suspend)
-        // during the servicing window.
-        if !is_bsp {
-            self.inner.vtl2_enable.store(false, Ordering::Relaxed);
-        }
-
+        // VTL2 stays enabled across a scrub. `enabled_vtls` and `vtl2_enable`
+        // are both left set, so `state.reset` keeps `active_vtl` at VTL2 and
+        // each AP idles in VTL2 (in startup suspend) during the servicing window.
         self.state.reset(true, is_bsp);
 
-        // Scrub only resets VTL2. Reset the Vplc to clear any stale pending
-        // signals (message queue notifications, external interrupts, start-VP
-        // requests, etc.) -- the hypervisor zeroes the equivalent per-VTL
-        // activity flags during a VTL scrub.
+        // Re-apply arch register fixups that WHP doesn't handle (`finish_reset`
+        // must run after the partition-level WHP reset), then clear stale
+        // pending per-VTL VP signals -- message queue notifications, external
+        // interrupts, start-VP requests, etc. -- via `Vplc::reset`. The
+        // hypervisor zeroes the equivalent per-VTL activity flags during a VTL
+        // scrub.
         self.finish_reset(Vtl::Vtl2);
         self.vplc(Vtl::Vtl2).reset();
 
         // Clear any pending VTL2 wake signal, since VTL2 is now back in
-        // startup suspend and any prior wake request is stale.
+        // startup suspend and any prior wake request is stale. Per-VP signals
+        // that are not VTL2-specific are intentionally left intact, as they may
+        // carry pending VTL0 work.
         self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
@@ -1909,9 +1932,7 @@ mod x86 {
             move |vec: u32, auto_eoi| match &self.vtlp(vtl).lapic {
                 LocalApicKind::Emulated(lapic) => {
                     lapic.synic_interrupt(vp, vec as u8, auto_eoi, |vp_index| {
-                        self.vp(vp_index)
-                            .expect("apic emulator passes valid vp index")
-                            .wake()
+                        self.vp(vp_index).unwrap().wake_for_apic(vtl);
                     });
                 }
                 LocalApicKind::Offloaded => unreachable!(),

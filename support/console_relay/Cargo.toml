@@ -11,6 +11,7 @@ pal_async.workspace = true
 term.workspace = true
 
 anyhow.workspace = true
+crossterm = { workspace = true, features = ["windows"] }
 futures.workspace = true
 getrandom.workspace = true
 tracing.workspace = true

@@ -3,6 +3,8 @@
 
 //! PCIe extended capabilities.
 
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
@@ -29,11 +31,13 @@ pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {
     ///   0x1000.
     fn len(&self) -> usize;
 
-    /// Read a u32 at the given capability-relative offset.
-    fn read_u32(&self, offset: u16) -> u32;
+    /// Read a byte-enabled DWORD at the given capability-relative offset.
+    /// The offset must be 32-bit aligned.
+    fn read(&self, offset: u16, value: ByteEnabledDwordRead<'_>);
 
-    /// Write a u32 at the given capability-relative offset.
-    fn write_u32(&mut self, offset: u16, val: u32);
+    /// Write a byte-enabled DWORD to the given capability-relative offset.
+    /// The offset must be 32-bit aligned.
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite);
 
     /// Reset the capability.
     fn reset(&mut self);
@@ -41,7 +45,8 @@ pub trait PciExtendedCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
 #[cfg(test)]
 pub(crate) fn assert_extended_header_contract(cap: &dyn PciExtendedCapability) {
-    let value = cap.read_u32(0);
+    let mut value = 0;
+    cap.read(0, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value));
     let expected =
         u32::from(cap.extended_capability_id()) | (u32::from(cap.capability_version()) << 16);
 

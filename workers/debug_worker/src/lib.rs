@@ -351,6 +351,15 @@ async fn run_state_machine<T: TargetArch>(
                             DebugStopReason::Break => MultiThreadStopReason::Signal(Signal::SIGINT),
                             DebugStopReason::PowerOff => MultiThreadStopReason::Exited(0),
                             DebugStopReason::Reset => MultiThreadStopReason::Exited(1),
+                            // Report as a signal, not Exited, so the debugger stays
+                            // attached for inspection: the watchdog may be configured to
+                            // halt, leaving the VM stopped rather than gone. SIGABRT
+                            // rather than a timer signal like SIGALRM, because GDB's
+                            // default disposition for SIGALRM is nostop/pass, so the
+                            // debugger would not break on the watchdog timeout.
+                            DebugStopReason::Watchdog => {
+                                MultiThreadStopReason::Signal(Signal::SIGABRT)
+                            }
                             DebugStopReason::TripleFault { vp } => {
                                 MultiThreadStopReason::SignalWithThread {
                                     tid: vm_target.vp_to_tid(vp),

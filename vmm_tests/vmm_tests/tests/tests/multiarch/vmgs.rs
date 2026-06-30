@@ -8,8 +8,9 @@ use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
-use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_NATIVE;
+use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -83,7 +84,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
 ///
 /// This test exists to ensure we are not getting a false positive for
 /// the `default_boot` and `clear_vmgs` test above.
-#[vmm_test_with(noagent(
+#[vmm_test_with(noagent, configs(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
@@ -357,7 +358,7 @@ async fn run_vmgstool_verification(
 
 /// Test vmgstool encryption
 #[openvmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_DEV_NATIVE],
 )]
 async fn vmgstool_update_key<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -404,6 +405,8 @@ async fn vmgstool_update_key<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
+    run_vmgstool_verification(vmgstool_path, &vmgs_path, Some(&key3_path), &temp_dir).await?;
 
     Ok(())
 }

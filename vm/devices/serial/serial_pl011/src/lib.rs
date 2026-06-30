@@ -660,7 +660,10 @@ impl State {
             .with_cts(self.connected)
             .with_dcd(self.connected)
             .with_dsr(self.connected)
-            .with_busy(!self.tx_buffer.is_empty())
+            // This virtual UART has no shift register latency. Reporting BUSY
+            // while bytes are queued can deadlock earlycon users that spin on
+            // BUSY before the asynchronous backend poller gets scheduled.
+            .with_busy(false)
             .with_rxfe(self.rx_buffer.is_empty())
             .with_txff(self.tx_buffer.len() >= fifo_size)
             .with_rxff(self.rx_buffer.len() >= fifo_size)

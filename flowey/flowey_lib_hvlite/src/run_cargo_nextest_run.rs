@@ -94,7 +94,9 @@ impl FlowNode for Node {
             let extra_env = if let Some(with_env) = extra_env {
                 let base_env = base_env.clone();
                 with_env.map(ctx, move |mut m| {
-                    m.extend(base_env);
+                    for (key, value) in base_env {
+                        m.entry(key).or_insert(value);
+                    }
                     m
                 })
             } else {

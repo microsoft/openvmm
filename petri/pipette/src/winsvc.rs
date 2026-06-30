@@ -9,6 +9,7 @@ use futures_concurrency::future::Race;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use std::ffi::OsString;
+use std::sync::OnceLock;
 use std::time::Duration;
 use windows_service::define_windows_service;
 use windows_service::service;
@@ -18,22 +19,41 @@ use windows_service::service_dispatcher;
 
 const SERVICE_NAME: &str = "pipette";
 
-pub fn start_service() -> anyhow::Result<()> {
+/// Configuration parsed in `main()` that must be forwarded to `service_main`.
+///
+/// The Windows service dispatcher calls `service_main` with a fixed callback
+/// signature (`fn(Vec<OsString>)`), so there is no way to pass arbitrary state
+/// through it. We use a global `OnceLock` to bridge the gap: `start_service`
+/// stores the config before entering the dispatcher, and `service_main`
+/// retrieves it on the other side.
+#[derive(Clone, Copy, Debug)]
+struct ServiceConfig {
+    transport: crate::agent::Transport,
+}
+
+static SERVICE_CONFIG: OnceLock<ServiceConfig> = OnceLock::new();
+
+pub fn start_service(transport: crate::agent::Transport) -> anyhow::Result<()> {
     // TODO: retarget stderr somewhere that the host can see (serial port?)
+    SERVICE_CONFIG.set(ServiceConfig { transport }).unwrap();
     define_windows_service!(ffi_service_main, service_main);
     service_dispatcher::start(SERVICE_NAME, ffi_service_main).context("failed to start service")?;
     Ok(())
 }
 
 fn service_main(_args: Vec<OsString>) {
+    let config = SERVICE_CONFIG.get().unwrap();
     DefaultPool::run_with(async |driver| {
-        if let Err(e) = service_main_inner(driver).await {
+        if let Err(e) = service_main_inner(driver, config.transport).await {
             eprintln!("service_main failed: {:#}", e);
         }
     })
 }
 
-async fn service_main_inner(driver: DefaultDriver) -> anyhow::Result<()> {
+async fn service_main_inner(
+    driver: DefaultDriver,
+    transport: crate::agent::Transport,
+) -> anyhow::Result<()> {
     let (send, recv) = mesh::oneshot::<()>();
     let mut send = Some(send);
     let event_handler = move |control_event| match control_event {
@@ -63,7 +83,7 @@ async fn service_main_inner(driver: DefaultDriver) -> anyhow::Result<()> {
     set_status(service::ServiceState::StartPending)?;
 
     let run = async {
-        let agent = Agent::new(driver).await?;
+        let agent = Agent::new(driver, transport).await?;
         set_status(service::ServiceState::Running)?;
         agent.run().await
     };

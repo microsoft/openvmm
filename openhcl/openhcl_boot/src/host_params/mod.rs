@@ -8,6 +8,7 @@ use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::shim_params::IsolationType;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
+use host_fdt_parser::ComInfo;
 use host_fdt_parser::CpuEntry;
 use host_fdt_parser::GicInfo;
 use host_fdt_parser::MemoryAllocationMode;
@@ -64,8 +65,8 @@ pub struct PartitionInfo {
     pub vmbus_vtl0: VmbusInfo,
     /// Command line to be used for the underhill kernel.
     pub cmdline: ArrayString<COMMAND_LINE_SIZE>,
-    /// Com3 serial device is available
-    pub com3_serial_available: bool,
+    /// Com3 serial device
+    pub com3_serial: ComInfo,
     /// Memory allocation mode that was performed.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
@@ -105,7 +106,7 @@ impl PartitionInfo {
                 connection_id: 0,
             },
             cmdline: ArrayString::new_const(),
-            com3_serial_available: false,
+            com3_serial: ComInfo::None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,

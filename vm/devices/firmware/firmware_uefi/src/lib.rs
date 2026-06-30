@@ -124,6 +124,9 @@ pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
     command_set: UefiCommandSet,
+    /// Overrides the per-period rate limit applied to EfiDiagnostics
+    /// See [`UefiDevice::resolve_rate_limit`] for more information.
+    diagnostics_rate_limit: Option<u32>,
 
     // Runtime glue
     gm: GuestMemory,
@@ -163,6 +166,7 @@ impl UefiDevice {
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,
             command_set: cfg.command_set,
+            diagnostics_rate_limit: cfg.diagnostics_rate_limit,
             address: 0,
             gm,
             watchdog_recv,
@@ -194,6 +198,20 @@ impl UefiDevice {
         };
 
         Ok(uefi)
+    }
+
+    /// Resolves the effective per-period rate limit for diagnostics emission,
+    /// given a built-in default and the device's optional override.
+    ///
+    /// - override is `None`: use the built-in default.
+    /// - override is `Some(0)`: disable rate limiting entirely.
+    /// - override is `Some(n)`: use `n` as the override limit.
+    fn resolve_rate_limit(&self, default_limit: u32) -> Option<u32> {
+        match self.diagnostics_rate_limit {
+            None => Some(default_limit),
+            Some(0) => None,
+            Some(n) => Some(n),
+        }
     }
 
     fn read_data(&mut self, addr: u32) -> u32 {
@@ -252,7 +270,7 @@ impl UefiDevice {
                 let _ = self.process_diagnostics(
                     false,
                     service::diagnostics::DiagnosticsEmitter::Tracing {
-                        limit: Some(DEFAULT_LOGS_PER_PERIOD),
+                        limit: self.resolve_rate_limit(DEFAULT_LOGS_PER_PERIOD),
                     },
                     None,
                 );
@@ -356,12 +374,10 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            //
-            // Here, we emit diagnostics to tracing with INFO level and no limit
             let _ = self.process_diagnostics(
                 false,
                 service::diagnostics::DiagnosticsEmitter::Tracing {
-                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                    limit: self.resolve_rate_limit(WATCHDOG_LOGS_PER_PERIOD),
                 },
                 Some(LogLevel::make_info()),
             );
@@ -562,6 +578,7 @@ mod save_restore {
                         diagnostics,
                     },
                 address,
+                diagnostics_rate_limit: _,
             } = self;
 
             Ok(state::SavedState {

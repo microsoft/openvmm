@@ -18,7 +18,9 @@ storvsp_resources.workspace = true
 vm_resource.workspace = true
 
 guid.workspace = true
+gptman.workspace = true
 pal_async.workspace = true
+pipette_protocol.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true

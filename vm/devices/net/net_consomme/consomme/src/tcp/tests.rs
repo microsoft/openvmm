@@ -10,12 +10,14 @@ use crate::ConsommeParams;
 use crate::IpVersion;
 use crate::PortForwardKey;
 use futures::AsyncRead;
+use futures::AsyncWrite;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use socket2::SockRef;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -142,11 +144,21 @@ impl TcpTestHarness {
     /// and completes with an ACK. Returns the harness with an
     /// established connection ready for data transfer.
     async fn connect(driver: DefaultDriver) -> Self {
+        Self::connect_with_params(driver, ConsommeParams::new().unwrap()).await
+    }
+
+    /// Like [`connect`](Self::connect), but with caller-provided params, e.g.
+    /// to set custom per-connection TCP buffer bounds.
+    async fn connect_with_params(driver: DefaultDriver, params: ConsommeParams) -> Self {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let dst_port = std_listener.local_addr().unwrap().port();
         let mut listener = PolledSocket::new(&driver, std_listener).unwrap();
 
-        let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+        let mut consomme = Consomme::new({
+            let mut params = params;
+            params.allow_host_local_access = true;
+            params
+        });
         let mut client = TestClient::new(driver);
 
         let guest_mac = consomme.params_mut().client_mac;
@@ -388,9 +400,77 @@ impl TcpTestHarness {
     }
 
     /// Write data from the host side into the connection.
+    ///
+    /// Polls consomme concurrently while writing so it can drain the host
+    /// socket into `tx_buffer`. Without this, a write larger than the kernel
+    /// socket buffer would block forever, since consomme is the only reader.
+    /// Returns once all of `data` has been handed to the kernel socket.
     async fn host_write(&mut self, data: &[u8]) {
-        use futures::AsyncWriteExt;
-        self.host_stream.write_all(data).await.unwrap();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let mut written = 0;
+        std::future::poll_fn(move |cx| {
+            // Drive consomme so it drains the host socket into the tx ring,
+            // relieving backpressure on the write below.
+            consomme.access(client).poll(cx);
+            while written < data.len() {
+                match Pin::new(&mut *host_stream).poll_write(cx, &data[written..]) {
+                    Poll::Ready(Ok(0)) => panic!("host write returned 0"),
+                    Poll::Ready(Ok(n)) => written += n,
+                    Poll::Ready(Err(e)) => panic!("host write error: {e}"),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    /// Push `data` from the host side while polling consomme, returning as soon
+    /// as `done` holds for the connection (even if not all of `data` has been
+    /// written).
+    ///
+    /// This is needed when consomme intentionally stops reading the host socket
+    /// (e.g. once the tx ring caps at `max`): the unread remainder stays in the
+    /// kernel socket buffer, and a blocking `write_all` would deadlock. Polling
+    /// consomme concurrently lets it drain the socket and reach the target
+    /// state, which the caller observes via `done`.
+    async fn host_write_until(
+        &mut self,
+        data: &[u8],
+        mut done: impl FnMut(&TcpConnectionInner) -> bool,
+    ) {
+        let ft = self.four_tuple();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let mut written = 0;
+        std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            let inner = &consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner;
+            if done(inner) {
+                return Poll::Ready(());
+            }
+            // Feed more data until the kernel socket buffer is full, then keep
+            // polling consomme so it drains the socket and makes progress toward
+            // `done`.
+            while written < data.len() {
+                match Pin::new(&mut *host_stream).poll_write(cx, &data[written..]) {
+                    Poll::Ready(Ok(0)) => panic!("host write returned 0"),
+                    Poll::Ready(Ok(n)) => written += n,
+                    Poll::Ready(Err(e)) => panic!("host write error: {e}"),
+                    Poll::Pending => break,
+                }
+            }
+            Poll::Pending
+        })
+        .await;
     }
 
     /// Shut down the host side write half (sends EOF to consomme).
@@ -401,6 +481,159 @@ impl TcpTestHarness {
     /// Clear captured guest packets so subsequent searches don't match old ones.
     fn clear_guest_packets(&mut self) {
         self.client.received_packets.lock().clear();
+    }
+
+    /// The four-tuple identifying the established connection.
+    fn four_tuple(&self) -> FourTuple {
+        FourTuple {
+            src: SocketAddr::V4(SocketAddrV4::new(self.guest_ip, self.guest_port)),
+            dst: SocketAddr::V4(SocketAddrV4::new(self.dst_ip, self.dst_port)),
+        }
+    }
+
+    /// Borrow the established connection's inner state for assertions.
+    fn connection_inner(&self) -> &TcpConnectionInner {
+        let ft = self.four_tuple();
+        &self
+            .consomme
+            .tcp
+            .connections
+            .get(&ft)
+            .expect("connection should exist")
+            .inner
+    }
+
+    /// Poll consomme until `cond` holds for the established connection, leaving
+    /// the future pending between polls so the async reactor can run and socket
+    /// readiness can fire.
+    async fn poll_until(&mut self, mut cond: impl FnMut(&TcpConnectionInner) -> bool) {
+        let ft = self.four_tuple();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        std::future::poll_fn(|cx| {
+            consomme.access(client).poll(cx);
+            let inner = &consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner;
+            if cond(inner) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    /// Flood guest→host data (without reading the host socket) until the
+    /// available receive buffer (`rx_window_avail`) reaches zero, which drives
+    /// the advertised window to zero. Only sends segments that fit the current
+    /// window, so nothing is dropped. Returns bytes accepted.
+    async fn flood_guest_until_window_closed(&mut self) -> usize {
+        let guest_mac = self.guest_mac;
+        let gateway_mac = self.gateway_mac;
+        let guest_ip = self.guest_ip;
+        let dst_ip = self.dst_ip;
+        let guest_port = self.guest_port;
+        let dst_port = self.dst_port;
+        let server_ack = self.server_ack;
+        let ft = self.four_tuple();
+
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        // Deliberately do NOT read `host_stream`: the path backs up so the
+        // receive window fills.
+        let guest_seq = &mut self.guest_seq;
+        let mut buf = vec![0u8; 1514];
+        let payload = [0x5Au8; 1400];
+        let mut total = 0usize;
+        // Safety cap so a regression can't loop forever.
+        let mut budget = 64 << 20;
+        std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            let avail = consomme
+                .tcp
+                .connections
+                .get(&ft)
+                .expect("connection should exist")
+                .inner
+                .rx_window_avail();
+            if avail == 0 || budget == 0 {
+                return Poll::Ready(total);
+            }
+            let n = avail.min(payload.len()).min(budget);
+            let tcp = TcpRepr {
+                src_port: guest_port,
+                dst_port,
+                control: TcpControl::None,
+                seq_number: *guest_seq,
+                ack_number: Some(server_ack),
+                window_len: 64240,
+                window_scale: None,
+                max_seg_size: None,
+                sack_permitted: false,
+                sack_ranges: [None, None, None],
+                timestamp: None,
+                payload: &payload[..n],
+            };
+            let len = build_tcp_packet(&mut buf, guest_mac, gateway_mac, guest_ip, dst_ip, &tcp);
+            consomme
+                .access(client)
+                .send(&buf[..len], &ChecksumState::NONE)
+                .unwrap();
+            *guest_seq += n;
+            total += n;
+            budget -= n;
+            // Re-poll promptly to keep pushing; once the host socket buffers
+            // fill, consomme stops draining and `avail` reaches zero.
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Drain the host socket while polling consomme, waiting for a guest-bound
+    /// ACK that advertises a non-zero receive window. Returns the advertised
+    /// window length, or `None` if no such packet appeared within a few
+    /// seconds.
+    async fn drain_host_until_window_update(&mut self) -> Option<u16> {
+        let mut timer = pal_async::timer::PolledTimer::new(self.client.driver());
+        let received = self.client.received_packets.clone();
+        let consomme = &mut self.consomme;
+        let client = &mut self.client;
+        let host_stream = &mut self.host_stream;
+        let poll = std::future::poll_fn(move |cx| {
+            consomme.access(client).poll(cx);
+            // Drain the host socket so the receive window reopens. Registers a
+            // read-readiness waker on Pending so we are re-polled as more data
+            // arrives.
+            let mut rb = [0u8; 4096];
+            loop {
+                match Pin::new(&mut *host_stream).poll_read(cx, &mut rb) {
+                    Poll::Ready(Ok(0)) => break,
+                    Poll::Ready(Ok(_)) => {}
+                    Poll::Ready(Err(e)) => panic!("host read error: {e}"),
+                    Poll::Pending => break,
+                }
+            }
+            let found = received.lock().iter().rev().find_map(|p| {
+                let t = TcpTestHarness::is_tcp_packet(p)?;
+                (t.ack_number.is_some() && t.window_len > 0).then_some(t.window_len)
+            });
+            match found {
+                Some(w) => Poll::Ready(w),
+                None => Poll::Pending,
+            }
+        });
+        let timeout = timer.sleep(std::time::Duration::from_secs(5));
+        let poll = std::pin::pin!(poll);
+        let timeout = std::pin::pin!(timeout);
+        match futures::future::select(poll, timeout).await {
+            futures::future::Either::Left((w, _)) => Some(w),
+            futures::future::Either::Right(_) => None,
+        }
     }
 }
 
@@ -724,6 +957,89 @@ async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
     );
 }
 
+/// Test that when the consomme endpoint is itself a loopback adapter (its own
+/// `client_ip` is a loopback address, as used by WSL's VirtioProxy localhost
+/// forwarding), the source IP of a forwarded loopback connection is left as
+/// loopback and is **not** rewritten to a virtual subnet address. Such adapters
+/// rely on the loopback source staying in range so the guest routes the reply
+/// back through the adapter.
+#[pal_async::async_test]
+async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Configure this endpoint as a loopback adapter.
+    params.client_ip = Ipv4Address::new(127, 0, 0, 1);
+    let mut consomme = Consomme::new(params);
+    let mut client = TestClient::new(driver.clone());
+
+    let guest_port = 9999;
+    let received = client.received_packets.clone();
+    let client_ip = consomme.params_mut().client_ip;
+
+    // Create and bind a TCP socket on loopback.
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+
+    {
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_tcp_port(socket, guest_port)
+            .expect("bind should succeed");
+    }
+
+    // Connect from localhost to trigger the listener.
+    let connector = std::net::TcpStream::connect(host_addr).unwrap();
+    connector.set_nonblocking(true).unwrap();
+
+    // Poll until consomme delivers a SYN to the guest.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(&mut client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        let has_syn = received.lock().iter().any(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        });
+        if has_syn {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for forwarded TCP SYN"
+        );
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(10))
+            .await;
+    }
+
+    // Verify the source IP of the forwarded SYN is left as loopback (not
+    // rewritten to a virtual subnet address).
+    let packets = received.lock();
+    let syn_pkt = packets
+        .iter()
+        .find(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        })
+        .expect("should have received a SYN");
+    let (src_ip, dst_ip, _tcp) = parse_tcp_packet(syn_pkt);
+
+    // The destination should be the (loopback) guest IP.
+    assert_eq!(dst_ip, client_ip);
+    // The source must remain loopback so the guest's reply is routed back
+    // through the loopback adapter rather than out the default interface.
+    assert!(
+        src_ip.is_loopback(),
+        "forwarded SYN source IP should remain loopback, got {src_ip}"
+    );
+}
+
 /// Test that binding the same guest port twice returns `PortAlreadyBound`.
 #[pal_async::async_test]
 async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
@@ -937,7 +1253,11 @@ async fn test_tcp_deferred_ack_batching(driver: DefaultDriver) {
 /// fields represent unscaled values.
 #[pal_async::async_test]
 async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new({
+        let mut params = ConsommeParams::new().unwrap();
+        params.allow_host_local_access = true;
+        params
+    });
     let mut client = TestClient::new(driver.clone());
 
     let guest_mac = consomme.params_mut().client_mac;
@@ -1016,20 +1336,15 @@ async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
         "SYN-ACK should include window_scale option when SYN had one"
     );
     let syn_ack_window_scale = syn_ack.window_scale.unwrap();
-    // The window_len in SYN-ACK is the unscaled value — it represents
-    // the actual receive window without any shift applied. Verify that
-    // the effective (scaled) window represents a valid receive buffer
-    // size (between 16KB min and 4MB max per the clamp in new_base).
-    // If the SYN-ACK window field were incorrectly pre-scaled, the
-    // effective value would be unreasonably large.
-    let effective_rx_window = (syn_ack.window_len as usize) << syn_ack_window_scale;
-    assert!(
-        (16384..=4 * 1024 * 1024).contains(&effective_rx_window),
-        "SYN-ACK effective window (unscaled={}, scale={}, effective={}) \
-         should represent a valid receive buffer size",
-        syn_ack.window_len,
-        syn_ack_window_scale,
-        effective_rx_window,
+    // RFC 7323 §2.2: the window field in a SYN/SYN-ACK is NOT scaled, even
+    // though the window_scale option is present. The guest reads window_len
+    // verbatim, so it must carry the real receive window (the 16 KiB initial
+    // cap), not a pre-shifted value. If it were pre-scaled (>> 7), the guest
+    // would see only 128 bytes and stall at connection start.
+    assert_eq!(
+        syn_ack.window_len as usize,
+        16 * 1024,
+        "SYN-ACK must advertise the unscaled receive window (scale={syn_ack_window_scale})",
     );
 
     // Now complete the handshake with an ACK that has a small window.
@@ -1297,7 +1612,11 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
 /// source port, not the proxy ephemeral port).
 #[pal_async::async_test]
 async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new({
+        let mut params = ConsommeParams::new().unwrap();
+        params.allow_host_local_access = true;
+        params
+    });
     let mut client = TestClient::new(driver.clone());
 
     let guest_mac = consomme.params_mut().client_mac;
@@ -1399,5 +1718,141 @@ async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
     assert!(
         !src_ip.is_loopback(),
         "loopback SYN source IP should not be 127.x.x.x, got {src_ip}"
+    );
+}
+
+/// `NormalizedBufferBounds::from_bounds` clamps to `[16 KiB, 4 MiB]`, rounds up
+/// to a power of two, and keeps `initial <= max`.
+#[test]
+fn test_normalized_buffer_bounds() {
+    use crate::TcpBufferBounds;
+    let n = |initial, max| NormalizedBufferBounds::from_bounds(TcpBufferBounds { initial, max });
+    // Clamp up to the 16 KiB floor.
+    let b = n(1, 1);
+    assert_eq!((b.initial, b.max), (16 << 10, 16 << 10));
+    // Clamp down to the 4 MiB ceiling.
+    let b = n(64 << 20, 64 << 20);
+    assert_eq!((b.initial, b.max), (4 << 20, 4 << 20));
+    // Round non-powers-of-two up.
+    let b = n(100 << 10, 100 << 10);
+    assert_eq!((b.initial, b.max), (128 << 10, 128 << 10));
+    // initial is clamped to be no greater than max.
+    let b = n(4 << 20, 64 << 10);
+    assert_eq!((b.initial, b.max), (64 << 10, 64 << 10));
+}
+
+/// The rx window scale derived from `max` must let the advertised receive
+/// window reach `max` without renegotiating window scaling mid-connection.
+#[pal_async::async_test]
+async fn test_tcp_rx_window_scale_reaches_max(driver: DefaultDriver) {
+    let h = TcpTestHarness::connect(driver).await;
+    let c = h.connection_inner();
+    assert_eq!(c.rx_buffer_max, 4 << 20, "default rx max should be 4 MiB");
+    assert!(
+        c.rx_window_scale > 0,
+        "window scaling must be enabled to grow past 64 KiB"
+    );
+    let max_advertisable = (u16::MAX as usize) << c.rx_window_scale;
+    assert!(
+        max_advertisable >= c.rx_buffer_max,
+        "advertised window ceiling {max_advertisable} must reach rx max {}",
+        c.rx_buffer_max,
+    );
+}
+
+/// Autotune: the tx ring grows past its initial size when the host floods data
+/// faster than the guest ACKs, and stays a power of two within `max`.
+#[pal_async::async_test]
+async fn test_tcp_tx_buffer_autotune_grows(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let initial = h.connection_inner().tx_buffer.capacity();
+
+    // Flood the host->guest direction without ever ACKing from the guest, so
+    // the unacked data piles up in the tx ring and forces it to grow.
+    let payload = vec![0xABu8; 64 << 10];
+    h.host_write(&payload).await;
+    h.poll_until(|c| c.tx_buffer.capacity() > initial).await;
+
+    let cap = h.connection_inner().tx_buffer.capacity();
+    assert!(
+        cap > initial,
+        "tx ring should have grown past {initial}, got {cap}"
+    );
+    assert!(
+        cap.is_power_of_two(),
+        "tx ring capacity must stay a power of two: {cap}"
+    );
+    assert!(
+        cap <= 4 << 20,
+        "tx ring must not exceed the 4 MiB ceiling: {cap}"
+    );
+}
+
+/// Autotune: tx ring growth stops at the configured `max` and never exceeds it.
+#[pal_async::async_test]
+async fn test_tcp_tx_buffer_autotune_caps_at_max(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Small ceiling so a modest flood saturates it.
+    params.tcp_tx_buffer = crate::TcpBufferBounds {
+        initial: 16 << 10,
+        max: 32 << 10,
+    };
+    let mut h = TcpTestHarness::connect_with_params(driver, params).await;
+
+    // 64 KiB exceeds the 32 KiB ceiling; consomme only ingests up to the cap
+    // (the rest stays in the host socket buffer). Stop writing as soon as the
+    // ring caps so the unread remainder can't block the write.
+    let payload = vec![0xABu8; 64 << 10];
+    h.host_write_until(&payload, |c| c.tx_buffer.capacity() >= 32 << 10)
+        .await;
+
+    let cap = h.connection_inner().tx_buffer.capacity();
+    assert_eq!(
+        cap,
+        32 << 10,
+        "tx ring must cap at the configured 32 KiB max"
+    );
+}
+
+/// Regression test: after the guest egress fills the receive window and it
+/// later reopens (host drains), consomme must send an unsolicited window-update
+/// ACK rather than waiting for the guest's zero-window probe.
+#[pal_async::async_test]
+async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    // Small, fixed receive window so it closes quickly and autotune can't grow
+    // it (which would mask the reopen path via its own `needs_ack`).
+    params.tcp_rx_buffer = crate::TcpBufferBounds {
+        initial: 16 << 10,
+        max: 16 << 10,
+    };
+    let mut h = TcpTestHarness::connect_with_params(driver, params).await;
+
+    // Shrink the host receive buffer so the egress path backs up after only a
+    // modest amount of data, keeping the flood bounded.
+    SockRef::from(h.host_stream.get())
+        .set_recv_buffer_size(8 << 10)
+        .unwrap();
+
+    // Flood until consomme's advertised receive window closes to zero.
+    let sent = h.flood_guest_until_window_closed().await;
+    assert_eq!(
+        h.connection_inner().rx_window_avail(),
+        0,
+        "receive window should have closed after flooding {sent} bytes"
+    );
+    assert!(
+        h.connection_inner().rx_window_last_adv < h.connection_inner().tx_mss,
+        "consomme should have advertised a (near) zero window to the guest"
+    );
+
+    // Discard the zero-window ACKs, then drain the host socket. Consomme must
+    // emit a window-update ACK on its own, without the guest probing.
+    h.clear_guest_packets();
+    let window_update = h.drain_host_until_window_update().await;
+    assert!(
+        window_update.is_some_and(|w| w > 0),
+        "consomme must proactively re-advertise a non-zero window after the \
+         host drains the backlog; got {window_update:?}"
     );
 }

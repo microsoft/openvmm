@@ -10,6 +10,7 @@ fn main() {
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SYMCRYPT");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_VENDORED");
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+    println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_ENV");
 
     println!("cargo::rustc-check-cfg=cfg(native)");
     println!("cargo::rustc-check-cfg=cfg(openssl)");
@@ -18,6 +19,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(single_backend)");
 
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
+    let musl = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default() == "musl";
 
     let native = std::env::var_os("CARGO_FEATURE_NATIVE").is_some();
     let openssl = std::env::var_os("CARGO_FEATURE_OPENSSL").is_some();
@@ -31,7 +33,9 @@ fn main() {
     // so that operations like `cargo check` and `cargo test` can succeed, but
     // emit a warning.
     if backend_count != 1 {
-        if linux {
+        if linux && musl {
+            println!("cargo::rustc-cfg=symcrypt");
+        } else if linux {
             println!("cargo::rustc-cfg=openssl");
         } else {
             println!("cargo::rustc-cfg=native");
@@ -57,7 +61,10 @@ fn main() {
         } else if rust {
             println!("cargo::rustc-cfg=rust");
             secure = false;
-        } else if native && linux {
+        } else if native && linux && musl {
+            println!("cargo::rustc-cfg=symcrypt");
+            secure = true;
+        } else if native && linux && !musl {
             println!("cargo::rustc-cfg=openssl");
             secure = true;
         } else if native && !linux {

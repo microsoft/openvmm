@@ -346,8 +346,12 @@ impl SmmuDevice {
                 self.process_cmdq();
             }
             registers::CMDQ_CONS => {
-                // CMDQ_CONS is writable by the SMMU only (for error reporting).
-                // Guest writes are ignored per spec.
+                // Per IHI 0070H.a §6.3.28, CMDQ_CONS is RW when CMDQEN==0
+                // (software initializes it before enabling the queue) and
+                // RO when CMDQEN==1.
+                if !self.cr0.cmdqen() {
+                    self.cmdq_cons = registers::CmdqCons::from(value);
+                }
             }
 
             registers::GERROR_IRQ_CFG1 => self.gerror_msi.data = value,
@@ -565,7 +569,9 @@ impl SmmuDevice {
 
                 // Synchronization command.
                 CmdOpcode::CMD_SYNC => {
-                    self.handle_cmd_sync(&entry);
+                    if !self.handle_cmd_sync(&entry) {
+                        break;
+                    }
                 }
 
                 // Unknown opcode — set CMDQ error.
@@ -589,7 +595,9 @@ impl SmmuDevice {
     /// With IDR0.MSI=0, Linux uses CS=SIG_SEV and polls CMDQ_CONS for
     /// completion. The MSIWrite path is kept for spec compliance but won't
     /// be exercised by Linux when MSI is not advertised.
-    fn handle_cmd_sync(&mut self, entry: &CmdEntry) {
+    /// Returns `true` on success, `false` if a CMDQ error was raised
+    /// (caller must stop consuming).
+    fn handle_cmd_sync(&mut self, entry: &CmdEntry) -> bool {
         let cmd = CmdSync::from(entry.qw0);
         let cs = SyncCs(cmd.cs());
 
@@ -616,9 +624,12 @@ impl SmmuDevice {
                 }
             }
             _ => {
-                tracelimit::warn_ratelimited!(cs = cs.0, "smmu: unknown CMD_SYNC CS value");
+                // CS=0b11 is reserved and causes CERROR_ILL per §4.7.3.
+                self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                return false;
             }
         }
+        true
     }
 
     /// Set a command queue error, toggling GERROR.CMDQ_ERR and storing the
@@ -1846,7 +1857,7 @@ mod tests {
     /// 1. Probe: read IDR registers, verify feature bits.
     /// 2. Reset: disable SMMU, program CR1, stream table, queues, enable.
     /// 3. Attach: configure STE and CD for a device.
-    /// 4. DMA: read/write through SmmuTranslatingMemory.
+    /// 4. DMA: read/write through TranslatingMemory.
     /// 5. MSI: fire MSI through SmmuSignalMsi with translated address.
     /// 6. Fault: access unmapped IOVA, verify EVTQ event.
     #[test]
@@ -2254,7 +2265,7 @@ mod tests {
         assert_eq!(sync_val, 0xCCCC, "CFGI+SYNC completion must be signaled");
 
         // =====================================================================
-        // Step 4: DMA — read/write through SmmuTranslatingMemory
+        // Step 4: DMA — read/write through TranslatingMemory
         // =====================================================================
 
         // Create per-device wrappers.
@@ -2264,7 +2275,13 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, smmu_msi) = {
-            let gm_wrapper = shared_state.create_translating_memory(bus_range, STREAM_ID_BASE, &gm);
+            let translator = shared_state.translator(STREAM_ID_BASE);
+            let gm_wrapper = iommu_common::TranslatingMemory::new_guest_memory(
+                "smmu-translating",
+                translator,
+                bus_range,
+                gm.clone(),
+            );
             let msi = Arc::new(SmmuSignalMsi::new(
                 shared_state.clone(),
                 STREAM_ID_BASE,
@@ -2358,7 +2375,7 @@ mod tests {
     // Save/Restore tests
     // =========================================================================
 
-    /// Verifies that DMA translation through SmmuTranslatingMemory
+    /// Verifies that DMA translation through TranslatingMemory
     /// continues to work after a save/restore cycle.
     ///
     /// This tests the critical restore path: re-syncing SharedStateInner
@@ -2479,9 +2496,14 @@ mod tests {
         // Create translating memory wrapper (holds Arc to same shared state).
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(BUS, BUS);
-        let translating_gm =
-            dev.shared_state()
-                .create_translating_memory(bus_range, STREAM_ID_BASE, &gm);
+        let shared_state = dev.shared_state().clone();
+        let translator = shared_state.translator(STREAM_ID_BASE);
+        let translating_gm = iommu_common::TranslatingMemory::new_guest_memory(
+            "smmu-translating",
+            translator,
+            bus_range,
+            gm.clone(),
+        );
 
         // Write test data and verify DMA read works.
         let test_data = b"save-restore-test";
@@ -2588,6 +2610,113 @@ mod tests {
         assert!(
             !dev.shared_state.cmdq_err_active(),
             "error must be cleared after acknowledge"
+        );
+    }
+
+    /// Per IHI 0070H.a §6.3.28, CMDQ_CONS is RW when CMDQEN==0 and
+    /// CR0ACK.CMDQEN==0, allowing software to initialize it before
+    /// enabling the queue. It becomes RO when CMDQEN==1.
+    #[test]
+    fn test_cmdq_cons_writable_when_disabled() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm.clone(),
+            &SmmuConfig::default(),
+            None,
+            None,
+        );
+
+        // CMDQEN is 0 at reset — CMDQ_CONS should be writable.
+        assert!(!Cr0::from(read32(&mut dev, CR0)).cmdqen());
+
+        // Write a non-zero value to CMDQ_CONS.
+        write32(&mut dev, CMDQ_CONS, 0x05);
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(
+            cons.rd(),
+            0x05,
+            "CMDQ_CONS.RD must accept writes when CMDQEN==0"
+        );
+
+        // Now enable CMDQEN — CMDQ_CONS should become read-only.
+        let cmdq_base = QueueBase::new()
+            .with_log2size(5)
+            .with_addr_bits(0x20_0000u64 >> 5);
+        write64(&mut dev, CMDQ_BASE, cmdq_base.into());
+        // Re-init CONS to 0 before enabling (required by spec).
+        write32(&mut dev, CMDQ_CONS, 0);
+        write32(&mut dev, CMDQ_PROD, 0);
+        write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).cmdqen());
+
+        // Writes to CMDQ_CONS while CMDQEN==1 must be ignored.
+        write32(&mut dev, CMDQ_CONS, 0x10);
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 0, "CMDQ_CONS must be read-only when CMDQEN==1");
+    }
+
+    /// Per IHI 0070H.a §4.7.3, CMD_SYNC with CS=0b11 is reserved and
+    /// must cause CERROR_ILL. The SMMU should stop consuming commands
+    /// and toggle GERROR.CMDQ_ERR.
+    #[test]
+    fn test_cmd_sync_reserved_cs_causes_cerror_ill() {
+        use crate::spec::commands::CmdEntry;
+        use crate::spec::commands::CmdOpcode;
+        use crate::spec::commands::CmdSync;
+
+        let gm = GuestMemory::allocate(0x40_0000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm.clone(),
+            &SmmuConfig::default(),
+            None,
+            None,
+        );
+
+        const CMDQ_GPA: u64 = 0x20_0000;
+
+        // Set up CMDQ.
+        let cmdq_base = QueueBase::new()
+            .with_log2size(5)
+            .with_addr_bits(CMDQ_GPA >> 5);
+        write64(&mut dev, CMDQ_BASE, cmdq_base.into());
+        write32(&mut dev, CMDQ_PROD, 0);
+        write32(&mut dev, CMDQ_CONS, 0);
+
+        // Enable CMDQ.
+        write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).cmdqen());
+
+        // Write a CMD_SYNC with CS=0b11 (reserved).
+        let bad_sync = CmdEntry {
+            qw0: CmdSync::new()
+                .with_opcode(CmdOpcode::CMD_SYNC.0)
+                .with_cs(0b11) // Reserved — must cause CERROR_ILL
+                .into(),
+            qw1: 0,
+        };
+        let cmd_addr = CMDQ_GPA;
+        gm.write_plain(cmd_addr, &bad_sync).expect("write cmd");
+
+        // Advance PROD to trigger processing.
+        write32(&mut dev, CMDQ_PROD, 1);
+
+        // GERROR.CMDQ_ERR should now be active (toggled != GERRORN).
+        let gerror = Gerror::from(read32(&mut dev, GERROR));
+        let gerrorn = Gerror::from(read32(&mut dev, GERRORN));
+        assert_ne!(
+            gerror.cmdq_err(),
+            gerrorn.cmdq_err(),
+            "GERROR.CMDQ_ERR must be active after CS=0b11"
+        );
+
+        // CMDQ_CONS.ERR must be CERROR_ILL (1).
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(
+            cons.err(),
+            CmdqError::CERROR_ILL.0,
+            "CMDQ_CONS.ERR must be CERROR_ILL"
         );
     }
 }

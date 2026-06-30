@@ -5,6 +5,8 @@
 
 use super::PciCapability;
 use crate::spec::caps::CapabilityId;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use std::fmt::Debug;
 use zerocopy::Immutable;
@@ -68,16 +70,17 @@ where
         size_of::<T>()
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
-        if offset as usize + 4 <= self.len() {
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        let dword_value = if offset as usize + 4 <= self.len() {
             let offset = offset.into();
             u32::from_ne_bytes(self.data.as_bytes()[offset..offset + 4].try_into().unwrap())
         } else {
             !0
-        }
+        };
+        value.set(dword_value);
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
         tracelimit::warn_ratelimited!(
             label = ?self.label,
             ?offset,
