@@ -37,7 +37,7 @@ pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::ino_t {
 
 /// Implements inode callbacks for virtio-fs.
 pub struct VirtioFsInode {
-    volume: Arc<LxVolume>,
+    pub(crate) volume: Arc<LxVolume>,
     /// Identifies which aggregated volume this inode belongs to. Inode numbers
     /// are only unique within a volume, so this is needed to key the stable
     /// inode-number map when a single file system exposes multiple roots, and

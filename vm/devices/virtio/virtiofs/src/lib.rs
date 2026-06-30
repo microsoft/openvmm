@@ -740,8 +740,15 @@ impl InodeMap {
 
     /// Insert an inode into the map, returning its node ID.
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        // If stable inode numbers are supported, look for the inode by its number.
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
+        // Only consult the stable-inode dedup map when the inode's backing
+        // volume actually has stable file IDs. Volumes without stable IDs
+        // (e.g. FAT) can reuse inode numbers after rename/deletion, so
+        // deduplicating by (volume_id, inode_nr) would alias unrelated files.
+        if let Some(inodes_by_inode_nr) = self
+            .inodes_by_inode_nr
+            .as_mut()
+            .filter(|_| inode.volume.supports_stable_file_id())
+        {
             match inodes_by_inode_nr.entry((inode.volume_id(), inode.inode_nr())) {
                 Entry::Occupied(entry) => {
                     // Inode found; increment its count and return the existing FUSE node ID.

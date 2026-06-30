@@ -405,6 +405,45 @@ impl LxVolume {
             Default::default(),
         )?;
 
+        // Emulate Linux rename semantics that NTFS enforces natively but FAT/exFAT does not.
+        if !self
+            .state
+            .fs_context
+            .compatibility_flags
+            .supports_posix_unlink_rename()
+        {
+            let is_dir = |h: &OwnedHandle| -> lx::Result<bool> {
+                Ok(
+                    util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(h)?
+                        .FileAttributes
+                        & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0
+                        != 0,
+                )
+            };
+            let source_is_dir = is_dir(&handle)?;
+
+            // Reject renaming a directory into its own descendant (EINVAL).
+            if source_is_dir && new_path != path && new_path.starts_with(path) {
+                return Err(lx::Error::EINVAL);
+            }
+
+            // Reject cross-type replacement: file-over-directory (ENOTDIR) or directory-over-file (EISDIR).
+            match self.open_file(new_path, W32Fs::FILE_READ_ATTRIBUTES, Default::default()) {
+                Ok(target_handle) => {
+                    let target_is_dir = is_dir(&target_handle)?;
+                    if source_is_dir && !target_is_dir {
+                        return Err(lx::Error::ENOTDIR);
+                    }
+                    if !source_is_dir && target_is_dir {
+                        return Err(lx::Error::EISDIR);
+                    }
+                }
+                // A missing target is fine; the rename creates it.
+                Err(err) if err.value() == lx::ENOENT => {}
+                Err(err) => return Err(err),
+            }
+        }
+
         let flags = fs::RenameFlags::default();
         let error = match fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags) {
             Ok(_) => return Ok(()),
@@ -425,7 +464,11 @@ impl LxVolume {
                 .compatibility_flags
                 .supports_posix_unlink_rename()
         {
-            match self.open_file(new_path, W32Fs::DELETE, Default::default()) {
+            match self.open_file(
+                new_path,
+                W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
+                Default::default(),
+            ) {
                 Ok(target_handle) => self.delete_file(&target_handle)?,
                 Err(err) => {
                     // ENOENT means the rename can proceed.
@@ -699,6 +742,16 @@ impl LxVolume {
     ) -> lx::Result<OwnedHandle> {
         assert!(path.is_relative() && !path.as_os_str().is_empty());
         self.check_sandbox_enforcement(path)?;
+
+        // Handle filesystems that do not support reparse points.
+        if !self
+            .state
+            .fs_context
+            .compatibility_flags
+            .supports_reparse_points()
+        {
+            return Err(lx::Error::EPERM);
+        }
 
         // Convert the target to its native Windows format.
         let win_target = Path::from_lx(target);
