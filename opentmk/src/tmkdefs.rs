@@ -10,8 +10,8 @@ use thiserror::Error;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
 pub enum TmkError {
     /// Returned when an error occurs in ACPI parsing or handling.
-    #[error("Error occurred in ACPI handling")]
-    AcpiError,
+    #[error("ACPI error: {0}")]
+    AcpiError(AcpiError),
     /// Returned when a memory allocation attempt fails.
     #[error("allocation failed")]
     AllocationFailed,
@@ -228,6 +228,50 @@ pub enum TmkError {
     /// Returned when the operation is not implemented.
     #[error("not implemented")]
     NotImplemented,
+}
+
+/// ACPI-specific errors wrapped by [`TmkError::AcpiError`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
+pub enum AcpiError {
+    /// ACPI table context was not initialized before use.
+    #[error("ACPI table initialization error")]
+    InitializationError,
+    /// UEFI system table was not found.
+    #[error("UEFI system table not found")]
+    UefiSystemTableNotFound,
+    /// RSDP was not found in the UEFI configuration table.
+    #[error("RSDP not found")]
+    RsdpNotFound,
+    /// RSDP structure is invalid or has an unsupported revision.
+    #[error("invalid RSDP structure")]
+    InvalidRsdpStructure,
+    /// XSDT pointer in the RSDP is null.
+    #[error("invalid XSDT")]
+    InvalidXsdt,
+    /// XSDT table structure is invalid.
+    #[error("invalid XSDT structure")]
+    InvalidXsdtStructure,
+    /// MADT pointer is null.
+    #[error("invalid MADT address")]
+    InvalidMadt,
+    /// MADT table structure is invalid.
+    #[error("invalid MADT structure")]
+    InvalidMadtStructure,
+    /// FADT was not found in the XSDT.
+    #[error("FADT not found")]
+    FadtNotFound,
+    /// FADT table structure is invalid or lacks usable shutdown fields.
+    #[error("invalid FADT structure")]
+    InvalidFadtStructure,
+    /// ACPI shutdown operation failed.
+    #[error("ACPI shutdown failed")]
+    ShutdownFailed,
+}
+
+impl From<AcpiError> for TmkError {
+    fn from(err: AcpiError) -> TmkError {
+        TmkError::AcpiError(err)
+    }
 }
 
 /// Result type alias for TMK operations using `TmkError`.
