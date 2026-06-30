@@ -3935,6 +3935,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipmi_kcs"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "chipset_device_resources",
+ "inspect",
+ "ipmi_kcs_resources",
+ "open_enum",
+ "test_with_tracing",
+ "tracelimit",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
+name = "ipmi_kcs_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "vm_resource",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5871,6 +5894,7 @@ dependencies = [
  "guest_watchdog",
  "hyperv_ic",
  "hypervisor_resources",
+ "ipmi_kcs",
  "mesh_worker",
  "missing_dev",
  "net_backend",
@@ -8771,6 +8795,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "ipmi_kcs_resources",
  "jiff",
  "kmsg",
  "kmsg_defs",

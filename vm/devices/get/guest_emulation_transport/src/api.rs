@@ -96,6 +96,7 @@ pub mod platform_settings {
 
         pub firmware_debugging_enabled: bool,
         pub hibernation_enabled: bool,
+        pub ipmi_enabled: bool,
 
         pub suppress_attestation: Option<bool>,
         pub generation_id: Option<[u8; 16]>,
