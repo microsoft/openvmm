@@ -5,15 +5,11 @@
 //!
 //! In firmware-less Linux direct boot there is no UEFI/PCAT firmware to
 //! synthesize SMBIOS tables, so the loader must build them itself. This module
-//! builds a SMBIOS 3.0 entry point (`_SM3_`) and a minimal structure table
+//! builds a SMBIOS 3.1 entry point (`_SM3_`) and a minimal structure table
 //! (Type 0 BIOS, Type 1 System, Type 127 End-of-table). The caller decides
 //! where the structure table lives in guest memory and how the entry point is
 //! delivered to the guest (x86 F-segment scan vs. aarch64 EFI configuration
 //! table).
-//!
-//! The structures use plain `#[repr(C)]` with `zerocopy` little-endian integer
-//! wrappers (which are alignment-1), so they are naturally packed and free of
-//! padding while requiring no `unsafe`.
 
 mod spec;
 
@@ -60,8 +56,8 @@ pub struct SmbiosSystemInfo<'a> {
     pub uuid: [u8; 16],
 }
 
-/// Aggregate of the SMBIOS structures to build. `Default` yields the Hyper-V /
-/// mu_msvm default identity with a nil UUID.
+/// Aggregate of the SMBIOS structures to build. The caller supplies all of the
+/// identity strings and the system UUID.
 #[derive(Debug, Copy, Clone)]
 pub struct SmbiosTables<'a> {
     /// Type 0 BIOS Information.
@@ -70,7 +66,7 @@ pub struct SmbiosTables<'a> {
     pub system: SmbiosSystemInfo<'a>,
 }
 
-/// Size in bytes of the SMBIOS 3.0 entry point (`_SM3_`). Callers that place
+/// Size in bytes of the SMBIOS 3.1 entry point (`_SM3_`). Callers that place
 /// the entry point and structure table separately (e.g. the aarch64 EFI
 /// configuration-table path) use this to reserve space for the entry point
 /// before knowing the structure table's address.
@@ -107,7 +103,7 @@ impl StringSet {
             return 0;
         }
         self.strings.push(s.to_string());
-        self.strings.len() as u8
+        self.strings.len().try_into().unwrap()
     }
 
     /// Appends the NUL-terminated string set to `out`, ending with the extra
@@ -220,7 +216,7 @@ pub fn build(tables: &SmbiosTables<'_>, table_gpa: u64) -> BuiltSmbios {
         docrev: 0,
         revision: 0x01,
         reserved: 0,
-        max_size: (structure_table.len() as u32).into(),
+        max_size: u32::try_from(structure_table.len()).unwrap().into(),
         table_addr: table_gpa.into(),
     };
     let sum = entry_point
