@@ -191,8 +191,6 @@ struct WhpVp {
     vtl2_enable: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    scan_irr: AtomicBool,
 }
 
 #[derive(InspectMut)]
@@ -362,7 +360,6 @@ impl WhpVp {
             vtl2_enable: vtl2_enabled.into(),
             vp_info: vp,
             waker: Default::default(),
-            scan_irr: true.into(),
         }
     }
 }
@@ -401,8 +398,8 @@ struct Vplc {
     extint_pending: AtomicBool,
     #[inspect(with = "|x| x.lock().is_some()")]
     start_vp_request: Mutex<Option<VpStartRequest>>,
-    #[inspect(skip)]
     start_vp: AtomicBool,
+    scan_irr: AtomicBool,
 }
 
 impl Vplc {
@@ -413,6 +410,7 @@ impl Vplc {
             extint_pending: false.into(),
             start_vp: false.into(),
             start_vp_request: Default::default(),
+            scan_irr: false.into(),
         }
     }
 
@@ -428,12 +426,14 @@ impl Vplc {
             extint_pending,
             start_vp_request,
             start_vp,
+            scan_irr,
         } = self;
         message_queues.clear();
         check_queues.store(false, Ordering::Relaxed);
         extint_pending.store(false, Ordering::Relaxed);
         *start_vp_request.lock() = None;
         start_vp.store(false, Ordering::Relaxed);
+        scan_irr.store(false, Ordering::Relaxed);
     }
 }
 
@@ -476,6 +476,12 @@ impl<'a> WhpVpRef<'a> {
         if let Some(waker) = &*self.vp().waker.read() {
             waker.wake_by_ref();
         }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn wake_for_apic(&self, vtl: Vtl) {
+        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
+        self.wake();
     }
 
     // Enqueues a message to be posted when the associated message slot is free.
@@ -1807,8 +1813,8 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
         // Clear any pending VTL2 wake signal, since VTL2 is now back in
         // startup suspend and any prior wake request is stale. Per-VP signals
-        // that are not VTL2-specific (such as `scan_irr`) are intentionally
-        // left intact, as they may carry pending VTL0 work.
+        // that are not VTL2-specific are intentionally left intact, as they may
+        // carry pending VTL0 work.
         self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
@@ -1926,9 +1932,7 @@ mod x86 {
             move |vec: u32, auto_eoi| match &self.vtlp(vtl).lapic {
                 LocalApicKind::Emulated(lapic) => {
                     lapic.synic_interrupt(vp, vec as u8, auto_eoi, |vp_index| {
-                        self.vp(vp_index)
-                            .expect("apic emulator passes valid vp index")
-                            .wake()
+                        self.vp(vp_index).unwrap().wake_for_apic(vtl);
                     });
                 }
                 LocalApicKind::Offloaded => unreachable!(),
