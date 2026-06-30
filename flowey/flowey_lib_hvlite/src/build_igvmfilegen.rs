@@ -21,7 +21,8 @@ pub enum IgvmfilegenOutput {
         #[serde(rename = "igvmfilegen.exe")]
         exe: PathBuf,
         #[serde(rename = "igvmfilegen.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 
