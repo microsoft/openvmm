@@ -19,6 +19,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use net_backend::BufferAccess;
+use net_backend::L3Protocol;
 use net_backend::L4Protocol;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
@@ -93,6 +94,7 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 /// Configuration for a port to forward from the host to the guest.
@@ -121,6 +123,10 @@ impl ConsommeEndpoint {
                 port_recv: None,
                 port_forwards: Vec::new(),
             }))),
+            rx_offload_support: net_backend::RxOffloadSupport {
+                lro4: false,
+                lro6: false,
+            },
         }
     }
 
@@ -133,6 +139,10 @@ impl ConsommeEndpoint {
                 port_recv: None,
                 port_forwards: ports,
             }))),
+            rx_offload_support: net_backend::RxOffloadSupport {
+                lro4: false,
+                lro6: false,
+            },
         }
     }
 
@@ -147,6 +157,10 @@ impl ConsommeEndpoint {
                     port_recv: None,
                     port_forwards: Vec::new(),
                 }))),
+                rx_offload_support: net_backend::RxOffloadSupport {
+                    lro4: false,
+                    lro6: false,
+                },
             },
             ConsommeControl { send },
         )
@@ -307,6 +321,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         "consomme"
     }
 
+    fn set_rx_offload_support(&mut self, support: net_backend::RxOffloadSupport) {
+        self.rx_offload_support = support;
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,
@@ -327,6 +345,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             },
             stats: Default::default(),
             driver: config.driver,
+            rx_offload_support: self.rx_offload_support,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -392,6 +411,7 @@ pub struct ConsommeQueue {
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -441,6 +461,7 @@ impl ConsommeQueue {
                 stats: &mut self.stats,
                 driver: &self.driver,
                 pool,
+                rx_offload_support: self.rx_offload_support,
             }))
     }
 
@@ -463,6 +484,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        rx_offload_support: self.rx_offload_support,
                     }),
                     message,
                 ),
@@ -773,6 +795,7 @@ struct Client<'a> {
     stats: &'a mut Stats,
     driver: &'a dyn Driver,
     pool: &'a mut dyn BufferAccess,
+    rx_offload_support: net_backend::RxOffloadSupport,
 }
 
 /// Minimal client for consomme operations that don't need BufferAccess
@@ -808,28 +831,58 @@ impl consomme::Client for Client<'_> {
         };
         let max = self.pool.capacity(rx_id) as usize;
         if data.len() <= max {
+            let l4_protocol = if checksum.tcp {
+                L4Protocol::Tcp
+            } else if checksum.udp {
+                L4Protocol::Udp
+            } else {
+                L4Protocol::Unknown
+            };
+
+            // Determine L3 protocol and header lengths for GSO metadata.
+            // Parse the Ethernet header to find IP version, then derive
+            // l2_len and l3_len from the packet.
+            let (l3_protocol, l2_len, l3_len, l4_len) = parse_rx_header_lengths(data, checksum);
+
+            let lro_allowed = match l3_protocol {
+                L3Protocol::Ipv4 => self.rx_offload_support.lro4,
+                L3Protocol::Ipv6 => self.rx_offload_support.lro6,
+                L3Protocol::Unknown => false,
+            };
+            let gso_size = if lro_allowed {
+                checksum.tso.unwrap_or(0)
+            } else {
+                0
+            };
+
             self.pool.write_packet(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
                     len: data.len(),
-                    ip_checksum: if checksum.ipv4 {
+                    ip_checksum: if checksum.tso.is_some() {
+                        // TSO packets have partial/coalesced checksums;
+                        // the guest must recompute per-segment checksums
+                        // via NEEDS_CSUM.
+                        RxChecksumState::Unknown
+                    } else if checksum.ipv4 {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_checksum: if checksum.tcp || checksum.udp {
+                    l4_checksum: if checksum.tso.is_some() {
+                        RxChecksumState::Unknown
+                    } else if checksum.tcp || checksum.udp {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_protocol: if checksum.tcp {
-                        L4Protocol::Tcp
-                    } else if checksum.udp {
-                        L4Protocol::Udp
-                    } else {
-                        L4Protocol::Unknown
-                    },
+                    l4_protocol,
+                    l3_protocol,
+                    gso_size,
+                    l2_len,
+                    l3_len,
+                    l4_len,
                     vlan: None,
                 },
                 data,
@@ -847,5 +900,52 @@ impl consomme::Client for Client<'_> {
         } else {
             0
         }
+    }
+}
+
+/// Parse an Ethernet frame to extract L3 protocol, l2_len, l3_len, and l4_len.
+///
+/// Used to populate `RxMetadata` GSO fields on the receive path so that
+/// the virtio-net device can construct proper virtio headers for LRO packets.
+fn parse_rx_header_lengths(data: &[u8], checksum: &ChecksumState) -> (L3Protocol, u8, u16, u8) {
+    const ETHERTYPE_IPV4: u16 = 0x0800;
+    const ETHERTYPE_IPV6: u16 = 0x86DD;
+
+    if data.len() < 14 {
+        return (L3Protocol::Unknown, 0, 0, 0);
+    }
+
+    let ethertype = u16::from_be_bytes([data[12], data[13]]);
+    let l2_len: u8 = 14;
+
+    match ethertype {
+        ETHERTYPE_IPV4 if checksum.ipv4 && data.len() >= l2_len as usize + 20 => {
+            let ihl = (data[l2_len as usize] & 0x0f) as u16 * 4;
+            let l3_len = ihl.max(20);
+            let l4_start = l2_len as usize + l3_len as usize;
+            // Derive TCP header length from data offset field if TCP
+            let l4_len = if checksum.tcp && data.len() >= l4_start + 20 {
+                let data_offset = (data[l4_start + 12] >> 4) * 4;
+                data_offset.max(20)
+            } else {
+                0
+            };
+            (L3Protocol::Ipv4, l2_len, l3_len, l4_len)
+        }
+        ETHERTYPE_IPV6 if data.len() >= l2_len as usize + 40 => {
+            // Base IPv6 header only. Extension headers are not parsed, but
+            // this is safe because consomme never generates IPv6 extension
+            // headers on the receive path.
+            let l3_len: u16 = 40;
+            let l4_start = l2_len as usize + l3_len as usize;
+            let l4_len = if checksum.tcp && data.len() >= l4_start + 20 {
+                let data_offset = (data[l4_start + 12] >> 4) * 4;
+                data_offset.max(20)
+            } else {
+                0
+            };
+            (L3Protocol::Ipv6, l2_len, l3_len, l4_len)
+        }
+        _ => (L3Protocol::Unknown, 0, 0, 0),
     }
 }

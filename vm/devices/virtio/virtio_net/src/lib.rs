@@ -268,6 +268,8 @@ impl VirtioDevice for Device {
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -505,10 +507,21 @@ struct ActiveState {
 }
 
 impl ActiveState {
-    fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
+    fn new(
+        mem: GuestMemory,
+        rx_queue_size: u16,
+        tx_queue_size: u16,
+        negotiated_features: NetworkFeaturesBank0,
+    ) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(
+                mem,
+                rx_queue_size,
+                negotiated_features.guest_csum(),
+                negotiated_features.guest_tso4(),
+                negotiated_features.guest_tso6(),
+            ),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
         }
@@ -635,6 +648,7 @@ impl Device {
             guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
+            negotiated_features,
         );
         let worker = Worker {
             virtio_state,
@@ -739,6 +753,14 @@ impl Coordinator {
         for worker in &mut self.workers {
             worker.task_mut().state = None;
         }
+
+        let features = self.workers[0].state_mut().unwrap().negotiated_features;
+        c_state
+            .endpoint
+            .set_rx_offload_support(net_backend::RxOffloadSupport {
+                lro4: features.guest_csum() && features.guest_tso4(),
+                lro6: features.guest_csum() && features.guest_tso6(),
+            });
 
         let queue_config = (0..self.workers.len())
             .map(|_| QueueConfig {

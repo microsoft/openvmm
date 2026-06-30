@@ -231,6 +231,10 @@ impl Endpoint for PacketCaptureEndpoint {
         self.current().endpoint_type()
     }
 
+    fn set_rx_offload_support(&mut self, support: net_backend::RxOffloadSupport) {
+        self.current_mut().set_rx_offload_support(support);
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,

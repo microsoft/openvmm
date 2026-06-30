@@ -107,6 +107,9 @@ pub trait Endpoint: Send + Sync + InspectMut {
         TxOffloadSupport::default()
     }
 
+    /// Sets the frontend's receive offload capabilities to the backend.
+    fn set_rx_offload_support(&mut self, _support: RxOffloadSupport) {}
+
     /// Specifies parameters related to supporting multiple queues.
     fn multiqueue_support(&self) -> MultiQueueSupport {
         MultiQueueSupport {
@@ -167,6 +170,18 @@ pub struct TxOffloadSupport {
     pub tso: bool,
     /// UDP segmentation offload (USO).
     pub uso: bool,
+}
+
+/// The set of supported receive offloads, advertised by the frontend.
+///
+/// Backends use this to decide whether they may deliver coalesced
+/// (LRO) packets via [`RxMetadata::gso_size`].
+#[derive(Debug, Copy, Clone, Default)]
+pub struct RxOffloadSupport {
+    /// The frontend supports receiving LRO packets over IPv4 TCP.
+    pub lro4: bool,
+    /// The frontend supports receiving LRO packets over IPv6 TCP.
+    pub lro6: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -334,6 +349,17 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// The L3 protocol (IPv4/IPv6). Used for GSO/LRO metadata.
+    pub l3_protocol: L3Protocol,
+    /// L2 (Ethernet) header length in bytes (e.g. 14, or 18 with VLAN).
+    pub l2_len: u8,
+    /// L3 (IP) header length in bytes.
+    pub l3_len: u16,
+    /// L4 (TCP/UDP) header length in bytes.
+    pub l4_len: u8,
+    /// If non-zero, this is a GSO/LRO packet and this value is the MSS
+    /// (maximum segment size) that should be advertised to the guest.
+    pub gso_size: u16,
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
     /// is populated. Only applies when traffic is being received over an L2 connection,
     /// so L3-only or above traffic will not use this option.
@@ -348,6 +374,11 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            l3_protocol: L3Protocol::Unknown,
+            l2_len: 0,
+            l3_len: 0,
+            l4_len: 0,
+            gso_size: 0,
             vlan: None,
         }
     }
@@ -637,6 +668,10 @@ impl DisconnectableEndpoint {
 impl Endpoint for DisconnectableEndpoint {
     fn endpoint_type(&self) -> &'static str {
         self.current().endpoint_type()
+    }
+
+    fn set_rx_offload_support(&mut self, support: RxOffloadSupport) {
+        self.current_mut().set_rx_offload_support(support);
     }
 
     async fn get_queues(
