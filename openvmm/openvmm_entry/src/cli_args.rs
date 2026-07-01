@@ -249,6 +249,12 @@ Examples:
     #[clap(long)]
     pub hv: bool,
 
+    /// Boot UEFI without exposing hypervisor (HV#1) enlightenments. Required to
+    /// boot UEFI without hypervisor support (e.g. aarch64 KVM). Requires
+    /// `--no-vmbus` since VMBus depends on the hypervisor.
+    #[clap(long, requires("no_vmbus"), conflicts_with_all = ["hv", "vtl2", "get", "pcat"])]
+    pub no_hv: bool,
+
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
     /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
     /// This flag selects the legacy DT-only path. Rejected on x86.
