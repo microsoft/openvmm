@@ -223,6 +223,21 @@ pub struct ConfigSpaceCommonHeaderEmulator<const N: usize> {
     state: ConfigSpaceCommonHeaderEmulatorState<N>,
 }
 
+impl<const N: usize> Drop for ConfigSpaceCommonHeaderEmulator<N> {
+    fn drop(&mut self) {
+        // Release any live BAR intercept registrations when the device's
+        // config space is torn down (e.g. a PCIe hot-remove). The BAR intercept
+        // controls are owned here in `mapped_memory`; without this, a removed
+        // device's BAR ranges stay registered in the chipset's shared range
+        // map, and a subsequent device that reuses the same GPA (a hot-add on
+        // the same port) fails to install its intercept with an
+        // IoRangeConflict, leaving its BAR undispatched (guest reads all-1s).
+        for mapping in self.mapped_memory.iter_mut().flatten() {
+            mapping.unmap_from_guest();
+        }
+    }
+}
+
 /// Type alias for Type 0 common header emulator (6 BARs)
 pub type ConfigSpaceCommonHeaderEmulatorType0 =
     ConfigSpaceCommonHeaderEmulator<{ header_type_consts::TYPE0_BAR_COUNT }>;
@@ -961,7 +976,15 @@ impl BarMemoryKind {
 
     fn unmap_from_guest(&mut self) {
         match self {
-            BarMemoryKind::Intercept(control) => control.unmap(),
+            BarMemoryKind::Intercept(control) => {
+                // Some `ControlMmioIntercept` implementations are not idempotent
+                // and panic if `unmap()` is called while the region is not
+                // mapped -- which happens when a device is torn down before the
+                // guest ever enables memory space. Only unmap when mapped.
+                if control.addr().is_some() {
+                    control.unmap();
+                }
+            }
             BarMemoryKind::SharedMem(control) => control.unmap_from_guest(),
             BarMemoryKind::Dummy => {}
         }
@@ -1957,6 +1980,9 @@ mod tests {
     use chipset_device::pci::ByteEnabledDwordRead;
     use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigByteEnable;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
     fn create_type0_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType0Emulator {
         ConfigSpaceType0Emulator::new(
@@ -3092,5 +3118,112 @@ mod tests {
         // Low nibble should retain BAR attribute bits from the mask while
         // higher address bits should come from the guest write and BAR mask.
         assert_eq!(common_emu.base_addresses()[0], 0x1234_5678);
+    }
+
+    // A `ControlMmioIntercept` test double that records map/unmap. Like some
+    // real intercept implementations (e.g. the PCIe test intercept), its
+    // `unmap()` panics if called while not mapped -- so these tests also verify
+    // that teardown never unmaps a BAR that was never mapped.
+    struct TrackingBar {
+        len: u64,
+        addr: Option<u64>,
+        mapped: Arc<AtomicBool>,
+    }
+
+    impl ControlMmioIntercept for TrackingBar {
+        fn region_name(&self) -> &str {
+            "bar0"
+        }
+        fn map(&mut self, addr: u64) {
+            self.addr = Some(addr);
+            self.mapped.store(true, Ordering::SeqCst);
+        }
+        fn unmap(&mut self) {
+            assert!(self.addr.is_some(), "unmap called while not mapped");
+            self.addr = None;
+            self.mapped.store(false, Ordering::SeqCst);
+        }
+        fn addr(&self) -> Option<u64> {
+            self.addr
+        }
+        fn len(&self) -> u64 {
+            self.len
+        }
+        fn offset_of(&self, addr: u64) -> Option<u64> {
+            let base = self.addr?;
+            (base..base + self.len).contains(&addr).then(|| addr - base)
+        }
+    }
+
+    fn config_space_with_intercept_bar(
+        mapped: Arc<AtomicBool>,
+    ) -> ConfigSpaceCommonHeaderEmulatorType0 {
+        let bars = DeviceBars::new().bar0(
+            0x1000,
+            BarMemoryKind::Intercept(Box::new(TrackingBar {
+                len: 0x1000,
+                addr: None,
+                mapped,
+            })),
+        );
+        ConfigSpaceCommonHeaderEmulatorType0::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            vec![],
+            bars,
+        )
+    }
+
+    // Regression test for a PCIe hot-add-after-remove failure: when a device's
+    // config space is dropped (e.g. a hot-removed controller being torn down),
+    // its BAR intercept registrations must be released. Otherwise the stale
+    // range stays in the chipset's shared range map and a subsequent device
+    // that reuses the same GPA fails to install its intercept, leaving its BAR
+    // undispatched (guest reads all-1s -> stornvme FindAdapter reads CAP=~0).
+    #[test]
+    fn dropping_config_space_unmaps_bar_intercepts() {
+        let mapped = Arc::new(AtomicBool::new(false));
+        let mut common_emu = config_space_with_intercept_bar(mapped.clone());
+
+        // Program BAR0's base address and enable memory space so the BAR
+        // intercept is mapped into the chipset's range map.
+        common_emu.set_base_addresses(&[0x2000_0000, 0, 0, 0, 0, 0]);
+        common_emu.update_mmio_enabled(true);
+        assert!(
+            mapped.load(Ordering::SeqCst),
+            "BAR intercept should be mapped once memory space is enabled"
+        );
+
+        // Dropping the config space (device teardown / hot-remove) must unmap
+        // the BAR intercept so its range is released.
+        drop(common_emu);
+        assert!(
+            !mapped.load(Ordering::SeqCst),
+            "dropping config space must unmap its BAR intercepts"
+        );
+    }
+
+    // A device can be torn down before the guest ever enables memory space (so
+    // the BAR was never mapped). Dropping its config space must not attempt to
+    // unmap the never-mapped intercept -- which would panic for intercept impls
+    // whose `unmap()` is not idempotent (as `TrackingBar::unmap` asserts here).
+    #[test]
+    fn dropping_config_space_without_mmio_enabled_does_not_unmap() {
+        let mapped = Arc::new(AtomicBool::new(false));
+        let common_emu = config_space_with_intercept_bar(mapped.clone());
+
+        // Never enabled memory space -> BAR never mapped. Dropping must be a
+        // no-op for the intercept and must not panic.
+        drop(common_emu);
+        assert!(!mapped.load(Ordering::SeqCst));
     }
 }
