@@ -102,11 +102,19 @@ impl LxVolume {
         )?;
 
         // Determine the capabilities of the file system.
-        let fs_context = fs::FsContext::new(&root, fs::LX_DRVFS_DISABLE_NONE, false)?;
+        let mut fs_context = fs::FsContext::new(&root, fs::LX_DRVFS_DISABLE_NONE, false)?;
 
         let mut options = options.clone();
         if !fs_context.compatibility_flags.supports_metadata() {
             options.metadata = false;
+        }
+
+        // Without metadata, ACL-derived modes plus a default owner deny the guest write access to
+        // its own files. Use the permissive drvfs default instead; the host ACL is the real gate.
+        if !options.metadata {
+            fs_context
+                .compatibility_flags
+                .set_supports_permission_mapping(false);
         }
 
         if !fs_context.compatibility_flags.supports_case_sensitive_dir() {
