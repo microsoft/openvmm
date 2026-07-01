@@ -10,6 +10,7 @@ rust-version.workspace = true
 aarch64defs.workspace = true
 igvm.workspace = true
 loader_defs.workspace = true
+product_policy.workspace = true
 memory_range.workspace = true
 page_table = {workspace = true, features = ["tracing"] }
 hvdef.workspace = true

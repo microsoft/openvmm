@@ -10,6 +10,7 @@ rust-version.workspace = true
 igvmfilegen_config.workspace = true
 loader.workspace = true
 loader_defs.workspace = true
+product_policy.workspace = true
 
 hvdef.workspace = true
 

@@ -200,6 +200,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
+product_policy = { path = "openhcl/product_policy" }
 openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 sidecar_client = { path = "openhcl/sidecar_client" }

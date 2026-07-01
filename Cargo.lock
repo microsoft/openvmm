@@ -3749,6 +3749,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "product_policy",
  "range_map_vec",
  "serde",
  "serde_json",
@@ -3765,6 +3766,7 @@ dependencies = [
 name = "igvmfilegen_config"
 version = "0.0.0"
 dependencies = [
+ "product_policy",
  "serde",
  "serde_json",
 ]
@@ -4214,6 +4216,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "product_policy",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -6674,6 +6677,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "product_policy"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "inspect",
+ "mesh_protobuf",
+ "paste",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "profiler_worker"
 version = "0.0.0"
 dependencies = [
@@ -8803,6 +8819,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "product_policy",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",
