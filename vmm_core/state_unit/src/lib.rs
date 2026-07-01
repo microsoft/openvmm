@@ -284,8 +284,25 @@ impl UnitHandle {
     fn remove_if(&mut self) {
         if let Some(inner) = self.inner.take().and_then(|inner| inner.upgrade()) {
             let mut inner = inner.lock();
-            inner.units.remove(&self.id.id).expect("unit exists");
+            let id = self.id.id;
+            let unit = inner.units.remove(&id).expect("unit exists");
             inner.names.remove(&self.id.name).expect("unit exists");
+            // Prune the bidirectional dependency edges that `build` created,
+            // so that no remaining unit still references this removed unit's
+            // id. A dangling reference would later panic when a unit is indexed
+            // by this id (e.g. during inspect or a state transition). A
+            // referenced unit may itself already have been removed, so tolerate
+            // a missing entry.
+            for dep in unit.dependencies {
+                if let Some(dep_unit) = inner.units.get_mut(&dep) {
+                    dep_unit.dependents.retain(|&d| d != id);
+                }
+            }
+            for dep in unit.dependents {
+                if let Some(dep_unit) = inner.units.get_mut(&dep) {
+                    dep_unit.dependencies.retain(|&d| d != id);
+                }
+            }
         }
     }
 }
@@ -1188,6 +1205,66 @@ mod tests {
         a_val.store(false, Ordering::Relaxed);
 
         units.restore(state).await.unwrap();
+    }
+
+    /// Asserts every dependency/dependent edge points at a unit that still
+    /// exists in the set.
+    fn assert_no_dangling_edges(inner: &super::Inner) {
+        for unit in inner.units.values() {
+            for id in unit.dependencies.iter().chain(&unit.dependents) {
+                assert!(
+                    inner.units.contains_key(id),
+                    "dangling edge to id {id} from unit {}",
+                    unit.name
+                );
+            }
+        }
+    }
+
+    /// Removing a unit must prune the reverse dependency edges that `build`
+    /// created, so no remaining unit references the removed unit's id.
+    /// Regression test for a panic ("no entry found for key") when inspecting
+    /// or transitioning state after a unit with dependency edges was removed
+    /// (e.g. a surprise NVMe hot-remove).
+    #[async_test]
+    async fn test_remove_prunes_dependency_edges(driver: DefaultDriver) {
+        let units = StateUnits::new();
+
+        let a = units
+            .add("a")
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap();
+
+        let b = units
+            .add("b")
+            .depends_on(a.handle())
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap();
+
+        // `a` now lists `b` as a dependent and `b` lists `a` as a dependency.
+        {
+            let inner = units.inner.lock();
+            assert!(inner.units.values().any(|u| !u.dependents.is_empty()));
+            assert_no_dangling_edges(&inner);
+        }
+
+        // Removing `b` must prune the reverse edge from `a`.
+        b.remove().await;
+        {
+            let inner = units.inner.lock();
+            assert_no_dangling_edges(&inner);
+            assert!(
+                inner.units.values().all(|u| u.dependents.is_empty()),
+                "a still references removed dependent b"
+            );
+        }
+
+        // Removing the remaining unit leaves the set empty.
+        a.remove().await;
+        {
+            let inner = units.inner.lock();
+            assert!(inner.units.is_empty());
+        }
     }
 
     #[async_test]
