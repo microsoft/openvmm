@@ -263,6 +263,7 @@ pub enum Aarch64Register {
     Pc(u64),
     X0(u64),
     X1(u64),
+    X2(u64),
     Cpsr(u64),
     VbarEl1(u64),
     Ttbr0El1(u64),
@@ -297,6 +298,14 @@ impl From<Aarch64Register> for igvm::registers::AArch64Register {
             Aarch64Register::Pc(v) => igvm_reg::Pc(v),
             Aarch64Register::X0(v) => igvm_reg::X0(v),
             Aarch64Register::X1(v) => igvm_reg::X1(v),
+            // TODO: The igvm crate's `AArch64Register` enum does not yet have an
+            // `X2` variant. X2 is only set on the OpenVMM direct-boot path (to
+            // signal a non-Hyper-V platform to UEFI), never when building IGVM
+            // files, so this conversion is never reached. Map it properly once a
+            // newer igvm crate exposes X2.
+            Aarch64Register::X2(_) => {
+                unreachable!("X2 is not supported when building IGVM files")
+            }
             Aarch64Register::Cpsr(v) => igvm_reg::Cpsr(v),
             Aarch64Register::SctlrEl1(v) => igvm_reg::SctlrEl1(v),
             Aarch64Register::TcrEl1(v) => igvm_reg::TcrEl1(v),

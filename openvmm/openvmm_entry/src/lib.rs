@@ -1265,7 +1265,13 @@ async fn vm_config_from_command_line(
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
 
-        with_hv = true;
+        if opt.no_hv && cfg!(guest_arch = "x86_64") {
+            anyhow::bail!(
+                "--no-hv is not supported on x86_64; the firmware always runs under Hyper-V"
+            );
+        }
+
+        with_hv = !opt.no_hv;
 
         let firmware = fs_err::File::open(
             (opt.uefi_firmware.0)
@@ -1295,6 +1301,7 @@ async fn vm_config_from_command_line(
             bios_guid,
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
+            enable_hv: !opt.no_hv,
         };
     } else {
         // Linux Direct
