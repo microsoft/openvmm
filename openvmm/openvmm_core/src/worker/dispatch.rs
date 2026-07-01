@@ -3846,9 +3846,9 @@ impl LoadedVm {
                                 })?;
 
                             // DPC is triggered by an uncorrectable error. When
-                            // status bits are supplied, record them as the AER
+                            // status bits are supplied, record them as the
                             // uncorrectable error on the source device;
-                            // otherwise trigger DPC without touching AER state.
+                            // otherwise trigger DPC without recording an error.
                             let aer = uncorrectable_status_bits.map(|status_bits| {
                                 pcie::PcieAerInjectRequest {
                                     kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
@@ -3862,10 +3862,9 @@ impl LoadedVm {
                             if complete {
                                 // Immediately clear RP Busy, modeling the Root
                                 // Port firmware completing recovery. Real
-                                // firmware clears RP Busy in microseconds; a
-                                // guest (e.g. Linux dpc_wait_rp_inactive) waits
-                                // only ~2s, so a separate manual completion
-                                // would time out.
+                                // firmware clears RP Busy in microseconds,
+                                // whereas a separate manual completion could be
+                                // too slow and let the guest time out.
                                 rc.inject_dpc_complete(target)?;
                             }
 

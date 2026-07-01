@@ -46,11 +46,13 @@ pub struct PcieDpcInjectRequest {
     /// triggering DPC (phase 2 folded into the same call), modeling the Root
     /// Port firmware completing recovery.
     pub complete: bool,
-    /// When set, the target device's Uncorrectable Error Status is updated with
-    /// these bits (and the handling Root Port records the error message), as if
-    /// the uncorrectable error that triggered DPC was reported through AER.
+    /// When set, the target (source) device's Uncorrectable Error Status is
+    /// updated with these bits, as if it detected the uncorrectable error that
+    /// triggered DPC. The containing port itself is not updated (DPC contains
+    /// the error); the event is reflected in the containing port's DPC
+    /// registers.
     pub uncorrectable_status_bits: Option<u32>,
-    /// AER Header Log recorded on the source device alongside
+    /// Header Log recorded on the source device alongside
     /// `uncorrectable_status_bits`.
     pub header_log: [u32; 4],
 }
