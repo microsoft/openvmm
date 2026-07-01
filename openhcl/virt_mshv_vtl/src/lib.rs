@@ -242,7 +242,6 @@ struct UhPartitionInner {
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
-    secure_avic: bool,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1925,18 +1924,6 @@ impl<'a> UhProtoPartition<'a> {
             params.hide_isolation,
         );
 
-        // Secure AVIC is an SNP-only (x86_64) feature; read it from the
-        // SEV_STATUS MSR so it can be enforced by product policy later.
-        #[cfg(guest_arch = "x86_64")]
-        let secure_avic = isolation == IsolationType::Snp
-            && x86defs::snp::SevStatusMsr::from(
-                MsrDevice::new(0)
-                    .expect("open msr")
-                    .read_msr(x86defs::X86X_AMD_MSR_SEV)
-                    .expect("read msr"),
-            )
-            .secure_avic();
-
         #[cfg(guest_arch = "x86_64")]
         let caps = UhPartition::construct_capabilities(
             params.topology,
@@ -2015,10 +2002,6 @@ impl<'a> UhProtoPartition<'a> {
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
             vmtime: late_params.vmtime.clone(),
             isolation,
-            #[cfg(guest_arch = "x86_64")]
-            secure_avic,
-            #[cfg(not(guest_arch = "x86_64"))]
-            secure_avic: false,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared,
@@ -2060,12 +2043,6 @@ impl<'a> UhProtoPartition<'a> {
 }
 
 impl UhPartition {
-    /// Whether Secure AVIC is enabled for this partition. Only ever true on
-    /// SNP-isolated x86_64; always false on other platforms.
-    pub fn secure_avic_enabled(&self) -> bool {
-        self.inner.secure_avic
-    }
-
     /// Gets the guest OS ID for VTL0.
     pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, hcl::ioctl::register::GetRegError> {
         // If Underhill is emulating the hypervisor interfaces, get this value

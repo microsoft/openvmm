@@ -6680,14 +6680,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "firmware_uefi_custom_vars",
- "hyperv_uefi_custom_vars_json",
  "inspect",
  "mesh_protobuf",
  "paste",
  "serde",
  "serde_json",
- "uefi_specs",
 ]
 
 [[package]]

@@ -49,22 +49,6 @@ impl crate::uefi_security_policy::UefiSecurityPolicyParams for CwcowPolicy {
     fn require_secure_boot(&self) -> bool {
         self.require_secure_boot
     }
-
-    fn require_secure_boot_vars(&self) -> bool {
-        self.require_secure_boot_vars
-    }
-
-    fn require_bcd_integrity(&self) -> bool {
-        self.require_bcd_integrity
-    }
-
-    fn custom_uefi_json(&self) -> &[u8] {
-        &self.custom_uefi_json
-    }
-
-    fn enforce_ephemeral_vmgs(&self) -> bool {
-        self.enforce_ephemeral_vmgs
-    }
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicy for CwcowPolicy {}

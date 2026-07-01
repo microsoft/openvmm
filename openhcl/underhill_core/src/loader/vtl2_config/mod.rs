@@ -22,7 +22,9 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
+#[cfg(feature = "product_policy")]
 use loader_defs::paravisor::PRODUCT_POLICY_INLINE_OFFSET;
+#[cfg(feature = "product_policy")]
 use loader_defs::paravisor::PRODUCT_POLICY_MAX_SIZE_BYTES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
 use loader_defs::shim::MemoryVtlType;
@@ -97,6 +99,7 @@ pub struct MeasuredVtl2Info {
     pub vtom_offset_bit: Option<u8>,
     /// Per-VM measured product policy. Built once during VTL2
     /// config read and cloned into `LoadedVm`.
+    #[cfg(feature = "product_policy")]
     measured_policy: product_policy::MeasuredPolicy,
 }
 
@@ -105,6 +108,7 @@ impl MeasuredVtl2Info {
         &self.accepted_regions
     }
 
+    #[cfg(feature = "product_policy")]
     pub fn measured_policy(&self) -> &product_policy::MeasuredPolicy {
         &self.measured_policy
     }
@@ -432,10 +436,13 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
 
     assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
 
+    // The optional `ProductPolicy` payload is only read when the
+    // `product_policy` feature is enabled; otherwise it is ignored.
+    #[cfg(feature = "product_policy")]
     let product_policy = {
         let size = measured_config.product_policy_size as usize;
         if size == 0 {
-            None
+            product_policy::MeasuredPolicy::new(None)
         } else {
             // Defence-in-depth: the IGVM importer caps this at build
             // time; reject anything larger rather than reading past
@@ -453,18 +460,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
                 .read_at(off, buf.as_mut_slice())
                 .context("failed to read product policy bytes")?;
 
-            let policy = product_policy::decode_product_policy(&buf)
-                .map_err(anyhow::Error::from)
-                .context("product policy decode failed")?;
-
-            let encoded_len = product_policy::encode_product_policy(&policy).len();
-            if encoded_len != size {
-                anyhow::bail!(
-                    "product policy size mismatch: declared {size} bytes, re-encoded {encoded_len} bytes"
-                );
-            }
-
-            Some(policy)
+            crate::measured_product_policy::decode(&buf, size)?
         }
     };
 
@@ -489,7 +485,8 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     let measured_vtl2_info = MeasuredVtl2Info {
         accepted_regions,
         vtom_offset_bit,
-        measured_policy: product_policy::MeasuredPolicy::new(product_policy),
+        #[cfg(feature = "product_policy")]
+        measured_policy: product_policy,
     };
 
     Ok((runtime_params, measured_vtl2_info))

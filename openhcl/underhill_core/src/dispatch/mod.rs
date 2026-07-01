@@ -189,6 +189,7 @@ pub(crate) struct LoadedVm {
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
 
     /// Per-VM measured product policy.
+    #[cfg(feature = "product_policy")]
     pub measured_product_policy: product_policy::MeasuredPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,

@@ -194,13 +194,6 @@ impl OpenhclIgvmOutput {
                             .filter(OpenhclIgvmEndorsements::is_complete)
                             .expect("missing endorsements"),
                     },
-                    OpenhclIgvmRecipe::X64CvmSivm => OpenhclIgvmOutput::X64Cvm {
-                        igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
-                    },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
                         OpenhclIgvmOutput::Aarch64Devkern { igvm_bin }
@@ -298,8 +291,6 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
-    /// X64 OpenHCL with CVM support and the Sivm product policy enabled.
-    X64CvmSivm,
     Aarch64,
     Aarch64Devkern,
 }
@@ -343,7 +334,6 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
-            OpenhclIgvmRecipe::X64CvmSivm => Some("cvm-sivm"),
         }
     }
 
@@ -354,8 +344,7 @@ impl OpenhclIgvmRecipe {
             | OpenhclIgvmRecipe::X64TestLinuxDirect
             | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
             | OpenhclIgvmRecipe::X64Cvm
-            | OpenhclIgvmRecipe::X64CvmDevkern
-            | OpenhclIgvmRecipe::X64CvmSivm => "x64",
+            | OpenhclIgvmRecipe::X64CvmDevkern => "x64",
             OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => "aarch64",
         }
     }
@@ -485,21 +474,6 @@ impl OpenhclIgvmRecipe {
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-cvm-dev.json",
                     "openhcl-x64-cvm-release.json",
-                ),
-                openhcl_kernel_package: OpenhclKernelPackage::Cvm,
-                openvmm_hcl_features: base_openvmm_hcl_features(),
-                target: CommonTriple::X86_64_LINUX_MUSL,
-                vtl0_kernel_type: None,
-                with_uefi: true,
-                with_interactive,
-                with_sidecar: false,
-                max_trace_level,
-            },
-            Self::X64CvmSivm => OpenhclIgvmRecipeDetails {
-                local_only: None,
-                igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-sivm-dev.json",
-                    "openhcl-x64-cvm-sivm-release.json",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),

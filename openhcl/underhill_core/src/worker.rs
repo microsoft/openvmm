@@ -68,7 +68,6 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend_resources::BlockDeviceDiskHandle;
 use disk_blockdevice::resolver::BlockDeviceResolver;
-use firmware_uefi_custom_vars::CustomVars;
 use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
@@ -116,7 +115,6 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
-use product_policy::UefiSecurityPolicy;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
@@ -1793,12 +1791,6 @@ async fn new_underhill_vm(
             .context("failed to construct the processor topology")?
     };
 
-    // Enforce the policy's ephemeral-VMGS requirement before opening the VMGS.
-    enforce_ephemeral_vmgs_policy(
-        measured_vtl2_info.measured_policy(),
-        dps.general.guest_state_lifetime,
-    )?;
-
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
     let mut vmgs = match (dps.general.guest_state_lifetime, servicing_state.vmgs) {
@@ -2527,46 +2519,39 @@ async fn new_underhill_vm(
             }
         };
 
-        let custom_uefi_vars = if let Some(measured_custom_vars) =
-            get_measured_uefi_nvram_state_from_policy(
-                measured_vtl2_info.measured_policy(),
-                &base_vars,
-            )? {
-            measured_custom_vars
+        // check if vmgs includes custom UEFI JSON
+        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+            vmgs_client
+                .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
+                .context("failed to instantiate custom UEFI JSON store")?
+                .restore()
+                .await
+                .context("failed to get custom UEFI JSON data")?
         } else {
-            // check if vmgs includes custom UEFI JSON
-            let custom_uefi_json_data = match vmgs_client.as_ref() {
-                Some(vmgs_client) => vmgs_client
-                    .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
-                    .context("failed to instantiate custom UEFI JSON store")?
-                    .restore()
-                    .await
-                    .context("failed to get custom UEFI JSON data")?,
-                None => None,
-            };
+            None
+        };
 
-            // obtain the final custom uefi vars by applying the delta onto
-            // the base vars
-            match custom_uefi_json_data {
-                Some(data) => {
-                    let res = (|| -> Result<CustomVars, anyhow::Error> {
-                        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                        Ok(base_vars.apply_delta(delta)?)
-                    })();
+        // obtain the final custom uefi vars by applying the delta onto
+        // the base vars
+        let custom_uefi_vars = match custom_uefi_json_data {
+            Some(data) => {
+                let res = (|| -> Result<CustomVars, anyhow::Error> {
+                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                    Ok(base_vars.apply_delta(delta)?)
+                })();
 
-                    match res {
-                        Ok(vars) => vars,
-                        Err(e) => {
-                            tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                            get_client
-                                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                                .await;
-                            return Err(e).context("failed to load custom UEFI variables");
-                        }
+                match res {
+                    Ok(vars) => vars,
+                    Err(e) => {
+                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
+                        get_client
+                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
+                            .await;
+                        return Err(e).context("failed to load custom UEFI variables");
                     }
                 }
-                None => base_vars,
             }
+            None => base_vars,
         };
 
         let config = firmware_uefi_resources::UefiConfig {
@@ -3717,6 +3702,7 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
+        #[cfg(feature = "product_policy")]
         measured_product_policy: measured_vtl2_info.measured_policy().clone(),
 
         _input_distributor: input_distributor,
@@ -3735,64 +3721,10 @@ async fn new_underhill_vm(
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
-    validate_product_policy(&loaded_vm)?;
+    #[cfg(feature = "product_policy")]
+    crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)
-}
-
-fn validate_uefi_security_policy(
-    policy: &dyn UefiSecurityPolicy,
-    vm: &LoadedVm,
-) -> Result<(), anyhow::Error> {
-    policy.validate_secure_boot_enabled(vm.device_platform_settings.general.secure_boot_enabled)?;
-    policy.validate_secure_boot_policy_enforcement()?;
-    Ok(())
-}
-
-/// Enforce the policy's ephemeral-VMGS requirement. Called before the VMGS is
-/// opened so a policy requiring ephemeral can't trigger a read of the attached
-/// (host-controlled) VMGS.
-fn enforce_ephemeral_vmgs_policy(
-    measured_policy: &product_policy::MeasuredPolicy,
-    guest_state_lifetime: GuestStateLifetime,
-) -> Result<(), anyhow::Error> {
-    let vmgs_is_ephemeral = matches!(guest_state_lifetime, GuestStateLifetime::Ephemeral);
-    measured_policy.sivm(|p| p.enforce_ephemeral_vmgs_required(vmgs_is_ephemeral))?;
-    measured_policy.cwcow(|p| p.enforce_ephemeral_vmgs_required(vmgs_is_ephemeral))?;
-    Ok(())
-}
-
-fn get_measured_uefi_nvram_state_from_policy(
-    measured_policy: &product_policy::MeasuredPolicy,
-    base_vars: &CustomVars,
-) -> Result<Option<CustomVars>, anyhow::Error> {
-    // Prefer the policy's custom UEFI JSON; `get_validated_uefi_json` self-
-    // validates and the accessors return `Ok(None)` for an absent/other variant.
-    let uefi_state_json: Option<Vec<u8>> = measured_policy
-        .sivm(|p| Ok(p.get_validated_uefi_json()?.to_vec()))?
-        .or(measured_policy.cwcow(|p| Ok(p.get_validated_uefi_json()?.to_vec()))?);
-    if let Some(uefi_state) = uefi_state_json {
-        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&uefi_state)?;
-        // Apply onto the secure-boot template base, like the VMGS path.
-        let measured_uefi_nvram_state = base_vars.clone().apply_delta(delta)?;
-        return Ok(Some(measured_uefi_nvram_state));
-    }
-    Ok(None)
-}
-
-fn validate_product_policy(loaded_vm: &LoadedVm) -> Result<(), anyhow::Error> {
-    loaded_vm
-        .measured_product_policy
-        .sivm(|p| validate_uefi_security_policy(p, &loaded_vm))?;
-    loaded_vm
-        .measured_product_policy
-        .cwcow(|p| validate_uefi_security_policy(p, &loaded_vm))?;
-
-    let hardware_secure_avic_enabled = loaded_vm.partition.secure_avic_enabled();
-    loaded_vm
-        .measured_product_policy
-        .cwcow(|p| p.enforce_secure_avic(hardware_secure_avic_enabled))?;
-    Ok(())
 }
 
 fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), anyhow::Error> {
