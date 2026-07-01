@@ -258,7 +258,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
+        let status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         // The uncorrectable-error path asserts RP Busy until port firmware
         // (the Complete action) clears it.
@@ -271,7 +271,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
+        let status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         assert!(!status.dpc_rp_busy());
     }
@@ -425,8 +425,8 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        assert_eq!((v & 0xffff) as u16, 0);
-        let status = DpcStatus::from_bits((v >> 16) as u16);
+        assert_eq!((v >> 16) as u16, 0);
+        let status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         // RP Busy is Reserved for Switch Downstream Ports (no RP Extensions),
         // so it is never asserted here.
@@ -463,7 +463,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let status = DpcStatus::from_bits((v >> 16) as u16);
+        let status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         assert!(!status.dpc_rp_busy());
     }
@@ -832,8 +832,8 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        assert_eq!((v & 0xffff) as u16, source_id);
-        let dpc_status = DpcStatus::from_bits((v >> 16) as u16);
+        assert_eq!((v >> 16) as u16, source_id);
+        let dpc_status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(dpc_status.dpc_trigger_status());
         // The uncorrectable-error path asserts RP Busy until port firmware
         // (the Complete action) clears it.
@@ -885,7 +885,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let dpc_status = DpcStatus::from_bits((v >> 16) as u16);
+        let dpc_status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(dpc_status.dpc_trigger_status());
         assert!(!dpc_status.dpc_rp_busy());
     }
@@ -1004,8 +1004,8 @@ mod tests {
             + DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0 as u64;
         let mut v = 0u32;
         rc.mmio_read(dsp_dpc_status_addr, v.as_mut_bytes()).unwrap();
-        assert_eq!((v & 0xffff) as u16, source_id);
-        let dsp_status = DpcStatus::from_bits((v >> 16) as u16);
+        assert_eq!((v >> 16) as u16, source_id);
+        let dsp_status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(dsp_status.dpc_trigger_status());
         // RP Busy is Reserved for Switch Downstream Ports (no RP Extensions),
         // so it is never asserted here.
@@ -1021,7 +1021,7 @@ mod tests {
                 &mut rv,
             )
             .unwrap();
-        assert!(!DpcStatus::from_bits((rv >> 16) as u16).dpc_trigger_status());
+        assert!(!DpcStatus::from_bits((rv & 0xffff) as u16).dpc_trigger_status());
 
         // The source endpoint's AER state was updated.
         let endpoint_aer_guard = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
@@ -1035,7 +1035,7 @@ mod tests {
         // Completion clears RP busy on the downstream switch port.
         rc.inject_dpc_complete(source_id).unwrap();
         rc.mmio_read(dsp_dpc_status_addr, v.as_mut_bytes()).unwrap();
-        let dsp_status = DpcStatus::from_bits((v >> 16) as u16);
+        let dsp_status = DpcStatus::from_bits((v & 0xffff) as u16);
         assert!(dsp_status.dpc_trigger_status());
         assert!(!dsp_status.dpc_rp_busy());
     }

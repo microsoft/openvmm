@@ -230,7 +230,10 @@ impl DpcExtendedCapability {
     }
 
     fn read_status_source_id(&self) -> u32 {
-        ((self.status.into_bits() as u32) << 16) | (self.error_source_id.into_bits() as u32)
+        // Per the DPC capability layout, the DPC Status Register occupies the
+        // low 16 bits (offset 0x08) and the DPC Error Source ID Register the
+        // high 16 bits (offset 0x0A).
+        (self.status.into_bits() as u32) | ((self.error_source_id.into_bits() as u32) << 16)
     }
 }
 
@@ -294,7 +297,9 @@ impl PciExtendedCapability for DpcExtendedCapability {
             }
             DpcExtendedCapabilityHeader::CAPABILITY_CONTROL => self.write_control(val),
             DpcExtendedCapabilityHeader::STATUS_SOURCE_ID => {
-                let merged_status = val.merge_high(self.status.into_bits());
+                // DPC Status is the low 16 bits (offset 0x08) and is RW1C; the
+                // DPC Error Source ID (high 16 bits, offset 0x0A) is read-only.
+                let merged_status = val.merge_low(self.status.into_bits());
                 let clear = merged_status & dpc_spec::DPC_STATUS_RW1C_MASK;
                 self.status = dpc_spec::DpcStatus::from_bits(self.status.into_bits() & !clear);
             }
@@ -474,7 +479,7 @@ mod tests {
         );
 
         let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
-        let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
+        let status = dpc_spec::DpcStatus::from_bits((status & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         assert!(cap.containment_active());
         // A software trigger is single-phase and must never assert RP Busy;
@@ -491,10 +496,9 @@ mod tests {
         write_extended_cap_u32(
             &mut cap,
             DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0,
-            (dpc_spec::DpcStatus::new()
+            dpc_spec::DpcStatus::new()
                 .with_dpc_trigger_status(true)
-                .into_bits() as u32)
-                << 16,
+                .into_bits() as u32,
         );
 
         assert!(!cap.containment_active());
@@ -508,13 +512,13 @@ mod tests {
 
         let _ = cap.trigger_from_uncorrectable_begin(0x1234);
         let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
-        let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
+        let status = dpc_spec::DpcStatus::from_bits((status & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         assert!(status.dpc_rp_busy());
 
         cap.clear_rp_busy();
         let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
-        let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
+        let status = dpc_spec::DpcStatus::from_bits((status & 0xffff) as u16);
         assert!(status.dpc_trigger_status());
         assert!(!status.dpc_rp_busy());
     }
