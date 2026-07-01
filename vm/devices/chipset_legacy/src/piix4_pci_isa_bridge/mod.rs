@@ -8,6 +8,8 @@ pub mod resolver;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use inspect::Inspect;
@@ -222,13 +224,13 @@ impl PortIoIntercept for PciIsaBridge {
 }
 
 impl PciConfigSpace for PciIsaBridge {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = match ConfigSpace(offset) {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(match ConfigSpace(offset) {
             // for bug-for-bug compat with the hyper-v implementation: return
             // hardcoded status register instead of letting the config space
             // emulator take care of it
             _ if offset == pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0 => 0x02000007,
-            _ if offset < 0x40 => return self.cfg_space.read_u32(offset, value),
+            _ if offset < 0x40 => return self.cfg_space.read_byte_enabled(offset, value),
             // these magic values mainly consist of default values pulled from
             // the PIIX4 documentation
             ConfigSpace::TOP => 0x00000200,
@@ -252,15 +254,16 @@ impl PciConfigSpace for PciIsaBridge {
                 tracing::debug!(?offset, "unimplemented config space read");
                 return IoResult::Err(IoError::InvalidRegister);
             }
-        };
+        });
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         match ConfigSpace(offset) {
-            _ if offset < 0x40 => return self.cfg_space.write_u32(offset, value),
+            _ if offset < 0x40 => return self.cfg_space.write_byte_enabled(offset, value),
             ConfigSpace::PIRQ => {
+                let value = value.merge(self.state.pci_irq_routing);
                 if self.state.pci_irq_routing != value {
                     tracelimit::info_ratelimited!(new_pci_irq_routing = ?value, "custom PCI IRQ routing is not implemented!");
                 }
@@ -268,6 +271,7 @@ impl PciConfigSpace for PciIsaBridge {
                 self.state.pci_irq_routing = value;
             }
             ConfigSpace::SER_IRQ => {
+                let value = value.extract();
                 if !(value == 0x0000000D0 || value == 0x000000010) {
                     tracelimit::warn_ratelimited!(
                         ?value,
@@ -279,17 +283,21 @@ impl PciConfigSpace for PciIsaBridge {
                 // Make sure ISA/DMA 512-640K Region Forwarding Enable is never cleared.
                 // This controls whether addresses 512K to 640K are forwarded to RAM
                 // (which we always want to do).
+                let value = value.extract();
                 if (value & 0x00000200) == 0 {
                     tracing::debug!("ISA/DMA 512-640K Region Forwarding Enable was cleared!");
                 }
             }
-            ConfigSpace::SMI => self.state.smi_control = value & 0x00FF001F,
-            ConfigSpace::SEE => self.state.system_event = value,
-            ConfigSpace::FTM => self.state.smi_request = value,
-            ConfigSpace::CTL_TMR => self.state.clock_scale = value,
+            ConfigSpace::SMI => {
+                self.state.smi_control = value.merge(self.state.smi_control) & 0x00FF001F;
+            }
+            ConfigSpace::SEE => value.merge_into(&mut self.state.system_event),
+            ConfigSpace::FTM => value.merge_into(&mut self.state.smi_request),
+            ConfigSpace::CTL_TMR => value.merge_into(&mut self.state.clock_scale),
             ConfigSpace::RTC_CONFIG => {
                 // For now, the code assumes the default value. We don't support
                 // disabling extended CMOS (upper 128 bytes).
+                let value = value.extract();
                 if (value & 0x04000000) == 0 {
                     tracing::debug!("Trying to disable extended CMOS - not supported")
                 }
@@ -301,6 +309,7 @@ impl PciConfigSpace for PciIsaBridge {
             ConfigSpace::APIC_BASE => {
                 // If any of bits 0..5 have changed, then we need to change the base of
                 // the IoApic.
+                let value = value.merge(self.state.apic_base);
                 if (value & 0x3F) != (self.state.apic_base & 0x3F) {
                     // DEVNOTE: this shouldn't actually be all that difficult to
                     // implement, but until there is definitive proof that there

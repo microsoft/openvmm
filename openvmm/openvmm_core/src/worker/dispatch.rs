@@ -4153,7 +4153,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
     fn pci_cfg_read(
         &mut self,
         offset: u16,
-        value: &mut u32,
+        value: chipset_device::pci::ByteEnabledDwordRead<'_>,
     ) -> Option<chipset_device::io::IoResult> {
         Some(
             self.0
@@ -4164,7 +4164,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: chipset_device::pci::ByteEnabledDwordWrite) -> Option<chipset_device::io::IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4180,7 +4180,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
+        value: chipset_device::pci::ByteEnabledDwordRead<'_>,
     ) -> Option<chipset_device::io::IoResult> {
         Some(
             self.0
@@ -4197,7 +4197,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
+        value: chipset_device::pci::ByteEnabledDwordWrite,
     ) -> Option<chipset_device::io::IoResult> {
         Some(
             self.0

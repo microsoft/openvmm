@@ -48,12 +48,12 @@ impl ChipsetDevice for NoopDevice {
 }
 
 impl PciConfigSpace for NoopDevice {
-    fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> IoResult {
-        *value = 0;
+    fn pci_cfg_read(&mut self, _offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(0);
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> IoResult {
         IoResult::Ok
     }
 }

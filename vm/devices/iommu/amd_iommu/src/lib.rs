@@ -18,6 +18,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -1655,12 +1657,12 @@ impl ChipsetDevice for AmdIommuDevice {
 // =============================================================================
 
 impl PciConfigSpace for AmdIommuDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.cfg_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.cfg_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.cfg_space.write_byte_enabled(offset, value)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {

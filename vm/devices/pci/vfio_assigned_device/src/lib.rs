@@ -516,7 +516,12 @@ impl VfioAssignedPciDevice {
         }
     }
 
-    fn write_phys_config(&self, offset: u16, value: u32) {
+    fn write_phys_config(&self, offset: u16, value: ByteEnabledDwordWrite) {
+        let value = if value.is_full() {
+            value.extract()
+        } else {
+            value.merge(self.read_phys_config(offset))
+        };
         if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
             tracelimit::warn_ratelimited!(
                 offset,
@@ -1144,8 +1149,8 @@ impl ChipsetDevice for VfioAssignedPciDevice {
 }
 
 impl PciConfigSpace for VfioAssignedPciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = match HeaderType00(offset) {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(match HeaderType00(offset) {
             // BAR registers: return locally cached values.
             HeaderType00::BAR0
             | HeaderType00::BAR1
@@ -1189,26 +1194,29 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     hw
                 }
             }
-        };
+        });
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         match HeaderType00(offset) {
             // Command register: track MMIO enable/disable.
             HeaderType00::STATUS_COMMAND => {
-                let command = cfg_space::Command::from_bits(value as u16);
-                let new_mmio_enabled = command.mmio_enabled();
+                let mse_mask: u32 = cfg_space::Command::new().with_mmio_enabled(true).into_bits().into();
+                if value.valid_mask() & mse_mask != 0 {
+                    let command = cfg_space::Command::from_bits(value.extract_low());
+                    let new_mmio_enabled = command.mmio_enabled();
 
-                if new_mmio_enabled != self.mmio_enabled {
-                    self.mmio_enabled = new_mmio_enabled;
-                    self.update_bar_mappings();
-                    tracing::debug!(
-                        pci_id = self.pci_id.as_str(),
-                        enabled = new_mmio_enabled,
-                        "MMIO state changed by guest"
-                    );
+                    if new_mmio_enabled != self.mmio_enabled {
+                        self.mmio_enabled = new_mmio_enabled;
+                        self.update_bar_mappings();
+                        tracing::debug!(
+                            pci_id = self.pci_id.as_str(),
+                            enabled = new_mmio_enabled,
+                            "MMIO state changed by guest"
+                        );
+                    }
                 }
 
                 self.write_phys_config(offset, value);
@@ -1223,6 +1231,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             | HeaderType00::BAR4
             | HeaderType00::BAR5 => {
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
+                let value = value.merge(self.bars[i]);
                 self.bars[i] = (value & self.bar_masks[i]) | self.bar_flags[i];
 
                 if self.mmio_enabled {
@@ -1237,36 +1246,39 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 //
                 // When returning to D0, write PMCSR first so the faults are
                 // resolvable before remapping MMIO into guest space.
-                let power_state = value & 0x3; // bits [1:0] = PowerState
-                let new_in_d0 = power_state == 0;
-                let old_in_d0 = self.in_d0;
-                if new_in_d0 {
-                    // Entering D0: forward first, then remap BARs.
-                    // If the write fails, leave BARs unmapped to
-                    // avoid SIGBUS from VFIO mmaps that are still
-                    // faulting.
-                    if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
-                        tracelimit::warn_ratelimited!(
-                            offset,
-                            error = e.as_ref() as &dyn std::error::Error,
-                            "VFIO config space write failed"
-                        );
-                        return IoResult::Ok;
+                if value.valid_mask() & 0x3 != 0 {
+                    let power_state = value.extract() & 0x3; // bits [1:0] = PowerState
+                    let new_in_d0 = power_state == 0;
+                    let old_in_d0 = self.in_d0;
+                    if new_in_d0 {
+                        // Entering D0: forward first, then remap BARs.
+                        // If the write fails, leave BARs unmapped to
+                        // avoid SIGBUS from VFIO mmaps that are still
+                        // faulting.
+                        let value = value.merge(self.read_phys_config(offset));
+                        if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
+                            tracelimit::warn_ratelimited!(
+                                offset,
+                                error = e.as_ref() as &dyn std::error::Error,
+                                "VFIO config space write failed"
+                            );
+                            return IoResult::Ok;
+                        }
                     }
-                }
-                self.in_d0 = new_in_d0;
-                self.update_bar_mappings();
-                if !new_in_d0 {
-                    // Leaving D0: unmap BARs first, then forward.
-                    self.write_phys_config(offset, value);
-                }
-                if new_in_d0 && !old_in_d0 {
-                    tracing::debug!(
-                        pci_id = self.pci_id.as_str(),
-                        power_state,
-                        in_d0 = new_in_d0,
-                        "PM power state changed by guest"
-                    );
+                    self.in_d0 = new_in_d0;
+                    self.update_bar_mappings();
+                    if !new_in_d0 {
+                        // Leaving D0: unmap BARs first, then forward.
+                        self.write_phys_config(offset, value);
+                    }
+                    if new_in_d0 && !old_in_d0 {
+                        tracing::debug!(
+                            pci_id = self.pci_id.as_str(),
+                            power_state,
+                            in_d0 = new_in_d0,
+                            "PM power state changed by guest"
+                        );
+                    }
                 }
                 return IoResult::Ok;
             }
@@ -1278,9 +1290,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 // VFIO_DEVICE_SET_IRQS. Writing it again through config space
                 // causes VFIO to tear down and re-setup MSI-X, losing the
                 // eventfd associations.
+                const MSIX_ENABLE_MASK: u32 = 0x8000_0000;
                 let msix = self.msix.as_mut().unwrap();
-                let new_enabled = value & 0x8000_0000 != 0;
                 let was_enabled = msix.enabled;
+                let new_enabled = if value.valid_mask() & MSIX_ENABLE_MASK != 0 {
+                    value.extract() & MSIX_ENABLE_MASK != 0
+                } else {
+                    was_enabled
+                };
 
                 if new_enabled && !was_enabled {
                     // Install irqfd routes BEFORE writing the
@@ -1291,7 +1308,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         Ok(()) => {
                             let msix = self.msix.as_mut().unwrap();
                             msix.capability
-                                .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
+                                .write(0, value);
                             msix.enabled = true;
                         }
                         Err(e) => {
@@ -1306,13 +1323,13 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     // Write capability first to disable vectors,
                     // then tear down VFIO mapping.
                     msix.capability
-                        .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
+                        .write(0, value);
                     self.msix_disable();
                     self.msix.as_mut().unwrap().enabled = false;
                 } else {
                     // No enable/disable transition — just forward.
                     msix.capability
-                        .write(0, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
+                        .write(0, value);
                 }
                 // Skip write_phys_config for MSI-X control register.
                 return IoResult::Ok;

@@ -70,10 +70,10 @@ pub mod standard_x86_io_ports {
 /// by providing implementations for the forwarding methods.
 pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space read to the device with the given address.
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult>;
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult>;
 
     /// Dispatch a PCI config space write to the device with the given address.
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult>;
 
     /// Handle a PCI configuration space read with full routing context.
     ///
@@ -104,12 +104,12 @@ pub trait GenericPciBusDevice: 'static + Send {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
+        mut value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
         if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_read(offset, value)
         } else {
-            *value = !0;
+            value.set(!0);
             Some(IoResult::Ok)
         }
     }
@@ -142,7 +142,7 @@ pub trait GenericPciBusDevice: 'static + Send {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
+        value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
         if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_write(offset, value)
@@ -425,8 +425,7 @@ impl PortIoIntercept for GenericPciBus {
 
 impl PollDevice for GenericPciBus {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.pci_devices);
-        self.bus_cfg_handler.poll(cx, &mut callback);
+        self.bus_cfg_handler.poll(cx);
     }
 }
 
@@ -443,18 +442,18 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
 }
 
 impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+    fn read(&mut self, addr: PciConfigAddress, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         let address = PciAddr::from(addr);
         match self.pci_devices.get_mut(&address) {
             Some((name, device)) => {
                 let offset = addr.byte_offset();
-                let res = device.pci_cfg_read(offset, value);
+                let res = device.pci_cfg_read(offset, value.reborrow());
                 if let Some(result) = res {
                     tracing::trace!(
                         device = &**name,
                         %address,
                         offset,
-                        value,
+                        ?value,
                         "cfg space read"
                     );
                     result
@@ -468,30 +467,30 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                         offset,
                         "cfg space read failed, device went away"
                     );
-                    *value = !0;
+                    value.set(!0);
                     IoResult::Ok
                 }
             }
             None => {
                 tracing::trace!(%address, "no device found - returning F's");
-                *value = !0;
+                value.set(!0);
                 IoResult::Ok
             }
         }
     }
 
-    fn write(&mut self, addr: PciConfigAddress, data: u32) -> IoResult {
+    fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
         let address = PciAddr::from(addr);
         match self.pci_devices.get_mut(&address) {
             Some((name, device)) => {
                 let offset = addr.byte_offset();
-                let res = device.pci_cfg_write(offset, data);
+                let res = device.pci_cfg_write(offset, value);
                 if let Some(result) = res {
                     tracing::trace!(
                         device = &**name,
                         %address,
                         offset,
-                        data,
+                        ?value,
                         "cfg space write"
                     );
                     result

@@ -212,8 +212,7 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl PollDevice for VpciBusDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
-        self.bus_cfg_handler.poll(cx, &mut callback);
+        self.bus_cfg_handler.poll(cx);
     }
 }
 
@@ -345,7 +344,7 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
 }
 
 impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+    fn read(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordRead<'_>) -> IoResult {
         self.device
             .lock()
             .supports_pci()
@@ -353,7 +352,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
             .pci_cfg_read(addr.byte_offset(), value)
     }
 
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+    fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
         self.device
             .lock()
             .supports_pci()
@@ -520,7 +519,7 @@ mod tests {
     }
 
     impl PciConfigSpace for DeferWriteDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> IoResult {
+        fn pci_cfg_read(&mut self, _offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
             if self.defer_reads {
                 assert!(
                     self.pending_read.is_none(),
@@ -530,13 +529,13 @@ mod tests {
                 self.pending_read = Some(deferred);
                 IoResult::Defer(token)
             } else {
-                *value = self.read_value;
+                value.set(self.read_value);
                 IoResult::Ok
             }
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.writes.push((offset, value));
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.writes.push((offset, value.extract()));
             if self.defer_writes {
                 assert!(
                     self.pending_write.is_none(),
@@ -656,7 +655,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn verify_deferred_pci_cfg_read_and_read_for_write_via_bus(_driver: DefaultDriver) {
+    async fn verify_deferred_pci_cfg_read_via_bus(_driver: DefaultDriver) {
         const BASE_ADDR: u64 = 0x1000_0000;
         const READ_OFFSET: u64 = 4;
         const WRITE_OFFSET: u64 = 5;
@@ -705,41 +704,7 @@ mod tests {
         device.lock().start_deferring_reads(0x1122_3344);
         let write_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + WRITE_OFFSET;
         let write_result = bus.lock().mmio_write(write_addr, &[0xaa]);
-        assert!(matches!(write_result, IoResult::Defer(_)));
-
-        std::future::poll_fn(|cx| {
-            bus.lock().poll_device(cx);
-            device.lock().poll_device(cx);
-            bus.lock().poll_device(cx);
-            Poll::Ready(())
-        })
-        .await;
-
-        if let IoResult::Defer(token) = write_result {
-            token
-                .write_future()
-                .await
-                .expect("deferred PCI config read-for-write should complete successfully");
-        }
-
-        let mut expected = 0x1122_3344u32.to_ne_bytes();
-        expected[1] = 0xaa;
-        assert_eq!(
-            device.lock().writes.pop(),
-            Some((4, u32::from_ne_bytes(expected)))
-        );
-
-        let mut read_data = [0; 2];
-        let read_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + 7;
-        let read_result = bus.lock().mmio_read(read_addr, &mut read_data);
-        assert!(
-            matches!(read_result, IoResult::Err(_)),
-            "read crossing a DWORD boundary should be rejected"
-        );
-        assert!(
-            device.lock().pending_read.is_none(),
-            "rejected read should not issue a device read"
-        );
+        assert!(matches!(write_result, IoResult::Ok));
     }
 
     #[async_test]

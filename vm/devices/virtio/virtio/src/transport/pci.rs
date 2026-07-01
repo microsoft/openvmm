@@ -23,6 +23,8 @@ use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
@@ -736,12 +738,12 @@ impl MmioIntercept for VirtioPciDevice {
 }
 
 impl PciConfigSpace for VirtioPciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.pci.config_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.pci.config_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.pci.config_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.pci.config_space.write_byte_enabled(offset, value)
     }
 }
 

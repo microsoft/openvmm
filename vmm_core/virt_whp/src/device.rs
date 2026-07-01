@@ -8,6 +8,8 @@ use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
 use inspect::Inspect;
@@ -360,38 +362,37 @@ impl AssignedPciDevice {
         })
     }
 
-    fn read_phys_config(&self, offset: u16) -> u32 {
-        let mut data = [0; 4];
-        match self.device.device().read_register(
+    fn read_phys_config(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        let (byte_offset, _) = value.byte_enable().to_byte_offset_len();
+        let offset = offset as u64;
+        self.device.device().read_register(
             whp::abi::WHvVpciConfigSpace,
-            offset.into(),
-            &mut data,
-        ) {
-            Ok(_) => u32::from_ne_bytes(data),
-            Err(e) => {
-                tracing::warn!(
-                    offset,
-                    error = &e as &dyn std::error::Error,
-                    "config space read",
-                );
-                !0
-            }
-        }
+            offset + (byte_offset as u64),
+            value.reborrow().into_valid_byte_slice(),
+        ).unwrap_or_else(|e| {
+            tracing::warn!(
+                offset,
+                error = &e as &dyn std::error::Error,
+                "config space read",
+            );
+            value.set(!0);
+        });
     }
 
-    fn write_phys_config(&self, offset: u16, value: u32) {
-        match self.device.device().write_register(
+    fn write_phys_config(&self, offset: u16, value: ByteEnabledDwordWrite) {
+        let (byte_offset, _) = value.byte_enable().to_byte_offset_len();
+        let offset = offset as u64;
+        self.device.device().write_register(
             whp::abi::WHvVpciConfigSpace,
-            offset.into(),
-            &value.to_ne_bytes(),
-        ) {
-            Ok(_) => (),
-            Err(e) => tracing::warn!(
+            offset + (byte_offset as u64),
+            value.as_valid_byte_slice(),
+        ).unwrap_or_else(|e| {
+            tracing::warn!(
                 offset,
                 error = &e as &dyn std::error::Error,
                 "config space write",
-            ),
-        }
+            );
+        });
     }
 
     fn set_power_state(&mut self, power_state: u32) {
@@ -474,30 +475,31 @@ impl SaveRestore for AssignedPciDevice {
 }
 
 impl PciConfigSpace for AssignedPciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         match offset {
             0x10 | 0x14 | 0x18 | 0x1c | 0x20 | 0x24 => {
                 let i = (offset - 0x10) as usize / 4;
-                *value = self.bars[i]
+                value.set(self.bars[i]);
             }
             _ => {
-                let phys = self.read_phys_config(offset);
-                *value = if Some(offset as u32) == self.power_reg {
-                    self.power_state | (phys & !3)
+                let mut phys_u32 = 0;
+                self.read_phys_config(offset, ByteEnabledDwordRead::with_all_bytes_enabled(&mut phys_u32));
+                value.set(if Some(offset as u32) == self.power_reg {
+                    self.power_state | (phys_u32 & !3)
                 } else {
-                    phys
-                }
+                    phys_u32
+                });
             }
         }
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         match offset {
             4 => {
                 // Power on/off the device if there is no power cap.
-                let command = cfg_space::Command::from_bits(value as u16);
+                let command = cfg_space::Command::from_bits(value.merge_low(self.command));
                 if command.mmio_enabled() {
                     if self.power_reg.is_none() && self.power_state != 0 {
                         tracing::info!("implicitly transitioning to D0");
@@ -519,11 +521,11 @@ impl PciConfigSpace for AssignedPciDevice {
 
             0x10 | 0x14 | 0x18 | 0x1c | 0x20 | 0x24 => {
                 let i = (offset - 0x10) as usize / 4;
-                self.bars[i] = value & self.probed_bars[i] | self.bar_flags[i];
+                self.bars[i] = value.merge(self.bars[i]) & self.probed_bars[i] | self.bar_flags[i];
             }
             _ => {
                 if Some(offset as u32) == self.power_reg {
-                    let power_state = value & 3;
+                    let power_state = value.merge(self.power_state) & 3;
                     if power_state == 0 && cfg_space::Command::from(self.command).mmio_enabled() {
                         self.set_power_state(power_state);
                         self.enable_mmio();
