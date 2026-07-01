@@ -604,11 +604,19 @@ impl PciCapability for PciExpressCapability {
                 // Root Capabilities upper 16 bits are read-only
             }
             PciExpressCapabilityHeader::ROOT_STS => {
-                // Root Status (4 bytes) - many bits are write-1-to-clear
+                // Root Status (4 bytes). PME Status (bit 16) is the only
+                // writable bit and it is write-1-to-clear; PME Requester ID
+                // and PME Pending are read-only. In particular, a write of 1
+                // to PME Status must *clear* it (e.g. Linux's
+                // `pcie_clear_root_pme_status()` writes 1 to clear) — treating
+                // this as a normal read/write would latch PME Status set and
+                // never let the guest clear it, producing spurious PME
+                // interrupts.
                 let mut state = self.state.lock();
-                // For simplicity, we'll allow basic writes for now
-                let new = val.merge(state.root_status.into_bits());
-                state.root_status = pci_express::RootStatus::from_bits(new);
+                let written = pci_express::RootStatus::from_bits(val.merge(0));
+                if written.pme_status() {
+                    state.root_status.set_pme_status(false);
+                }
             }
             PciExpressCapabilityHeader::DEVICE_CAPS_2 => {
                 // Device Capabilities 2 register is read-only
@@ -1667,6 +1675,66 @@ mod tests {
         // Should not panic and should be silently ignored
         cap.set_presence_detect_state(true);
         cap.set_presence_detect_state(false);
+    }
+
+    #[test]
+    fn test_root_status_pme_status_write_1_to_clear() {
+        // The Root Status register's PME Status bit (bit 16) is
+        // write-1-to-clear. Guests (e.g. Linux's `pcie_clear_root_pme_status()`)
+        // write 1 to *clear* it. A handler that treats the register as normal
+        // read/write would latch PME Status set and never let the guest clear
+        // it, producing repeated spurious PME interrupts.
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // PME Status starts clear.
+        assert_eq!(
+            read_cap_u32(&cap, 0x20) & (1 << 16),
+            0,
+            "PME Status should be clear on a freshly created root port",
+        );
+
+        // Writing 1 to PME Status must not latch it set.
+        write_cap_u32(&mut cap, 0x20, 1 << 16);
+        assert_eq!(
+            read_cap_u32(&cap, 0x20) & (1 << 16),
+            0,
+            "writing 1 to PME Status must clear it, not set it",
+        );
+
+        // With PME Status set (as if a PME message was received), writing 1
+        // clears it; the read-only PME Requester ID is left untouched.
+        {
+            let mut state = cap.state.lock();
+            state.root_status.set_pme_status(true);
+            state.root_status.set_pme_requester_id(0x0100);
+        }
+        assert_ne!(read_cap_u32(&cap, 0x20) & (1 << 16), 0);
+        write_cap_u32(&mut cap, 0x20, 1 << 16);
+        let after = read_cap_u32(&cap, 0x20);
+        assert_eq!(
+            after & (1 << 16),
+            0,
+            "write-1 should clear a set PME Status"
+        );
+        assert_eq!(
+            after & 0xffff,
+            0x0100,
+            "PME Requester ID is read-only and must be preserved",
+        );
+    }
+
+    #[test]
+    fn test_root_status_pme_requester_id_is_read_only() {
+        // Only PME Status is writable in Root Status; the Requester ID and PME
+        // Pending bits are read-only and must ignore guest writes.
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        write_cap_u32(&mut cap, 0x20, 0xffff_ffff);
+        assert_eq!(
+            read_cap_u32(&cap, 0x20),
+            0,
+            "read-only Root Status bits must ignore guest writes",
+        );
     }
 
     #[test]

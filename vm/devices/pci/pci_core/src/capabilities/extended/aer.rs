@@ -54,7 +54,7 @@ pub struct AerCapabilityConfig {
     pub uncorrectable_severity_mask: Option<u32>,
     /// Interrupt message number used by Root Ports for AER signaling.
     ///
-    /// This corresponds to Root Error Status[31:27].
+    /// This corresponds to `Root Error Status[31:27]`.
     pub root_error_interrupt_message_number: Option<u8>,
 }
 
@@ -159,7 +159,7 @@ impl AerExtendedCapability {
     pub fn interrupt_message_number(&self) -> Option<u8> {
         self.supports_root_registers().then(|| {
             self.root_error_status
-                .advanced_error_interrupt_message_number() as u8
+                .advanced_error_interrupt_message_number()
         })
     }
 
