@@ -421,19 +421,34 @@ impl HyperVNewCustomVMArgs {
                 anyhow::bail!("OpenHCL is required to set GuestStateEncryptionPolicy");
             }
 
-            let encryption_cli = match guest_state_encryption_policy {
-                HyperVGuestStateEncryptionPolicy::Default => "AUTO",
-                HyperVGuestStateEncryptionPolicy::None => "NONE",
-                HyperVGuestStateEncryptionPolicy::GspById => "GSP_BY_ID",
-                HyperVGuestStateEncryptionPolicy::GspKey => "GSP_KEY",
-                policy => {
-                    anyhow::bail!("encryption policy not supported over command line: {policy:?}")
+            // Hardware sealing is encoded by the host as a combined
+            // `GuestStateEncryptionPolicy` value, but is plumbed over the
+            // OpenHCL command line as two separate settings: the encryption
+            // policy (`HARDWARE_SEALING`) and the sealing policy id
+            // (`HASH`/`SIGNER`). A single exhaustive match keeps the two
+            // encodings in sync and forces new variants to be handled here.
+            let (encryption_cli, sealing_cli) = match guest_state_encryption_policy {
+                HyperVGuestStateEncryptionPolicy::Default => ("AUTO", None),
+                HyperVGuestStateEncryptionPolicy::None => ("NONE", None),
+                HyperVGuestStateEncryptionPolicy::GspById => ("GSP_BY_ID", None),
+                HyperVGuestStateEncryptionPolicy::GspKey => ("GSP_KEY", None),
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy => {
+                    ("HARDWARE_SEALING", Some("HASH"))
+                }
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy => {
+                    ("HARDWARE_SEALING", Some("SIGNER"))
                 }
             };
             append_cmdline(
                 &mut self.firmware_parameters,
                 format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
             );
+            if let Some(sealing_cli) = sealing_cli {
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    format!("HCL_HARDWARE_SEALING_POLICY={sealing_cli}"),
+                );
+            }
             self.guest_state_encryption_policy = None;
         }
 
@@ -447,6 +462,7 @@ impl HyperVNewCustomVMArgs {
     ) -> anyhow::Result<HyperVNewCustomVMArgs> {
         use crate::ApicMode;
         use crate::IsolationType;
+        use crate::PetriHardwareSealingPolicy;
         use crate::PetriVmgsResource;
         use crate::SecureBootTemplate;
         use petri_artifacts_common::tags::MachineArch;
@@ -531,20 +547,46 @@ impl HyperVNewCustomVMArgs {
                         .unwrap_or(false),
                 )
             }),
-            guest_state_encryption_policy: firmware
-                .is_openhcl()
-                .then(|| vmgs.encryption_policy())
-                .flatten()
-                .map(|p| match p {
-                    GuestStateEncryptionPolicy::Auto => HyperVGuestStateEncryptionPolicy::Default,
-                    GuestStateEncryptionPolicy::None(_) => HyperVGuestStateEncryptionPolicy::None,
-                    GuestStateEncryptionPolicy::GspById(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspById
+            guest_state_encryption_policy: {
+                // A requested hardware sealing policy takes precedence over the
+                // VMGS-derived encryption policy: it maps to a dedicated
+                // `GuestStateEncryptionPolicy` value that selects hardware
+                // sealing as the exclusive encryption source.
+                let hardware_sealing = tpm.as_ref().and_then(|t| match t.hardware_sealing_policy {
+                    PetriHardwareSealingPolicy::Default => None,
+                    PetriHardwareSealingPolicy::HashPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy)
                     }
-                    GuestStateEncryptionPolicy::GspKey(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspKey
+                    PetriHardwareSealingPolicy::SignerPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy)
                     }
-                }),
+                });
+                if let Some(policy) = hardware_sealing {
+                    if !firmware.is_openhcl() {
+                        anyhow::bail!("hardware sealing policy requires OpenHCL firmware");
+                    }
+                    Some(policy)
+                } else {
+                    firmware
+                        .is_openhcl()
+                        .then(|| vmgs.encryption_policy())
+                        .flatten()
+                        .map(|p| match p {
+                            GuestStateEncryptionPolicy::Auto => {
+                                HyperVGuestStateEncryptionPolicy::Default
+                            }
+                            GuestStateEncryptionPolicy::None(_) => {
+                                HyperVGuestStateEncryptionPolicy::None
+                            }
+                            GuestStateEncryptionPolicy::GspById(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspById
+                            }
+                            GuestStateEncryptionPolicy::GspKey(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspKey
+                            }
+                        })
+                }
+            },
             memory: Some(memory.startup_bytes),
             vp_count: Some(proc_topology.vp_count as u64),
             // TODO: fix this mapping, and/or update petri to better match

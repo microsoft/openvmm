@@ -23,6 +23,7 @@ pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
+use crate::hardware_key_sealing::HardwareKeySealingError;
 use crate::jwt::JwtError;
 use crate::jwt::JwtHelper;
 use ::vmgs::EncryptionAlgorithm;
@@ -43,9 +44,13 @@ use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::VmgsProvisioner;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
+use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION;
+use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_1;
+use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_2;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
@@ -55,6 +60,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use static_assertions::const_assert_eq;
 use std::fmt::Debug;
+use tee_call::KeyDerivationPolicy;
+use tee_call::REPORT_DATA_SIZE;
 use tee_call::TeeCall;
 use thiserror::Error;
 use zerocopy::FromZeros;
@@ -87,11 +94,21 @@ enum AttestationErrorInner {
     ReadGuestSecretKey(#[source] vmgs::ReadFromVmgsError),
     #[error("failed to verify VMGS provenance")]
     Provenance(#[source] ProvenanceError),
+    #[error("failed to get an attestation report")]
+    GetAttestationReport(#[source] tee_call::Error),
+    #[error(
+        "host requested HardwareSealing GSP, but hardware sealing is not available \
+         (tee_available={tee_available}, hardware_sealing_policy={hardware_sealing_policy:?})"
+    )]
+    HardwareSealingRequestedButNotAvailable {
+        tee_available: bool,
+        hardware_sealing_policy: HardwareSealingPolicy,
+    },
 }
 
 #[derive(Debug, Error)]
 enum GetDerivedKeysError {
-    #[error("failed to get ingress/egress keys from the the key protector")]
+    #[error("failed to get ingress/egress keys from the key protector")]
     GetKeysFromKeyProtector(#[source] GetKeysFromKeyProtectorError),
     #[error("failed to fetch GSP")]
     FetchGuestStateProtectionById(
@@ -100,9 +117,9 @@ enum GetDerivedKeysError {
     #[error("GSP By Id required, but no GSP By Id found")]
     GspByIdRequiredButNotFound,
     #[error("failed to unseal the ingress key using hardware derived keys")]
-    UnsealIngressKeyUsingHardwareDerivedKeys(
-        #[source] hardware_key_sealing::HardwareKeySealingError,
-    ),
+    UnsealIngressKeyUsingHardwareDerivedKeys(#[source] HardwareKeySealingError),
+    #[error("failed to get an ingress key from hardware key protector")]
+    GetIngressKeyFromHardwareKeyProtectorFailed,
     #[error("failed to get an ingress key from key protector")]
     GetIngressKeyFromKpFailed,
     #[error("failed to get an ingress key from guest state protection")]
@@ -114,7 +131,7 @@ enum GetDerivedKeysError {
     #[error("VMGS encryption is required, but no encryption sources were found")]
     EncryptionRequiredButNotFound,
     #[error("failed to seal the egress key using hardware derived keys")]
-    SealEgressKeyUsingHardwareDerivedKeys(#[source] hardware_key_sealing::HardwareKeySealingError),
+    SealEgressKeyUsingHardwareDerivedKeys(#[source] HardwareKeySealingError),
     #[error("failed to write to `FileId::HW_KEY_PROTECTOR` in vmgs")]
     VmgsWriteHardwareKeyProtector(#[source] vmgs::WriteToVmgsError),
     #[error("failed to get derived key by id")]
@@ -123,6 +140,8 @@ enum GetDerivedKeysError {
     DeriveIngressKey(#[source] crypto::kbkdf::KbkdfError),
     #[error("failed to derive an egress key")]
     DeriveEgressKey(#[source] crypto::kbkdf::KbkdfError),
+    #[error("Hardware sealing is required, but not supported")]
+    HardwareSealingRequiredButNotSupported,
 }
 
 #[derive(Debug, Error)]
@@ -151,7 +170,7 @@ enum UnlockVmgsDataStoreError {
     VmgsUnlockUsingExistingIngressKey(#[source] ::vmgs::Error),
     #[error("failed to write key protector to vmgs")]
     WriteKeyProtector(#[source] vmgs::WriteToVmgsError),
-    #[error("failed to read key protector by id to vmgs")]
+    #[error("failed to write key protector by id to vmgs")]
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
     #[error("failed to update the vmgs encryption key")]
     UpdateVmgsEncryptionKey(#[source] ::vmgs::Error),
@@ -162,9 +181,11 @@ enum UnlockVmgsDataStoreError {
 #[derive(Debug, Error)]
 enum PersistAllKeyProtectorsError {
     #[error("failed to write key protector to vmgs")]
-    WriteKeyProtector(#[source] vmgs::WriteToVmgsError),
-    #[error("failed to read key protector by id to vmgs")]
-    WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
+    KeyProtector(#[source] vmgs::WriteToVmgsError),
+    #[error("failed to write key protector by id to vmgs")]
+    KeyProtectorById(#[source] vmgs::WriteToVmgsError),
+    #[error("failed to write hardware key protector to vmgs")]
+    HardwareKeyProtector(#[source] vmgs::WriteToVmgsError),
 }
 
 #[derive(Debug, Error)]
@@ -258,6 +279,8 @@ struct DerivedKeyResult {
     key_protector_settings: KeyProtectorSettings,
     /// The instance of [`GspExtendedStatusFlags`] returned by GSP.
     gsp_extended_status_flags: GspExtendedStatusFlags,
+    /// Optional hardware key protector.
+    hardware_key_protector: Option<HardwareKeyProtector>,
 }
 
 /// The return values of [`initialize_platform_security`].
@@ -271,7 +294,6 @@ pub struct PlatformAttestationData {
 }
 
 /// The attestation type to use.
-// TODO: Support VBS
 #[derive(Debug, MeshPayload, Copy, Clone, PartialEq, Eq)]
 pub enum AttestationType {
     /// Use the SEV-SNP TEE for attestation.
@@ -298,21 +320,38 @@ async fn try_unlock_vmgs(
     tee_call: Option<&dyn TeeCall>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
+    require_hardware_sealing: bool,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     key_protector_by_id: &mut KeyProtectorById,
 ) -> Result<bool, (AttestationErrorInner, bool)> {
     let skr_response = if let Some(tee_call) = tee_call {
-        tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
+        if !require_hardware_sealing {
+            tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
+            // Retrieve the tenant key via attestation
+            secure_key_release::request_vmgs_encryption_keys(
+                get,
+                tee_call,
+                vmgs,
+                attestation_vm_config,
+                agent_data,
+            )
+            .await
+        } else {
+            tracing::info!(
+                CVM_ALLOWED,
+                "Getting attestation report only for hardware sealing"
+            );
 
-        // Retrieve the tenant key via attestation
-        secure_key_release::request_vmgs_encryption_keys(
-            get,
-            tee_call,
-            vmgs,
-            attestation_vm_config,
-            agent_data,
-        )
-        .await
+            let report = tee_call
+                .get_attestation_report(&[0; REPORT_DATA_SIZE])
+                .map_err(|e| (AttestationErrorInner::GetAttestationReport(e), false))?;
+
+            Ok(VmgsEncryptionKeys {
+                ingress_rsa_kek: None,
+                wrapped_des_key: None,
+                tcb_version: report.tcb_version,
+            })
+        }
     } else {
         tracing::info!(CVM_ALLOWED, "Key-encryption key retrieval not required");
 
@@ -361,27 +400,51 @@ async fn try_unlock_vmgs(
         }
     };
 
-    // Determine the minimal size of a DEK entry based on whether `wrapped_des_key` presents
-    let dek_minimal_size = if wrapped_des_key.is_some() {
-        key_protector::AES_WRAPPED_AES_KEY_LENGTH
-    } else {
-        key_protector::RSA_WRAPPED_AES_KEY_LENGTH
-    };
+    let mut key_protector = if !require_hardware_sealing {
+        // Determine the minimal size of a DEK entry based on whether `wrapped_des_key` is present
+        let dek_minimal_size = if wrapped_des_key.is_some() {
+            key_protector::AES_WRAPPED_AES_KEY_LENGTH
+        } else {
+            key_protector::RSA_WRAPPED_AES_KEY_LENGTH
+        };
 
-    // Read Key Protector blob from VMGS
-    tracing::info!(
-        CVM_ALLOWED,
-        dek_minimal_size = dek_minimal_size,
-        "Reading key protector from VMGS"
-    );
-    let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
-        .await
-        .map_err(|e| (AttestationErrorInner::ReadKeyProtector(e), false))?;
+        // Read Key Protector blob from VMGS
+        tracing::info!(
+            CVM_ALLOWED,
+            dek_minimal_size = dek_minimal_size,
+            "Reading key protector from VMGS"
+        );
+
+        vmgs::read_key_protector(vmgs, dek_minimal_size)
+            .await
+            .map_err(|e| (AttestationErrorInner::ReadKeyProtector(e), false))?
+    } else {
+        tracing::info!(
+            CVM_ALLOWED,
+            "Hardware sealing is required, skip reading key protector from VMGS"
+        );
+        KeyProtector::new_zeroed()
+    };
 
     let start_time = std::time::SystemTime::now();
     let vmgs_encrypted = vmgs.encrypted();
+
+    // Only the `Hash` policy mixes the OpenHCL measurement into the hardware key
+    // derivation; the other policies do not, allowing the sealed key to survive
+    // OpenHCL measurement changes (e.g. servicing).
+    let mix_measurement = matches!(
+        attestation_vm_config.hardware_sealing_policy,
+        HardwareSealingPolicy::Hash
+    );
+
+    let key_derivation_policy = tcb_version.map(|tcb_version| KeyDerivationPolicy {
+        tcb_version,
+        mix_measurement,
+    });
+
     tracing::info!(
-        ?tcb_version,
+        CVM_ALLOWED,
+        key_derivation_policy=?key_derivation_policy,
         vmgs_encrypted,
         op_type = ?LogOpType::BeginDecryptVmgs,
         "Deriving keys"
@@ -398,9 +461,10 @@ async fn try_unlock_vmgs(
         vmgs_encrypted,
         ingress_rsa_kek.as_ref(),
         wrapped_des_key.as_deref(),
-        tcb_version,
+        key_derivation_policy,
         guest_state_encryption_policy,
         strict_encryption_policy,
+        require_hardware_sealing,
         skip_hw_unsealing,
     )
     .await
@@ -418,13 +482,14 @@ async fn try_unlock_vmgs(
         (AttestationErrorInner::GetDerivedKeys(e), retry)
     })?;
 
-    // All Underhill VMs use VMGS encryption
     tracing::info!("Unlocking VMGS");
+
     if let Err(e) = unlock_vmgs_data_store(
         vmgs,
         vmgs_encrypted,
         &mut key_protector,
         key_protector_by_id,
+        derived_keys_result.hardware_key_protector,
         derived_keys_result.derived_keys,
         derived_keys_result.key_protector_settings,
         bios_guid,
@@ -490,6 +555,10 @@ pub async fn initialize_platform_security(
         secure_boot=attestation_vm_config.secure_boot,
         tpm_enabled=attestation_vm_config.tpm_enabled,
         tpm_persisted=attestation_vm_config.tpm_persisted,
+        // Hardware sealing requires a TEE that can derive keys, so support is
+        // gated on both the TEE being present and exposing `get_derived_key`.
+        hardware_sealing_supported=tee_call.and_then(|tee| tee.supports_get_derived_key()).is_some(),
+        hardware_sealing_policy=?attestation_vm_config.hardware_sealing_policy,
         "Reading security profile");
 
     // Read Security Profile from VMGS
@@ -499,10 +568,73 @@ pub async fn initialize_platform_security(
         .await
         .map_err(AttestationErrorInner::ReadSecurityProfile)?;
 
-    // If attestation is suppressed, return the `agent_data` that is required by
-    // TPM AK cert request.
-    if suppress_attestation {
-        tracing::info!(CVM_ALLOWED, "Suppressing attestation");
+    // Hardware sealing is *required* (the only source of the VMGS DEK) when all
+    // hold: the VM is a CVM (tee_call available), it is stateless
+    // (suppress_attestation = true, so SKR is bypassed), the host requests
+    // `HardwareSealing`, and the attested config permits it
+    // (hardware_sealing_policy != None). Host invariant: the host selects
+    // exclusive hardware sealing only in stateless mode paired with
+    // `HardwareSealingPolicy::{Hash, Signer}`. In stateful mode it is at most a
+    // backup recovery path, so this flag stays false.
+    let require_hardware_sealing = tee_call.is_some()
+        && suppress_attestation
+        && matches!(
+            guest_state_encryption_policy,
+            GuestStateEncryptionPolicy::HardwareSealing
+        )
+        && !matches!(
+            attestation_vm_config.hardware_sealing_policy,
+            HardwareSealingPolicy::None
+        );
+
+    // A stateful (`!suppress_attestation`) request for `HardwareSealing` breaks
+    // the invariant above. We don't fail closed because the normal attestation
+    // flow still encrypts the VMGS (the directive is just downgraded to a
+    // backup); warn so the host bug is observable.
+    if !suppress_attestation
+        && matches!(
+            guest_state_encryption_policy,
+            GuestStateEncryptionPolicy::HardwareSealing
+        )
+    {
+        tracing::warn!(
+            CVM_ALLOWED,
+            ?guest_state_encryption_policy,
+            hardware_sealing_policy = ?attestation_vm_config.hardware_sealing_policy,
+            "host requested exclusive hardware sealing in stateful mode; \
+             ignoring and proceeding with the normal attestation flow"
+        );
+    }
+
+    // Attestation is suppressed and hardware sealing is not required, indicating that VMGS encryption is bypassed.
+    // Skip the attestation flow and return the `agent_data` that is required by TPM AK cert request.
+    if suppress_attestation && !require_hardware_sealing {
+        // This branch is the normal stateless (attestation-suppressed) path when
+        // hardware sealing is not requested. The one exception is when the host
+        // requested `GuestStateEncryptionPolicy::HardwareSealing` but failed to
+        // provide a usable hardware sealing policy on a CVM (the host invariant
+        // above), in which case we fail closed rather than silently downgrading
+        // to no encryption.
+        if matches!(
+            guest_state_encryption_policy,
+            GuestStateEncryptionPolicy::HardwareSealing
+        ) {
+            return Err(
+                AttestationErrorInner::HardwareSealingRequestedButNotAvailable {
+                    tee_available: tee_call.is_some(),
+                    hardware_sealing_policy: attestation_vm_config.hardware_sealing_policy,
+                }
+                .into(),
+            );
+        }
+
+        tracing::info!(
+            CVM_ALLOWED,
+            ?guest_state_encryption_policy,
+            hardware_sealing_policy = ?attestation_vm_config.hardware_sealing_policy,
+            tee_available = tee_call.is_some(),
+            "Suppressing attestation; VMGS encryption is bypassed"
+        );
 
         return Ok(PlatformAttestationData {
             host_attestation_settings: HostAttestationSettings {
@@ -513,31 +645,44 @@ pub async fn initialize_platform_security(
         });
     }
 
-    // Read VM id from VMGS
-    tracing::info!(CVM_ALLOWED, "Reading VM ID from VMGS");
-    let mut key_protector_by_id = match vmgs::read_key_protector_by_id(vmgs).await {
-        Ok(key_protector_by_id) => KeyProtectorById {
-            inner: key_protector_by_id,
-            found_id: true,
-        },
-        Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => KeyProtectorById {
-            inner: openhcl_attestation_protocol::vmgs::KeyProtectorById::new_zeroed(),
-            found_id: false,
-        },
-        Err(e) => { Err(AttestationErrorInner::ReadKeyProtectorById(e)) }?,
-    };
-
-    // Check if the VM id has been changed since last boot with KP write
-    let vm_id_changed = if key_protector_by_id.found_id {
-        let changed = key_protector_by_id.inner.id_guid != bios_guid;
-        if changed {
-            tracing::info!("VM Id has changed since last boot");
+    let (mut key_protector_by_id, vm_id_changed) = if !require_hardware_sealing {
+        // Read VM id from VMGS
+        tracing::info!(CVM_ALLOWED, "Reading VM ID from VMGS");
+        let key_protector_by_id = match vmgs::read_key_protector_by_id(vmgs).await {
+            Ok(key_protector_by_id) => KeyProtectorById {
+                inner: key_protector_by_id,
+                found_id: true,
+            },
+            Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => KeyProtectorById {
+                inner: openhcl_attestation_protocol::vmgs::KeyProtectorById::new_zeroed(),
+                found_id: false,
+            },
+            Err(e) => { Err(AttestationErrorInner::ReadKeyProtectorById(e)) }?,
         };
-        changed
+
+        // Check if the VM id has been changed since last boot with KP write
+        let vm_id_changed = if key_protector_by_id.found_id {
+            let changed = key_protector_by_id.inner.id_guid != bios_guid;
+            if changed {
+                tracing::info!("VM Id has changed since last boot");
+            };
+            changed
+        } else {
+            // Previous id in KP not found means this is the first boot or the GspById
+            // is not provisioned, treat id as unchanged for this case.
+            false
+        };
+
+        (key_protector_by_id, vm_id_changed)
     } else {
-        // Previous id in KP not found means this is the first boot or the GspById
-        // is not provisioned, treat id as unchanged for this case.
-        false
+        // When hardware sealing is required, the key protector by id is not used, and VM id change does not trigger state refresh.
+        (
+            KeyProtectorById {
+                inner: openhcl_attestation_protocol::vmgs::KeyProtectorById::new_zeroed(),
+                found_id: false,
+            },
+            false,
+        )
     };
 
     // Retry attestation call-out if necessary (if VMGS encrypted).
@@ -564,6 +709,7 @@ pub async fn initialize_platform_security(
             tee_call,
             guest_state_encryption_policy,
             strict_encryption_policy,
+            require_hardware_sealing,
             &mut agent_data,
             &mut key_protector_by_id,
         )
@@ -620,6 +766,7 @@ async fn unlock_vmgs_data_store(
     vmgs_encrypted: bool,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
+    hardware_key_protector: Option<HardwareKeyProtector>,
     derived_keys: Option<Keys>,
     key_protector_settings: KeyProtectorSettings,
     bios_guid: Guid,
@@ -706,6 +853,7 @@ async fn unlock_vmgs_data_store(
         vmgs,
         key_protector,
         key_protector_by_id,
+        hardware_key_protector.as_ref(),
         bios_guid,
         key_protector_settings,
     )
@@ -729,6 +877,7 @@ async fn unlock_vmgs_data_store(
 ///         - KEK + GSP                 - [KEK + GSP]
 ///
 /// NOTE: for TVM parity, only None, Gsp By Id v9.1, and Gsp By Id / Gsp v10.0 are used.
+#[expect(clippy::fn_params_excessive_bools)]
 async fn get_derived_keys(
     get: &GuestEmulationTransportClient,
     tee_call: Option<&dyn TeeCall>,
@@ -740,9 +889,10 @@ async fn get_derived_keys(
     is_encrypted: bool,
     ingress_rsa_kek: Option<&RsaKeyPair>,
     wrapped_des_key: Option<&[u8]>,
-    tcb_version: Option<u64>,
+    key_derivation_policy: Option<KeyDerivationPolicy>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
+    require_hardware_sealing: bool,
     skip_hw_unsealing: bool,
 ) -> Result<DerivedKeyResult, GetDerivedKeysError> {
     tracing::info!(
@@ -751,14 +901,6 @@ async fn get_derived_keys(
         strict_encryption_policy,
         "encryption policy"
     );
-
-    // TODO: implement hardware sealing only
-    if matches!(
-        guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::HardwareSealing
-    ) {
-        todo!("hardware sealing")
-    }
 
     let mut key_protector_settings = KeyProtectorSettings {
         should_write_kp: true,
@@ -839,7 +981,17 @@ async fn get_derived_keys(
     let mut requires_gsp_by_id = is_gsp_by_id;
 
     // Attempt GSP
-    let (gsp_response, gsp_available, no_gsp, requires_gsp) = {
+    let (gsp_response, gsp_available, no_gsp, requires_gsp) = if require_hardware_sealing {
+        // In stateless + hardware sealing mode, the VMGS DEK comes exclusively
+        // from hardware sealing, and the TPM seeds must remain stable across
+        // boots. Skip the GSP host callout entirely so that a host-provided
+        // `state_refresh_request` can never trigger a TPM seed refresh.
+        tracing::info!(
+            CVM_ALLOWED,
+            "Hardware sealing is required, skip GSP callout"
+        );
+        (GuestStateProtection::new_zeroed(), false, true, false)
+    } else {
         tracing::info!(CVM_ALLOWED, "attempting GSP");
 
         let response = get_gsp_data(get, key_protector).await;
@@ -887,8 +1039,11 @@ async fn get_derived_keys(
     };
 
     // Attempt GSP By Id protection if GSP is not available, when changing
-    // schemes, or as requested
-    let (gsp_response_by_id, gsp_by_id_available, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
+    // schemes, or as requested. Skipped entirely in hardware sealing mode
+    // for the same reason the GSP callout is skipped above.
+    let (gsp_response_by_id, gsp_by_id_available, no_gsp_by_id) = if !require_hardware_sealing
+        && (no_gsp || requires_gsp_by_id)
+    {
         tracing::info!(CVM_ALLOWED, "attempting GSP By Id");
 
         let gsp_response_by_id = get
@@ -899,17 +1054,17 @@ async fn get_derived_keys(
         let no_gsp_by_id_available = gsp_response_by_id.extended_status_flags.no_registry_file();
 
         let no_gsp_by_id = no_gsp_by_id_available
-            // disable if auto and pre-existing guest state is unencrypted
-            // to prevent encryption changes without explicit intent
-            || (matches!(
-                guest_state_encryption_policy,
-                GuestStateEncryptionPolicy::Auto
-            ) && existing_unencrypted)
-            // disable per encryption policy (first boot only, unless strict)
-            || (matches!(
-                guest_state_encryption_policy,
-                GuestStateEncryptionPolicy::None
-            ) && (!requires_gsp_by_id || strict_encryption_policy));
+                // disable if auto and pre-existing guest state is unencrypted
+                // to prevent encryption changes without explicit intent
+                || (matches!(
+                    guest_state_encryption_policy,
+                    GuestStateEncryptionPolicy::Auto
+                ) && existing_unencrypted)
+                // disable per encryption policy (first boot only, unless strict)
+                || (matches!(
+                    guest_state_encryption_policy,
+                    GuestStateEncryptionPolicy::None
+                ) && (!requires_gsp_by_id || strict_encryption_policy));
 
         if no_gsp_by_id && requires_gsp_by_id {
             Err(GetDerivedKeysError::GspByIdRequiredButNotFound)?
@@ -925,7 +1080,11 @@ async fn get_derived_keys(
     };
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
-    if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
+    if (no_kek && found_dek)
+        || (no_gsp && requires_gsp)
+        || (no_gsp_by_id && requires_gsp_by_id)
+        || (require_hardware_sealing && is_encrypted)
+    {
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
@@ -943,17 +1102,48 @@ async fn get_derived_keys(
 
             let hardware_derived_keys = tee_call.supports_get_derived_key().and_then(|tee_call| {
                 if let Some(hardware_key_protector) = &hardware_key_protector {
-                    match HardwareDerivedKeys::derive_key(
-                        tee_call,
-                        attestation_vm_config,
-                        hardware_key_protector.header.tcb_version,
-                    ) {
+                    let policy = match hardware_key_protector.header.version {
+                        HW_KEY_PROTECTOR_VERSION_1 => {
+                            // Version 1 is not forward compatible with other versions because it always mixes the OpenHCL
+                            // measurement into the hardware key derivation function (KDF). This means that any version
+                            // change implying an OpenHCL measurement change will result in a different hardware sealing key,
+                            // causing the unsealing process to fail. To prevent this issue, we return None here and log
+                            // the appropriate information.
+                            //
+                            // NOTE: In future implementations, we should handle version 2 and above differently.
+                            // These versions support forward compatibility when using signer-based sealing policy that
+                            // does not mix the OpenHCL measurement into the hardware KDF.
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                current_version = HW_KEY_PROTECTOR_CURRENT_VERSION,
+                                "HW_KEY_PROTECTOR version 1 is incompatible with newer versions. Skip VMGS DEK unsealing with hardware key protector."
+                            );
+                            return None;
+                        }
+                        HW_KEY_PROTECTOR_VERSION_2 => KeyDerivationPolicy {
+                            tcb_version: hardware_key_protector.header.tcb_version,
+                            mix_measurement: hardware_key_protector.header.mix_measurement != 0,
+                        },
+                        unsupported_version => {
+                            // unsupported version
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                unsupported_version,
+                                "unsupported HW_KEY_PROTECTOR version",
+                            );
+                            return None;
+                        }
+                    };
+
+                    match HardwareDerivedKeys::derive_key(tee_call, attestation_vm_config, policy) {
                         Ok(hardware_derived_key) => Some(hardware_derived_key),
                         Err(e) => {
                             // non-fatal
                             tracing::warn!(
                                 CVM_ALLOWED,
                                 error = &e as &dyn std::error::Error,
+                                tcb_version = hardware_key_protector.header.tcb_version,
+                                mix_measurement = hardware_key_protector.header.mix_measurement,
                                 "failed to derive hardware keys using HW_KEY_PROTECTOR",
                             );
                             None
@@ -1001,27 +1191,79 @@ async fn get_derived_keys(
         if let (Some(hardware_key_protector), Some(hardware_derived_keys)) =
             (hardware_key_protector, hardware_derived_keys)
         {
-            derived_keys.ingress = hardware_key_protector
-                .unseal_key(&hardware_derived_keys)
-                .map_err(GetDerivedKeysError::UnsealIngressKeyUsingHardwareDerivedKeys)?;
+            let dek = match hardware_key_protector.unseal_key(&hardware_derived_keys) {
+                Ok(dek) => dek,
+                Err(e @ HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)
+                    if require_hardware_sealing =>
+                {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        "hardware unsealing failed due to inconsistent hardware-derived keys"
+                    );
+
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_SEALING_INVALID_KEY,
+                    )
+                    .await;
+
+                    return Err(GetDerivedKeysError::UnsealIngressKeyUsingHardwareDerivedKeys(e));
+                }
+                Err(e) => {
+                    return Err(GetDerivedKeysError::UnsealIngressKeyUsingHardwareDerivedKeys(e));
+                }
+            };
+
+            derived_keys.ingress = dek;
             derived_keys.decrypt_egress = None;
-            derived_keys.encrypt_egress = derived_keys.ingress;
+
+            let hardware_key_protector = if require_hardware_sealing && is_encrypted {
+                // Generate a new key on every boot for key rotation
+                let mut new_dek = [0u8; AES_GCM_KEY_LENGTH];
+                getrandom::fill(&mut new_dek).expect("rng failure");
+
+                let updated_hardware_key_protector =
+                    HardwareKeyProtector::seal_key(&hardware_derived_keys, &new_dek)
+                        .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
+
+                derived_keys.encrypt_egress = new_dek;
+
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "Non-first boot with VMGS hardware sealing mode. Generate a new random key for VMGS DEK rotation."
+                );
+
+                // Use the updated key protector in the exclusive hardware sealing scenario
+                // to support per-boot key rotation
+                updated_hardware_key_protector
+            } else {
+                derived_keys.encrypt_egress = derived_keys.ingress;
+
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    "Using hardware-derived key to recover VMGS DEK"
+                );
+
+                // Use the same key protector in the VMGS DEK backup scenario
+                hardware_key_protector
+            };
 
             key_protector_settings.should_write_kp = false;
             key_protector_settings.use_hardware_unlock = true;
-
-            tracing::warn!(
-                CVM_ALLOWED,
-                "Using hardware-derived key to recover VMGS DEK"
-            );
 
             return Ok(DerivedKeyResult {
                 derived_keys: Some(derived_keys),
                 key_protector_settings,
                 gsp_extended_status_flags: gsp_response.extended_status_flags,
+                hardware_key_protector: Some(hardware_key_protector),
             });
         } else {
-            if no_kek && found_dek {
+            if require_hardware_sealing && is_encrypted {
+                get.event_log_fatal(
+                    guest_emulation_transport::api::EventLogId::DEK_HARDWARE_SEALING_FAILED,
+                )
+                .await;
+                return Err(GetDerivedKeysError::GetIngressKeyFromHardwareKeyProtectorFailed);
+            } else if no_kek && found_dek {
                 return Err(GetDerivedKeysError::GetIngressKeyFromKpFailed);
             } else if no_gsp && requires_gsp {
                 return Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed);
@@ -1039,8 +1281,75 @@ async fn get_derived_keys(
         gsp = !no_gsp,
         gsp_by_id_available = ?gsp_by_id_available,
         gsp_by_id = !no_gsp_by_id,
+        hw_sealing = require_hardware_sealing,
         "Encryption sources"
     );
+
+    // Attempt to get hardware derived keys
+    let hardware_derived_keys = tee_call
+        .and_then(|tee_call| tee_call.supports_get_derived_key())
+        .and_then(|tee_call| {
+            if let Some(policy) = key_derivation_policy {
+                match HardwareDerivedKeys::derive_key(tee_call, attestation_vm_config, policy) {
+                    Ok(keys) => Some(keys),
+                    Err(e) => {
+                        // non-fatal
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            error = &e as &dyn std::error::Error,
+                            "failed to derive hardware keys"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        });
+
+    // Let hardware sealing take precedence over other sources if it's required
+    if require_hardware_sealing && !is_encrypted {
+        let Some(hardware_derived_keys) = hardware_derived_keys else {
+            get.event_log_fatal(
+                guest_emulation_transport::api::EventLogId::DEK_HARDWARE_SEALING_FAILED,
+            )
+            .await;
+            return Err(GetDerivedKeysError::HardwareSealingRequiredButNotSupported);
+        };
+
+        let mut new_dek = [0u8; AES_GCM_KEY_LENGTH];
+        getrandom::fill(&mut new_dek).expect("rng failure");
+
+        let hardware_key_protector =
+            match HardwareKeyProtector::seal_key(&hardware_derived_keys, &new_dek) {
+                Ok(hardware_key_protector) => hardware_key_protector,
+                Err(e) => {
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_SEALING_FAILED,
+                    )
+                    .await;
+                    return Err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys(
+                        e,
+                    ));
+                }
+            };
+
+        derived_keys.ingress = [0u8; AES_GCM_KEY_LENGTH];
+        derived_keys.decrypt_egress = None;
+        derived_keys.encrypt_egress = new_dek;
+
+        tracing::info!(
+            CVM_ALLOWED,
+            "First boot with VMGS hardware sealing mode. Generate a new random key for VMGS encryption."
+        );
+
+        return Ok(DerivedKeyResult {
+            derived_keys: Some(derived_keys),
+            key_protector_settings,
+            gsp_extended_status_flags: gsp_response.extended_status_flags,
+            hardware_key_protector: Some(hardware_key_protector),
+        });
+    }
 
     // Check if sources of encryption are available
     if no_kek && no_gsp && no_gsp_by_id {
@@ -1061,33 +1370,11 @@ async fn get_derived_keys(
                     derived_keys: None,
                     key_protector_settings,
                     gsp_extended_status_flags: gsp_response.extended_status_flags,
+                    hardware_key_protector: None,
                 });
             }
         }
     }
-
-    // Attempt to get hardware derived keys
-    let hardware_derived_keys = tee_call
-        .and_then(|tee_call| tee_call.supports_get_derived_key())
-        .and_then(|tee_call| {
-            if let Some(tcb_version) = tcb_version {
-                match HardwareDerivedKeys::derive_key(tee_call, attestation_vm_config, tcb_version)
-                {
-                    Ok(keys) => Some(keys),
-                    Err(e) => {
-                        // non-fatal
-                        tracing::warn!(
-                            CVM_ALLOWED,
-                            error = &e as &dyn std::error::Error,
-                            "failed to derive hardware keys"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        });
 
     // Use tenant key (KEK only)
     if no_gsp && no_gsp_by_id {
@@ -1114,6 +1401,7 @@ async fn get_derived_keys(
             derived_keys: Some(derived_keys),
             key_protector_settings,
             gsp_extended_status_flags: gsp_response.extended_status_flags,
+            hardware_key_protector: None,
         });
     }
 
@@ -1153,6 +1441,7 @@ async fn get_derived_keys(
                 derived_keys: Some(derived_keys_by_id),
                 key_protector_settings,
                 gsp_extended_status_flags: gsp_response.extended_status_flags,
+                hardware_key_protector: None,
             });
         }
 
@@ -1308,6 +1597,7 @@ async fn get_derived_keys(
         derived_keys: Some(derived_keys),
         key_protector_settings,
         gsp_extended_status_flags: gsp_response.extended_status_flags,
+        hardware_key_protector: None,
     })
 }
 
@@ -1404,6 +1694,7 @@ async fn persist_all_key_protectors(
     vmgs: &mut Vmgs,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
+    hardware_key_protector: Option<&HardwareKeyProtector>,
     bios_guid: Guid,
     key_protector_settings: KeyProtectorSettings,
 ) -> Result<(), PersistAllKeyProtectorsError> {
@@ -1412,10 +1703,18 @@ async fn persist_all_key_protectors(
     if key_protector_settings.use_gsp_by_id && !key_protector_settings.should_write_kp {
         vmgs::write_key_protector_by_id(&mut key_protector_by_id.inner, vmgs, false, bios_guid)
             .await
-            .map_err(PersistAllKeyProtectorsError::WriteKeyProtectorById)?;
+            .map_err(PersistAllKeyProtectorsError::KeyProtectorById)?;
     } else {
-        // If HW Key unlocked VMGS, do not alter KP
-        if !key_protector_settings.use_hardware_unlock {
+        // When a hardware key protector is present, the VMGS DEK is sealed by the
+        // hardware-derived key (either recovered via hardware unsealing, or
+        // freshly generated/rotated in exclusive hardware sealing mode). In that
+        // case persist the hardware key protector instead of altering the regular
+        // key protector.
+        if let Some(hardware_key_protector) = hardware_key_protector {
+            vmgs::write_hardware_key_protector(hardware_key_protector, vmgs)
+                .await
+                .map_err(PersistAllKeyProtectorsError::HardwareKeyProtector)?;
+        } else {
             // Remove ingress KP & DEK, no longer applies to data store
             key_protector.dek[key_protector.active_kp as usize % NUMBER_KP]
                 .dek_buffer
@@ -1425,7 +1724,7 @@ async fn persist_all_key_protectors(
 
             vmgs::write_key_protector(key_protector, vmgs)
                 .await
-                .map_err(PersistAllKeyProtectorsError::WriteKeyProtector)?;
+                .map_err(PersistAllKeyProtectorsError::KeyProtector)?;
         }
 
         // Update Id data to indicate this scheme is no longer in use
@@ -1436,7 +1735,7 @@ async fn persist_all_key_protectors(
             key_protector_by_id.inner.ported = 1;
             vmgs::write_key_protector_by_id(&mut key_protector_by_id.inner, vmgs, true, bios_guid)
                 .await
-                .map_err(PersistAllKeyProtectorsError::WriteKeyProtectorById)?;
+                .map_err(PersistAllKeyProtectorsError::KeyProtectorById)?;
         }
     }
 
@@ -1541,6 +1840,7 @@ pub fn derive_vmgsid(seed_file: &[u8]) -> Result<Guid, Error> {
 pub mod test_utils {
     use tee_call::GetAttestationReportResult;
     use tee_call::HW_DERIVED_KEY_LENGTH;
+    use tee_call::KeyDerivationPolicy;
     use tee_call::REPORT_DATA_SIZE;
     use tee_call::TeeCall;
     use tee_call::TeeCallGetDerivedKey;
@@ -1548,14 +1848,24 @@ pub mod test_utils {
 
     /// Mock implementation of [`TeeCall`] with get derived key support for testing purposes
     pub struct MockTeeCall {
-        /// Mock TCB version to return from get_attestation_report
+        /// Mock measurement data
+        pub measurement: [u8; 32],
+        /// Mock TCB version returned in attestation reports
         pub tcb_version: u64,
     }
 
     impl MockTeeCall {
         /// Create a new instance of [`MockTeeCall`].
-        pub fn new(tcb_version: u64) -> Self {
-            Self { tcb_version }
+        pub fn new(measurement: [u8; 32]) -> Self {
+            Self {
+                measurement,
+                tcb_version: 0x1234,
+            }
+        }
+
+        /// Update the mock measurement data.
+        pub fn update_measurement(&mut self, measurement: [u8; 32]) {
+            self.measurement = measurement;
         }
     }
 
@@ -1585,14 +1895,21 @@ pub mod test_utils {
     }
 
     impl TeeCallGetDerivedKey for MockTeeCall {
-        fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; 32], tee_call::Error> {
+        fn get_derived_key(
+            &self,
+            policy: KeyDerivationPolicy,
+        ) -> Result<[u8; 32], tee_call::Error> {
             // Base test key; mix in policy so different policies yield different derived secrets
             let mut key: [u8; HW_DERIVED_KEY_LENGTH] = [0xab; HW_DERIVED_KEY_LENGTH];
 
             // Use mutation to simulate the policy
-            let tcb = tcb_version.to_le_bytes();
+            let tcb = policy.tcb_version.to_le_bytes();
             for (i, b) in key.iter_mut().enumerate() {
-                *b ^= tcb[i % tcb.len()];
+                if policy.mix_measurement {
+                    *b ^= self.measurement[i] ^ tcb[i % tcb.len()];
+                } else {
+                    *b ^= tcb[i % tcb.len()];
+                }
             }
 
             Ok(key)
@@ -1638,6 +1955,8 @@ mod tests {
     use get_protocol::GspExtendedStatusFlags;
     use guest_emulation_device::IgvmAgentAction;
     use guest_emulation_device::IgvmAgentTestPlan;
+    use guest_emulation_device::test_utilities::Event;
+    use guest_emulation_device::test_utilities::TestGetResponses;
     use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
@@ -1788,6 +2107,22 @@ mod tests {
         }
     }
 
+    fn new_attestation_vm_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_persisted: true,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        }
+    }
+
     #[async_test]
     async fn do_nothing_without_derived_keys() {
         let mut vmgs = new_formatted_vmgs().await;
@@ -1810,6 +2145,7 @@ mod tests {
             false,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             None,
             key_protector_settings,
             bios_guid,
@@ -1835,6 +2171,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             None,
             key_protector_settings,
             bios_guid,
@@ -1878,6 +2215,7 @@ mod tests {
             false,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -1934,6 +2272,7 @@ mod tests {
             true,
             &mut new_key_protector,
             &mut new_key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -2002,6 +2341,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -2076,6 +2416,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -2155,6 +2496,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -2209,6 +2551,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             Some(derived_keys),
             key_protector_settings,
             bios_guid,
@@ -2296,6 +2639,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
+            Some(&HardwareKeyProtector::new_zeroed()),
             bios_guid,
             key_protector_settings,
         )
@@ -2308,6 +2652,328 @@ mod tests {
         // The key protector should remain unchanged
         assert_eq!(active_kp_copy, key_protector.active_kp);
         assert_eq!(kp_copy.as_slice(), key_protector.as_bytes());
+    }
+
+    #[async_test]
+    async fn hardware_sealing_first_boot_creates_hwkp_and_encrypts_vmgs(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        // Start with an empty KP to simulate brand-new VMGS with no DEK/GSP present
+        let mut key_protector = KeyProtector::new_zeroed();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Create a GET client backed by the test host
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let mock_tee_call = MockTeeCall::new([0x8a; 32]);
+
+        // No KEK, no GSP. Require HardwareSealing and VMGS is not encrypted.
+        let derived = get_derived_keys(
+            &get_pair.client,
+            Some(&mock_tee_call),
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            &AttestationVmConfig {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_persisted: false,
+                hardware_sealing_policy: HardwareSealingPolicy::Hash,
+                filtered_vpci_devices_allowed: true,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            },
+            false,
+            None,
+            None,
+            Some(KeyDerivationPolicy {
+                tcb_version: 0x1234,
+                mix_measurement: true,
+            }),
+            GuestStateEncryptionPolicy::HardwareSealing,
+            true,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // It must produce an egress key and HWKP
+        assert!(derived.derived_keys.is_some());
+        assert!(derived.hardware_key_protector.is_some());
+
+        // Capture the egress key before `derived.derived_keys` is consumed below
+        let egress_key = derived.derived_keys.as_ref().unwrap().encrypt_egress;
+
+        // Apply to VMGS and verify encryption using egress key
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            false,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            derived.hardware_key_protector,
+            derived.derived_keys,
+            derived.key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // VMGS should be unlockable with the egress key
+        vmgs.unlock_with_encryption_key(&egress_key).await.unwrap();
+
+        // VMGS should not be unlockable with an all-zero key (ingress was zeroed)
+        vmgs.unlock_with_encryption_key(&[0; AES_GCM_KEY_LENGTH])
+            .await
+            .unwrap_err();
+    }
+
+    #[async_test]
+    async fn hardware_sealing_recovery_uses_hwkp_v2_when_encrypted(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // Pre-encrypt VMGS to simulate previous boot
+        let bootstrap = [0x33; AES_GCM_KEY_LENGTH];
+        vmgs.test_add_new_encryption_key(&bootstrap, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Create a HWKP V2 by sealing current key and writing to VMGS
+        let mock_tee_call = MockTeeCall::new([0x8a; 32]);
+
+        let hdk = HardwareDerivedKeys::derive_key(
+            mock_tee_call.supports_get_derived_key().unwrap(),
+            &AttestationVmConfig {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_persisted: false,
+                hardware_sealing_policy: HardwareSealingPolicy::Hash,
+                filtered_vpci_devices_allowed: true,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            },
+            KeyDerivationPolicy {
+                tcb_version: 0x1234,
+                mix_measurement: true,
+            },
+        )
+        .unwrap();
+        let hwkp = HardwareKeyProtector::seal_key(&hdk, &bootstrap).unwrap();
+        vmgs::write_hardware_key_protector(&hwkp, &mut vmgs)
+            .await
+            .unwrap();
+
+        // Now call get_derived_keys with HardwareSealing required and VMGS encrypted
+        // Create a GET client backed by the test host
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let derived = get_derived_keys(
+            &get_pair.client,
+            Some(&mock_tee_call),
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            &AttestationVmConfig {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_persisted: false,
+                hardware_sealing_policy: HardwareSealingPolicy::Hash,
+                filtered_vpci_devices_allowed: true,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            },
+            true,
+            None,
+            None,
+            Some(KeyDerivationPolicy {
+                tcb_version: 0x1234,
+                mix_measurement: true,
+            }),
+            GuestStateEncryptionPolicy::HardwareSealing,
+            true,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should have recovered ingress from HWKP and rotated egress
+        let keys = derived.derived_keys.unwrap();
+        assert_eq!(keys.ingress, bootstrap);
+        assert_ne!(keys.encrypt_egress, keys.ingress);
+    }
+
+    /// In stateless + hardware sealing mode, the GSP / GSP-by-id host callout
+    /// must be skipped so that a host-requested `state_refresh` can never
+    /// trigger a TPM seed refresh. Here the GSP callout is skipped entirely, so
+    /// `get_derived_keys` must report no state refresh.
+    ///
+    /// See `non_sealing_propagates_gsp_state_refresh` for the contrasting case
+    /// that proves a host-provided `state_refresh` is otherwise honored.
+    #[async_test]
+    async fn hardware_sealing_skips_gsp_state_refresh(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = KeyProtector::new_zeroed();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // No scripted GSP responses are needed: hardware sealing mode skips the
+        // GSP callout entirely.
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let mock_tee_call = MockTeeCall::new([0x8a; 32]);
+
+        let derived = get_derived_keys(
+            &get_pair.client,
+            Some(&mock_tee_call),
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            &AttestationVmConfig {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_persisted: false,
+                hardware_sealing_policy: HardwareSealingPolicy::Hash,
+                filtered_vpci_devices_allowed: true,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            },
+            false,
+            None,
+            None,
+            Some(KeyDerivationPolicy {
+                tcb_version: 0x1234,
+                mix_measurement: true,
+            }),
+            GuestStateEncryptionPolicy::HardwareSealing,
+            true,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // The GSP callout is skipped in sealing mode, so the host-requested
+        // state refresh must not be reported.
+        assert!(!derived.gsp_extended_status_flags.state_refresh_request());
+    }
+
+    /// Companion to `hardware_sealing_skips_gsp_state_refresh`: in the normal
+    /// (non-sealing) flow the GSP callout IS made, so a host-provided
+    /// `state_refresh` is propagated. This proves the host actually injects the
+    /// flag, making the sealing-mode assertion meaningful.
+    #[async_test]
+    async fn non_sealing_propagates_gsp_state_refresh(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = KeyProtector::new_zeroed();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Script the host GSP response to report `state_refresh_request`, and a
+        // GSP-by-id response with no registry file (no encryption source). The
+        // non-sealing flow makes both callouts and captures the GSP flags.
+        let gsp_response = TestGetResponses::new(Event::Response(
+            get_protocol::GuestStateProtectionResponse {
+                message_header: get_protocol::HeaderGeneric::new(
+                    get_protocol::HostRequests::GUEST_STATE_PROTECTION,
+                ),
+                encrypted_gsp: get_protocol::GspCiphertextContent::new_zeroed(),
+                decrypted_gsp: [get_protocol::GspCleartextContent::new_zeroed();
+                    get_protocol::NUMBER_GSP as usize],
+                extended_status_flags: GspExtendedStatusFlags::new()
+                    .with_state_refresh_request(true),
+            }
+            .as_bytes()
+            .to_vec(),
+        ));
+        let gsp_by_id_response = TestGetResponses::new(Event::Response(
+            get_protocol::GuestStateProtectionByIdResponse {
+                message_header: get_protocol::HeaderGeneric::new(
+                    get_protocol::HostRequests::GUEST_STATE_PROTECTION_BY_ID,
+                ),
+                seed: get_protocol::GspCleartextContent::new_zeroed(),
+                extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
+            }
+            .as_bytes()
+            .to_vec(),
+        ));
+
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            Some(vec![gsp_response, gsp_by_id_response]),
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let derived = get_derived_keys(
+            &get_pair.client,
+            None,
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            &new_attestation_vm_config(),
+            false,
+            None,
+            None,
+            None,
+            GuestStateEncryptionPolicy::Auto,
+            false,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // The GSP callout is made in the normal flow, so the host-requested
+        // state refresh is reported.
+        assert!(derived.gsp_extended_status_flags.state_refresh_request());
     }
 
     #[async_test]
@@ -2333,6 +2999,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             bios_guid,
             key_protector_settings,
         )
@@ -2377,6 +3044,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
+            None,
             bios_guid,
             key_protector_settings,
         )
@@ -2425,6 +3093,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
+            Some(&HardwareKeyProtector::new_zeroed()),
             bios_guid,
             key_protector_settings,
         )
@@ -2500,8 +3169,8 @@ mod tests {
         let get_pair = new_test_get(driver, true, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
-        let tee = MockTeeCall::new(0x1234);
+        let att_cfg = new_attestation_vm_config();
+        let tee = MockTeeCall::new([0x12u8; 32]);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -2586,8 +3255,8 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
-        let tee = MockTeeCall::new(0x1234);
+        let att_cfg = new_attestation_vm_config();
+        let tee = MockTeeCall::new([0x12u8; 32]);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -2672,7 +3341,7 @@ mod tests {
         assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
-        let tee = MockTeeCall::new(0x1234);
+        let tee = MockTeeCall::new([0x12u8; 32]);
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
         let res = initialize_platform_security(
             &get_pair.client,
@@ -2757,7 +3426,7 @@ mod tests {
         assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
-        let tee = MockTeeCall::new(0x1234);
+        let tee = MockTeeCall::new([0x12u8; 32]);
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
         let res = initialize_platform_security(
             &get_pair.client,

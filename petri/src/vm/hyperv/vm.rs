@@ -388,8 +388,11 @@ impl HyperVVM {
         &mut self,
         _allow_reset: bool,
     ) -> anyhow::Result<PetriHaltReasonDetail> {
-        // Allow CVMs some time for the VM to be off after reset.
-        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+        // Allow CVMs some time for the VM to be off after reset. Loaded SNP
+        // hosts can take ~30s to re-validate guest memory and restart the VM
+        // after a guest-initiated reset, so keep this generous to avoid
+        // spuriously failing CVM reboot tests on slow hosts.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(60);
 
         let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
 

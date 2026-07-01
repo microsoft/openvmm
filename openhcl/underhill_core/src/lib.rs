@@ -348,6 +348,7 @@ async fn launch_workers(
         default_boot_always_attempt: opt.default_boot_always_attempt,
         guest_state_lifetime: opt.guest_state_lifetime,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        hardware_sealing_policy: opt.hardware_sealing_policy,
         efi_diagnostics_log_level: opt.efi_diagnostics_log_level,
         efi_diagnostics_rate_limit: opt.efi_diagnostics_rate_limit,
         strict_encryption_policy: opt.strict_encryption_policy,
