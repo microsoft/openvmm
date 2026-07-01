@@ -444,11 +444,11 @@ async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_save_vf_reset_pending(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),

@@ -176,7 +176,8 @@ impl<T: DeviceBacking> ManaDevice<T> {
         Ok(device)
     }
 
-    /// Saves the device's state for servicing
+    /// Saves the device's state for servicing,
+    /// unless the device does not return state to save.
     pub async fn save(self) -> (anyhow::Result<Option<ManaDeviceSavedState>>, T) {
         self.inspect_task.cancel().await;
         if let Some(hwc_task) = self.hwc_task {
