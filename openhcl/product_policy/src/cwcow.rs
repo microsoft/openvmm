@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 #[mesh(package = "openhcl.product_policy")]
 /// Cwcow policy
 pub struct CwcowPolicy {
-    /// Require an ephemeral VMGS (the attached VMGS must never be read).
+    /// Reserved: require an ephemeral VMGS. Not enforced at runtime yet.
     #[mesh(1)]
     pub enforce_ephemeral_vmgs: bool,
 
@@ -23,15 +23,18 @@ pub struct CwcowPolicy {
     #[mesh(2)]
     pub require_secure_boot: bool,
 
-    /// Refuse to boot unless PK/KEK/db/dbx variables are present.
+    /// Reserved: require PK/KEK/db/dbx variables. Not enforced at runtime yet.
     #[mesh(3)]
     pub require_secure_boot_vars: bool,
 
-    /// Refuse to boot unless `BootConfigurationDataHash` is set.
+    /// Reserved: require `BootConfigurationDataHash`. Not enforced at runtime yet.
     #[mesh(4)]
     pub require_bcd_integrity: bool,
 
-    /// Custom UEFI JSON bytes. Base64 in manifest JSON; mandatory.
+    /// Custom UEFI JSON bytes (base64 in manifest JSON). Required in
+    /// manifests and asserted non-empty at build time when secure boot
+    /// plus secure-boot-vars or BCD-integrity are set; not validated at
+    /// runtime.
     #[mesh(5)]
     #[cfg_attr(
         feature = "manifest",
@@ -60,5 +63,37 @@ impl CwcowPolicy {
             anyhow::bail!("Secure AVIC is required but not enabled");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn secure_avic_flag_off_passes_either_way() {
+        let p = CwcowPolicy::default();
+        assert!(p.enforce_secure_avic(false).is_ok());
+        assert!(p.enforce_secure_avic(true).is_ok());
+    }
+
+    #[test]
+    fn secure_avic_flag_on_passes_when_enabled() {
+        let p = CwcowPolicy {
+            enforce_secure_avic_enabled: true,
+            ..Default::default()
+        };
+        assert!(p.enforce_secure_avic(true).is_ok());
+    }
+
+    #[test]
+    fn secure_avic_flag_on_fails_when_disabled() {
+        let p = CwcowPolicy {
+            enforce_secure_avic_enabled: true,
+            ..Default::default()
+        };
+        let err = p.enforce_secure_avic(false).unwrap_err();
+        assert!(err.to_string().contains("Secure AVIC"));
     }
 }

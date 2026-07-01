@@ -3703,7 +3703,7 @@ async fn new_underhill_vm(
         device_platform_settings: dps,
         runtime_params,
         #[cfg(feature = "product_policy")]
-        measured_product_policy: measured_vtl2_info.measured_policy().clone(),
+        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
 

@@ -7,12 +7,12 @@
 
 use crate::dispatch::LoadedVm;
 use anyhow::Context as _;
-use product_policy::MeasuredPolicy;
+use product_policy::MeasuredProductPolicy;
 use product_policy::UefiSecurityPolicy;
 
 /// Decode and integrity-check a product policy body read from the measured
 /// VTL2 config region. `size` is the declared `product_policy_size`.
-pub fn decode(buf: &[u8], size: usize) -> anyhow::Result<MeasuredPolicy> {
+pub fn decode(buf: &[u8], size: usize) -> anyhow::Result<MeasuredProductPolicy> {
     let policy = product_policy::decode_product_policy(buf)
         .map_err(anyhow::Error::from)
         .context("product policy decode failed")?;
@@ -23,7 +23,7 @@ pub fn decode(buf: &[u8], size: usize) -> anyhow::Result<MeasuredPolicy> {
             "product policy size mismatch: declared {size} bytes, re-encoded {encoded_len} bytes"
         );
     }
-    Ok(MeasuredPolicy::new(Some(policy)))
+    Ok(MeasuredProductPolicy::new(Some(policy)))
 }
 
 fn validate_uefi_security_policy(

@@ -190,7 +190,7 @@ pub(crate) struct LoadedVm {
 
     /// Per-VM measured product policy.
     #[cfg(feature = "product_policy")]
-    pub measured_product_policy: product_policy::MeasuredPolicy,
+    pub measured_product_policy: product_policy::MeasuredProductPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
 

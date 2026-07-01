@@ -32,9 +32,9 @@ pub use paste::paste as __paste;
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[cfg_attr(feature = "inspect", inspect(transparent))]
-pub struct MeasuredPolicy(Option<ProductPolicy>);
+pub struct MeasuredProductPolicy(Option<ProductPolicy>);
 
-impl MeasuredPolicy {
+impl MeasuredProductPolicy {
     /// Wrap the decoded policy (or its absence).
     pub fn new(policy: Option<ProductPolicy>) -> Self {
         Self(policy)
@@ -47,7 +47,7 @@ impl MeasuredPolicy {
 }
 
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
-/// a `MeasuredPolicy::foo(|body| ...) -> anyhow::Result<Option<T>>`
+/// a `MeasuredProductPolicy::foo(|body| ...) -> anyhow::Result<Option<T>>`
 /// accessor (`Ok(None)` when the policy is absent or a different
 /// variant; closure errors propagate).
 macro_rules! define_product_policy {
@@ -90,7 +90,7 @@ macro_rules! define_product_policy {
 
         $crate::__paste! {
             $(
-                impl $crate::MeasuredPolicy {
+                impl $crate::MeasuredProductPolicy {
                     #[doc = concat!(
                         "Run `f` over the `",
                         stringify!($variant),
@@ -364,13 +364,14 @@ mod tests {
     mod measured_policy_tests {
         use super::*;
 
-        fn measured(p: SivmPolicy) -> MeasuredPolicy {
-            MeasuredPolicy::new(Some(ProductPolicy::Sivm(p)))
+        fn measured(p: SivmPolicy) -> MeasuredProductPolicy {
+            MeasuredProductPolicy::new(Some(ProductPolicy::Sivm(p)))
         }
 
         #[test]
         fn no_policy_yields_ok_none() {
-            let r = MeasuredPolicy::new(None).sivm(|p| p.validate_secure_boot_enabled(false));
+            let r =
+                MeasuredProductPolicy::new(None).sivm(|p| p.validate_secure_boot_enabled(false));
             assert!(matches!(r, Ok(None)));
         }
 

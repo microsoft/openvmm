@@ -100,7 +100,7 @@ pub struct MeasuredVtl2Info {
     /// Per-VM measured product policy. Built once during VTL2
     /// config read and cloned into `LoadedVm`.
     #[cfg(feature = "product_policy")]
-    measured_policy: product_policy::MeasuredPolicy,
+    measured_product_policy: product_policy::MeasuredProductPolicy,
 }
 
 impl MeasuredVtl2Info {
@@ -109,8 +109,8 @@ impl MeasuredVtl2Info {
     }
 
     #[cfg(feature = "product_policy")]
-    pub fn measured_policy(&self) -> &product_policy::MeasuredPolicy {
-        &self.measured_policy
+    pub fn measured_product_policy(&self) -> &product_policy::MeasuredProductPolicy {
+        &self.measured_product_policy
     }
 }
 
@@ -442,7 +442,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     let product_policy = {
         let size = measured_config.product_policy_size as usize;
         if size == 0 {
-            product_policy::MeasuredPolicy::new(None)
+            product_policy::MeasuredProductPolicy::new(None)
         } else {
             // Defence-in-depth: the IGVM importer caps this at build
             // time; reject anything larger rather than reading past
@@ -486,7 +486,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         accepted_regions,
         vtom_offset_bit,
         #[cfg(feature = "product_policy")]
-        measured_policy: product_policy,
+        measured_product_policy: product_policy,
     };
 
     Ok((runtime_params, measured_vtl2_info))

@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! UEFI enforced security settings: traits and validation logic.
-//!
-//! This module is the single home for all UEFI-security-related
-//! abstractions used by product policy variants (Sivm, Cwcow, etc.).
+//! Shared validation for the currently enforced UEFI product-policy
+//! checks (secure-boot-required), used by product policy variants
+//! (Sivm, Cwcow, etc.).
 
 /// Internal trait providing access to policy fields needed by the
 /// shared validation logic. Kept crate-private so raw getters are not
@@ -14,7 +13,7 @@ pub(crate) trait UefiSecurityPolicyParams {
 }
 
 /// A trait for validating UEFI security settings. Implementors only
-/// need to provide [`UefiSecurityPolicyParams`]; all methods here have
+/// need to provide `UefiSecurityPolicyParams`; all methods here have
 /// default bodies, so policies can use an empty marker impl.
 #[expect(
     private_bounds,
