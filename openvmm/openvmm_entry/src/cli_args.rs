@@ -451,7 +451,7 @@ Examples:
     pub openhcl_controller: Vec<OpenhclControllerCli>,
 
     /// attach a CXL Type-3 test endpoint on a PCIe root port
-    #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>")]
+    #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>[,aer]")]
     pub cxl_test: Vec<CxlTestDeviceCli>,
 
     /// attach a disk via a virtio-blk controller
@@ -2410,6 +2410,8 @@ pub struct CxlTestDeviceCli {
     pub hdm_size: u64,
     /// PCIe root port name where the device is attached.
     pub pcie_port: String,
+    /// Whether to advertise an AER extended capability on the device.
+    pub aer: bool,
 }
 
 impl FromStr for CxlTestDeviceCli {
@@ -2428,6 +2430,7 @@ impl FromStr for CxlTestDeviceCli {
 
         let hdm_size = parse_memory(arg).context("failed to parse CXL test HDM size")?;
         let mut pcie_port = None;
+        let mut aer = false;
 
         for opt in opts {
             let mut kv = opt.split('=');
@@ -2440,6 +2443,8 @@ impl FromStr for CxlTestDeviceCli {
                     }
                     pcie_port = Some(val.unwrap().to_string());
                 }
+                // Flag with no value: advertise an AER extended capability.
+                "aer" => aer = true,
                 _ => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -2451,6 +2456,7 @@ impl FromStr for CxlTestDeviceCli {
         Ok(Self {
             hdm_size,
             pcie_port,
+            aer,
         })
     }
 }
@@ -4456,6 +4462,12 @@ mod tests {
         let cfg = CxlTestDeviceCli::from_str("mem:1G,pcie_port=rp0").unwrap();
         assert_eq!(cfg.hdm_size, 1024 * 1024 * 1024);
         assert_eq!(cfg.pcie_port, "rp0");
+        assert!(!cfg.aer);
+
+        // `aer` flag opts into an AER extended capability.
+        let cfg = CxlTestDeviceCli::from_str("mem:1G,pcie_port=rp0,aer").unwrap();
+        assert_eq!(cfg.pcie_port, "rp0");
+        assert!(cfg.aer);
     }
 
     #[test]
@@ -4463,6 +4475,7 @@ mod tests {
         assert!(CxlTestDeviceCli::from_str("file:disk.img,pcie_port=rp0").is_err());
         assert!(CxlTestDeviceCli::from_str("mem:1G").is_err());
         assert!(CxlTestDeviceCli::from_str("mem:1G,pcie_port=").is_err());
+        assert!(CxlTestDeviceCli::from_str("mem:1G,pcie_port=rp0,bogus").is_err());
     }
 
     #[test]

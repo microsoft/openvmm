@@ -9,9 +9,15 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::PciAerErrorKind;
+use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigSpace;
 use inspect::InspectMut;
 use mesh::MeshPayload;
+use pci_core::capabilities::extended::PciExtendedCapability;
+use pci_core::capabilities::extended::aer::AerExtendedCapability;
+use pci_core::capabilities::extended::aer::AerInjectedErrorKind;
+use pci_core::capabilities::extended::aer::AerInjection;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
@@ -112,6 +118,7 @@ impl CxlTestDevice {
     pub fn new(
         register_mmio: &mut dyn RegisterMmioIntercept,
         hdm_size_bytes: u64,
+        aer: bool,
     ) -> Result<Self, CxlTestDeviceCreateError> {
         if hdm_size_bytes == 0 || !hdm_size_bytes.is_multiple_of(HDM_SIZE_GRANULARITY_BYTES) {
             return Err(CxlTestDeviceCreateError::InvalidHdmSize(hdm_size_bytes));
@@ -190,6 +197,19 @@ impl CxlTestDevice {
             )
             .map_err(|_| CxlTestDeviceCreateError::InvalidRegisterLocatorConfig)?;
 
+        // Extended capabilities: CXL DVSECs, and optionally an AER capability
+        // so the guest OS can exercise AER against this endpoint.
+        let mut extended_caps: Vec<Box<dyn PciExtendedCapability>> = vec![
+            Box::new(cxl_device_dvsec),
+            Box::new(flex_bus_dvsec),
+            Box::new(register_locator_dvsec),
+        ];
+        if aer {
+            extended_caps.push(Box::new(AerExtendedCapability::new(
+                &DevicePortType::Endpoint,
+            )));
+        }
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: MICROSOFT_VENDOR_ID,
@@ -205,11 +225,7 @@ impl CxlTestDevice {
                 DevicePortType::Endpoint,
                 None,
             ))],
-            vec![
-                Box::new(cxl_device_dvsec),
-                Box::new(flex_bus_dvsec),
-                Box::new(register_locator_dvsec),
-            ],
+            extended_caps,
             bars,
         );
 
@@ -464,6 +480,40 @@ impl PciConfigSpace for CxlTestDevice {
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         self.cfg_space.write_u32(offset, value)
     }
+
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        injection: PciAerInjection,
+    ) -> bool {
+        // Only respond when the injection targets this endpoint directly
+        // (device 0, function 0 on our own bus). This opt-in behavior is what
+        // distinguishes an emulated device that models AER from a pass-through
+        // device that reports its own real AER state and simply does not
+        // implement this method.
+        if target_bus != secondary_bus || function != 0 {
+            return false;
+        }
+
+        for ext in self.cfg_space.extended_capabilities_mut() {
+            if let Some(aer) = ext.as_aer_mut() {
+                aer.inject_local(AerInjection {
+                    kind: match injection.kind {
+                        PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
+                        PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
+                    },
+                    status_bits: injection.status_bits,
+                    header_log: injection.header_log,
+                    source_id: injection.source_id,
+                });
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 impl SaveRestore for CxlTestDevice {
@@ -483,6 +533,8 @@ impl SaveRestore for CxlTestDevice {
 pub struct CxlTestDeviceHandle {
     /// HDM size in bytes. Must be non-zero and 256MiB-aligned.
     pub hdm_size_bytes: u64,
+    /// Whether to advertise an AER extended capability on the device.
+    pub aer: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for CxlTestDeviceHandle {
@@ -523,7 +575,8 @@ pub mod resolver {
             resource: CxlTestDeviceHandle,
             input: ResolvePciDeviceHandleParams<'_>,
         ) -> Result<Self::Output, Self::Error> {
-            let device = CxlTestDevice::new(input.register_mmio, resource.hdm_size_bytes)?;
+            let device =
+                CxlTestDevice::new(input.register_mmio, resource.hdm_size_bytes, resource.aer)?;
             Ok(device.into())
         }
     }

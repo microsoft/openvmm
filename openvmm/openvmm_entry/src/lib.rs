@@ -840,6 +840,7 @@ async fn vm_config_from_command_line(
             port_name: cxl_test.pcie_port.clone(),
             resource: CxlTestDeviceHandle {
                 hdm_size_bytes: cxl_test.hdm_size,
+                aer: cxl_test.aer,
             }
             .into_resource(),
         });
