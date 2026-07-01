@@ -71,7 +71,7 @@ pub struct VmManifestBuilder {
     arch: MachineArch,
     serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     serial_wait_for_rts: bool,
-    serial_debugger_mode: bool,
+    serial_debugger_mode: [bool; 4],
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
@@ -209,21 +209,38 @@ enum ErrorInner {
 
 fn serial_16550_devices(
     wait_for_rts: bool,
-    debugger_mode: bool,
+    debugger_mode: [bool; 4],
     backends: [Option<Resource<SerialBackendHandle>>; 4],
 ) -> [Serial16550DeviceHandle; 4] {
-    Serial16550DeviceHandle::com_ports(
+    let [d0, d1, d2, d3] = Serial16550DeviceHandle::com_ports(
         backends.map(|r| r.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource())),
-    )
-    .map(|d| Serial16550DeviceHandle {
-        wait_for_rts,
-        debugger_mode,
-        ..d
-    })
+    );
+    [
+        Serial16550DeviceHandle {
+            wait_for_rts,
+            debugger_mode: debugger_mode[0],
+            ..d0
+        },
+        Serial16550DeviceHandle {
+            wait_for_rts,
+            debugger_mode: debugger_mode[1],
+            ..d1
+        },
+        Serial16550DeviceHandle {
+            wait_for_rts,
+            debugger_mode: debugger_mode[2],
+            ..d2
+        },
+        Serial16550DeviceHandle {
+            wait_for_rts,
+            debugger_mode: debugger_mode[3],
+            ..d3
+        },
+    ]
 }
 
 fn serial_pl011_devices(
-    debugger_mode: bool,
+    debugger_mode: [bool; 4],
     backends: [Option<Resource<SerialBackendHandle>>; 4],
 ) -> Result<[SerialPl011DeviceHandle; 2], ErrorInner> {
     const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
@@ -241,13 +258,13 @@ fn serial_pl011_devices(
             base: PL011_SERIAL0_BASE,
             irq: PL011_SERIAL0_IRQ,
             io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
-            debugger_mode,
+            debugger_mode: debugger_mode[0],
         },
         SerialPl011DeviceHandle {
             base: PL011_SERIAL1_BASE,
             irq: PL011_SERIAL1_IRQ,
             io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
-            debugger_mode,
+            debugger_mode: debugger_mode[1],
         },
     ])
 }
@@ -262,7 +279,7 @@ impl VmManifestBuilder {
             arch,
             serial: None,
             serial_wait_for_rts: false,
-            serial_debugger_mode: false,
+            serial_debugger_mode: [false; 4],
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
@@ -298,12 +315,16 @@ impl VmManifestBuilder {
         self
     }
 
-    /// Enable serial debugger mode for WinDbg / KD-over-serial.
+    /// Enable serial debugger mode per COM port, for WinDbg / KD-over-serial.
     ///
-    /// Keeps the serial backend drained and may drop bytes instead of applying
-    /// backpressure so the kernel debugger transport does not deadlock.
-    pub fn with_serial_debugger_mode(mut self) -> Self {
-        self.serial_debugger_mode = true;
+    /// Each element enables debugger mode for the corresponding COM port
+    /// (index 0 = COM1, .., index 3 = COM4; for PL011, index 0 and 1). In
+    /// debugger mode the serial backend is kept drained and may drop bytes
+    /// instead of applying backpressure so the kernel debugger transport does
+    /// not deadlock. Ports are independent: one COM port can run in debugger
+    /// mode while another behaves normally.
+    pub fn with_serial_debugger_mode(mut self, debugger_mode: [bool; 4]) -> Self {
+        self.serial_debugger_mode = debugger_mode;
         self
     }
 
@@ -784,7 +805,7 @@ impl VmChipsetResult {
         &mut self,
         arch: MachineArch,
         wait_for_rts: bool,
-        debugger_mode: bool,
+        debugger_mode: [bool; 4],
         register_missing: bool,
         serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     ) -> Result<&mut Self, ErrorInner> {
@@ -825,7 +846,7 @@ impl VmChipsetResult {
     fn attach_serial_16550(
         &mut self,
         wait_for_rts: bool,
-        debugger_mode: bool,
+        debugger_mode: [bool; 4],
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> &mut Self {
         let devices = serial_16550_devices(wait_for_rts, debugger_mode, backends);
@@ -845,7 +866,7 @@ impl VmChipsetResult {
 
     fn attach_serial_pl011(
         &mut self,
-        debugger_mode: bool,
+        debugger_mode: [bool; 4],
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> Result<&mut Self, ErrorInner> {
         let [serial0, serial1] = serial_pl011_devices(debugger_mode, backends)?;
@@ -940,28 +961,38 @@ mod tests {
     #[test]
     fn serial_debugger_mode_builder_flag_defaults_false_and_can_enable() {
         let builder = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64);
-        assert!(!builder.serial_debugger_mode);
+        assert_eq!(builder.serial_debugger_mode, [false; 4]);
 
-        let builder = builder.with_serial_debugger_mode();
-        assert!(builder.serial_debugger_mode);
+        let builder = builder.with_serial_debugger_mode([true, false, false, true]);
+        assert_eq!(builder.serial_debugger_mode, [true, false, false, true]);
     }
 
     #[test]
     fn serial_debugger_mode_defaults_false_on_generated_handles() {
-        let serial_16550 = serial_16550_devices(false, false, no_serial_backends());
+        let serial_16550 = serial_16550_devices(false, [false; 4], no_serial_backends());
         assert!(serial_16550.iter().all(|handle| !handle.debugger_mode));
 
-        let serial_pl011 = serial_pl011_devices(false, no_serial_backends()).unwrap();
+        let serial_pl011 = serial_pl011_devices([false; 4], no_serial_backends()).unwrap();
         assert!(serial_pl011.iter().all(|handle| !handle.debugger_mode));
     }
 
     #[test]
-    fn serial_debugger_mode_threads_to_generated_handles() {
-        let serial_16550 = serial_16550_devices(true, true, no_serial_backends());
+    fn serial_debugger_mode_is_independent_per_port() {
+        // One COM port in debugger mode, the rest normal.
+        let serial_16550 =
+            serial_16550_devices(true, [false, true, false, false], no_serial_backends());
         assert!(serial_16550.iter().all(|handle| handle.wait_for_rts));
-        assert!(serial_16550.iter().all(|handle| handle.debugger_mode));
+        assert_eq!(
+            serial_16550.map(|handle| handle.debugger_mode),
+            [false, true, false, false]
+        );
 
-        let serial_pl011 = serial_pl011_devices(true, no_serial_backends()).unwrap();
-        assert!(serial_pl011.iter().all(|handle| handle.debugger_mode));
+        // PL011 uses the first two entries independently.
+        let serial_pl011 =
+            serial_pl011_devices([true, false, false, false], no_serial_backends()).unwrap();
+        assert_eq!(
+            serial_pl011.map(|handle| handle.debugger_mode),
+            [true, false]
+        );
     }
 }

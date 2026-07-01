@@ -320,9 +320,18 @@ async fn vm_config_from_command_line(
 
     let mut vmbus_devices = Vec::new();
 
+    let com_debugger_mode = [
+        opt.com1.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com2.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com3.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com4.as_ref().is_some_and(|c| c.debugger_mode),
+    ];
+
     let serial0_cfg = setup_serial(
         "com1",
-        opt.com1.clone().unwrap_or(SerialConfigCli::Console),
+        opt.com1
+            .clone()
+            .map_or(SerialConfigCli::Console, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS0"
         } else {
@@ -331,7 +340,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial1_cfg = setup_serial(
         "com2",
-        opt.com2.clone().unwrap_or(SerialConfigCli::None),
+        opt.com2
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS1"
         } else {
@@ -340,7 +351,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial2_cfg = setup_serial(
         "com3",
-        opt.com3.clone().unwrap_or(SerialConfigCli::None),
+        opt.com3
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS2"
         } else {
@@ -349,7 +362,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial3_cfg = setup_serial(
         "com4",
-        opt.com4.clone().unwrap_or(SerialConfigCli::None),
+        opt.com4
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS3"
         } else {
@@ -1127,9 +1142,7 @@ async fn vm_config_from_command_line(
     if any_serial_configured {
         chipset = chipset.with_serial([serial0_cfg, serial1_cfg, serial2_cfg, serial3_cfg]);
     }
-    if opt.serial_debugger_mode {
-        chipset = chipset.with_serial_debugger_mode();
-    }
+    chipset = chipset.with_serial_debugger_mode(com_debugger_mode);
     if opt.battery {
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());
