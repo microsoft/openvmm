@@ -1542,6 +1542,22 @@ pub mod caps {
         pub const DPC_CONTROL_RW_MASK_BASE: u16 = 0x011f;
         pub const DPC_STATUS_RW1C_MASK: u16 = (1 << 0) | (1 << 3) | (1 << 13);
 
+        /// Valid bit mask for the RP PIO registers (Status/Mask/Severity/
+        /// SysError/Exception). One bit per completion-error type: Cfg/IO/Mem
+        /// each with UR Cpl, CA Cpl, and CTO, at bits {0,1,2}, {8,9,10}, and
+        /// {16,17,18} respectively.
+        pub const RP_PIO_VALID_MASK: u32 = 0x0007_0707;
+
+        /// RP PIO Log Size (in DWORDs) advertised by Root Ports. A value of 4
+        /// covers the 4-DWORD RP PIO Header Log; the ImpSpec and TLP Prefix
+        /// logs (which require a log size of 5 or greater) are not present.
+        pub const RP_PIO_LOG_SIZE_DW: u8 = 4;
+
+        /// Default value of the RP PIO First Error Pointer: 31, pointing at the
+        /// permanently-reserved bit, which indicates that no RP PIO error is
+        /// logged.
+        pub const RP_PIO_FIRST_ERROR_POINTER_NONE: u8 = 0x1f;
+
         pub const DPC_TRIGGER_REASON_UNMASKED_UNCORRECTABLE: u8 = 0b00;
         pub const DPC_TRIGGER_REASON_EXTENSION: u8 = 0b11;
         pub const DPC_TRIGGER_REASON_EXTENSION_SOFTWARE_TRIGGER: u8 = 0b01;

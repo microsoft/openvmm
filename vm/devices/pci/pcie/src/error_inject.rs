@@ -260,8 +260,9 @@ mod tests {
             .unwrap();
         let status = DpcStatus::from_bits((v >> 16) as u16);
         assert!(status.dpc_trigger_status());
-        // RP Extensions are not implemented, so RP Busy is never asserted.
-        assert!(!status.dpc_rp_busy());
+        // The uncorrectable-error path asserts RP Busy until port firmware
+        // (the Complete action) clears it.
+        assert!(status.dpc_rp_busy());
 
         assert!(port.apply_dpc_action(0x0100, PcieDpcRoutingAction::Complete));
         port.cfg_space
@@ -427,7 +428,8 @@ mod tests {
         assert_eq!((v & 0xffff) as u16, 0);
         let status = DpcStatus::from_bits((v >> 16) as u16);
         assert!(status.dpc_trigger_status());
-        // RP Extensions are not implemented, so RP Busy is never asserted.
+        // RP Busy is Reserved for Switch Downstream Ports (no RP Extensions),
+        // so it is never asserted here.
         assert!(!status.dpc_rp_busy());
 
         let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
@@ -833,8 +835,9 @@ mod tests {
         assert_eq!((v & 0xffff) as u16, source_id);
         let dpc_status = DpcStatus::from_bits((v >> 16) as u16);
         assert!(dpc_status.dpc_trigger_status());
-        // RP Extensions are not implemented, so RP Busy is never asserted.
-        assert!(!dpc_status.dpc_rp_busy());
+        // The uncorrectable-error path asserts RP Busy until port firmware
+        // (the Complete action) clears it.
+        assert!(dpc_status.dpc_rp_busy());
 
         let endpoint_aer_guard = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
         let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
@@ -1004,7 +1007,8 @@ mod tests {
         assert_eq!((v & 0xffff) as u16, source_id);
         let dsp_status = DpcStatus::from_bits((v >> 16) as u16);
         assert!(dsp_status.dpc_trigger_status());
-        // RP Extensions are not implemented, so RP Busy is never asserted.
+        // RP Busy is Reserved for Switch Downstream Ports (no RP Extensions),
+        // so it is never asserted here.
         assert!(!dsp_status.dpc_rp_busy());
 
         // The root port did not contain the error (the closer DSP did).

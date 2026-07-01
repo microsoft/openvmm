@@ -3828,6 +3828,7 @@ impl LoadedVm {
                         rpc.handle_failable(async |request: openvmm_defs::rpc::PcieDpcInjectRequest| {
                             let openvmm_defs::rpc::PcieDpcInjectRequest {
                                 target,
+                                complete,
                                 uncorrectable_status_bits,
                                 header_log,
                             } = request;
@@ -3844,23 +3845,28 @@ impl LoadedVm {
                                     )
                                 })?;
 
-                            // DPC is triggered by an uncorrectable error. When
-                            // status bits are supplied, record them as the AER
-                            // uncorrectable error on the source device (and at
-                            // the handling Root Port); otherwise trigger DPC
-                            // without touching AER state.
-                            let aer = uncorrectable_status_bits.map(|status_bits| {
-                                pcie::PcieAerInjectRequest {
-                                    kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
-                                    status_bits,
-                                    header_log,
-                                }
-                            });
+                            if complete {
+                                // Phase 2: the Root Port firmware (modeled by
+                                // the host) clears RP Busy once recovery is
+                                // done. The guest OS does not do this.
+                                rc.lock().inject_dpc_complete(target)?;
+                            } else {
+                                // Phase 1: DPC is triggered by an uncorrectable
+                                // error. When status bits are supplied, record
+                                // them as the AER uncorrectable error on the
+                                // source device (and at the handling Root Port);
+                                // otherwise trigger DPC without touching AER
+                                // state.
+                                let aer = uncorrectable_status_bits.map(|status_bits| {
+                                    pcie::PcieAerInjectRequest {
+                                        kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
+                                        status_bits,
+                                        header_log,
+                                    }
+                                });
 
-                            // DPC containment is entered in a single phase; the
-                            // guest exits it by clearing the DPC Trigger Status
-                            // bit, so no host-side completion is required.
-                            rc.lock().inject_dpc_begin(target, aer)?;
+                                rc.lock().inject_dpc_begin(target, aer)?;
+                            }
 
                             anyhow::Ok(())
                         })

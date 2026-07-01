@@ -62,31 +62,51 @@ impl DpcExtendedCapability {
         Self::with_config(port_type, DpcCapabilityConfig::default())
     }
 
-    pub fn with_config(_port_type: &DevicePortType, config: DpcCapabilityConfig) -> Self {
+    pub fn with_config(port_type: &DevicePortType, config: DpcCapabilityConfig) -> Self {
         // RP Extensions for DPC (the RP Busy handshake and the RP PIO logging
-        // registers) are not implemented by this emulator, so the capability
-        // must never advertise them, regardless of the requested configuration
-        // or port type.
+        // registers) are defined only for Root Ports; they are Reserved for
+        // Switch Downstream Ports.
+        let rp_extensions_for_dpc = matches!(port_type, DevicePortType::RootPort);
+
         let capability = dpc_spec::DpcCapability::new()
             .with_dpc_interrupt_message_number(
                 config.dpc_interrupt_message_number.unwrap_or(0) & 0x1f,
             )
-            .with_rp_extensions_for_dpc(false)
+            .with_rp_extensions_for_dpc(rp_extensions_for_dpc)
             .with_poisoned_tlp_egress_blocking_supported(
                 config.poisoned_tlp_egress_blocking_supported,
             )
             .with_dpc_software_triggering_supported(config.dpc_software_triggering_supported)
             .with_dl_active_err_cor_signaling_supported(
                 config.dl_active_err_cor_signaling_supported,
-            );
+            )
+            .with_rp_pio_log_size_3_0(if rp_extensions_for_dpc {
+                dpc_spec::RP_PIO_LOG_SIZE_DW
+            } else {
+                0
+            });
+
+        // When RP Extensions are supported, the RP PIO Mask register defaults to
+        // all error types masked (1b), and the First Error Pointer defaults to
+        // the permanently-reserved bit (no logged error). Otherwise the RP PIO
+        // registers are Reserved and read as zero.
+        let (rp_pio_mask, rp_pio_first_error_pointer) = if rp_extensions_for_dpc {
+            (
+                dpc_spec::RP_PIO_VALID_MASK,
+                dpc_spec::RP_PIO_FIRST_ERROR_POINTER_NONE,
+            )
+        } else {
+            (0, 0)
+        };
 
         Self {
             capability,
             control: dpc_spec::DpcControl::new(),
-            status: dpc_spec::DpcStatus::new(),
+            status: dpc_spec::DpcStatus::new()
+                .with_rp_pio_first_error_pointer(rp_pio_first_error_pointer),
             error_source_id: dpc_spec::DpcErrorSourceId::new(),
             rp_pio_status: 0,
-            rp_pio_mask: 0,
+            rp_pio_mask,
             rp_pio_severity: 0,
             rp_pio_syserror: 0,
             rp_pio_exception: 0,
@@ -98,6 +118,13 @@ impl DpcExtendedCapability {
 
     pub fn interrupt_message_number(&self) -> u8 {
         self.capability.dpc_interrupt_message_number()
+    }
+
+    /// Returns whether this port supports RP Extensions for DPC (Root Ports
+    /// only). The RP Busy handshake and the RP PIO registers are meaningful
+    /// only when this is set.
+    fn rp_extensions(&self) -> bool {
+        self.capability.rp_extensions_for_dpc()
     }
 
     pub fn containment_active(&self) -> bool {
@@ -119,21 +146,34 @@ impl DpcExtendedCapability {
         )
     }
 
-    /// Enter DPC containment for an uncorrectable error.
+    /// Phase 1 of DPC handling for an uncorrectable error: enter containment
+    /// and assert RP Busy while the Root Port performs its (synthetic) recovery.
     ///
-    /// RP Extensions for DPC (including the RP Busy handshake) are not
-    /// implemented, so containment is entered synchronously in a single phase
-    /// and RP Busy is never asserted.
+    /// RP Busy is cleared by the Root Port's *firmware* — modeled here by
+    /// [`clear_rp_busy`](Self::clear_rp_busy), driven by the host — once
+    /// recovery completes, **not** by the guest OS. Software triggers do not
+    /// use this path and never assert RP Busy.
     pub fn trigger_from_uncorrectable_begin(&mut self, source_id: u16) -> DpcTriggerOutcome {
-        self.trigger_from_uncorrectable(source_id)
+        let outcome = self.trigger_from_uncorrectable(source_id);
+        // RP Busy is defined only for Root Ports that support RP Extensions for
+        // DPC; it is Reserved for Switch Downstream Ports.
+        if self.rp_extensions() {
+            self.status.set_dpc_rp_busy(true);
+        }
+        outcome
     }
 
-    /// Clear the RP Busy status bit.
+    /// Phase 2 of DPC handling: clear RP Busy once the Root Port firmware has
+    /// completed recovery. This is performed by port firmware (the host), not
+    /// the guest OS.
     ///
-    /// Retained for routing/reset symmetry; RP Busy is never set because RP
-    /// Extensions for DPC are not implemented.
+    /// RP Busy is defined only for Root Ports that support RP Extensions for
+    /// DPC; on any other port (no RP Extensions, or a Switch Downstream Port)
+    /// completion is a no-op.
     pub fn clear_rp_busy(&mut self) {
-        self.status.set_dpc_rp_busy(false);
+        if self.rp_extensions() {
+            self.status.set_dpc_rp_busy(false);
+        }
     }
 
     fn trigger(&mut self, reason: u8, reason_extension: u8, source_id: u16) -> DpcTriggerOutcome {
@@ -258,12 +298,38 @@ impl PciExtendedCapability for DpcExtendedCapability {
                 let clear = merged_status & dpc_spec::DPC_STATUS_RW1C_MASK;
                 self.status = dpc_spec::DpcStatus::from_bits(self.status.into_bits() & !clear);
             }
-            DpcExtendedCapabilityHeader::RP_PIO_STATUS
-            | DpcExtendedCapabilityHeader::RP_PIO_MASK
-            | DpcExtendedCapabilityHeader::RP_PIO_SEVERITY
-            | DpcExtendedCapabilityHeader::RP_PIO_SYSERROR
-            | DpcExtendedCapabilityHeader::RP_PIO_EXCEPTION
-            | DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_0
+            DpcExtendedCapabilityHeader::RP_PIO_STATUS => {
+                // Write-1-to-clear; valid only for Root Ports with RP Extensions.
+                if self.rp_extensions() {
+                    let write = val.merge(0) & dpc_spec::RP_PIO_VALID_MASK;
+                    self.rp_pio_status &= !write;
+                }
+            }
+            DpcExtendedCapabilityHeader::RP_PIO_MASK => {
+                // Read/write sticky.
+                if self.rp_extensions() {
+                    self.rp_pio_mask = val.merge(self.rp_pio_mask) & dpc_spec::RP_PIO_VALID_MASK;
+                }
+            }
+            DpcExtendedCapabilityHeader::RP_PIO_SEVERITY => {
+                if self.rp_extensions() {
+                    self.rp_pio_severity =
+                        val.merge(self.rp_pio_severity) & dpc_spec::RP_PIO_VALID_MASK;
+                }
+            }
+            DpcExtendedCapabilityHeader::RP_PIO_SYSERROR => {
+                if self.rp_extensions() {
+                    self.rp_pio_syserror =
+                        val.merge(self.rp_pio_syserror) & dpc_spec::RP_PIO_VALID_MASK;
+                }
+            }
+            DpcExtendedCapabilityHeader::RP_PIO_EXCEPTION => {
+                if self.rp_extensions() {
+                    self.rp_pio_exception =
+                        val.merge(self.rp_pio_exception) & dpc_spec::RP_PIO_VALID_MASK;
+                }
+            }
+            DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_0
             | DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_1
             | DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_2
             | DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_3
@@ -272,7 +338,7 @@ impl PciExtendedCapability for DpcExtendedCapability {
             | DpcExtendedCapabilityHeader::RP_PIO_TLP_PREFIX_LOG_1
             | DpcExtendedCapabilityHeader::RP_PIO_TLP_PREFIX_LOG_2
             | DpcExtendedCapabilityHeader::RP_PIO_TLP_PREFIX_LOG_3 => {
-                // These are modeled as status/log outputs in this emulator.
+                // RP PIO Header/ImpSpec/TLP Prefix logs are read-only (ROS).
             }
             _ => {
                 tracelimit::warn_ratelimited!(
@@ -285,12 +351,23 @@ impl PciExtendedCapability for DpcExtendedCapability {
     }
 
     fn reset(&mut self) {
-        let rp_pointer = self.status.rp_pio_first_error_pointer();
+        // The RP PIO Mask register and First Error Pointer default to their
+        // RP-Extensions values on Root Ports, or zero when RP Extensions are
+        // not supported.
+        let (rp_pio_mask, rp_pio_first_error_pointer) = if self.rp_extensions() {
+            (
+                dpc_spec::RP_PIO_VALID_MASK,
+                dpc_spec::RP_PIO_FIRST_ERROR_POINTER_NONE,
+            )
+        } else {
+            (0, 0)
+        };
         self.control = dpc_spec::DpcControl::new();
-        self.status = dpc_spec::DpcStatus::new().with_rp_pio_first_error_pointer(rp_pointer);
+        self.status =
+            dpc_spec::DpcStatus::new().with_rp_pio_first_error_pointer(rp_pio_first_error_pointer);
         self.error_source_id = dpc_spec::DpcErrorSourceId::new();
         self.rp_pio_status = 0;
-        self.rp_pio_mask = 0;
+        self.rp_pio_mask = rp_pio_mask;
         self.rp_pio_severity = 0;
         self.rp_pio_syserror = 0;
         self.rp_pio_exception = 0;
@@ -367,9 +444,13 @@ mod tests {
         assert_eq!(cap.len(), 0x44);
         assert_extended_header_contract(&cap);
         assert!(!cap.containment_active());
-        // RP Extensions for DPC are not implemented, so they must never be
-        // advertised, even for a Root Port.
-        assert!(!cap.capability.rp_extensions_for_dpc());
+        // Root Ports advertise RP Extensions for DPC with an RP PIO Log Size of
+        // 4 DWORDs.
+        assert!(cap.capability.rp_extensions_for_dpc());
+        assert_eq!(
+            cap.capability.rp_pio_log_size_3_0(),
+            dpc_spec::RP_PIO_LOG_SIZE_DW
+        );
     }
 
     #[test]
@@ -396,6 +477,9 @@ mod tests {
         let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
         assert!(status.dpc_trigger_status());
         assert!(cap.containment_active());
+        // A software trigger is single-phase and must never assert RP Busy;
+        // RP Busy only applies to the uncorrectable-error recovery path.
+        assert!(!status.dpc_rp_busy());
     }
 
     #[test]
@@ -417,15 +501,90 @@ mod tests {
     }
 
     #[test]
-    fn test_dpc_trigger_does_not_set_rp_busy() {
-        // RP Extensions for DPC are not implemented, so triggering containment
-        // enters it in a single phase and never asserts RP Busy.
+    fn test_dpc_two_phase_rp_busy() {
+        // An uncorrectable-error trigger asserts RP Busy (Root Port recovery in
+        // progress); it is cleared by port firmware (the host), not the OS.
         let mut cap = DpcExtendedCapability::new(&DevicePortType::RootPort);
 
         let _ = cap.trigger_from_uncorrectable_begin(0x1234);
         let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
         let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
         assert!(status.dpc_trigger_status());
+        assert!(status.dpc_rp_busy());
+
+        cap.clear_rp_busy();
+        let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
+        let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
+        assert!(status.dpc_trigger_status());
         assert!(!status.dpc_rp_busy());
+    }
+
+    #[test]
+    fn test_rp_pio_registers_root_port() {
+        let mut cap = DpcExtendedCapability::new(&DevicePortType::RootPort);
+
+        // RP PIO Mask defaults to all valid error types masked.
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_MASK.0),
+            dpc_spec::RP_PIO_VALID_MASK
+        );
+
+        // RP PIO Status is write-1-to-clear.
+        cap.rp_pio_status = dpc_spec::RP_PIO_VALID_MASK;
+        write_extended_cap_u32(
+            &mut cap,
+            DpcExtendedCapabilityHeader::RP_PIO_STATUS.0,
+            0x0000_0001,
+        );
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_STATUS.0),
+            dpc_spec::RP_PIO_VALID_MASK & !0x0000_0001
+        );
+
+        // RP PIO Severity is read/write; reserved bits are dropped.
+        write_extended_cap_u32(
+            &mut cap,
+            DpcExtendedCapabilityHeader::RP_PIO_SEVERITY.0,
+            0xffff_ffff,
+        );
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_SEVERITY.0),
+            dpc_spec::RP_PIO_VALID_MASK
+        );
+
+        // RP PIO Header Log is read-only.
+        write_extended_cap_u32(
+            &mut cap,
+            DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_0.0,
+            0xdead_beef,
+        );
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_HEADER_LOG_0.0),
+            0
+        );
+    }
+
+    #[test]
+    fn test_rp_pio_reserved_for_downstream_switch_port() {
+        let mut cap = DpcExtendedCapability::new(&DevicePortType::DownstreamSwitchPort);
+
+        // RP Extensions are Reserved for Switch Downstream Ports.
+        assert!(!cap.capability.rp_extensions_for_dpc());
+
+        // The RP PIO registers are reserved: they read as zero and ignore
+        // writes.
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_MASK.0),
+            0
+        );
+        write_extended_cap_u32(
+            &mut cap,
+            DpcExtendedCapabilityHeader::RP_PIO_MASK.0,
+            0xffff_ffff,
+        );
+        assert_eq!(
+            read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::RP_PIO_MASK.0),
+            0
+        );
     }
 }

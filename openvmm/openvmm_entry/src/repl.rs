@@ -329,6 +329,11 @@ enum InteractiveCommand {
         /// defaults to 0 (for example: `0.1.0.0` or `1.0.0`).
         #[clap(long, value_parser=parse_segment_bus_device_function)]
         target: u16,
+        /// Complete DPC recovery (phase 2) by clearing RP Busy on the
+        /// containing port, as the Root Port firmware would. RP Busy is cleared
+        /// by port firmware, not the guest OS. Ignores `--status`/`--log`.
+        #[clap(long)]
+        complete: bool,
         /// Optional uncorrectable AER status bits to record on the target
         /// device (and report at the handling Root Port) as the uncorrectable
         /// error that triggered DPC. When omitted, DPC is triggered without
@@ -1083,6 +1088,7 @@ pub(crate) async fn run_repl(
             }
             InteractiveCommand::InjectDpc {
                 target,
+                complete,
                 status,
                 log,
             } => {
@@ -1096,6 +1102,7 @@ pub(crate) async fn run_repl(
                             VmRpc::InjectPcieDpc,
                             openvmm_defs::rpc::PcieDpcInjectRequest {
                                 target,
+                                complete,
                                 uncorrectable_status_bits,
                                 header_log: log,
                             },
