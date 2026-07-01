@@ -2236,6 +2236,10 @@ mod tests {
         // offset 0x200 (`HEADERS_SIZE`).
         const SIZE_FIELD_OFFSET: usize = 0x200 + 0x5c;
         let oversized: u32 = (resource_dll_parser::MAX_IGVM_SIZE as u32) + 1;
+        assert!(
+            dll_data.len() >= SIZE_FIELD_OFFSET + 4,
+            "test DLL too small to patch size field",
+        );
         dll_data[SIZE_FIELD_OFFSET..SIZE_FIELD_OFFSET + 4]
             .copy_from_slice(&oversized.to_le_bytes());
 
