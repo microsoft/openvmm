@@ -61,7 +61,7 @@ pub struct LoadUefiParams<'a> {
     pub pcie_host_bridges: &'a [PcieHostBridge],
     pub settings: UefiLoadSettings,
     pub chipset_mmio: &'a ChipsetMmioRanges,
-    pub acpi_tables: &'a [&'a [u8]],
+    pub acpi_tables: &'a [(config::BlobStructureType, &'a [u8])],
 }
 
 /// Loads the UEFI firmware.
@@ -183,14 +183,14 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         });
     }
 
-    for table in acpi_tables {
-        cfg.add_raw(config::BlobStructureType::AcpiTable, table);
+    for &(structure_type, table) in acpi_tables {
+        cfg.add_raw(structure_type, table);
     }
 
     if !pcie_host_bridges.is_empty() {
         let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
             .map_err(Error::PcieAcpi)?;
-        cfg.add_raw(config::BlobStructureType::AcpiTable, &pcie_tables.ssdt);
+        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
         if let Some(cedt) = pcie_tables.cedt {
             cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }
