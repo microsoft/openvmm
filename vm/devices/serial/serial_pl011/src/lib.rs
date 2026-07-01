@@ -1462,17 +1462,46 @@ mod tests {
     async fn debugger_relay_rx_does_not_report_overrun(driver: DefaultDriver) {
         let (backend, handle) = DebuggerBackend::new();
         let mut serial = new_debugger_serial(driver, backend);
+        // Burst larger than the relay's RX ring so the relay must drop overflow.
         let burst: Vec<_> = (0..(20 * 1024)).map(|x| (x % 251) as u8).collect();
 
         handle.inject_rx(&burst);
+        // The relay's pump drains the whole burst independently of the guest.
         handle.wait_until(|state| state.rx.is_empty()).await;
-        poll_serial(&mut serial).await;
 
-        let ris = read(&mut serial, Register::UARTRIS);
-        assert_eq!(ris & 0x0400, 0, "debugger relay overflow must not set OE");
-        let fr = read(&mut serial, Register::UARTFR);
-        assert_eq!(fr & 0x0010, 0, "RX data should be visible to the guest");
-        assert_eq!(read(&mut serial, Register::UARTDR) as u8, burst[0]);
+        // Drain everything the guest can see.
+        let mut delivered = Vec::new();
+        for _ in 0..1024 {
+            poll_serial(&mut serial).await;
+            let mut progressed = false;
+            loop {
+                let fr = read(&mut serial, Register::UARTFR);
+                if fr & 0x0010 != 0 {
+                    // RXFE set: receive FIFO empty.
+                    break;
+                }
+                // Overrun must never be visible to the guest.
+                let ris = read(&mut serial, Register::UARTRIS);
+                assert_eq!(ris & 0x0400, 0, "debugger relay overflow must not set OE");
+                delivered.push(read(&mut serial, Register::UARTDR) as u8);
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        // The guest saw data, but strictly fewer bytes than were injected: the
+        // relay dropped the overflow before it ever reached the emulator.
+        assert!(!delivered.is_empty(), "guest should see data");
+        assert!(
+            delivered.len() < burst.len(),
+            "relay must have dropped overflow bytes (got {} of {})",
+            delivered.len(),
+            burst.len()
+        );
+        // The delivered bytes are the earliest ones, in order (drop-newest).
+        assert_eq!(delivered, burst[..delivered.len()]);
     }
 
     #[async_test]

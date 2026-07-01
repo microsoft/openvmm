@@ -5131,6 +5131,20 @@ mod tests {
         assert_eq!(com1.backend, SerialConfigCli::Pipe("/tmp/kd".into()));
         // Other ports remain independent (not in debugger mode).
         assert!(!opt.com2.unwrap().debugger_mode);
+
+        // The prefix must not eat colons in the backend (e.g. a tcp address).
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=tcp:127.0.0.1:5555",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(
+            com1.backend,
+            SerialConfigCli::Tcp("127.0.0.1:5555".parse().unwrap())
+        );
     }
 
     #[test]

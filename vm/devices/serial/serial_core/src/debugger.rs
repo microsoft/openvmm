@@ -445,6 +445,9 @@ mod tests {
         connected: bool,
         read_buf: VecDeque<u8>,
         infinite_read: bool,
+        read_polls: usize,
+        panic_after_read_polls: Option<usize>,
+        write_zero: bool,
         written: Vec<u8>,
         write_limit: usize,
         fail_write_disconnect: bool,
@@ -472,6 +475,9 @@ mod tests {
                 connected: true,
                 read_buf: VecDeque::new(),
                 infinite_read: false,
+                read_polls: 0,
+                panic_after_read_polls: None,
+                write_zero: false,
                 written: Vec::new(),
                 write_limit: usize::MAX,
                 fail_write_disconnect: false,
@@ -544,6 +550,14 @@ mod tests {
             let mut wakes = WakeList::default();
             let result = {
                 let mut state = self.state.lock();
+                state.read_polls += 1;
+                if let Some(limit) = state.panic_after_read_polls {
+                    assert!(
+                        state.read_polls <= limit,
+                        "backend read polled {} times in one scheduling turn (pump is spinning without yielding)",
+                        state.read_polls
+                    );
+                }
                 if !state.connected {
                     state.wake_waiter(&mut wakes);
                     Poll::Ready(Ok(0))
@@ -585,6 +599,13 @@ mod tests {
                     Poll::Ready(Err(ErrorKind::BrokenPipe.into()))
                 } else if !state.connected {
                     Poll::Ready(Err(ErrorKind::BrokenPipe.into()))
+                } else if state.write_zero {
+                    // A misbehaving backend that accepts zero bytes on a
+                    // non-empty write; the pump must treat this as a disconnect
+                    // rather than looping forever making no progress.
+                    state.connected = false;
+                    state.wake_waiter(&mut wakes);
+                    Poll::Ready(Ok(0))
                 } else if state.write_limit == 0 {
                     state.write_waker = Some(cx.waker().clone());
                     Poll::Pending
@@ -676,6 +697,28 @@ mod tests {
             wakes.wake();
         }
 
+        /// Makes the backend accept zero bytes on writes (a `Ok(0)` write-zero).
+        fn set_write_zero(&self) {
+            let mut wakes = WakeList::default();
+            {
+                let mut state = self.state.lock();
+                state.write_zero = true;
+                wakes.take(&mut state.write_waker);
+                state.wake_waiter(&mut wakes);
+            }
+            wakes.wake();
+        }
+
+        /// Panic (rather than hang) if the backend is read-polled more than
+        /// `limit` times without the pump yielding, so a spin fails cleanly.
+        fn panic_after_read_polls(&self, limit: usize) {
+            self.state.lock().panic_after_read_polls = Some(limit);
+        }
+
+        fn read_polls(&self) -> usize {
+            self.state.lock().read_polls
+        }
+
         fn written(&self) -> Vec<u8> {
             self.state.lock().written.clone()
         }
@@ -696,6 +739,44 @@ mod tests {
 
     fn sequence(len: usize) -> Vec<u8> {
         (0..len).map(|x| (x % 251) as u8).collect()
+    }
+
+    /// A `Waker` that counts how many times it was woken, for asserting whether
+    /// a future re-armed itself (cooperative yield) or stayed parked (idle).
+    struct CountingWaker(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    impl CountingWaker {
+        fn new() -> (Arc<Self>, Waker) {
+            let arc = Arc::new(CountingWaker(std::sync::atomic::AtomicUsize::new(0)));
+            let waker = Waker::from(arc.clone());
+            (arc, waker)
+        }
+        fn count(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    fn new_shared(connected: bool) -> Arc<Mutex<Inner>> {
+        Arc::new(Mutex::new(Inner {
+            rx: RingBuf::new(RX_RING_CAP),
+            tx: RingBuf::new(TX_RING_CAP),
+            connected,
+            eof: !connected,
+            device_rx_waker: None,
+            device_conn_waker: None,
+            pump_waker: None,
+            rx_dropped: 0,
+            tx_dropped: 0,
+        }))
     }
 
     fn snapshot(relay: &DebuggerRelay) -> RelaySnapshot {
@@ -758,56 +839,50 @@ mod tests {
     /// must keep reading and dropping (so the transport never deadlocks) but must
     /// still yield back to the executor rather than spinning forever in a single
     /// poll. Polling `run_pump` directly asserts this deterministically: a fixed
-    /// pump returns `Pending` (after bounded work) and re-arms its own waker; a
-    /// spinning pump would never return from this single poll (timeout).
+    /// pump returns `Pending` (after bounded work) and re-arms its own waker. The
+    /// mock's `panic_after_read_polls` guard turns a regressed spin into a clean
+    /// panic instead of a hang.
     #[test]
     fn pump_yields_instead_of_spinning() {
-        use std::sync::Arc as StdArc;
-        use std::sync::atomic::AtomicUsize;
-        use std::sync::atomic::Ordering;
-        use std::task::Wake;
-
-        struct CountingWaker(AtomicUsize);
-        impl Wake for CountingWaker {
-            fn wake(self: StdArc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-            fn wake_by_ref(self: &StdArc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let shared = Arc::new(Mutex::new(Inner {
-            rx: RingBuf::new(RX_RING_CAP),
-            tx: RingBuf::new(TX_RING_CAP),
-            connected: true,
-            eof: false,
-            device_rx_waker: None,
-            device_conn_waker: None,
-            pump_waker: None,
-            rx_dropped: 0,
-            tx_dropped: 0,
-        }));
-
+        let shared = new_shared(true);
         let (io, handle) = MockSerialIo::new();
         handle.set_infinite_read();
+        handle.panic_after_read_polls(PUMP_POLL_BUDGET as usize + 16);
 
         let fut = run_pump(Box::new(io), shared.clone());
         let mut fut = std::pin::pin!(fut);
 
-        let counter = StdArc::new(CountingWaker(AtomicUsize::new(0)));
-        let waker = Waker::from(counter.clone());
+        let (counter, waker) = CountingWaker::new();
         let mut cx = Context::from_waker(&waker);
 
         // A single poll must return: the pump drains and drops into the full ring
-        // but yields once its per-poll budget is spent. (If it spun, this poll
-        // would never return and the test would time out.)
+        // but yields once its per-poll budget is spent.
         assert!(fut.as_mut().poll(&mut cx).is_pending());
 
         // It kept draining/dropping the always-ready backend within that poll...
         assert!(shared.lock().rx_dropped >= RX_RING_CAP as u64);
         // ...and re-armed itself to continue on the next poll (cooperative yield).
-        assert!(counter.0.load(Ordering::Relaxed) >= 1);
+        assert!(counter.count() >= 1);
+    }
+
+    /// When there is nothing to do, the pump must park (return Pending) after a
+    /// single backend poll WITHOUT re-arming its own waker, otherwise it would
+    /// spin at 100% CPU while the guest is idle.
+    #[test]
+    fn pump_parks_when_idle() {
+        let shared = new_shared(true);
+        let (io, handle) = MockSerialIo::new();
+
+        let fut = run_pump(Box::new(io), shared.clone());
+        let mut fut = std::pin::pin!(fut);
+
+        let (counter, waker) = CountingWaker::new();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        // Parked: polled the backend once, then waited without self-waking.
+        assert_eq!(handle.read_polls(), 1);
+        assert_eq!(counter.count(), 0);
     }
 
     #[async_test]
@@ -859,20 +934,83 @@ mod tests {
     #[async_test]
     async fn tx_never_blocks_and_drops_overflow(driver: DefaultDriver) {
         let (io, handle) = MockSerialIo::new();
-        handle.set_write_limit(0);
+        handle.set_write_limit(0); // backend stalled
         let mut relay = DebuggerRelay::new(driver, "tx-drop", Box::new(io));
-        let chunk = [0xa5; 1024];
 
-        for _ in 0..=TX_RING_CAP / chunk.len() {
+        // Write more than the TX ring holds; device writes must never block.
+        let data = sequence(TX_RING_CAP + 1024);
+        for chunk in data.chunks(1024) {
             assert!(matches!(
-                poll_write_now(&mut relay, &chunk),
-                Poll::Ready(Ok(1024))
+                poll_write_now(&mut relay, chunk),
+                Poll::Ready(Ok(n)) if n == chunk.len()
             ));
         }
 
         let snapshot = snapshot(&relay);
         assert!(snapshot.tx_depth <= TX_RING_CAP);
-        assert!(snapshot.tx_dropped > 0);
+        assert_eq!(snapshot.tx_dropped, 1024);
+
+        // Unstall the backend: the retained bytes must be the earliest ones
+        // (drop-newest), forwarded in order.
+        handle.set_write_limit(usize::MAX);
+        handle
+            .wait_until(|state| state.written.len() >= TX_RING_CAP)
+            .await;
+        assert_eq!(handle.written(), data[..TX_RING_CAP]);
+    }
+
+    /// A backend that accepts zero bytes on a non-empty write must be treated as
+    /// a disconnect by the pump, not an infinite no-progress loop.
+    #[async_test]
+    async fn tx_write_zero_disconnects(driver: DefaultDriver) {
+        let (io, handle) = MockSerialIo::new();
+        handle.set_write_zero();
+        let mut relay = DebuggerRelay::new(driver, "tx-write-zero", Box::new(io));
+
+        // The device-facing write still never blocks.
+        assert!(matches!(
+            poll_write_now(&mut relay, b"windbg"),
+            Poll::Ready(Ok(6))
+        ));
+        // The pump forwards, receives Ok(0), and disconnects rather than spinning.
+        wait_for_relay(&relay, |state| !state.connected).await;
+        assert!(!relay.is_connected());
+    }
+
+    /// The relay must wake a device that is blocked in `poll_read` when new RX
+    /// arrives. Guards against a lost wakeup that would hang guest input forever.
+    #[async_test]
+    async fn device_read_waker_is_woken_on_new_rx(driver: DefaultDriver) {
+        let (io, handle) = MockSerialIo::new();
+        let mut relay = DebuggerRelay::new(driver, "rx-wake", Box::new(io));
+        let (counter, waker) = CountingWaker::new();
+
+        // With the relay empty, the device read is Pending and registers `waker`.
+        let mut buf = [0u8; 4];
+        assert!(matches!(
+            Pin::new(&mut relay).poll_read(&mut Context::from_waker(&waker), &mut buf),
+            Poll::Pending
+        ));
+        assert_eq!(counter.count(), 0);
+
+        // New RX arrives at the backend; the pump must drain it and wake `waker`.
+        handle.inject_rx(b"hi");
+        poll_fn(|cx| {
+            if counter.count() >= 1 {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+
+        // And the bytes are now readable.
+        assert!(matches!(
+            Pin::new(&mut relay).poll_read(&mut Context::from_waker(&waker), &mut buf),
+            Poll::Ready(Ok(2))
+        ));
+        assert_eq!(&buf[..2], b"hi");
     }
 
     #[async_test]
@@ -918,5 +1056,57 @@ mod tests {
 
         drop(relay);
         handle.wait_until(|state| state.dropped).await;
+    }
+
+    /// TX must keep being forwarded to the backend even while the RX side is a
+    /// firehose that is always ready. Driven by a single manual poll so it does
+    /// not depend on executor fairness: within one scheduling turn the pump must
+    /// service TX, not drain RX forever. The read-poll guard turns a regressed
+    /// spin into a clean panic instead of a hang.
+    #[test]
+    fn tx_is_serviced_even_with_always_ready_rx() {
+        let shared = new_shared(true);
+        // Queue guest->host TX directly in the ring.
+        shared.lock().tx.push_drop_newest(b"windbg-tx");
+
+        let (io, handle) = MockSerialIo::new();
+        handle.set_infinite_read();
+        handle.panic_after_read_polls(PUMP_POLL_BUDGET as usize + 16);
+
+        let fut = run_pump(Box::new(io), shared.clone());
+        let mut fut = std::pin::pin!(fut);
+        let (_counter, waker) = CountingWaker::new();
+        let mut cx = Context::from_waker(&waker);
+
+        // One scheduling turn is enough to forward the queued TX despite the RX
+        // firehose.
+        let _ = fut.as_mut().poll(&mut cx);
+        assert_eq!(handle.written(), b"windbg-tx");
+        // And RX was concurrently drained/dropped (both directions ran).
+        assert!(shared.lock().rx_dropped > 0);
+    }
+
+    /// A backend that is already disconnected at construction must be reflected:
+    /// the relay reports disconnected, reads return EOF, and a later connect is
+    /// observable. Guards the `connected`/`eof` initialization in `new`.
+    #[async_test]
+    async fn reflects_backend_disconnected_at_construction(driver: DefaultDriver) {
+        let (io, handle) = MockSerialIo::new();
+        handle.set_connected(false);
+        let mut relay = DebuggerRelay::new(driver, "start-disconnected", Box::new(io));
+
+        assert!(!relay.is_connected());
+        let mut buf = [0; 4];
+        assert!(matches!(
+            poll_read_now(&mut relay, &mut buf),
+            Poll::Ready(Ok(0))
+        ));
+        assert!(matches!(poll_connect_now(&mut relay), Poll::Pending));
+
+        // Once the backend connects, the relay follows.
+        handle.set_connected(true);
+        wait_for_relay(&relay, |state| state.connected && !state.eof).await;
+        assert!(relay.is_connected());
+        assert!(matches!(poll_connect_now(&mut relay), Poll::Ready(Ok(()))));
     }
 }

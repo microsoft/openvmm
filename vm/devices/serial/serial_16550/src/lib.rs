@@ -1060,16 +1060,44 @@ mod tests {
     async fn debugger_relay_rx_does_not_report_overrun(driver: DefaultDriver) {
         let (backend, handle) = MockBackend::new();
         let mut serial = new_debugger_serial(driver, backend);
+        // Burst larger than the relay's RX ring so the relay must drop overflow.
         let burst: Vec<_> = (0..(20 * 1024)).map(|x| (x % 251) as u8).collect();
 
         handle.inject_rx(&burst);
+        // The relay's pump drains the whole burst independently of the guest.
         handle.wait_until(|state| state.rx.is_empty()).await;
-        poll_serial(&mut serial).await;
 
-        let lsr = read_reg(&mut serial, Register::LSR);
-        assert_ne!(lsr & 0x01, 0, "RX data should be visible to the guest");
-        assert_eq!(lsr & 0x02, 0, "debugger relay overflow must not set OE");
-        assert_eq!(read_reg(&mut serial, Register::RHR), burst[0]);
+        // Drain everything the guest can see.
+        let mut delivered = Vec::new();
+        for _ in 0..1024 {
+            poll_serial(&mut serial).await;
+            let mut progressed = false;
+            loop {
+                let lsr = read_reg(&mut serial, Register::LSR);
+                if lsr & 0x01 == 0 {
+                    break;
+                }
+                // Overrun must never be visible to the guest.
+                assert_eq!(lsr & 0x02, 0, "debugger relay overflow must not set OE");
+                delivered.push(read_reg(&mut serial, Register::RHR));
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        // The guest saw data, but strictly fewer bytes than were injected: the
+        // relay dropped the overflow before it ever reached the emulator.
+        assert!(!delivered.is_empty(), "guest should see data");
+        assert!(
+            delivered.len() < burst.len(),
+            "relay must have dropped overflow bytes (got {} of {})",
+            delivered.len(),
+            burst.len()
+        );
+        // The delivered bytes are the earliest ones, in order (drop-newest).
+        assert_eq!(delivered, burst[..delivered.len()]);
     }
 
     #[async_test]
