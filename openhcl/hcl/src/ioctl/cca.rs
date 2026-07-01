@@ -35,6 +35,13 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use user_driver::memory::MemoryBlock;
 
+#[derive(Debug, Error)]
+#[expect(missing_docs)]
+pub enum GetIpaStateError {
+    #[error("RSI IPA state read ioctl failed")]
+    Ioctl(#[source] nix::Error),
+}
+
 /// CCA: Structure mirroring the data returned by RMM in the RSI_REALM_CONFIG call.
 #[repr(C, align(0x1000))]
 #[derive(Clone, Copy, Default)]
@@ -71,12 +78,15 @@ pub struct mshv_rsi_set_mem_perm {
     pub top_addr: u64,
 }
 
-/// CCA:
+/// CCA: Structure used by the hcl_rsi_ipa_state_read ioctl.
+/// Caller sets fipa to the faulting IPA. On return the state
+/// contains the corresponding RIPAS state.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-#[expect(missing_docs)]
 pub struct mshv_rsi_get_ipa_state {
+    /// Faulting ipa to have its state queried
     pub fipa: u64,
+    /// RIPAS state returned for fipa
     pub state: u64,
 }
 
@@ -215,14 +225,8 @@ impl ProcessorRunner<'_, Cca> {
     }
 
     /// Get the ipa ripas state from the RMM
-    pub fn cca_ipa_state_read(
-        &self,
-        vtl: GuestVtl,
-        state: &mut mshv_rsi_get_ipa_state,
-    ) -> Result<(), Error> {
-        self.hcl
-            .rsi_get_ipa_state(vtl, state)
-            .map_err(|_| Error::InvalidRegisterValue)
+    pub fn cca_ipa_state_read(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.hcl.rsi_get_ipa_state(fipa)
     }
 
     /// Update the address of the `plane_run` structure in `mshv_vtl_run.context`.
@@ -492,23 +496,23 @@ impl MshvVtl {
     }
 
     /// Get the ipa RIPAS state
-    pub fn rsi_get_ipa_state(
-        &self,
-        vtl: GuestVtl,
-        plane_state: &mut mshv_rsi_get_ipa_state,
-    ) -> Result<(), HvError> {
-        let _plane = match vtl {
-            GuestVtl::Vtl0 => 1,
-            _ => return Err(HvError::InvalidVtlState),
+    pub fn rsi_get_ipa_state(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        let mut plane_state = mshv_rsi_get_ipa_state {
+            fipa,
+            state: u64::MAX,
         };
 
         // SAFETY: Calling hcl_rsi_ipa_state_read ioctl with the correct arguments.
         unsafe {
-            hcl_rsi_ipa_state_read(self.file.as_raw_fd(), plane_state)
-                .map_err(|_| HvError::InvalidVpState)?;
+            hcl_rsi_ipa_state_read(self.file.as_raw_fd(), &mut plane_state)
+                .map_err(GetIpaStateError::Ioctl)?;
         }
 
-        Ok(())
+        if plane_state.state >= u8::MAX as u64 {
+            return Ok(None);
+        }
+
+        Ok(Some(plane_state.state))
     }
 }
 
@@ -544,11 +548,7 @@ impl Hcl {
     }
 
     /// getting ipa RIPAS state
-    pub fn rsi_get_ipa_state(
-        &self,
-        vtl: GuestVtl,
-        plane_state: &mut mshv_rsi_get_ipa_state,
-    ) -> Result<(), HvError> {
-        self.mshv_vtl.rsi_get_ipa_state(vtl, plane_state)
+    pub fn rsi_get_ipa_state(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.mshv_vtl.rsi_get_ipa_state(fipa)
     }
 }
