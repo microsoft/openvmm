@@ -42,9 +42,9 @@ pub struct PcieDpcInjectRequest {
     ///
     /// The containing port is discovered automatically by walking the topology.
     pub target: u16,
-    /// When true, complete DPC recovery (phase 2) by clearing the RP Busy
-    /// status bit on the containing port, as the Root Port firmware would.
-    /// The remaining fields are ignored in this case.
+    /// When true, immediately clear RP Busy on the containing port right after
+    /// triggering DPC (phase 2 folded into the same call), modeling the Root
+    /// Port firmware completing recovery.
     pub complete: bool,
     /// When set, the target device's Uncorrectable Error Status is updated with
     /// these bits (and the handling Root Port records the error message), as if

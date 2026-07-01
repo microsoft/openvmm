@@ -3845,27 +3845,28 @@ impl LoadedVm {
                                     )
                                 })?;
 
-                            if complete {
-                                // Phase 2: the Root Port firmware (modeled by
-                                // the host) clears RP Busy once recovery is
-                                // done. The guest OS does not do this.
-                                rc.lock().inject_dpc_complete(target)?;
-                            } else {
-                                // Phase 1: DPC is triggered by an uncorrectable
-                                // error. When status bits are supplied, record
-                                // them as the AER uncorrectable error on the
-                                // source device (and at the handling Root Port);
-                                // otherwise trigger DPC without touching AER
-                                // state.
-                                let aer = uncorrectable_status_bits.map(|status_bits| {
-                                    pcie::PcieAerInjectRequest {
-                                        kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
-                                        status_bits,
-                                        header_log,
-                                    }
-                                });
+                            // DPC is triggered by an uncorrectable error. When
+                            // status bits are supplied, record them as the AER
+                            // uncorrectable error on the source device;
+                            // otherwise trigger DPC without touching AER state.
+                            let aer = uncorrectable_status_bits.map(|status_bits| {
+                                pcie::PcieAerInjectRequest {
+                                    kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
+                                    status_bits,
+                                    header_log,
+                                }
+                            });
 
-                                rc.lock().inject_dpc_begin(target, aer)?;
+                            let mut rc = rc.lock();
+                            rc.inject_dpc_begin(target, aer)?;
+                            if complete {
+                                // Immediately clear RP Busy, modeling the Root
+                                // Port firmware completing recovery. Real
+                                // firmware clears RP Busy in microseconds; a
+                                // guest (e.g. Linux dpc_wait_rp_inactive) waits
+                                // only ~2s, so a separate manual completion
+                                // would time out.
+                                rc.inject_dpc_complete(target)?;
                             }
 
                             anyhow::Ok(())

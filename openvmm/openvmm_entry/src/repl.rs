@@ -329,9 +329,11 @@ enum InteractiveCommand {
         /// defaults to 0 (for example: `0.1.0.0` or `1.0.0`).
         #[clap(long, value_parser=parse_segment_bus_device_function)]
         target: u16,
-        /// Complete DPC recovery (phase 2) by clearing RP Busy on the
-        /// containing port, as the Root Port firmware would. RP Busy is cleared
-        /// by port firmware, not the guest OS. Ignores `--status`/`--log`.
+        /// After triggering DPC, immediately clear RP Busy on the containing
+        /// port, modeling the Root Port firmware completing recovery. Without
+        /// this, RP Busy stays set and a guest DPC handler (e.g. Linux, which
+        /// waits only ~2s in `dpc_wait_rp_inactive`) will time out. RP Busy is
+        /// cleared by port firmware, never by the guest OS.
         #[clap(long)]
         complete: bool,
         /// Optional uncorrectable AER status bits to record on the target
