@@ -47,6 +47,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -62,6 +63,22 @@ impl FlowNode for Node {
                 m
             });
 
+        // igvmfilegen depends on the workspace `crypto` crate, which on
+        // `linux-gnu` targets pulls in openssl-sys and requires the OpenSSL
+        // development headers + pkg-config to be present on the build host.
+        let mut pre_build_deps = Vec::new();
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "pkg-config".into()],
+                    done: v,
+                }
+            }));
+        }
+
         for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "igvmfilegen".into(),
@@ -72,7 +89,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps: Vec::new(),
+                pre_build_deps: pre_build_deps.clone(),
                 output: v,
             });
 

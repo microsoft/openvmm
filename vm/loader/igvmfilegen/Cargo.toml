@@ -14,23 +14,28 @@ loader_defs.workspace = true
 hvdef.workspace = true
 
 memory_range.workspace = true
-vbs_defs.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true
+bitfield-struct.workspace = true
 clap = { workspace = true, features = ["derive"] }
+corim.workspace = true
+crypto = { workspace = true, features = ["native", "vendored"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
-igvm.workspace = true
+igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
 range_map_vec.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
-thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+crypto = { workspace = true, features = ["test_helpers"] }
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
