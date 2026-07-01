@@ -42,6 +42,13 @@ pub struct PcieDpcInjectRequest {
     ///
     /// The containing port is discovered automatically by walking the topology.
     pub target: u16,
+    /// When set, the target device's Uncorrectable Error Status is updated with
+    /// these bits (and the handling Root Port records the error message), as if
+    /// the uncorrectable error that triggered DPC was reported through AER.
+    pub uncorrectable_status_bits: Option<u32>,
+    /// AER Header Log recorded on the source device alongside
+    /// `uncorrectable_status_bits`.
+    pub header_log: [u32; 4],
 }
 
 #[derive(MeshPayload)]

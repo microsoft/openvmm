@@ -329,6 +329,16 @@ enum InteractiveCommand {
         /// defaults to 0 (for example: `0.1.0.0` or `1.0.0`).
         #[clap(long, value_parser=parse_segment_bus_device_function)]
         target: u16,
+        /// Optional uncorrectable AER status bits to record on the target
+        /// device (and report at the handling Root Port) as the uncorrectable
+        /// error that triggered DPC. When omitted, DPC is triggered without
+        /// updating AER state.
+        #[clap(long, value_parser=maybe_with_radix_u64)]
+        status: Option<u64>,
+        /// Header log as comma-separated DW0,DW1,DW2,DW3, recorded on the
+        /// source device alongside `--status`.
+        #[clap(long, value_parser=parse_header_log_dwords, default_value = "0,0,0,0")]
+        log: [u32; 4],
     },
 
     /// Reset the VM.
@@ -1071,12 +1081,24 @@ pub(crate) async fn run_repl(
                     tracing::error!(error = error.as_error(), "error injecting PCIe AER")
                 }
             }
-            InteractiveCommand::InjectDpc { target } => {
+            InteractiveCommand::InjectDpc {
+                target,
+                status,
+                log,
+            } => {
                 let action = async {
+                    let uncorrectable_status_bits = status
+                        .map(|s| u32::try_from(s).context("status out of u32 range"))
+                        .transpose()?;
+
                     vm_rpc
                         .call(
                             VmRpc::InjectPcieDpc,
-                            openvmm_defs::rpc::PcieDpcInjectRequest { target },
+                            openvmm_defs::rpc::PcieDpcInjectRequest {
+                                target,
+                                uncorrectable_status_bits,
+                                header_log: log,
+                            },
                         )
                         .await??;
 

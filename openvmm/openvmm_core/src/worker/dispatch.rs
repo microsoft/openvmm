@@ -3826,7 +3826,11 @@ impl LoadedVm {
                     }
                     VmRpc::InjectPcieDpc(rpc) => {
                         rpc.handle_failable(async |request: openvmm_defs::rpc::PcieDpcInjectRequest| {
-                            let openvmm_defs::rpc::PcieDpcInjectRequest { target } = request;
+                            let openvmm_defs::rpc::PcieDpcInjectRequest {
+                                target,
+                                uncorrectable_status_bits,
+                                header_log,
+                            } = request;
 
                             let target_bus = (target >> 8) as u8;
                             let rc = self
@@ -3840,10 +3844,23 @@ impl LoadedVm {
                                     )
                                 })?;
 
+                            // DPC is triggered by an uncorrectable error. When
+                            // status bits are supplied, record them as the AER
+                            // uncorrectable error on the source device (and at
+                            // the handling Root Port); otherwise trigger DPC
+                            // without touching AER state.
+                            let aer = uncorrectable_status_bits.map(|status_bits| {
+                                pcie::PcieAerInjectRequest {
+                                    kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
+                                    status_bits,
+                                    header_log,
+                                }
+                            });
+
                             // DPC containment is entered in a single phase; the
                             // guest exits it by clearing the DPC Trigger Status
                             // bit, so no host-side completion is required.
-                            rc.lock().inject_dpc_begin(target, None)?;
+                            rc.lock().inject_dpc_begin(target, aer)?;
 
                             anyhow::Ok(())
                         })
