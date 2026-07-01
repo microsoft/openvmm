@@ -467,18 +467,15 @@ impl PcieDownstreamPort {
                 &port_type,
                 DevicePortType::RootPort | DevicePortType::DownstreamSwitchPort
             ) {
-                let rp_extensions_for_dpc = matches!(&port_type, DevicePortType::RootPort);
                 extended_capabilities.push(Box::new(DpcExtendedCapability::with_config(
                     &port_type,
                     DpcCapabilityConfig {
                         dpc_interrupt_message_number,
-                        rp_extensions_for_dpc,
                         poisoned_tlp_egress_blocking_supported: dpc_settings
                             .poisoned_tlp_egress_blocking_supported,
                         dpc_software_triggering_supported: dpc_settings.software_trigger_supported,
                         dl_active_err_cor_signaling_supported: dpc_settings
                             .dl_active_err_cor_signaling_supported,
-                        rp_pio_log_size_dw: if rp_extensions_for_dpc { 4 } else { 0 },
                     },
                 )));
             } else {
@@ -1012,6 +1009,33 @@ impl PcieDownstreamPort {
             .extended_capabilities()
             .iter()
             .any(|cap| cap.as_dpc().is_some())
+    }
+
+    /// Handle a write to this port's own configuration space.
+    ///
+    /// This wraps [`ConfigSpaceType0Emulator::write_u32`] so that a guest write
+    /// which software-triggers DPC (via the DPC Control register's Software
+    /// Trigger bit) results in the port firing its DPC interrupt. The DPC
+    /// capability records the trigger in its own registers during the write,
+    /// but only the port can signal the MSI, so detect the newly-pending DPC
+    /// interrupt here and fire it.
+    pub fn write_cfg_space(&mut self, offset: u16, value: u32) -> IoResult {
+        let before = self.dpc_interrupt_pending();
+        let result = self.cfg_space.write_u32(offset, value);
+        if !before && self.dpc_interrupt_pending() {
+            self.fire_port_interrupt(PortInterruptKind::Dpc);
+        }
+        result
+    }
+
+    /// Returns whether this port's DPC capability currently has a pending
+    /// (unserviced) DPC interrupt.
+    fn dpc_interrupt_pending(&self) -> bool {
+        self.cfg_space
+            .extended_capabilities()
+            .iter()
+            .find_map(|cap| cap.as_dpc())
+            .is_some_and(|dpc| dpc.interrupt_pending())
     }
 
     /// Record receipt of an AER error *message* from a downstream device in

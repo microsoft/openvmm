@@ -35,6 +35,15 @@ pub struct PcieAerInjectRequest {
     pub header_log: [u32; 4],
 }
 
+#[derive(Debug, MeshPayload, Clone)]
+pub struct PcieDpcInjectRequest {
+    /// Target device Requester ID (Bus<<8 | DevFn) behind the port that should
+    /// enter DPC containment.
+    ///
+    /// The containing port is discovered automatically by walking the topology.
+    pub target: u16,
+}
+
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
@@ -60,6 +69,8 @@ pub enum VmRpc {
     RemovePcieDevice(FailableRpc<String, ()>),
     /// Inject an AER event on a named PCIe root port at runtime.
     InjectPcieAer(FailableRpc<PcieAerInjectRequest, ()>),
+    /// Trigger DPC containment for a target device at runtime.
+    InjectPcieDpc(FailableRpc<PcieDpcInjectRequest, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -103,6 +114,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
             VmRpc::InjectPcieAer(_) => "InjectPcieAer",
+            VmRpc::InjectPcieDpc(_) => "InjectPcieDpc",
             VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)

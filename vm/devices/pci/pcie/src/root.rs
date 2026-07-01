@@ -831,9 +831,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     value,
                 )
                 .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.write_u32(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port.port.write_cfg_space(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }

@@ -320,6 +320,17 @@ enum InteractiveCommand {
         log: [u32; 4],
     },
 
+    /// Trigger DPC (Downstream Port Containment) for a target device.
+    ///
+    /// The containing port is discovered automatically by walking the topology.
+    InjectDpc {
+        /// Target device behind the port to contain, as
+        /// `[segment.]bus.device.function`. The segment may be omitted and
+        /// defaults to 0 (for example: `0.1.0.0` or `1.0.0`).
+        #[clap(long, value_parser=parse_segment_bus_device_function)]
+        target: u16,
+    },
+
     /// Reset the VM.
     Reset,
 
@@ -1058,6 +1069,22 @@ pub(crate) async fn run_repl(
 
                 if let Err(error) = action.await {
                     tracing::error!(error = error.as_error(), "error injecting PCIe AER")
+                }
+            }
+            InteractiveCommand::InjectDpc { target } => {
+                let action = async {
+                    vm_rpc
+                        .call(
+                            VmRpc::InjectPcieDpc,
+                            openvmm_defs::rpc::PcieDpcInjectRequest { target },
+                        )
+                        .await??;
+
+                    anyhow::Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    tracing::error!(error = error.as_error(), "error injecting PCIe DPC")
                 }
             }
             InteractiveCommand::AddDisk {

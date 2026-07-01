@@ -3824,6 +3824,31 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::InjectPcieDpc(rpc) => {
+                        rpc.handle_failable(async |request: openvmm_defs::rpc::PcieDpcInjectRequest| {
+                            let openvmm_defs::rpc::PcieDpcInjectRequest { target } = request;
+
+                            let target_bus = (target >> 8) as u8;
+                            let rc = self
+                                .inner
+                                .pcie_root_complexes
+                                .iter()
+                                .find(|rc| rc.lock().decodes_bus(target_bus))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "no root complex decodes bus {target_bus:#x} for target {target:#06x}"
+                                    )
+                                })?;
+
+                            // DPC containment is entered in a single phase; the
+                            // guest exits it by clearing the DPC Trigger Status
+                            // bit, so no host-side completion is required.
+                            rc.lock().inject_dpc_begin(target, None)?;
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await

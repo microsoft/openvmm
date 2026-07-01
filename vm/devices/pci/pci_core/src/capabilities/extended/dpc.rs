@@ -17,22 +17,18 @@ use inspect::Inspect;
 #[derive(Debug, Clone, Copy, Inspect)]
 pub struct DpcCapabilityConfig {
     pub dpc_interrupt_message_number: Option<u8>,
-    pub rp_extensions_for_dpc: bool,
     pub poisoned_tlp_egress_blocking_supported: bool,
     pub dpc_software_triggering_supported: bool,
     pub dl_active_err_cor_signaling_supported: bool,
-    pub rp_pio_log_size_dw: u8,
 }
 
 impl Default for DpcCapabilityConfig {
     fn default() -> Self {
         Self {
             dpc_interrupt_message_number: None,
-            rp_extensions_for_dpc: false,
             poisoned_tlp_egress_blocking_supported: false,
             dpc_software_triggering_supported: true,
             dl_active_err_cor_signaling_supported: false,
-            rp_pio_log_size_dw: 0,
         }
     }
 }
@@ -63,39 +59,31 @@ pub struct DpcExtendedCapability {
 
 impl DpcExtendedCapability {
     pub fn new(port_type: &DevicePortType) -> Self {
-        let mut config = DpcCapabilityConfig::default();
-        if matches!(port_type, DevicePortType::RootPort) {
-            config.rp_extensions_for_dpc = true;
-        }
-        Self::with_config(port_type, config)
+        Self::with_config(port_type, DpcCapabilityConfig::default())
     }
 
-    pub fn with_config(port_type: &DevicePortType, config: DpcCapabilityConfig) -> Self {
-        let mut capability = dpc_spec::DpcCapability::new()
+    pub fn with_config(_port_type: &DevicePortType, config: DpcCapabilityConfig) -> Self {
+        // RP Extensions for DPC (the RP Busy handshake and the RP PIO logging
+        // registers) are not implemented by this emulator, so the capability
+        // must never advertise them, regardless of the requested configuration
+        // or port type.
+        let capability = dpc_spec::DpcCapability::new()
             .with_dpc_interrupt_message_number(
                 config.dpc_interrupt_message_number.unwrap_or(0) & 0x1f,
             )
-            .with_rp_extensions_for_dpc(config.rp_extensions_for_dpc)
+            .with_rp_extensions_for_dpc(false)
             .with_poisoned_tlp_egress_blocking_supported(
                 config.poisoned_tlp_egress_blocking_supported,
             )
             .with_dpc_software_triggering_supported(config.dpc_software_triggering_supported)
             .with_dl_active_err_cor_signaling_supported(
                 config.dl_active_err_cor_signaling_supported,
-            )
-            .with_rp_pio_log_size_3_0(config.rp_pio_log_size_dw & 0x0f)
-            .with_rp_pio_log_size_4((config.rp_pio_log_size_dw & 0x10) != 0);
-
-        if !matches!(port_type, DevicePortType::RootPort) {
-            capability.set_rp_extensions_for_dpc(false);
-            capability.set_rp_pio_log_size_3_0(0);
-            capability.set_rp_pio_log_size_4(false);
-        }
+            );
 
         Self {
             capability,
             control: dpc_spec::DpcControl::new(),
-            status: dpc_spec::DpcStatus::new().with_rp_pio_first_error_pointer(0x1f),
+            status: dpc_spec::DpcStatus::new(),
             error_source_id: dpc_spec::DpcErrorSourceId::new(),
             rp_pio_status: 0,
             rp_pio_mask: 0,
@@ -116,6 +104,13 @@ impl DpcExtendedCapability {
         self.status.dpc_trigger_status()
     }
 
+    /// Returns whether the DPC Interrupt Status bit is currently set (i.e. a
+    /// DPC event is pending guest servicing). Used by the port to detect a
+    /// software-triggered DPC event and fire the DPC interrupt.
+    pub fn interrupt_pending(&self) -> bool {
+        self.status.dpc_interrupt_status()
+    }
+
     pub fn trigger_from_uncorrectable(&mut self, source_id: u16) -> DpcTriggerOutcome {
         self.trigger(
             dpc_spec::DPC_TRIGGER_REASON_UNMASKED_UNCORRECTABLE,
@@ -124,16 +119,19 @@ impl DpcExtendedCapability {
         )
     }
 
-    /// Phase 1 of synthetic DPC handling: enter containment for an
-    /// uncorrectable error and mark RP as busy until software completes
-    /// recovery.
+    /// Enter DPC containment for an uncorrectable error.
+    ///
+    /// RP Extensions for DPC (including the RP Busy handshake) are not
+    /// implemented, so containment is entered synchronously in a single phase
+    /// and RP Busy is never asserted.
     pub fn trigger_from_uncorrectable_begin(&mut self, source_id: u16) -> DpcTriggerOutcome {
-        let outcome = self.trigger_from_uncorrectable(source_id);
-        self.status.set_dpc_rp_busy(true);
-        outcome
+        self.trigger_from_uncorrectable(source_id)
     }
 
-    /// Phase 2 of synthetic DPC handling: clear RP busy after recovery.
+    /// Clear the RP Busy status bit.
+    ///
+    /// Retained for routing/reset symmetry; RP Busy is never set because RP
+    /// Extensions for DPC are not implemented.
     pub fn clear_rp_busy(&mut self) {
         self.status.set_dpc_rp_busy(false);
     }
@@ -369,6 +367,9 @@ mod tests {
         assert_eq!(cap.len(), 0x44);
         assert_extended_header_contract(&cap);
         assert!(!cap.containment_active());
+        // RP Extensions for DPC are not implemented, so they must never be
+        // advertised, even for a Root Port.
+        assert!(!cap.capability.rp_extensions_for_dpc());
     }
 
     #[test]
@@ -416,16 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn test_dpc_two_phase_rp_busy() {
+    fn test_dpc_trigger_does_not_set_rp_busy() {
+        // RP Extensions for DPC are not implemented, so triggering containment
+        // enters it in a single phase and never asserts RP Busy.
         let mut cap = DpcExtendedCapability::new(&DevicePortType::RootPort);
 
         let _ = cap.trigger_from_uncorrectable_begin(0x1234);
-        let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
-        let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
-        assert!(status.dpc_trigger_status());
-        assert!(status.dpc_rp_busy());
-
-        cap.clear_rp_busy();
         let status = read_extended_cap_u32(&cap, DpcExtendedCapabilityHeader::STATUS_SOURCE_ID.0);
         let status = dpc_spec::DpcStatus::from_bits((status >> 16) as u16);
         assert!(status.dpc_trigger_status());
