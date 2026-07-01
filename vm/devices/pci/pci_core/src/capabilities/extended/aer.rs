@@ -199,12 +199,18 @@ impl AerExtendedCapability {
         mask
     }
 
-    /// Injects an AER event into this capability.
+    /// Records an AER error in this capability's *local* status registers.
     ///
-    /// For endpoints/switch ports, this updates local status/header-log state.
-    /// For root ports, this additionally updates root-error status/source fields
-    /// and returns interrupt signaling guidance.
-    pub fn inject(&mut self, injection: AerInjection) -> Option<AerRootInjectionOutcome> {
+    /// This updates the Correctable/Uncorrectable Error Status registers and
+    /// the Header Log — i.e. the state a device logs for an error it detected
+    /// itself. It does **not** touch the Root Error Status / Error Source
+    /// Identification registers; when a Root Port receives an error *message*
+    /// from a downstream device, those root registers are updated separately
+    /// via [`report_root`](Self::report_root), and the per-error status/header
+    /// stays on the source device (matching how Linux reads AER: the source
+    /// device's own capability holds the status + header log, while the Root
+    /// Port only reports the Root Error Status + Error Source Identification).
+    pub fn inject_local(&mut self, injection: AerInjection) {
         match injection.kind {
             AerInjectedErrorKind::Correctable => {
                 let new_cor = self.cor_err_status.into_bits()
@@ -219,7 +225,20 @@ impl AerExtendedCapability {
         }
 
         self.header_log = injection.header_log;
+    }
 
+    /// Records receipt of an error *message* from a downstream device into this
+    /// Root Port's Root Error Status and Error Source Identification registers,
+    /// returning interrupt-signaling guidance.
+    ///
+    /// This mirrors real hardware: when a Root Port receives an
+    /// ERR_COR/ERR_NONFATAL/ERR_FATAL message, only the "root" aggregation
+    /// registers are updated. The Root Port's own Correctable/Uncorrectable
+    /// Error Status and Header Log are **not** modified — those describe errors
+    /// the Root Port detected itself, and for a downstream-sourced error they
+    /// live on the source device. Returns `None` if this capability does not
+    /// implement the Root Port registers.
+    pub fn report_root(&mut self, injection: AerInjection) -> Option<AerRootInjectionOutcome> {
         if !self.supports_root_registers() {
             return None;
         }

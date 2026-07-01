@@ -1014,18 +1014,22 @@ impl PcieDownstreamPort {
             .any(|cap| cap.as_dpc().is_some())
     }
 
-    /// Record an AER event in this port's own AER capability (acting as the
-    /// error handler) and fire the AER interrupt when root-error reporting is
-    /// enabled.
+    /// Record receipt of an AER error *message* from a downstream device in
+    /// this port's Root Error Status / Error Source Identification registers
+    /// (acting as the error handler) and fire the AER interrupt when
+    /// root-error reporting is enabled.
     ///
-    /// Returns whether this port had an AER capability.
+    /// This does not modify the port's own Correctable/Uncorrectable Error
+    /// Status or Header Log — for a downstream-sourced error, that per-error
+    /// state lives on the source device, not the handling Root Port. Returns
+    /// whether this port had an AER capability.
     pub fn report_aer(&mut self, injection: PciAerInjection) -> bool {
         let mut found = false;
         let mut should_interrupt = false;
         for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
             if let Some(aer) = ext.as_aer_mut() {
                 found = true;
-                if let Some(outcome) = aer.inject(to_aer_injection(injection)) {
+                if let Some(outcome) = aer.report_root(to_aer_injection(injection)) {
                     should_interrupt = outcome.should_interrupt;
                 }
                 break;
@@ -1123,12 +1127,13 @@ impl PcieDownstreamPort {
 
     /// Inject AER state into this port's local AER capability.
     ///
-    /// This updates status/header/source fields for the source function device
-    /// and does not perform root-port-only interrupt handling.
+    /// This updates the local Correctable/Uncorrectable Error Status and Header
+    /// Log for a device that detected the error itself (e.g. the source
+    /// function). It does not touch the Root Port aggregation registers.
     pub fn inject_local_aer_state(&mut self, request: PciAerInjection) -> bool {
         for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
             if let Some(aer) = ext.as_aer_mut() {
-                let _ = aer.inject(AerInjection {
+                aer.inject_local(AerInjection {
                     kind: match request.kind {
                         PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
                         PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,

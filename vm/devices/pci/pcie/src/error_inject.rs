@@ -167,6 +167,7 @@ mod tests {
     use pci_core::spec::caps::aer::AerExtendedCapabilityHeader;
     use pci_core::spec::caps::aer::CorrectableErrorStatus;
     use pci_core::spec::caps::aer::RootErrorCommand;
+    use pci_core::spec::caps::aer::RootErrorStatus;
     use pci_core::spec::caps::aer::UncorrectableErrorStatus;
     use pci_core::spec::caps::dpc::DpcControl;
     use pci_core::spec::caps::dpc::DpcExtendedCapabilityHeader;
@@ -239,8 +240,17 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let unc_status = UncorrectableErrorStatus::from_bits(v);
-        assert!(unc_status.data_link_protocol_error_status());
+        // The handler port's own Uncorrectable Error Status is not set; only its
+        // Root Error Status aggregates the received message.
+        assert!(!UncorrectableErrorStatus::from_bits(v).data_link_protocol_error_status());
+
+        port.cfg_space
+            .read_u32(
+                aer_off + AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0,
+                &mut v,
+            )
+            .unwrap();
+        assert!(RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
 
         port.cfg_space
             .read_u32(
@@ -590,7 +600,10 @@ mod tests {
         )
         .unwrap();
 
-        // Root AER status and source should be updated.
+        // The Root Port aggregates the received error message: its Root Error
+        // Status records ERR_COR received and Error Source Identification
+        // records the source. Its own Correctable Error Status / Header Log are
+        // NOT set — that per-error state lives on the source device.
         let mut v = 0u32;
         let root_port = rc.test_root_port("root-port");
 
@@ -601,8 +614,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let root_cor_status = CorrectableErrorStatus::from_bits(v);
-        assert!(root_cor_status.receiver_error_status());
+        assert!(!CorrectableErrorStatus::from_bits(v).receiver_error_status());
 
         root_port
             .cfg_space
@@ -611,31 +623,16 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        assert_eq!(v, header_log[0]);
+        assert_eq!(v, 0);
+
         root_port
             .cfg_space
             .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_1.0,
+                root_aer_off + AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0,
                 &mut v,
             )
             .unwrap();
-        assert_eq!(v, header_log[1]);
-        root_port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_2.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[2]);
-        root_port
-            .cfg_space
-            .read_u32(
-                root_aer_off + AerExtendedCapabilityHeader::HEADER_LOG_3.0,
-                &mut v,
-            )
-            .unwrap();
-        assert_eq!(v, header_log[3]);
+        assert!(RootErrorStatus::from_bits(v).err_cor_received());
 
         root_port
             .cfg_space
@@ -810,8 +807,19 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        let root_unc_status = UncorrectableErrorStatus::from_bits(v);
-        assert!(root_unc_status.data_link_protocol_error_status());
+        // The containing Root Port does not set its own Uncorrectable Error
+        // Status for a downstream-sourced error; that lives on the endpoint. Its
+        // Root Error Status does aggregate the received message.
+        assert!(!UncorrectableErrorStatus::from_bits(v).data_link_protocol_error_status());
+
+        root_port
+            .cfg_space
+            .read_u32(
+                root_aer_off + AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0,
+                &mut v,
+            )
+            .unwrap();
+        assert!(RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
 
         root_port
             .cfg_space

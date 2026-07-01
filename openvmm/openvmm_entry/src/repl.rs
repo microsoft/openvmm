@@ -83,23 +83,18 @@ fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
 }
 
 fn parse_segment_bus_device_function(s: &str) -> Result<u16, String> {
-    let mut parts = s.split('.');
-    let segment = parts
-        .next()
-        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
-    let bus = parts
-        .next()
-        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
-    let device = parts
-        .next()
-        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
-    let function = parts
-        .next()
-        .ok_or_else(|| "expected segment.bus.device.function".to_string())?;
-
-    if parts.next().is_some() {
-        return Err("expected segment.bus.device.function".to_string());
-    }
+    let parts: Vec<&str> = s.split('.').collect();
+    // Accept either `segment.bus.device.function` or `bus.device.function`
+    // (segment defaults to 0 when omitted).
+    let (segment, bus, device, function) = match parts.as_slice() {
+        [segment, bus, device, function] => (*segment, *bus, *device, *function),
+        [bus, device, function] => ("0", *bus, *device, *function),
+        _ => {
+            return Err(
+                "expected [segment.]bus.device.function (e.g. 0.1.0.0 or 1.0.0)".to_string(),
+            );
+        }
+    };
 
     let segment = maybe_with_radix_u64(segment)?;
     if segment != 0 {
@@ -309,8 +304,9 @@ enum InteractiveCommand {
     ///
     /// The handling port is discovered automatically by walking the topology.
     InjectAer {
-        /// Target device in segment.bus.device.function format (for example:
-        /// 0.1.0.0) that generated the error.
+        /// Target device that generated the error, as
+        /// `[segment.]bus.device.function`. The segment may be omitted and
+        /// defaults to 0 (for example: `0.1.0.0` or `1.0.0`).
         #[clap(long, value_parser=parse_segment_bus_device_function)]
         target: u16,
         /// Error kind: "cor" for correctable or "unc" for uncorrectable.

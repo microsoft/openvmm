@@ -242,7 +242,7 @@ impl GenericPciBusDevice for TestAerEndpoint {
         }
 
         let mut aer = self.aer.lock().expect("endpoint AER mutex poisoned");
-        let _ = aer.inject(AerInjection {
+        aer.inject_local(AerInjection {
             kind: match injection.kind {
                 chipset_device::pci::PciAerErrorKind::Correctable => {
                     AerInjectedErrorKind::Correctable
