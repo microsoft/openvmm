@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! aarch64 specific tests.
+
 #![cfg(target_arch = "aarch64")]
 #![allow(
     unsafe_code,

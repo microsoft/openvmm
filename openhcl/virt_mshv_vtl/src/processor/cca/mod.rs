@@ -25,7 +25,7 @@ use aarch64defs::SystemReg;
 use aarch64defs::rsi::cca_rsi_plane_exit;
 use hcl::GuestVtl;
 use hcl::ioctl::cca::Cca;
-use hcl::ioctl::cca::mshv_rsi_get_ipa_state;
+use hcl::ioctl::cca::GetIpaStateError;
 use hcl::ioctl::register;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -396,17 +396,18 @@ impl BackingPrivate for CcaBacked {
                             let far = cca_exit.far_el2();
                             let hpfar = cca_exit.hpfar_el2();
                             let fipa = (hpfar.fipa() << 12) | (far & 0xfff);
-                            let mut plane_state = mshv_rsi_get_ipa_state {
-                                fipa,
-                                state: u64::MAX,
+
+                            let plane_state = match this.ipa_state_read(fipa) {
+                                Ok(state) => state,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = ?e,
+                                        fipa,
+                                        "failed to read IPA state; state will be u8::MAX which is unavailable"
+                                    );
+                                    None
+                                }
                             };
-                            if let Err(e) = this.ipa_state_read(GuestVtl::Vtl0, &mut plane_state) {
-                                tracing::warn!(
-                                    error = ?e,
-                                    fipa,
-                                    "failed to read IPA state; state will be u8::MAX which is unavailable"
-                                );
-                            }
 
                             return Err(dev.fatal_error(
                                 CcaUnsupportedExit::InstructionAbort {
@@ -414,7 +415,7 @@ impl BackingPrivate for CcaBacked {
                                     elr_el2: cca_exit.elr_el2(),
                                     far_el2: cca_exit.far_el2(),
                                     fipa,
-                                    fipa_state: plane_state.state as u8,
+                                    fipa_state: plane_state.map_or(u8::MAX, |state| state as u8),
                                     ifsc: iss.ifsc().0,
                                     reason,
                                     far_not_valid: iss.fnv(),
@@ -523,14 +524,8 @@ impl UhProcessor<'_, CcaBacked> {
         self.runner.cca_sysreg_read(vtl, reg, val)
     }
 
-    fn ipa_state_read(
-        &self,
-        vtl: GuestVtl,
-        state: &mut mshv_rsi_get_ipa_state,
-    ) -> Result<(), Error> {
-        self.runner
-            .cca_ipa_state_read(vtl, state)
-            .map_err(Error::Hcl)
+    fn ipa_state_read(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.runner.cca_ipa_state_read(fipa)
     }
 
     fn set_plane_enter(&mut self) {
