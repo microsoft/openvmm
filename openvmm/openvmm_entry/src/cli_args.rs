@@ -1087,7 +1087,7 @@ Options:
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `aer`                          enable AER extended capability with default masks
-    `acs_ce_mask=<mask>`           AER Correctable Error Mask register default (u32)
+    `aer_ce_mask=<mask>`           AER Correctable Error Mask register default (u32)
     `aer_uce_mask=<mask>`
                                    AER Uncorrectable Error Mask register default (u32)
     `aer_uce_sev=<mask>`
@@ -1128,7 +1128,7 @@ Options:
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
     `aer`                           enable AER extended capability with default masks
-    `acs_ce_mask=<mask>`            AER Correctable Error Mask register default (u32)
+    `aer_ce_mask=<mask>`            AER Correctable Error Mask register default (u32)
     `aer_uce_mask=<mask>`
                                     AER Uncorrectable Error Mask register default (u32)
     `aer_uce_sev=<mask>`
@@ -3235,10 +3235,10 @@ impl FromStr for PcieRootPortCli {
                     }
                     aer.get_or_insert_with(PcieAerCli::default);
                 }
-                "acs_ce_mask" => {
-                    let value = value.context("acs_ce_mask option requires a value")?;
+                "aer_ce_mask" => {
+                    let value = value.context("aer_ce_mask option requires a value")?;
                     if kv.next().is_some() {
-                        anyhow::bail!("acs_ce_mask option expects a single value")
+                        anyhow::bail!("aer_ce_mask option expects a single value")
                     }
                     let parsed = parse_u32_mask(value, "AER correctable mask")?;
                     aer.get_or_insert_with(PcieAerCli::default).correctable_mask = Some(parsed);
@@ -3386,10 +3386,10 @@ impl FromStr for GenericPcieSwitchCli {
                     }
                     aer.get_or_insert_with(PcieAerCli::default);
                 }
-                "acs_ce_mask" => {
-                    let value = kv.next().context("acs_ce_mask option requires a value")?;
+                "aer_ce_mask" => {
+                    let value = kv.next().context("aer_ce_mask option requires a value")?;
                     if kv.next().is_some() {
-                        anyhow::bail!("acs_ce_mask option expects a single value")
+                        anyhow::bail!("aer_ce_mask option expects a single value")
                     }
                     let parsed = parse_u32_mask(value, "AER correctable mask")?;
                     aer.get_or_insert_with(PcieAerCli::default).correctable_mask = Some(parsed);
@@ -4890,7 +4890,7 @@ mod tests {
 
         assert_eq!(
             PcieRootPortCli::from_str(
-                "my_rc:port3,acs_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=0x13000"
+                "my_rc:port3,aer_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=0x13000"
             )
             .unwrap(),
             PcieRootPortCli {
@@ -5149,7 +5149,7 @@ mod tests {
 
         assert_eq!(
             GenericPcieSwitchCli::from_str(
-                "rp0:switch0,acs_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=77824"
+                "rp0:switch0,aer_ce_mask=0x21,aer_uce_mask=0x04000000,aer_uce_sev=77824"
             )
             .unwrap(),
             GenericPcieSwitchCli {

@@ -63,8 +63,30 @@ notification.
 
 Runtime AER testing/injection can be triggered via
 `VmRpc::InjectPcieAer`, which injects a correctable or uncorrectable
-event on a named root port and signals MSI when the corresponding
-root AER reporting enable bits are set.
+error reported by a target device, identified by its Requester ID
+(`Bus << 8 | DevFn`). The handling port is discovered automatically by
+walking the topology and decoding bus ranges: the target device's own
+AER status is updated, and the root port that handles the error signals
+MSI when the corresponding root AER reporting enable bits are set.
+
+Runtime DPC (Downstream Port Containment) testing/injection can be
+triggered via `VmRpc::InjectPcieDpc`, which contains a target device,
+also identified by its Requester ID. The containing port is discovered
+by walking the topology; DPC containment is entered at the first
+DPC-capable port on the path (setting DPC Trigger Status, and RP Busy on
+Root Ports that support RP Extensions) and the DPC interrupt is signaled
+when enabled. When uncorrectable status bits are supplied, they are
+recorded on the source device's AER as the error that triggered DPC (the
+error is *not* additionally reported through the handling port's AER,
+since DPC contains it). RP Busy is cleared by port firmware, not the
+guest OS; the request's `complete` flag models that by clearing RP Busy
+immediately after triggering, so a guest DPC handler does not time out
+waiting for it.
+
+From the OpenVMM interactive console these two APIs are exposed as the
+`inject-aer` and `inject-dpc` monitor commands (each takes a `--target`
+Requester ID as `[segment.]bus.device.function`); run `inject-dpc
+--help` / `inject-aer --help` for the full option list.
 
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)

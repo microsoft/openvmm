@@ -1159,15 +1159,7 @@ impl PcieDownstreamPort {
     pub fn inject_local_aer_state(&mut self, request: PciAerInjection) -> bool {
         for ext in self.cfg_space.extended_capabilities_mut().iter_mut() {
             if let Some(aer) = ext.as_aer_mut() {
-                aer.inject_local(AerInjection {
-                    kind: match request.kind {
-                        PciAerErrorKind::Correctable => AerInjectedErrorKind::Correctable,
-                        PciAerErrorKind::Uncorrectable => AerInjectedErrorKind::Uncorrectable,
-                    },
-                    status_bits: request.status_bits,
-                    header_log: request.header_log,
-                    source_id: request.source_id,
-                });
+                aer.inject_local(to_aer_injection(request));
                 return true;
             }
         }

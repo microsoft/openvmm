@@ -250,15 +250,18 @@ pub struct PciePortConfig {
     pub hotplug: bool,
     /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
-    /// Optional AER configuration to expose on this port.
-    pub aer: Option<PcieAerConfig>,
-    /// Optional DPC configuration to expose on this port.
-    pub dpc: Option<PcieDpcConfig>,
     /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+    // NOTE: `MeshPayload` assigns wire field numbers by declaration order, so
+    // new fields MUST be appended here (after `cxl`) to avoid changing the
+    // numbers of existing fields and breaking wire compatibility.
+    /// Optional AER configuration to expose on this port.
+    pub aer: Option<PcieAerConfig>,
+    /// Optional DPC configuration to expose on this port.
+    pub dpc: Option<PcieDpcConfig>,
 }
 
 /// Optional AER capability configuration for a PCIe port.

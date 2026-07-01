@@ -78,10 +78,6 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
-    /// Inject an AER event on a named PCIe root port at runtime.
-    InjectPcieAer(FailableRpc<PcieAerInjectRequest, ()>),
-    /// Trigger DPC containment for a target device at runtime.
-    InjectPcieDpc(FailableRpc<PcieDpcInjectRequest, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -89,6 +85,16 @@ pub enum VmRpc {
     /// handle to write to (typically a temporary file that gets renamed
     /// into place on success).
     DumpState(FailableRpc<File, ()>),
+    // NOTE: `MeshPayload` assigns wire field numbers by declaration order, so
+    // new variants MUST be appended here (at the end) to avoid changing the
+    // numbers of existing variants and breaking wire compatibility.
+    /// Inject an AER event at runtime, reported by a target device identified
+    /// by its Requester ID (`Bus << 8 | DevFn`). The handling root port is
+    /// located automatically by decoding bus ranges; no port name is used.
+    InjectPcieAer(FailableRpc<PcieAerInjectRequest, ()>),
+    /// Trigger DPC containment at runtime for a target device, identified by
+    /// its Requester ID. The containing port is located automatically.
+    InjectPcieDpc(FailableRpc<PcieDpcInjectRequest, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

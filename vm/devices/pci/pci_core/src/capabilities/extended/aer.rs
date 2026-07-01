@@ -102,6 +102,15 @@ pub struct AerExtendedCapability {
     #[inspect(skip)]
     tlp_prefix_log: [u32; 4],
     advanced_capabilities: AerAdvancedCapabilities,
+    // Static register defaults captured at construction time. These are part of
+    // the capability's configuration (not runtime state), so `reset()` restores
+    // them rather than the spec defaults; only RW1C status bits are cleared.
+    default_cor_err_mask: u32,
+    default_unc_err_mask: u32,
+    default_unc_err_severity: u32,
+    /// Advertised `Root Error Status[31:27]` for Root Ports; preserved across
+    /// reset so AER interrupt routing stays stable.
+    root_error_interrupt_message_number: u8,
 }
 
 impl AerExtendedCapability {
@@ -148,6 +157,10 @@ impl AerExtendedCapability {
             error_source_identification: aer_spec::ErrorSourceIdentification::new(),
             tlp_prefix_log: [0; 4],
             advanced_capabilities: AerAdvancedCapabilities::new(),
+            default_cor_err_mask: default_correctable_mask,
+            default_unc_err_mask: default_uncorrectable_mask,
+            default_unc_err_severity: default_uncorrectable_severity,
+            root_error_interrupt_message_number,
         }
     }
 
@@ -448,18 +461,25 @@ impl PciExtendedCapability for AerExtendedCapability {
     }
 
     fn reset(&mut self) {
+        // Clear RW1C status/log state, but restore the *configured* register
+        // defaults (masks, severity, and the Root Port interrupt message
+        // number) captured at construction rather than the spec defaults.
         self.unc_err_status = aer_spec::UncorrectableErrorStatus::new();
-        self.unc_err_mask =
-            aer_spec::UncorrectableErrorMask::from_bits(aer_spec::DEFAULT_UNC_ERR_MASK);
+        self.unc_err_mask = aer_spec::UncorrectableErrorMask::from_bits(self.default_unc_err_mask);
         self.unc_err_severity =
-            aer_spec::UncorrectableErrorSeverity::from_bits(aer_spec::DEFAULT_UNC_ERR_SEVERITY);
+            aer_spec::UncorrectableErrorSeverity::from_bits(self.default_unc_err_severity);
         self.cor_err_status = aer_spec::CorrectableErrorStatus::new();
-        self.cor_err_mask =
-            aer_spec::CorrectableErrorMask::from_bits(aer_spec::DEFAULT_COR_ERR_MASK);
+        self.cor_err_mask = aer_spec::CorrectableErrorMask::from_bits(self.default_cor_err_mask);
         self.aer_cap_ctl = aer_spec::AdvancedErrorCapabilitiesAndControl::new();
         self.header_log = [0; 4];
         self.root_error_command = aer_spec::RootErrorCommand::new();
-        self.root_error_status = aer_spec::RootErrorStatus::new();
+        self.root_error_status = if self.supports_root_registers {
+            aer_spec::RootErrorStatus::new().with_advanced_error_interrupt_message_number(
+                self.root_error_interrupt_message_number,
+            )
+        } else {
+            aer_spec::RootErrorStatus::new()
+        };
         self.error_source_identification = aer_spec::ErrorSourceIdentification::new();
         self.tlp_prefix_log = [0; 4];
     }
@@ -806,6 +826,68 @@ mod tests {
             ),
             0x0001_3000
         );
+        assert_eq!(
+            aer_spec::RootErrorStatus::from_bits(read_extended_cap_u32(
+                &cap,
+                AerExtendedCapabilityHeader::ROOT_ERROR_STATUS.0,
+            ))
+            .advanced_error_interrupt_message_number(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_aer_reset_preserves_configured_defaults() {
+        let mut cap = AerExtendedCapability::with_config(
+            &DevicePortType::RootPort,
+            AerCapabilityConfig {
+                correctable_mask: Some(0x0000_0021),
+                uncorrectable_mask: Some(0x0400_0000),
+                uncorrectable_severity_mask: Some(0x0001_3000),
+                root_error_interrupt_message_number: Some(3),
+            },
+        );
+
+        // Mutate the writable registers away from their configured defaults.
+        write_extended_cap_u32(
+            &mut cap,
+            AerExtendedCapabilityHeader::CORRECTABLE_ERROR_MASK.0,
+            0x0000_0000,
+        );
+        write_extended_cap_u32(
+            &mut cap,
+            AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_MASK.0,
+            0x0000_0000,
+        );
+        write_extended_cap_u32(
+            &mut cap,
+            AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_SEVERITY.0,
+            0xffff_ffff,
+        );
+
+        cap.reset();
+
+        // Reset restores the configured defaults, not the spec defaults.
+        assert_eq!(
+            read_extended_cap_u32(&cap, AerExtendedCapabilityHeader::CORRECTABLE_ERROR_MASK.0),
+            0x0000_0021
+        );
+        assert_eq!(
+            read_extended_cap_u32(
+                &cap,
+                AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_MASK.0
+            ),
+            0x0400_0000
+        );
+        assert_eq!(
+            read_extended_cap_u32(
+                &cap,
+                AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_SEVERITY.0
+            ),
+            0x0001_3000
+        );
+        // The advertised Root Error interrupt message number survives reset.
+        assert_eq!(cap.interrupt_message_number(), Some(3));
         assert_eq!(
             aer_spec::RootErrorStatus::from_bits(read_extended_cap_u32(
                 &cap,
