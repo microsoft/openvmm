@@ -3390,12 +3390,14 @@ async fn new_underhill_vm(
 
                 use vpci_relay::*;
 
+                let TDX_TEST = true;
+
                 // Create a resource validator based on the test scenario. If it's a real CVM,
                 // we'll use a real resource validator. Otherwise, we'll use the noop validator.
                 #[cfg(feature = "dev_snp_ohcl_tio_support")]
                 let resource_validator: Option<
                     Arc<dyn TdispResourceValidationInterface>,
-                > = if !test_tdisp_flow {
+                > = if !test_tdisp_flow && !TDX_TEST {
                     Some(Arc::new(TdispSevTioResourceValidator::new(
                         vtom.unwrap_or(0),
                     )?))

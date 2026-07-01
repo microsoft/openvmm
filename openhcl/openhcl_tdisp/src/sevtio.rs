@@ -16,6 +16,61 @@ use memory_range::MemoryRange;
 use sev_guest_device::SevGuestDevice;
 use x86defs::snp::SevRmpAdjust;
 
+/// Records the PFNs marked immutable by a
+/// `modify_gpa_visibility_and_immutability(.., true, ..)` call, so the
+/// immutable bit can be undone if a later step fails before it is cleared on
+/// the normal path.
+///
+/// Armed on construction (i.e. immediately after a successful mark). Call
+/// [`Self::disarm`] once immutability has been cleared on the success path so
+/// `Drop` does not attempt a second, redundant clear.
+struct ImmutablePfnGuard<'a> {
+    mshv: &'a MshvHvcall,
+    pfns: Vec<u64>,
+    armed: bool,
+}
+
+impl<'a> ImmutablePfnGuard<'a> {
+    fn new(mshv: &'a MshvHvcall, pfns: Vec<u64>) -> Self {
+        Self {
+            mshv,
+            pfns,
+            armed: true,
+        }
+    }
+
+    /// Cancel the rollback after immutability has been cleared normally.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ImmutablePfnGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        tracing::warn!(
+            page_count = self.pfns.len(),
+            "rolling back immutable bit on PFNs after failed MMIO block/unblock"
+        );
+
+        if let Err((e, processed)) = self.mshv.modify_gpa_visibility_and_immutability(
+            HostVisibilityType::PRIVATE,
+            false,
+            &self.pfns,
+        ) {
+            // Leaving pages stuck immutable is unrecoverable. Matches the
+            // PagesAccessibleToLowerVtl precedent in lower_vtl_permissions_guard.
+            panic!(
+                "failed to roll back immutable bit on {} PFNs ({processed} cleared before failure): {e:?}",
+                self.pfns.len()
+            );
+        }
+    }
+}
+
 /// AMD SEV-TIO implementation of [`TdispResourceValidationInterface`].
 ///
 /// After a device has been attested and placed in the Run state, this struct
@@ -149,6 +204,10 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             }
         }
 
+        // The pages are now immutable. Arm a guard that clears the immutable bit
+        // if we bail before clearing it ourselves on the success path below.
+        let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
+
         // Initiate the guest request to mark the MMIO range as validated. The firmware will verify all paging assignments from
         // the host to ensure the range is properly backed by expected guest pages before marking it as validated.
         match self.sev_guest.tio_msg_mmio_validate_req(
@@ -195,6 +254,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 );
             }
         }
+
+        // Immutability has been cleared on the success path; cancel the rollback.
+        immutable_guard.disarm();
 
         // Page is now in the validated=true and immutable=false state in the RMP. We are free to RMPADJUST
         // now.
@@ -294,6 +356,10 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             }
         }
 
+        // The pages are now immutable. Arm a guard that clears the immutable bit
+        // if we bail before clearing it ourselves on the success path below.
+        let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
+
         // Invalidate the TDI's record of the MMIO range on the PSP.
         let subrange_base = base_gpa;
         let subrange_page_count = length_in_pages;
@@ -344,6 +410,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
             }
         }
+
+        // Immutability has been cleared on the success path; cancel the rollback.
+        immutable_guard.disarm();
 
         // Flip the pages back to shared / host-visible.
         tracing::info!(
