@@ -161,6 +161,7 @@ mod tests {
     use chipset_device::pci::PciAerInjection;
     use chipset_device::pci::PcieDpcRoutingAction;
     use memory_range::MemoryRange;
+    use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::bus_range::AssignedBusRange;
     use pci_core::capabilities::extended::aer::AerExtendedCapability;
@@ -181,7 +182,6 @@ mod tests {
     use pci_core::spec::hwid::ProgrammingInterface;
     use pci_core::spec::hwid::Subclass;
     use std::sync::Arc;
-    use std::sync::Mutex;
     use zerocopy::IntoBytes;
 
     fn bridge_hardware_ids() -> HardwareIds {
@@ -406,7 +406,7 @@ mod tests {
         // so it is never asserted here.
         assert!(!status.dpc_rp_busy());
 
-        let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
+        let endpoint_aer = endpoint_aer.lock();
         let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
             &endpoint_aer,
             AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS,
@@ -622,7 +622,7 @@ mod tests {
         assert_eq!((v & 0xffff) as u16, source_id);
 
         // Endpoint local AER state should be updated with the same payload.
-        let endpoint_aer = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
+        let endpoint_aer = endpoint_aer.lock();
         let endpoint_cor_status = CorrectableErrorStatus::from_bits(read_aer_dword(
             &endpoint_aer,
             AerExtendedCapabilityHeader::CORRECTABLE_ERROR_STATUS,
@@ -814,7 +814,7 @@ mod tests {
         // (the Complete action) clears it.
         assert!(dpc_status.dpc_rp_busy());
 
-        let endpoint_aer_guard = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
+        let endpoint_aer_guard = endpoint_aer.lock();
         let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
             &endpoint_aer_guard,
             AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS,
@@ -999,7 +999,7 @@ mod tests {
         assert!(!DpcStatus::from_bits((rv & 0xffff) as u16).dpc_trigger_status());
 
         // The source endpoint's AER state was updated.
-        let endpoint_aer_guard = endpoint_aer.lock().expect("endpoint AER mutex poisoned");
+        let endpoint_aer_guard = endpoint_aer.lock();
         let endpoint_unc_status = UncorrectableErrorStatus::from_bits(read_aer_dword(
             &endpoint_aer_guard,
             AerExtendedCapabilityHeader::UNCORRECTABLE_ERROR_STATUS,

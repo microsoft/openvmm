@@ -7,6 +7,7 @@ use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigSpace;
+use parking_lot::Mutex;
 use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::capabilities::extended::aer::AerExtendedCapability;
@@ -17,7 +18,6 @@ use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::aer::AerExtendedCapabilityHeader;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub struct TestPcieMmioRegistration {}
 
@@ -193,19 +193,13 @@ pub struct RecordingSignalMsi {
 
 impl RecordingSignalMsi {
     pub fn pop(&self) -> Option<(Option<u32>, u64, u32)> {
-        self.records
-            .lock()
-            .expect("recording MSI mutex poisoned")
-            .pop()
+        self.records.lock().pop()
     }
 }
 
 impl SignalMsi for RecordingSignalMsi {
     fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
-        self.records
-            .lock()
-            .expect("recording MSI mutex poisoned")
-            .push((devid, address, data));
+        self.records.lock().push((devid, address, data));
     }
 }
 
@@ -241,7 +235,7 @@ impl GenericPciBusDevice for TestAerEndpoint {
             return Some(false);
         }
 
-        let mut aer = self.aer.lock().expect("endpoint AER mutex poisoned");
+        let mut aer = self.aer.lock();
         aer.inject_local(AerInjection {
             kind: match injection.kind {
                 chipset_device::pci::PciAerErrorKind::Correctable => {
