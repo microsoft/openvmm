@@ -121,7 +121,7 @@ pub enum GuestStateEncryptionPolicy {
     /// Prefer (or require, if strict) GspById.
     ///
     /// This prevents a VM from being created as or migrated to GspKey even
-    /// if it is available. Exisiting GspKey encryption will be used unless
+    /// if it is available. Existing GspKey encryption will be used unless
     /// strict encryption policy is enabled. Fails if the data cannot be
     /// encrypted.
     GspById,
@@ -131,8 +131,9 @@ pub enum GuestStateEncryptionPolicy {
     /// be used if GspKey is unavailable unless strict encryption policy is
     /// enabled. Fails if the data cannot be encrypted.
     GspKey,
-    /// Use hardware sealing
-    // TODO: update this doc comment once hardware sealing is implemented
+    /// Use hardware sealing exclusively.
+    ///
+    /// Expected to be set only when `no_persistent_secrets` is true on CVMs.
     HardwareSealing,
 }
 
@@ -147,6 +148,27 @@ open_enum! {
         /// All logs
         FULL = 2,
     }
+}
+
+/// Hardware sealing policy
+///
+/// Selects how the hardware-derived key used to seal the VMGS DEK is computed
+/// (e.g. whether the OpenHCL measurement is mixed into the derivation).
+///
+/// On CVMs the policy governs the hardware-sealing-based VMGS DEK backup by
+/// default. When [`GuestStateEncryptionPolicy::HardwareSealing`] is selected
+/// (stateless mode, i.e. `no_persistent_secrets` is true), the same policy
+/// governs the exclusive hardware sealing that becomes the sole source of the
+/// VMGS DEK.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum HardwareSealingPolicy {
+    /// No hardware sealing
+    #[default]
+    None,
+    /// Hash-based hardware sealing
+    Hash,
+    /// Signer-based hardware sealing
+    Signer,
 }
 
 /// Management VTL Feature Flags
@@ -166,7 +188,7 @@ pub struct ManagementVtlFeatures {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
-    //UEFI flags
+    // UEFI flags
     pub legacy_memory_map: bool,
     pub pause_after_boot_failure: bool,
     pub pxe_ip_v6: bool,
@@ -221,6 +243,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub management_vtl_features: ManagementVtlFeatures,
     #[serde(default)]
     pub force_dma_bounce_enabled: bool,
+    #[serde(default)]
+    pub hardware_sealing_policy_id: HardwareSealingPolicy,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

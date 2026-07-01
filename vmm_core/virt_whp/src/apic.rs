@@ -49,9 +49,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(apic) => {
                 apic.lint(vp_index, index, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {
@@ -78,9 +76,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(lapic) => {
                 lapic.request_interrupt(request.address, request.data, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {
@@ -122,6 +118,7 @@ impl WhpPartitionInner {
 
 pub struct WhpApicClient<'a, T> {
     partition: &'a WhpPartitionInner,
+    vtl: Vtl,
     whp: whp::Processor<'a>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
@@ -136,6 +133,7 @@ impl<'a> WhpVpRef<'a> {
     ) -> WhpApicClient<'a, T> {
         WhpApicClient {
             partition: self.partition,
+            vtl,
             whp: self.whp(vtl),
             dev,
             vmtime,
@@ -161,16 +159,7 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
-        let vp = self
-            .partition
-            .vp(vp_index)
-            .expect("apic emulator passes valid vp index")
-            .vp();
-
-        vp.scan_irr.store(true, Ordering::Relaxed);
-        if let Some(waker) = &*vp.waker.read() {
-            waker.wake_by_ref();
-        }
+        self.partition.vp(vp_index).unwrap().wake_for_apic(self.vtl);
     }
 
     fn eoi(&mut self, vector: u8) {
@@ -427,12 +416,10 @@ impl WhpProcessor<'_> {
                 break;
             }
 
+            let scan_irr = self.vplc(vtl).scan_irr.swap(false, Ordering::Relaxed);
             let vtl_state = &mut self.state.vtls[vtl];
             if let Some(lapic) = &mut vtl_state.lapic {
-                let work = lapic.apic.scan(
-                    &mut self.state.vmtime,
-                    self.inner.scan_irr.swap(false, Ordering::Relaxed),
-                );
+                let work = lapic.apic.scan(&mut self.state.vmtime, scan_irr);
                 lapic.nmi_pending |= work.nmi;
                 if lapic.nmi_pending {
                     self.inject_nmi(vtl);

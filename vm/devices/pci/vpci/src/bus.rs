@@ -11,23 +11,21 @@ use crate::device::VpciConfigSpaceVtom;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
-use chipset_device::io::deferred::DeferredToken;
-use chipset_device::io::deferred::DeferredWrite;
-use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
-use chipset_device::pci::PciConfigSpace;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAddress;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::poll_device::PollDevice;
 use closeable_mutex::CloseableMutex;
-use device_emulators::read_as_u32_chunks;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use inspect::InspectMut;
-use std::collections::VecDeque;
+use pci_core::bus_cfg::PciBusCfgAccessCallbacks;
+use pci_core::bus_cfg::PciBusCfgAccessHandler;
 use std::sync::Arc;
 use std::task::Context;
-use std::task::Poll;
-use std::task::Waker;
 use thiserror::Error;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::offer_simple_device;
@@ -68,31 +66,8 @@ pub struct VpciBusDevice {
     /// Track vtom as when isolated with vtom enabled, guests may access mmio
     /// with or without vtom set.
     vtom: Option<u64>,
-    /// Deferred config space writes being driven through the state machine.
-    #[inspect(skip)]
-    pending_actions: Vec<PendingConfigWrite>,
-    /// Waker registered by the chipset's poll loop. Used to re-schedule
-    /// polling when a new pending write is added from [`MmioIntercept::mmio_write`].
-    /// Initialized to a noop waker; replaced on the first [`PollDevice::poll_device`] call.
-    #[inspect(skip)]
-    waker: Waker,
-}
-
-/// State for a config space write that could not complete synchronously.
-///
-/// Drives writes one at a time: when `device_write` resolves, the next entry
-/// from `remaining` is issued. The bus deferred token `bus_write` is completed
-/// once all entries finish (or errored if any entry fails).
-struct PendingConfigWrite {
-    /// Token for the currently in-flight `pci_cfg_write` call.
-    device_write: DeferredToken,
-    deferred_address: u16,
-    deferred_value: u32,
-
-    /// Outer write completed once every entry in `remaining` has finished.
-    bus_write: DeferredWrite,
-    /// Remaining `(config_offset, value)` pairs to write, in order.
-    remaining: VecDeque<(u16, u32)>,
+    /// Bus config space accesses handler.
+    bus_cfg_handler: PciBusCfgAccessHandler,
 }
 
 /// An error creating a VPCI bus.
@@ -148,8 +123,7 @@ impl VpciBusDevice {
             config_space_offset,
             current_slot: SlotNumber::from(0),
             vtom: config.vtom,
-            pending_actions: Vec::new(),
-            waker: Waker::noop().clone(),
+            bus_cfg_handler: PciBusCfgAccessHandler::new(),
         };
 
         Ok((this, channel))
@@ -238,49 +212,8 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl PollDevice for VpciBusDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        self.waker = cx.waker().clone();
-        self.pending_actions = std::mem::take(&mut self.pending_actions)
-            .into_iter()
-            .filter_map(|mut action| {
-                // If the current write is still pending, poll it for completion.
-                match action.device_write.poll_write(cx) {
-                    Poll::Pending => return Some(action),
-                    Poll::Ready(Err(e)) => {
-                        panic!(
-                            "deferred config space write failed: address={:#x}, value={:#x}, error={e:?}", 
-                            action.deferred_address,
-                            action.deferred_value);
-                    }
-                    Poll::Ready(Ok(())) => {}
-                }
-
-                // The current write completed. Issue the next writes until
-                // another deferral or exhaustion. Complete non-deferred writes immediately
-                // in this loop to avoid unnecessary context switches.
-                let mut device = self.device.lock();
-                let pci = device.supports_pci().unwrap();
-                while let Some((address, value)) = action.remaining.pop_front() {
-                    match pci.pci_cfg_write(address, value) {
-                        IoResult::Ok => {} // continue to next write
-                        IoResult::Err(e) => {
-                            panic!(
-                                "config space write failed: address={address:#x}, value={value:#x}, error={e:?}"
-                            );
-                        }
-                        IoResult::Defer(token) => {
-                            action.device_write = token;
-                            action.deferred_address = address;
-                            action.deferred_value = value;
-                            return Some(action);
-                        }
-                    }
-                }
-
-                // If there are no more writes to issue, complete the outer token and finish.
-                action.bus_write.complete();
-                None
-            })
-            .collect();
+        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+        self.bus_cfg_handler.poll(cx, &mut callback);
     }
 }
 
@@ -297,20 +230,24 @@ impl MmioIntercept for VpciBusDevice {
         };
         match reg {
             Register::SlotNumber => return IoResult::Err(IoError::InvalidRegister),
-            Register::ConfigSpace(offset) => {
+            Register::ConfigSpace(address, byte_enable) => {
                 // FUTURE: support a bus with multiple devices.
                 if u32::from(self.current_slot) == 0 {
-                    let mut device = self.device.lock();
-                    let pci = device.supports_pci().unwrap();
-                    let mut buf = 0;
-                    read_as_u32_chunks(offset, data, |addr| {
-                        pci.pci_cfg_read(addr, &mut buf)
-                            .now_or_never()
-                            .map(|_| buf)
-                            .unwrap_or(0)
-                    });
+                    let mut value_u32 = 0;
+                    let mut value = ByteEnabledDwordRead::new(&mut value_u32, byte_enable);
+
+                    let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+                    let result =
+                        self.bus_cfg_handler
+                            .read(address, value.reborrow(), &mut callback);
+
+                    if matches!(result, IoResult::Ok) {
+                        value.fill_intercept_buffer(data);
+                    }
+
+                    return result;
                 } else {
-                    tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset, "no device at slot for config space read");
+                    tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset = address.byte_offset(), "no device at slot for config space read");
                     data.fill(!0);
                 }
             }
@@ -335,39 +272,14 @@ impl MmioIntercept for VpciBusDevice {
                 };
                 self.current_slot = SlotNumber::from(data);
             }
-            Register::ConfigSpace(offset) => {
+            Register::ConfigSpace(address, byte_enable) => {
                 // FUTURE: support a bus with multiple devices.
                 if u32::from(self.current_slot) == 0 {
-                    let mut device = self.device.lock();
-                    let pci = device.supports_pci().unwrap();
-
-                    // Pre-compute all u32 writes (reads done synchronously).
-                    let mut writes = compute_config_writes(pci, offset, data);
-
-                    // Issue writes one at a time; defer on the first that needs it.
-                    while let Some((address, value)) = writes.pop_front() {
-                        match pci.pci_cfg_write(address, value) {
-                            IoResult::Ok => {}
-                            IoResult::Err(err) => panic!(
-                                "config space write failed: address={address:#x}, value={value:#x}, error={err:?}"
-                            ),
-                            IoResult::Defer(device_write) => {
-                                drop(device);
-                                let (bus_write, bus_token) = defer_write();
-                                self.pending_actions.push(PendingConfigWrite {
-                                    device_write,
-                                    deferred_address: address,
-                                    deferred_value: value,
-                                    bus_write,
-                                    remaining: writes,
-                                });
-                                self.waker.wake_by_ref();
-                                return IoResult::Defer(bus_token);
-                            }
-                        }
-                    }
+                    let value = ByteEnabledDwordWrite::from_intercept_buffer(byte_enable, data);
+                    let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
+                    return self.bus_cfg_handler.write(address, value, &mut callback);
                 } else {
-                    tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset, "no device at slot for config space write");
+                    tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset = address.byte_offset(), "no device at slot for config space write");
                 }
             }
         }
@@ -377,66 +289,7 @@ impl MmioIntercept for VpciBusDevice {
 
 enum Register {
     SlotNumber,
-    ConfigSpace(u16),
-}
-
-/// Pre-computes the sequence of aligned u32 writes needed for a config space
-/// write, performing any required read-modify-write reads synchronously.
-///
-/// The returned queue contains `(config_offset, value)` pairs in order;
-/// callers issue them one at a time and handle deferred completions.
-///
-/// Mimics behavior of [`device_emulators::write_as_u32_chunks`]
-fn compute_config_writes(
-    pci: &mut dyn PciConfigSpace,
-    offset: u16,
-    data: &[u8],
-) -> VecDeque<(u16, u32)> {
-    let mut writes = VecDeque::new();
-    let mut next_offset = offset as u64;
-
-    // Unaligned start: read-modify-write the leading partial u32.
-    let remaining = if next_offset & 3 != 0 {
-        let aligned = (next_offset & !3) as u16;
-        let mut existing = 0u32;
-        let read_val = pci
-            .pci_cfg_read(aligned, &mut existing)
-            .now_or_never()
-            .map(|_| existing)
-            .unwrap_or(0);
-        let mut bytes = read_val.to_ne_bytes();
-        let u32_offset = (next_offset & 3) as usize;
-        let byte_count = (4 - u32_offset).min(data.len());
-        bytes[u32_offset..u32_offset + byte_count].copy_from_slice(&data[..byte_count]);
-        writes.push_back((aligned, u32::from_ne_bytes(bytes)));
-        next_offset += byte_count as u64;
-        &data[byte_count..]
-    } else {
-        data
-    };
-
-    // Aligned middle chunks: full u32 writes.
-    for chunk in remaining.chunks_exact(4) {
-        let val = u32::from_ne_bytes(chunk.try_into().unwrap());
-        writes.push_back((next_offset as u16, val));
-        next_offset += 4;
-    }
-
-    // Unaligned end: read-modify-write the trailing partial u32.
-    let extra = remaining.chunks_exact(4).remainder();
-    if !extra.is_empty() {
-        let mut existing = 0u32;
-        let read_val = pci
-            .pci_cfg_read(next_offset as u16, &mut existing)
-            .now_or_never()
-            .map(|_| existing)
-            .unwrap_or(0);
-        let mut bytes = read_val.to_ne_bytes();
-        bytes[..extra.len()].copy_from_slice(extra);
-        writes.push_back((next_offset as u16, u32::from_ne_bytes(bytes)));
-    }
-
-    writes
+    ConfigSpace(PciConfigAddress, PciConfigByteEnable),
 }
 
 impl VpciBusDevice {
@@ -468,11 +321,44 @@ impl VpciBusDevice {
                 }
                 Register::SlotNumber
             }
-            protocol::MMIO_PAGE_CONFIG_SPACE => Register::ConfigSpace(offset_in_page),
+            protocol::MMIO_PAGE_CONFIG_SPACE => {
+                let address = PciConfigAddress::new(0, 0, offset_in_page / 4)
+                    .ok_or(IoError::InvalidRegister)?;
+                let byte_enable = PciConfigByteEnable::from_offset_len(offset_in_page, len)?;
+                Register::ConfigSpace(address, byte_enable)
+            }
             _ => return Err(IoError::InvalidRegister),
         };
 
         Ok(reg)
+    }
+}
+
+struct PciBusCfgAccessCallbackView<'a> {
+    device: &'a mut Arc<CloseableMutex<dyn ChipsetDevice>>,
+}
+
+impl<'a> PciBusCfgAccessCallbackView<'a> {
+    fn new(device: &'a mut Arc<CloseableMutex<dyn ChipsetDevice>>) -> Self {
+        Self { device }
+    }
+}
+
+impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
+    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+        self.device
+            .lock()
+            .supports_pci()
+            .unwrap()
+            .pci_cfg_read(addr.byte_offset(), value)
+    }
+
+    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+        self.device
+            .lock()
+            .supports_pci()
+            .unwrap()
+            .pci_cfg_write(addr.byte_offset(), value)
     }
 }
 
@@ -482,7 +368,9 @@ mod tests {
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
+    use chipset_device::io::deferred::DeferredRead;
     use chipset_device::io::deferred::DeferredWrite;
+    use chipset_device::io::deferred::defer_read;
     use chipset_device::io::deferred::defer_write;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
@@ -496,28 +384,103 @@ mod tests {
     use pal_async::task::Spawn;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
     use vmcore::vpci_msi::VpciInterruptMapper;
+
+    const BASE_ADDR: u64 = 0x1000_0000;
 
     /// A minimal PCI device that returns `IoResult::Ok` for all operations
     /// until `start_deferring` is called, after which `pci_cfg_write` defers
     /// completion until driven by `poll_device`.
     struct DeferWriteDevice {
+        pending_read: Option<DeferredRead>,
         pending_write: Option<DeferredWrite>,
+        defer_reads: bool,
         defer_writes: bool,
+        read_error: Option<IoError>,
+        write_error: Option<IoError>,
+        read_value: u32,
+        writes: Vec<(u16, u32)>,
     }
 
     impl DeferWriteDevice {
         fn new() -> Self {
             Self {
+                pending_read: None,
                 pending_write: None,
+                defer_reads: false,
                 defer_writes: false,
+                read_error: None,
+                write_error: None,
+                read_value: 0,
+                writes: Vec::new(),
             }
+        }
+
+        fn start_deferring_reads(&mut self, value: u32) {
+            self.read_value = value;
+            self.defer_reads = true;
         }
 
         fn start_deferring(&mut self) {
             self.defer_writes = true;
+        }
+
+        fn fail_deferred_reads(&mut self, error: IoError) {
+            self.read_error = Some(error);
+            self.defer_reads = true;
+        }
+
+        fn fail_deferred_writes(&mut self, error: IoError) {
+            self.write_error = Some(error);
+            self.defer_writes = true;
+        }
+    }
+
+    struct VpciTestRig {
+        bus: Arc<CloseableMutex<VpciBusDevice>>,
+        device: Arc<CloseableMutex<DeferWriteDevice>>,
+    }
+
+    impl VpciTestRig {
+        fn new() -> Self {
+            let msi_controller = TestVpciInterruptController::new();
+            let device: Arc<CloseableMutex<DeferWriteDevice>> =
+                Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
+
+            let (bus, _channel) = VpciBusDevice::new(
+                VpciBusConfig {
+                    instance_id: Guid::new_random(),
+                    vtom: None,
+                    vnode: None,
+                },
+                device.clone(),
+                &mut ExternallyManagedMmioIntercepts,
+                VpciInterruptMapper::new(msi_controller),
+            )
+            .unwrap();
+
+            let bus = Arc::new(CloseableMutex::new(bus));
+            bus.lock().config_space_offset().set(BASE_ADDR);
+
+            Self { bus, device }
+        }
+
+        fn config_addr(offset: u64) -> u64 {
+            BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + offset
+        }
+
+        fn slot_addr() -> u64 {
+            BASE_ADDR + protocol::MMIO_PAGE_SLOT_NUMBER
+        }
+
+        fn poll_bus_and_device(&self) {
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            self.bus.lock().poll_device(&mut cx);
+            self.device.lock().poll_device(&mut cx);
+            self.bus.lock().poll_device(&mut cx);
         }
     }
 
@@ -539,18 +502,41 @@ mod tests {
 
     impl PollDevice for DeferWriteDevice {
         fn poll_device(&mut self, _cx: &mut Context<'_>) {
+            if let Some(deferred) = self.pending_read.take() {
+                if let Some(error) = self.read_error.take() {
+                    deferred.complete_error(error);
+                } else {
+                    deferred.complete(&self.read_value.to_ne_bytes());
+                }
+            }
             if let Some(deferred) = self.pending_write.take() {
-                deferred.complete();
+                if let Some(error) = self.write_error.take() {
+                    deferred.complete_error(error);
+                } else {
+                    deferred.complete();
+                }
             }
         }
     }
 
     impl PciConfigSpace for DeferWriteDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> IoResult {
-            IoResult::Ok
+        fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> IoResult {
+            if self.defer_reads {
+                assert!(
+                    self.pending_read.is_none(),
+                    "new read issued before previous deferred read completed"
+                );
+                let (deferred, token) = defer_read();
+                self.pending_read = Some(deferred);
+                IoResult::Defer(token)
+            } else {
+                *value = self.read_value;
+                IoResult::Ok
+            }
         }
 
-        fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> IoResult {
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+            self.writes.push((offset, value));
             if self.defer_writes {
                 assert!(
                     self.pending_write.is_none(),
@@ -648,64 +634,179 @@ mod tests {
             "poll_device task did not run before the deferred write completed"
         );
 
-        // --- Part 2: multiple u32 writes are each deferred and polled in order ---
-        //
-        // Write 12 bytes (3 contiguous u32s) at a 4-byte-aligned offset. Each
-        // pci_cfg_write is deferred by the device. Verify that:
-        //   - the bus returns a single outer Defer for the whole MMIO write,
-        //   - writes are issued strictly one at a time (enforced by the assert in
-        //     DeferWriteDevice::pci_cfg_write), and
-        //   - exactly 3 rounds of (bus poll → device complete → bus poll) are
-        //     needed to drive the outer Defer to completion.
+        // A PCI config access cannot span multiple DWORDs. Reject it before
+        // sending anything to the device, even if the device would defer.
         const MULTI_OFFSET: u64 = 8;
         let multi_write_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + MULTI_OFFSET;
-        let multi_result = bus.lock().mmio_write(multi_write_addr, &[0xAAu8; 12]);
+        let writes_before = device.lock().writes.len();
+        let multi_result = bus.lock().mmio_write(multi_write_addr, &[0xaa; 12]);
         assert!(
-            matches!(multi_result, IoResult::Defer(_)),
-            "3-u32 write should return a single outer Defer"
+            matches!(multi_result, IoResult::Err(IoError::InvalidAccessSize)),
+            "multi-DWORD write should be rejected"
         );
-
-        // After mmio_write returns, only the first pci_cfg_write has been issued.
         assert!(
-            device.lock().pending_write.is_some(),
-            "write 1/3 should be in flight immediately after mmio_write"
+            device.lock().pending_write.is_none(),
+            "rejected write should not issue a device write"
         );
+        assert_eq!(
+            device.lock().writes.len(),
+            writes_before,
+            "rejected write should not be recorded by the device"
+        );
+    }
 
-        let bus_clone2 = bus.clone();
-        let device_clone2 = device.clone();
-        let rounds = Arc::new(AtomicUsize::new(0));
-        let rounds_clone = rounds.clone();
-        driver
-            .spawn("poll-device-multi", async move {
-                std::future::poll_fn(|cx| {
-                    // Drive one round per deferred write. Each round:
-                    //   1. bus poll_device: sees current write pending, registers waker
-                    //   2. device poll_device: completes the current write
-                    //   3. bus poll_device: picks up completion and issues the next
-                    //      write (or completes the outer token on the last one)
-                    for _ in 0..3 {
-                        bus_clone2.lock().poll_device(cx);
-                        device_clone2.lock().poll_device(cx);
-                        bus_clone2.lock().poll_device(cx);
-                        rounds_clone.fetch_add(1, Ordering::SeqCst);
-                    }
-                    Poll::Ready(())
-                })
-                .await;
-            })
-            .detach();
+    #[async_test]
+    async fn verify_deferred_pci_cfg_read_and_read_for_write_via_bus(_driver: DefaultDriver) {
+        const BASE_ADDR: u64 = 0x1000_0000;
+        const READ_OFFSET: u64 = 4;
+        const WRITE_OFFSET: u64 = 5;
 
-        if let IoResult::Defer(token) = multi_result {
+        let msi_controller = TestVpciInterruptController::new();
+        let device: Arc<CloseableMutex<DeferWriteDevice>> =
+            Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
+
+        let (bus, _channel) = VpciBusDevice::new(
+            VpciBusConfig {
+                instance_id: Guid::new_random(),
+                vtom: None,
+                vnode: None,
+            },
+            device.clone(),
+            &mut ExternallyManagedMmioIntercepts,
+            VpciInterruptMapper::new(msi_controller),
+        )
+        .unwrap();
+
+        let bus = Arc::new(CloseableMutex::new(bus));
+        bus.lock().config_space_offset().set(BASE_ADDR);
+
+        device.lock().start_deferring_reads(0x5566_7788);
+        let read_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + READ_OFFSET;
+        let mut read_data = [0; 4];
+        let read_result = bus.lock().mmio_read(read_addr, &mut read_data);
+        assert!(matches!(read_result, IoResult::Defer(_)));
+
+        std::future::poll_fn(|cx| {
+            bus.lock().poll_device(cx);
+            device.lock().poll_device(cx);
+            bus.lock().poll_device(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        if let IoResult::Defer(token) = read_result {
+            token
+                .read_future(&mut read_data)
+                .await
+                .expect("deferred PCI config read should complete successfully");
+        }
+        assert_eq!(u32::from_ne_bytes(read_data), 0x5566_7788);
+
+        device.lock().start_deferring_reads(0x1122_3344);
+        let write_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + WRITE_OFFSET;
+        let write_result = bus.lock().mmio_write(write_addr, &[0xaa]);
+        assert!(matches!(write_result, IoResult::Defer(_)));
+
+        std::future::poll_fn(|cx| {
+            bus.lock().poll_device(cx);
+            device.lock().poll_device(cx);
+            bus.lock().poll_device(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        if let IoResult::Defer(token) = write_result {
             token
                 .write_future()
                 .await
-                .expect("multi-u32 deferred write should complete successfully");
+                .expect("deferred PCI config read-for-write should complete successfully");
         }
 
+        let mut expected = 0x1122_3344u32.to_ne_bytes();
+        expected[1] = 0xaa;
         assert_eq!(
-            rounds.load(Ordering::SeqCst),
-            3,
-            "each of the 3 deferred writes should have required an independent poll round"
+            device.lock().writes.pop(),
+            Some((4, u32::from_ne_bytes(expected)))
         );
+
+        let mut read_data = [0; 2];
+        let read_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + 7;
+        let read_result = bus.lock().mmio_read(read_addr, &mut read_data);
+        assert!(
+            matches!(read_result, IoResult::Err(_)),
+            "read crossing a DWORD boundary should be rejected"
+        );
+        assert!(
+            device.lock().pending_read.is_none(),
+            "rejected read should not issue a device read"
+        );
+    }
+
+    #[async_test]
+    async fn verify_deferred_pci_cfg_errors_via_bus(_driver: DefaultDriver) {
+        const READ_OFFSET: u64 = 4;
+        const WRITE_OFFSET: u64 = 8;
+
+        let rig = VpciTestRig::new();
+
+        rig.device.lock().fail_deferred_reads(IoError::NoResponse);
+        let writes_before = rig.device.lock().writes.len();
+        let mut read_data = [0; 4];
+        let read_result = rig
+            .bus
+            .lock()
+            .mmio_read(VpciTestRig::config_addr(READ_OFFSET), &mut read_data);
+        let IoResult::Defer(read_token) = read_result else {
+            panic!("read should defer before completing with an error");
+        };
+
+        rig.poll_bus_and_device();
+        assert!(matches!(
+            read_token.read_future(&mut read_data).await,
+            Err(IoError::NoResponse)
+        ));
+        assert_eq!(rig.device.lock().writes.len(), writes_before);
+
+        rig.device.lock().fail_deferred_writes(IoError::NoResponse);
+        let write_result = rig.bus.lock().mmio_write(
+            VpciTestRig::config_addr(WRITE_OFFSET),
+            &0xaabb_ccddu32.to_ne_bytes(),
+        );
+        let IoResult::Defer(write_token) = write_result else {
+            panic!("write should defer before completing with an error");
+        };
+
+        rig.poll_bus_and_device();
+        assert!(matches!(
+            write_token.write_future().await,
+            Err(IoError::NoResponse)
+        ));
+        assert_eq!(rig.device.lock().writes.pop(), Some((8, 0xaabb_ccdd)));
+    }
+
+    #[test]
+    fn verify_nonzero_slot_config_accesses_do_not_touch_device() {
+        let rig = VpciTestRig::new();
+        let writes_before = rig.device.lock().writes.len();
+
+        rig.bus
+            .lock()
+            .mmio_write(VpciTestRig::slot_addr(), &1u32.to_ne_bytes())
+            .unwrap();
+
+        let mut read_data = [0; 4];
+        rig.bus
+            .lock()
+            .mmio_read(VpciTestRig::config_addr(0), &mut read_data)
+            .unwrap();
+        assert_eq!(read_data, [0xff; 4]);
+
+        rig.bus
+            .lock()
+            .mmio_write(VpciTestRig::config_addr(0), &0xaabb_ccddu32.to_ne_bytes())
+            .unwrap();
+        assert!(rig.device.lock().pending_read.is_none());
+        assert!(rig.device.lock().pending_write.is_none());
+        assert_eq!(rig.device.lock().writes.len(), writes_before);
     }
 }

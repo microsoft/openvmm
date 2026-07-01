@@ -427,19 +427,34 @@ impl HyperVNewCustomVMArgs {
                 anyhow::bail!("OpenHCL is required to set GuestStateEncryptionPolicy");
             }
 
-            let encryption_cli = match guest_state_encryption_policy {
-                HyperVGuestStateEncryptionPolicy::Default => "AUTO",
-                HyperVGuestStateEncryptionPolicy::None => "NONE",
-                HyperVGuestStateEncryptionPolicy::GspById => "GSP_BY_ID",
-                HyperVGuestStateEncryptionPolicy::GspKey => "GSP_KEY",
-                policy => {
-                    anyhow::bail!("encryption policy not supported over command line: {policy:?}")
+            // Hardware sealing is encoded by the host as a combined
+            // `GuestStateEncryptionPolicy` value, but is plumbed over the
+            // OpenHCL command line as two separate settings: the encryption
+            // policy (`HARDWARE_SEALING`) and the sealing policy id
+            // (`HASH`/`SIGNER`). A single exhaustive match keeps the two
+            // encodings in sync and forces new variants to be handled here.
+            let (encryption_cli, sealing_cli) = match guest_state_encryption_policy {
+                HyperVGuestStateEncryptionPolicy::Default => ("AUTO", None),
+                HyperVGuestStateEncryptionPolicy::None => ("NONE", None),
+                HyperVGuestStateEncryptionPolicy::GspById => ("GSP_BY_ID", None),
+                HyperVGuestStateEncryptionPolicy::GspKey => ("GSP_KEY", None),
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy => {
+                    ("HARDWARE_SEALING", Some("HASH"))
+                }
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy => {
+                    ("HARDWARE_SEALING", Some("SIGNER"))
                 }
             };
             append_cmdline(
                 &mut self.firmware_parameters,
                 format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
             );
+            if let Some(sealing_cli) = sealing_cli {
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    format!("HCL_HARDWARE_SEALING_POLICY={sealing_cli}"),
+                );
+            }
             self.guest_state_encryption_policy = None;
         }
 
@@ -453,6 +468,7 @@ impl HyperVNewCustomVMArgs {
     ) -> anyhow::Result<HyperVNewCustomVMArgs> {
         use crate::ApicMode;
         use crate::IsolationType;
+        use crate::PetriHardwareSealingPolicy;
         use crate::PetriVmgsResource;
         use crate::SecureBootTemplate;
         use petri_artifacts_common::tags::MachineArch;
@@ -537,20 +553,46 @@ impl HyperVNewCustomVMArgs {
                         .unwrap_or(false),
                 )
             }),
-            guest_state_encryption_policy: firmware
-                .is_openhcl()
-                .then(|| vmgs.encryption_policy())
-                .flatten()
-                .map(|p| match p {
-                    GuestStateEncryptionPolicy::Auto => HyperVGuestStateEncryptionPolicy::Default,
-                    GuestStateEncryptionPolicy::None(_) => HyperVGuestStateEncryptionPolicy::None,
-                    GuestStateEncryptionPolicy::GspById(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspById
+            guest_state_encryption_policy: {
+                // A requested hardware sealing policy takes precedence over the
+                // VMGS-derived encryption policy: it maps to a dedicated
+                // `GuestStateEncryptionPolicy` value that selects hardware
+                // sealing as the exclusive encryption source.
+                let hardware_sealing = tpm.as_ref().and_then(|t| match t.hardware_sealing_policy {
+                    PetriHardwareSealingPolicy::Default => None,
+                    PetriHardwareSealingPolicy::HashPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy)
                     }
-                    GuestStateEncryptionPolicy::GspKey(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspKey
+                    PetriHardwareSealingPolicy::SignerPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy)
                     }
-                }),
+                });
+                if let Some(policy) = hardware_sealing {
+                    if !firmware.is_openhcl() {
+                        anyhow::bail!("hardware sealing policy requires OpenHCL firmware");
+                    }
+                    Some(policy)
+                } else {
+                    firmware
+                        .is_openhcl()
+                        .then(|| vmgs.encryption_policy())
+                        .flatten()
+                        .map(|p| match p {
+                            GuestStateEncryptionPolicy::Auto => {
+                                HyperVGuestStateEncryptionPolicy::Default
+                            }
+                            GuestStateEncryptionPolicy::None(_) => {
+                                HyperVGuestStateEncryptionPolicy::None
+                            }
+                            GuestStateEncryptionPolicy::GspById(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspById
+                            }
+                            GuestStateEncryptionPolicy::GspKey(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspKey
+                            }
+                        })
+                }
+            },
             memory: Some(memory.startup_bytes),
             vp_count: Some(proc_topology.vp_count as u64),
             // TODO: fix this mapping, and/or update petri to better match
@@ -1426,6 +1468,46 @@ pub struct WinEvent {
     pub id: u32,
     /// Message content
     pub message: String,
+    /// Raw event data property values, stringified in template order. Empty
+    /// when the event carries no data.
+    #[serde(default, deserialize_with = "deserialize_event_properties")]
+    pub properties: Vec<String>,
+}
+
+/// Deserialize the `Properties` projection of a Windows event into a flat list
+/// of stringified values.
+fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    use serde_json::Value;
+
+    fn flatten(value: Value, out: &mut Vec<String>) {
+        match value {
+            Value::Null => out.push("<null>".to_string()),
+            Value::String(s) => out.push(s),
+            Value::Bool(b) => out.push(b.to_string()),
+            Value::Number(n) => out.push(n.to_string()),
+            Value::Array(items) => {
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            // PowerShell wraps the array as
+            // `{ "value": [...], "Count": N }` (and an empty array as `{}`).
+            // Pull the values out and ignore the bookkeeping `Count` field.
+            Value::Object(mut map) => {
+                if let Some(inner) = map.remove("value") {
+                    flatten(inner, out);
+                }
+            }
+        }
+    }
+
+    let mut properties = Vec::new();
+    flatten(Value::deserialize(deserializer)?, &mut properties);
+    Ok(properties)
 }
 
 /// Get event logs
@@ -1475,6 +1557,15 @@ pub async fn run_get_winevent(
         ps::Value::new("Level"),
         ps::Value::new("Id"),
         ps::Value::new("Message"),
+        ps::Value::new(ps::HashTable::new([
+            ("label", ps::Value::new("Properties")),
+            (
+                "expression",
+                ps::Value::new(ps::Script::new(
+                    "@($_.Properties | ForEach-Object { [string]$_.Value })",
+                )),
+            ),
+        ])),
     ]);
 
     let output = run_host_cmd(
