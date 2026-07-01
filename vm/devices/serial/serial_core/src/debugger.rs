@@ -101,6 +101,24 @@ impl DebuggerRelay {
     }
 }
 
+/// Wraps `io` in a [`DebuggerRelay`] (spawning a pump task on `driver`) when
+/// `debugger_mode` is set, otherwise returns `io` unchanged.
+///
+/// Shared by the serial device resolvers so the wrapping logic lives in one
+/// place.
+pub fn apply_debugger_mode(
+    debugger_mode: bool,
+    driver: impl Spawn,
+    name: &str,
+    io: Box<dyn SerialIo>,
+) -> Box<dyn SerialIo> {
+    if debugger_mode {
+        Box::new(DebuggerRelay::new(driver, name, io))
+    } else {
+        io
+    }
+}
+
 impl RingBuf {
     fn new(cap: usize) -> Self {
         Self {
@@ -1108,5 +1126,28 @@ mod tests {
         wait_for_relay(&relay, |state| state.connected && !state.eof).await;
         assert!(relay.is_connected());
         assert!(matches!(poll_connect_now(&mut relay), Poll::Ready(Ok(()))));
+    }
+
+    /// `apply_debugger_mode` wraps the backend in a relay only when enabled: a
+    /// stalled backend blocks device writes when passed through, but the relay
+    /// accepts them immediately when debugger mode is on.
+    #[async_test]
+    async fn apply_debugger_mode_wraps_only_when_enabled(driver: DefaultDriver) {
+        let (io, handle) = MockSerialIo::new();
+        handle.set_write_limit(0); // backend writes stall
+        let mut passthrough = apply_debugger_mode(false, driver.clone(), "serial", Box::new(io));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut passthrough).poll_write(&mut cx, b"x"),
+            Poll::Pending
+        ));
+
+        let (io, _handle) = MockSerialIo::new();
+        let mut wrapped = apply_debugger_mode(true, driver, "serial", Box::new(io));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut wrapped).poll_write(&mut cx, b"x"),
+            Poll::Ready(Ok(1))
+        ));
     }
 }
