@@ -867,3 +867,224 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::poll_fn;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use serial_core::debugger::DebuggerRelay;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::sync::Arc;
+    use std::task::Waker;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineInterrupt;
+
+    struct MockBackend {
+        state: Arc<Mutex<MockState>>,
+    }
+
+    #[derive(Clone)]
+    struct MockHandle {
+        state: Arc<Mutex<MockState>>,
+    }
+
+    struct MockState {
+        rx: VecDeque<u8>,
+        written: Vec<u8>,
+        write_stalled: bool,
+        read_waker: Option<Waker>,
+        write_waker: Option<Waker>,
+        wait_waker: Option<Waker>,
+    }
+
+    impl MockBackend {
+        fn new() -> (Self, MockHandle) {
+            let state = Arc::new(Mutex::new(MockState {
+                rx: VecDeque::new(),
+                written: Vec::new(),
+                write_stalled: false,
+                read_waker: None,
+                write_waker: None,
+                wait_waker: None,
+            }));
+            (
+                Self {
+                    state: state.clone(),
+                },
+                MockHandle { state },
+            )
+        }
+    }
+
+    impl InspectMut for MockBackend {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl SerialIo for MockBackend {
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn poll_connect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_disconnect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncRead for MockBackend {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut state = self.state.lock();
+            if state.rx.is_empty() {
+                state.read_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            let n = buf.len().min(state.rx.len());
+            for (dst, src) in buf.iter_mut().zip(state.rx.drain(..n)) {
+                *dst = src;
+            }
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl AsyncWrite for MockBackend {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut state = self.state.lock();
+            if state.write_stalled {
+                state.write_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            state.written.extend_from_slice(buf);
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl MockHandle {
+        fn inject_rx(&self, data: &[u8]) {
+            let mut state = self.state.lock();
+            state.rx.extend(data);
+            if let Some(waker) = state.read_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+        }
+
+        fn set_write_stalled(&self, stalled: bool) {
+            let mut state = self.state.lock();
+            state.write_stalled = stalled;
+            if let Some(waker) = state.write_waker.take() {
+                waker.wake();
+            }
+        }
+
+        async fn wait_until(&self, mut predicate: impl FnMut(&MockState) -> bool) {
+            poll_fn(|cx| {
+                let mut state = self.state.lock();
+                if predicate(&state) {
+                    Poll::Ready(())
+                } else {
+                    state.wait_waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }
+
+    fn new_debugger_serial(driver: DefaultDriver, backend: MockBackend) -> Serial16550 {
+        Serial16550::new(
+            "com1".to_string(),
+            MmioOrIoPort::IoPort(0x3f8),
+            1,
+            LineInterrupt::detached(),
+            Box::new(DebuggerRelay::new(driver, "com1", Box::new(backend))),
+            false,
+        )
+        .unwrap()
+    }
+
+    async fn poll_serial(serial: &mut Serial16550) {
+        poll_fn(|cx| {
+            serial.poll_device(cx);
+            Poll::Ready(())
+        })
+        .await
+    }
+
+    fn read_reg(serial: &mut Serial16550, register: Register) -> u8 {
+        let mut data = [0];
+        serial.read(register.0.into(), &mut data).unwrap();
+        data[0]
+    }
+
+    fn write_reg(serial: &mut Serial16550, register: Register, value: u8) {
+        serial.write(register.0.into(), &[value]).unwrap();
+    }
+
+    #[async_test]
+    async fn debugger_relay_rx_does_not_report_overrun(driver: DefaultDriver) {
+        let (backend, handle) = MockBackend::new();
+        let mut serial = new_debugger_serial(driver, backend);
+        let burst: Vec<_> = (0..(20 * 1024)).map(|x| (x % 251) as u8).collect();
+
+        handle.inject_rx(&burst);
+        handle.wait_until(|state| state.rx.is_empty()).await;
+        poll_serial(&mut serial).await;
+
+        let lsr = read_reg(&mut serial, Register::LSR);
+        assert_ne!(lsr & 0x01, 0, "RX data should be visible to the guest");
+        assert_eq!(lsr & 0x02, 0, "debugger relay overflow must not set OE");
+        assert_eq!(read_reg(&mut serial, Register::RHR), burst[0]);
+    }
+
+    #[async_test]
+    async fn debugger_relay_tx_stalled_backend_reports_thr_empty(driver: DefaultDriver) {
+        let (backend, handle) = MockBackend::new();
+        handle.set_write_stalled(true);
+        let mut serial = new_debugger_serial(driver, backend);
+
+        for byte in b"windbg" {
+            write_reg(&mut serial, Register::THR, *byte);
+        }
+        poll_serial(&mut serial).await;
+
+        let lsr = read_reg(&mut serial, Register::LSR);
+        assert_ne!(lsr & 0x20, 0, "THR should be empty with debugger relay");
+        assert_ne!(lsr & 0x40, 0, "TSR should be empty with debugger relay");
+    }
+}

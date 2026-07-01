@@ -28,6 +28,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 pal_async.workspace = true
+parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

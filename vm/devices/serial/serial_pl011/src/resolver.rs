@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
+use serial_core::SerialIo;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use thiserror::Error;
@@ -16,6 +17,7 @@ use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
+use vmcore::vm_task::VmTaskDriver;
 
 /// The resource resolver for [`SerialPl011`].
 pub struct SerialPl011Resolver;
@@ -33,6 +35,23 @@ pub enum ResolvePl011Error {
     ResolveBackend(#[source] ResolveError),
     #[error("failed to configure serial device")]
     Configuration(#[source] super::ConfigurationError),
+}
+
+fn apply_debugger_mode(
+    debugger_mode: bool,
+    driver: VmTaskDriver,
+    device_name: &str,
+    io: Box<dyn SerialIo>,
+) -> Box<dyn SerialIo> {
+    if debugger_mode {
+        Box::new(serial_core::debugger::DebuggerRelay::new(
+            driver,
+            device_name,
+            io,
+        ))
+    } else {
+        io
+    }
 }
 
 #[async_trait]
@@ -63,14 +82,108 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, SerialPl011DeviceHandle>
             .configure
             .new_line(IRQ_LINE_SET, "interrupt", resource.irq);
 
-        let device = SerialPl011::new(
-            input.device_name.to_string(),
-            resource.base,
-            interrupt,
+        let io = apply_debugger_mode(
+            resource.debugger_mode,
+            input.task_driver_source.simple(),
+            input.device_name,
             io.0.into_io(),
-        )
-        .map_err(ResolvePl011Error::Configuration)?;
+        );
+
+        let device = SerialPl011::new(input.device_name.to_string(), resource.base, interrupt, io)
+            .map_err(ResolvePl011Error::Configuration)?;
 
         Ok(device.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_debugger_mode;
+    use futures::AsyncRead;
+    use futures::AsyncWrite;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use serial_core::SerialIo;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    #[derive(InspectMut)]
+    struct PendingWriteSerial;
+
+    impl SerialIo for PendingWriteSerial {
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn poll_connect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_disconnect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncRead for PendingWriteSerial {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for PendingWriteSerial {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[async_test]
+    async fn debugger_mode_wraps_backend(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+        let mut passthrough = apply_debugger_mode(
+            false,
+            driver_source.simple(),
+            "serial",
+            Box::new(PendingWriteSerial),
+        );
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut passthrough).poll_write(&mut cx, b"x"),
+            Poll::Pending
+        ));
+
+        let mut debugger = apply_debugger_mode(
+            true,
+            driver_source.simple(),
+            "serial",
+            Box::new(PendingWriteSerial),
+        );
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut debugger).poll_write(&mut cx, b"x"),
+            Poll::Ready(Ok(1))
+        ));
     }
 }

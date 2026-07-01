@@ -1127,6 +1127,9 @@ async fn vm_config_from_command_line(
     if any_serial_configured {
         chipset = chipset.with_serial([serial0_cfg, serial1_cfg, serial2_cfg, serial3_cfg]);
     }
+    if opt.serial_debugger_mode {
+        chipset = chipset.with_serial_debugger_mode();
+    }
     if opt.battery {
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());

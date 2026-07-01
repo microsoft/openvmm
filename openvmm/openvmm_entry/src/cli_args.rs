@@ -590,6 +590,18 @@ options:
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
 
+    /// Enable serial debugger mode for WinDbg kernel debugging over serial (KD).
+    ///
+    /// Pair this with the COM port WinDbg connects to, e.g.
+    /// `--serial-debugger-mode --com1 listen=<path>` or
+    /// `--serial-debugger-mode --com1 listen=tcp:<ip>:<port>`. In this mode
+    /// OpenVMM keeps the serial backend drained and may drop bytes instead of
+    /// applying backpressure, so the kernel debugger (KD) transport does not
+    /// deadlock across guest resets/reboots. Dropped bytes are recovered by
+    /// KD's own retransmission.
+    #[clap(long)]
+    pub serial_debugger_mode: bool,
+
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
@@ -3723,6 +3735,7 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+    use test_with_tracing::test;
 
     #[test]
     fn test_parse_file_opts() {
@@ -5061,6 +5074,15 @@ mod tests {
         assert!(opt.prefetch_memory());
         assert!(opt.private_memory());
         assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_serial_debugger_mode_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(!opt.serial_debugger_mode);
+
+        let opt = Options::try_parse_from(["openvmm", "--serial-debugger-mode"]).unwrap();
+        assert!(opt.serial_debugger_mode);
     }
 
     #[test]

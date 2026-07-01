@@ -180,6 +180,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
 Serial devices can be configured to appear as different devices inside the guest:
 
 * `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--serial-debugger-mode`: Enable debugger-mode handling for architectural
+  serial ports. The default is `false`. Use this for WinDbg kernel debugging
+  over serial (KD), paired with the COM port that WinDbg connects to, such as
+  `--serial-debugger-mode --com1 listen=<PATH>` or
+  `--serial-debugger-mode --com1 listen=tcp:<IP>:<PORT>`. In this mode OpenVMM
+  keeps the serial backend drained and may drop bytes instead of applying
+  backpressure, so the KD transport does not deadlock across guest resets or
+  reboots; KD recovers dropped bytes with its own retransmission.
 * `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
   `/dev/hvc0` inside the guest).
 

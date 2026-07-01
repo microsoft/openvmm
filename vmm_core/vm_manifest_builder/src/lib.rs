@@ -71,6 +71,7 @@ pub struct VmManifestBuilder {
     arch: MachineArch,
     serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     serial_wait_for_rts: bool,
+    serial_debugger_mode: bool,
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
@@ -206,6 +207,51 @@ enum ErrorInner {
     WaitForRtsNotSupported,
 }
 
+fn serial_16550_devices(
+    wait_for_rts: bool,
+    debugger_mode: bool,
+    backends: [Option<Resource<SerialBackendHandle>>; 4],
+) -> [Serial16550DeviceHandle; 4] {
+    Serial16550DeviceHandle::com_ports(
+        backends.map(|r| r.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource())),
+    )
+    .map(|d| Serial16550DeviceHandle {
+        wait_for_rts,
+        debugger_mode,
+        ..d
+    })
+}
+
+fn serial_pl011_devices(
+    debugger_mode: bool,
+    backends: [Option<Resource<SerialBackendHandle>>; 4],
+) -> Result<[SerialPl011DeviceHandle; 2], ErrorInner> {
+    const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
+    const PL011_SERIAL0_IRQ: u32 = 1;
+    const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
+    const PL011_SERIAL1_IRQ: u32 = 2;
+
+    let [backend0, backend1, backend2, backend3] = backends;
+    if backend2.is_some() || backend3.is_some() {
+        return Err(ErrorInner::UnsupportedSerialCount);
+    }
+
+    Ok([
+        SerialPl011DeviceHandle {
+            base: PL011_SERIAL0_BASE,
+            irq: PL011_SERIAL0_IRQ,
+            io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            debugger_mode,
+        },
+        SerialPl011DeviceHandle {
+            base: PL011_SERIAL1_BASE,
+            irq: PL011_SERIAL1_IRQ,
+            io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            debugger_mode,
+        },
+    ])
+}
+
 impl VmManifestBuilder {
     /// Create a new VM manifest builder for the given chipset type and
     /// architecture.
@@ -216,6 +262,7 @@ impl VmManifestBuilder {
             arch,
             serial: None,
             serial_wait_for_rts: false,
+            serial_debugger_mode: false,
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
@@ -248,6 +295,15 @@ impl VmManifestBuilder {
     /// until the guest has raised the RTS line.
     pub fn with_serial_wait_for_rts(mut self) -> Self {
         self.serial_wait_for_rts = true;
+        self
+    }
+
+    /// Enable serial debugger mode for WinDbg / KD-over-serial.
+    ///
+    /// Keeps the serial backend drained and may drop bytes instead of applying
+    /// backpressure so the kernel debugger transport does not deadlock.
+    pub fn with_serial_debugger_mode(mut self) -> Self {
+        self.serial_debugger_mode = true;
         self
     }
 
@@ -387,6 +443,7 @@ impl VmManifestBuilder {
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
+                    self.serial_debugger_mode,
                     self.serial.unwrap_or_else(|| [(); 4].map(|_| None)),
                 );
                 result.chipset = BaseChipsetManifest {
@@ -443,6 +500,7 @@ impl VmManifestBuilder {
                     .maybe_attach_arch_serial(
                         self.arch,
                         self.serial_wait_for_rts,
+                        self.serial_debugger_mode,
                         true,
                         self.serial,
                     )?
@@ -481,6 +539,7 @@ impl VmManifestBuilder {
                     .maybe_attach_arch_serial(
                         self.arch,
                         self.serial_wait_for_rts,
+                        self.serial_debugger_mode,
                         true,
                         self.serial,
                     )?
@@ -506,6 +565,7 @@ impl VmManifestBuilder {
                 result.maybe_attach_arch_serial(
                     self.arch,
                     self.serial_wait_for_rts,
+                    self.serial_debugger_mode,
                     false,
                     self.serial,
                 )?;
@@ -724,19 +784,20 @@ impl VmChipsetResult {
         &mut self,
         arch: MachineArch,
         wait_for_rts: bool,
+        debugger_mode: bool,
         register_missing: bool,
         serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     ) -> Result<&mut Self, ErrorInner> {
         if let Some(serial) = serial {
             match arch {
                 MachineArch::X86_64 => {
-                    self.attach_serial_16550(wait_for_rts, serial);
+                    self.attach_serial_16550(wait_for_rts, debugger_mode, serial);
                 }
                 MachineArch::Aarch64 => {
                     if wait_for_rts {
                         return Err(ErrorInner::WaitForRtsNotSupported);
                     }
-                    self.attach_serial_pl011(serial)?;
+                    self.attach_serial_pl011(debugger_mode, serial)?;
                 }
             }
         } else if register_missing && arch == MachineArch::X86_64 {
@@ -764,18 +825,10 @@ impl VmChipsetResult {
     fn attach_serial_16550(
         &mut self,
         wait_for_rts: bool,
+        debugger_mode: bool,
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> &mut Self {
-        let mut devices = Serial16550DeviceHandle::com_ports(
-            backends.map(|r| r.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource())),
-        );
-
-        if wait_for_rts {
-            devices = devices.map(|d| Serial16550DeviceHandle {
-                wait_for_rts: true,
-                ..d
-            });
-        }
+        let devices = serial_16550_devices(wait_for_rts, debugger_mode, backends);
 
         self.chipset_devices.extend(
             zip(
@@ -792,35 +845,18 @@ impl VmChipsetResult {
 
     fn attach_serial_pl011(
         &mut self,
+        debugger_mode: bool,
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> Result<&mut Self, ErrorInner> {
-        const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
-        const PL011_SERIAL0_IRQ: u32 = 1;
-        const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
-        const PL011_SERIAL1_IRQ: u32 = 2;
-
-        let [backend0, backend1, backend2, backend3] = backends;
-        if backend2.is_some() || backend3.is_some() {
-            return Err(ErrorInner::UnsupportedSerialCount);
-        }
+        let [serial0, serial1] = serial_pl011_devices(debugger_mode, backends)?;
         self.chipset_devices.extend([
             ChipsetDeviceHandle {
                 name: "com1".to_string(),
-                resource: SerialPl011DeviceHandle {
-                    base: PL011_SERIAL0_BASE,
-                    irq: PL011_SERIAL0_IRQ,
-                    io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
-                }
-                .into_resource(),
+                resource: serial0.into_resource(),
             },
             ChipsetDeviceHandle {
                 name: "com2".to_string(),
-                resource: SerialPl011DeviceHandle {
-                    base: PL011_SERIAL1_BASE,
-                    irq: PL011_SERIAL1_IRQ,
-                    io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
-                }
-                .into_resource(),
+                resource: serial1.into_resource(),
             },
         ]);
         Ok(self)
@@ -889,5 +925,43 @@ impl VmChipsetResult {
             ]);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn no_serial_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
+        [(); 4].map(|_| None)
+    }
+
+    #[test]
+    fn serial_debugger_mode_builder_flag_defaults_false_and_can_enable() {
+        let builder = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64);
+        assert!(!builder.serial_debugger_mode);
+
+        let builder = builder.with_serial_debugger_mode();
+        assert!(builder.serial_debugger_mode);
+    }
+
+    #[test]
+    fn serial_debugger_mode_defaults_false_on_generated_handles() {
+        let serial_16550 = serial_16550_devices(false, false, no_serial_backends());
+        assert!(serial_16550.iter().all(|handle| !handle.debugger_mode));
+
+        let serial_pl011 = serial_pl011_devices(false, no_serial_backends()).unwrap();
+        assert!(serial_pl011.iter().all(|handle| !handle.debugger_mode));
+    }
+
+    #[test]
+    fn serial_debugger_mode_threads_to_generated_handles() {
+        let serial_16550 = serial_16550_devices(true, true, no_serial_backends());
+        assert!(serial_16550.iter().all(|handle| handle.wait_for_rts));
+        assert!(serial_16550.iter().all(|handle| handle.debugger_mode));
+
+        let serial_pl011 = serial_pl011_devices(true, no_serial_backends()).unwrap();
+        assert!(serial_pl011.iter().all(|handle| handle.debugger_mode));
     }
 }
