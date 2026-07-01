@@ -15,9 +15,6 @@ memory_range.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
-# Used by the `test_helpers` module, which is compiled for `cfg(test)` and the
-# `fuzz` feature (a non-test build), so it must be a regular dependency rather
-# than a dev-dependency.
 parking_lot.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
