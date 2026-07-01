@@ -3243,26 +3243,52 @@ impl LoadedVmInner {
                 enable_vmbus,
                 force_dma_bounce,
             } => {
+                use loader::uefi::config::BlobStructureType;
+                // Deliver each ACPI table with the blob structure type the
+                // firmware expects. Tables the firmware consumes directly
+                // (MADT, SRAT, SLIT, MCFG, PPTT, IORT) must be delivered via
+                // their dedicated typed blobs; the firmware does not accept
+                // them via the generic AcpiTable blob and will fail to boot
+                // (EFI_SECURITY_VIOLATION) otherwise. Tables with no dedicated
+                // blob type (IVRS, DMAR) are delivered via the generic
+                // AcpiTable blob. The PCIe tables (SSDT via its typed blob,
+                // CEDT via the generic AcpiTable blob) are added separately by
+                // the loader from `pcie_host_bridges`, and so are not part of
+                // this list.
                 let acpi_tables = [
                     // MADT
-                    Some(acpi_builder.build_madt()),
+                    Some((BlobStructureType::Madt, acpi_builder.build_madt())),
                     // SRAT
-                    Some(acpi_builder.build_srat()),
+                    Some((BlobStructureType::Srat, acpi_builder.build_srat())),
                     // SLIT
-                    acpi_builder.build_slit(),
+                    acpi_builder
+                        .build_slit()
+                        .map(|t| (BlobStructureType::Slit, t)),
                     // MCFG
-                    (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg()),
+                    (!self.pcie_host_bridges.is_empty())
+                        .then(|| (BlobStructureType::Mcfg, acpi_builder.build_mcfg())),
                     // PPTT
-                    cache_topology.is_some().then(|| acpi_builder.build_pptt()),
+                    cache_topology
+                        .is_some()
+                        .then(|| (BlobStructureType::Pptt, acpi_builder.build_pptt())),
                     // IORT
-                    acpi_builder.build_iort(),
+                    acpi_builder
+                        .build_iort()
+                        .map(|t| (BlobStructureType::Iort, t)),
                     // IVRS (AMD IOMMU)
-                    acpi_builder.build_ivrs(),
+                    acpi_builder
+                        .build_ivrs()
+                        .map(|t| (BlobStructureType::AcpiTable, t)),
                     // DMAR (Intel VT-d)
-                    acpi_builder.build_dmar(),
+                    acpi_builder
+                        .build_dmar()
+                        .map(|t| (BlobStructureType::AcpiTable, t)),
                 ];
-                let acpi_tables: Vec<_> =
-                    acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
+                let acpi_tables: Vec<_> = acpi_tables
+                    .iter()
+                    .flatten()
+                    .map(|(structure_type, t)| (*structure_type, t.as_ref()))
+                    .collect();
 
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
                     debugging: enable_debugging,
