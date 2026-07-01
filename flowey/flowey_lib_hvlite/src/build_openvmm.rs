@@ -30,7 +30,8 @@ pub enum OpenvmmOutput {
         #[serde(rename = "openvmm.exe")]
         exe: PathBuf,
         #[serde(rename = "openvmm.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
     LinuxBin {
         #[serde(rename = "openvmm")]

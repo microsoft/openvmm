@@ -52,9 +52,11 @@ impl SimpleFlowNode for Node {
                             fs_err::hard_link(&exe, &exe_name)?;
                             files.push((exe_name.absolute()?, None));
 
-                            let pdb_name = PathBuf::from(format!("vmgstool-{target}.pdb"));
-                            fs_err::hard_link(&pdb, &pdb_name)?;
-                            files.push((pdb_name.absolute()?, None));
+                            if let Some(pdb) = pdb {
+                                let pdb_name = PathBuf::from(format!("vmgstool-{target}.pdb"));
+                                fs_err::hard_link(&pdb, &pdb_name)?;
+                                files.push((pdb_name.absolute()?, None));
+                            }
                         }
                     }
                 }

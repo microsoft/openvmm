@@ -4214,6 +4214,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "static_assertions",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
