@@ -1115,10 +1115,12 @@ impl PcieDownstreamPort {
         }
 
         match action {
-            PcieDpcRoutingAction::Begin { aer } => {
-                if let Some(aer) = aer {
-                    let _ = self.report_aer(aer);
-                }
+            PcieDpcRoutingAction::Begin => {
+                // The error is contained by DPC, so it is not reported through
+                // this port's AER: DPC does not set the Root Error Status or
+                // generate an AER interrupt for a contained error. Delivering
+                // AER here as well would make the guest run both AER and DPC
+                // recovery for the same event, which conflict.
                 self.trigger_dpc(source_id);
             }
             PcieDpcRoutingAction::Complete => {

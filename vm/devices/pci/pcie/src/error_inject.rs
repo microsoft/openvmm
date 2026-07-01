@@ -68,10 +68,13 @@ impl GenericPcieRootComplex {
 
     /// Begin DPC containment (phase 1) for the device at `target`.
     ///
-    /// `request` is optional; when supplied, the source device's own AER
-    /// capability is updated and the handler port's AER capability is recorded.
-    /// DPC is triggered at the first DPC-capable port found walking upstream
-    /// from the device (the port closest to it).
+    /// `request` is optional; when supplied, the *source device's* own AER
+    /// capability is updated to reflect the uncorrectable error. The handling
+    /// port's AER is deliberately **not** updated: DPC contains the error, so
+    /// it is not additionally reported through the port's AER (which would make
+    /// the guest run both AER and DPC recovery for the same event). DPC is
+    /// triggered at the first DPC-capable port found walking upstream from the
+    /// device (the port closest to it).
     pub fn inject_dpc_begin(
         &mut self,
         target: u16,
@@ -91,7 +94,7 @@ impl GenericPcieRootComplex {
         }
 
         // 2. Trigger DPC at the first DPC-capable port upstream of the device.
-        let action = PcieDpcRoutingAction::Begin { aer };
+        let action = PcieDpcRoutingAction::Begin;
         if apply_dpc_upstream(port, target, target_bus, function, action) {
             Ok(())
         } else {
@@ -195,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_dpc_action_two_phase_updates_aer_and_rp_busy() {
+    fn test_apply_dpc_action_two_phase_contains_without_aer_report() {
         let msi_target = MsiTarget::disconnected();
         let mut port = PcieDownstreamPort::new(
             "root",
@@ -213,22 +216,7 @@ mod tests {
             None,
         );
 
-        let injected_unc_status = UncorrectableErrorStatus::new()
-            .with_data_link_protocol_error_status(true)
-            .into_bits();
-
-        let injection = PciAerInjection {
-            kind: PciAerErrorKind::Uncorrectable,
-            status_bits: injected_unc_status,
-            header_log: [1, 2, 3, 4],
-            source_id: 0x0100,
-        };
-        assert!(port.apply_dpc_action(
-            0x0100,
-            PcieDpcRoutingAction::Begin {
-                aer: Some(injection)
-            }
-        ));
+        assert!(port.apply_dpc_action(0x0100, PcieDpcRoutingAction::Begin));
 
         let aer_off = find_ext_cap_offset_type1(&port.cfg_space, ExtendedCapabilityId::AER);
         let dpc_off = find_ext_cap_offset_type1(&port.cfg_space, ExtendedCapabilityId::DPC);
@@ -240,8 +228,7 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        // The handler port's own Uncorrectable Error Status is not set; only its
-        // Root Error Status aggregates the received message.
+        // The handler port's own Uncorrectable Error Status is not set.
         assert!(!UncorrectableErrorStatus::from_bits(v).data_link_protocol_error_status());
 
         port.cfg_space
@@ -250,7 +237,9 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        assert!(RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
+        // The error is contained by DPC, so it is not reported through the
+        // port's AER — the Root Error Status does not record it.
+        assert!(!RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
 
         port.cfg_space
             .read_u32(
@@ -279,17 +268,7 @@ mod tests {
     #[test]
     fn test_apply_dpc_action_supported_on_root_and_downstream_only() {
         let msi_target = MsiTarget::disconnected();
-        let injection = PciAerInjection {
-            kind: PciAerErrorKind::Uncorrectable,
-            status_bits: UncorrectableErrorStatus::new()
-                .with_data_link_protocol_error_status(true)
-                .into_bits(),
-            header_log: [0; 4],
-            source_id: 0x0100,
-        };
-        let action = PcieDpcRoutingAction::Begin {
-            aer: Some(injection),
-        };
+        let action = PcieDpcRoutingAction::Begin;
 
         let mut root = PcieDownstreamPort::new(
             "root",
@@ -411,12 +390,7 @@ mod tests {
         };
         // Update the source endpoint's AER, then contain at this downstream port.
         assert!(port.inject_child_aer(0, 0, injection).unwrap());
-        assert!(port.apply_dpc_action(
-            0,
-            PcieDpcRoutingAction::Begin {
-                aer: Some(injection)
-            }
-        ));
+        assert!(port.apply_dpc_action(0, PcieDpcRoutingAction::Begin));
 
         let mut v = 0u32;
         port.cfg_space
@@ -812,8 +786,7 @@ mod tests {
             )
             .unwrap();
         // The containing Root Port does not set its own Uncorrectable Error
-        // Status for a downstream-sourced error; that lives on the endpoint. Its
-        // Root Error Status does aggregate the received message.
+        // Status for a downstream-sourced error; that lives on the endpoint.
         assert!(!UncorrectableErrorStatus::from_bits(v).data_link_protocol_error_status());
 
         root_port
@@ -823,7 +796,9 @@ mod tests {
                 &mut v,
             )
             .unwrap();
-        assert!(RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
+        // The error is contained by DPC, so it is not reported through the Root
+        // Port's AER — the Root Error Status does not record it.
+        assert!(!RootErrorStatus::from_bits(v).err_fatal_nonfatal_received());
 
         root_port
             .cfg_space

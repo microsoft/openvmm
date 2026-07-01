@@ -310,12 +310,13 @@ pub struct PciAerInjection {
 /// upstream from a target device toward the root complex.
 #[derive(Debug, Clone, Copy)]
 pub enum PcieDpcRoutingAction {
-    /// DPC phase 1: enter containment at the handler port. When `aer` is
-    /// `Some`, the handler port's local AER capability is also updated.
-    Begin {
-        /// Optional AER state to record on the handler port.
-        aer: Option<PciAerInjection>,
-    },
+    /// DPC phase 1: enter containment at the handler port.
+    ///
+    /// A DPC-contained error is *not* reported through the handler port's AER
+    /// (no Root Error Status update and no AER interrupt) — DPC is the sole
+    /// handler for a contained error. The source device's own AER state is
+    /// updated separately, before routing.
+    Begin,
     /// DPC phase 2: release containment (clear RP busy) at the handler port.
     Complete,
 }
