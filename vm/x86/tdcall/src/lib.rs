@@ -6,8 +6,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use hvdef::HV_PAGE_SIZE;
 use hvdef::hypercall::HypercallOutput;
+use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -24,6 +24,9 @@ use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageAttrWriteRcx;
 use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
+use x86defs::tdx::TdgMemPageReleaseRcx;
+use x86defs::tdx::TdgMemPageReleaseRcxResult;
+use x86defs::tdx::TdgVmRdResult;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
 
@@ -329,6 +332,117 @@ pub fn tdcall_accept_pages(
     }
 }
 
+/// The error information returned from [`tdcall_release_page`].
+#[derive(Debug, Error)]
+pub enum TdgPageReleaseError {
+    /// Unknown error type.
+    #[error("unknown error: {0:?}")]
+    Unknown(TdCallResultCode),
+    /// Page not allocated to TD's GPA Space
+    #[error("page is not allocated to GPA space: {0:?}")]
+    NotAllocated(TdCallResultCode),
+    /// Page is in an invalid entry state
+    #[error("page has invalid state [pending: {pending:?}, mmio: {mmio:?}]: {result:?}")]
+    EntryStateInvalid {
+        /// Associated TDX Result Code
+        result: TdCallResultCode,
+        /// Page is in PENDING state
+        pending: bool,
+        /// Page is MMIO
+        mmio: bool,
+    },
+    /// Size mismatch
+    #[error("page size mismatch. Expected page level {expected_level:?}: {result:?}")]
+    PageSizeMismatch {
+        /// Associated TDX Result Code
+        result: TdCallResultCode,
+        /// Expected page level
+        expected_level: TdgMemPageLevel,
+    },
+    /// Invalid operand
+    #[error("invalid operand: {0:?}")]
+    Invalid(TdCallResultCode),
+    /// Busy Operand
+    #[error("operand busy: {0:?}")]
+    Busy(TdCallResultCode),
+}
+
+/// Issue a TDG.MEM.PAGE.RELEASE call
+pub fn tdcall_release_page(
+    call: &mut impl Tdcall,
+    gpa_page_number: u64,
+    as_large_page: bool,
+) -> Result<(), TdgPageReleaseError> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(gpa_page_number, as_large_page, "tdcall_release_page");
+
+    let rcx = TdgMemPageReleaseRcx::new()
+        .with_gpa_page_number(gpa_page_number)
+        .with_level(if as_large_page {
+            TdgMemPageLevel::Size2Mb
+        } else {
+            TdgMemPageLevel::Size4k
+        });
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MEM_PAGE_RELEASE,
+        rcx: rcx.into(),
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    let result_code = output.rax.code();
+    let result_info = TdgMemPageReleaseRcxResult::from(output.rcx);
+
+    match result_code {
+        TdCallResultCode::SUCCESS => Ok(()),
+        TdCallResultCode::EPT_ENTRY_FREE => Err(TdgPageReleaseError::NotAllocated(result_code)),
+        TdCallResultCode::EPT_ENTRY_STATE_INCORRECT => {
+            Err(TdgPageReleaseError::EntryStateInvalid {
+                result: result_code,
+                pending: result_info.pending(),
+                mmio: result_info.mmio(),
+            })
+        }
+        TdCallResultCode::PAGE_SIZE_MISMATCH => Err(TdgPageReleaseError::PageSizeMismatch {
+            result: result_code,
+            expected_level: result_info.level(),
+        }),
+        TdCallResultCode::OPERAND_INVALID => Err(TdgPageReleaseError::Invalid(result_code)),
+        TdCallResultCode::OPERAND_BUSY => Err(TdgPageReleaseError::Busy(result_code)),
+        val => Err(TdgPageReleaseError::Unknown(val)),
+    }
+}
+
+/// Releases memory from `range` using [`tdcall_release_page`].
+pub fn release_pages(
+    call: &mut impl Tdcall,
+    range: MemoryRange,
+) -> Result<(), TdgPageReleaseError> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(%range, "release_pages");
+
+    for_each_tdcall_page(range, |gpn, is_large_page| {
+        match tdcall_release_page(call, gpn, is_large_page) {
+            Ok(_) => Ok(TdcallPageOperationOutcome::Advance),
+            Err(TdgPageReleaseError::PageSizeMismatch {
+                expected_level: TdgMemPageLevel::Size4k,
+                ..
+            }) if is_large_page => Ok(TdcallPageOperationOutcome::Retry4k),
+            Err(e) => Err(e),
+        }
+    })
+}
+
 /// The result returned from [`tdcall_page_attr_rd`].
 #[derive(Debug)]
 pub struct TdgPageAttrRdResult {
@@ -418,7 +532,8 @@ fn set_page_attr(
             #[cfg(debug_assertions)]
             {
                 let result =
-                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * HV_PAGE_SIZE).unwrap();
+                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE)
+                        .unwrap();
                 assert_eq!(u64::from(mapping), result.mapping.into());
                 assert_eq!(attributes.l1(), result.attributes.l1());
                 assert_eq!(
@@ -485,64 +600,36 @@ pub fn accept_pages<T: Tdcall>(
         }
     };
 
-    let mut range = range;
-    while !range.is_empty() {
-        // Attempt to accept in large page chunks if possible.
-        if range.start().is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
-            && range.len() >= x86defs::X64_LARGE_PAGE_SIZE
-        {
-            match tdcall_accept_pages(call, range.start_4k_gpn(), true) {
-                Ok(_) => {
-                    set_attributes(
-                        call,
-                        TdgMemPageAttrWriteRcx::new()
-                            .with_gpa_page_number(range.start_4k_gpn())
-                            .with_level(TdgMemPageLevel::Size2Mb),
-                    )?;
-
-                    range =
-                        MemoryRange::new(range.start() + x86defs::X64_LARGE_PAGE_SIZE..range.end());
-                    continue;
-                }
-                Err(e) => match e {
-                    TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
-                    TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
-                    TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
-                        panic!("page {} already accepted", range.start_4k_gpn());
-                    }
-                    TdCallResultCode::PAGE_SIZE_MISMATCH => {
-                        #[cfg(feature = "tracing")]
-                        tracing::trace!("accept pages size mismatch returned");
-                    }
-                    _ => return Err(AcceptPagesError::Unknown(e)),
-                },
-            }
-        }
-
-        // Accept in 4k size pages
-        match tdcall_accept_pages(call, range.start_4k_gpn(), false) {
+    for_each_tdcall_page(range, |gpn, is_large_page| {
+        match tdcall_accept_pages(call, gpn, is_large_page) {
             Ok(_) => {
                 set_attributes(
                     call,
                     TdgMemPageAttrWriteRcx::new()
-                        .with_gpa_page_number(range.start_4k_gpn())
-                        .with_level(TdgMemPageLevel::Size4k),
+                        .with_gpa_page_number(gpn)
+                        .with_level(if is_large_page {
+                            TdgMemPageLevel::Size2Mb
+                        } else {
+                            TdgMemPageLevel::Size4k
+                        }),
                 )?;
-
-                range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end());
+                Ok(TdcallPageOperationOutcome::Advance)
             }
             Err(e) => match e {
-                TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
-                TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
+                TdCallResultCode::OPERAND_BUSY => Err(AcceptPagesError::Busy(e)),
+                TdCallResultCode::OPERAND_INVALID => Err(AcceptPagesError::Invalid(e)),
                 TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
-                    panic!("page {} already accepted", range.start_4k_gpn());
+                    panic!("page {} already accepted", gpn);
                 }
-                _ => return Err(AcceptPagesError::Unknown(e)),
+                TdCallResultCode::PAGE_SIZE_MISMATCH if is_large_page => {
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!("accept pages size mismatch returned");
+                    Ok(TdcallPageOperationOutcome::Retry4k)
+                }
+                _ => Err(AcceptPagesError::Unknown(e)),
             },
         }
-    }
-
-    Ok(())
+    })
 }
 
 /// Set page attributes from `range` using
@@ -563,42 +650,26 @@ pub fn set_page_attributes(
         "set_page_attributes"
     );
 
-    let mut range = range;
-    while !range.is_empty() {
-        // Attempt to set in large page chunks if possible.
-        if range.start().is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
-            && range.len() >= x86defs::X64_LARGE_PAGE_SIZE
-        {
-            let mapping = TdgMemPageAttrWriteRcx::new()
-                .with_gpa_page_number(range.start_4k_gpn())
-                .with_level(TdgMemPageLevel::Size2Mb);
-
-            match set_page_attr(call, mapping, attributes, mask) {
-                Ok(()) => {
-                    range =
-                        MemoryRange::new(range.start() + x86defs::X64_LARGE_PAGE_SIZE..range.end());
-                    continue;
-                }
-                Err(TdCallResultCode::PAGE_SIZE_MISMATCH) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!("set pages attr size mismatch returned");
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        // Set in 4k size pages
+    for_each_tdcall_page(range, |gpn, is_large_page| {
+        let level = if is_large_page {
+            TdgMemPageLevel::Size2Mb
+        } else {
+            TdgMemPageLevel::Size4k
+        };
         let mapping = TdgMemPageAttrWriteRcx::new()
-            .with_gpa_page_number(range.start_4k_gpn())
-            .with_level(TdgMemPageLevel::Size4k);
+            .with_gpa_page_number(gpn)
+            .with_level(level);
 
         match set_page_attr(call, mapping, attributes, mask) {
-            Ok(()) => range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end()),
-            Err(e) => return Err(e),
+            Ok(()) => Ok(TdcallPageOperationOutcome::Advance),
+            Err(TdCallResultCode::PAGE_SIZE_MISMATCH) if is_large_page => {
+                #[cfg(feature = "tracing")]
+                tracing::trace!("set pages attr size mismatch returned");
+                Ok(TdcallPageOperationOutcome::Retry4k)
+            }
+            Err(e) => Err(e),
         }
-    }
-
-    Ok(())
+    })
 }
 
 /// Issue a map gpa call to change page visibility for accepted pages via a
@@ -788,4 +859,76 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
         TdCallResultCode::SUCCESS => Ok(()),
         _ => Err(output.rax),
     }
+}
+
+/// Issue a TDG.VM.RD call
+pub fn tdcall_vm_rd(
+    call: &mut impl Tdcall,
+    field_id: TdxExtendedFieldCode,
+) -> Result<TdgVmRdResult, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VM_RD,
+        rcx: 0,
+        rdx: field_id.into_bits(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        return Err(output.rax);
+    }
+
+    Ok(output.r8)
+}
+
+/// Outcome of a per-page TDCall operation.
+enum TdcallPageOperationOutcome {
+    /// The operation succeeded; advance past this page.
+    Advance,
+
+    /// The operation returned PAGE_SIZE_MISMATCH on a 2MB attempt;
+    /// retry the same page as 4K.
+    Retry4k,
+}
+
+/// Processes a memory range for memory operation TDCalls. Prefers 2MB when possible and handles page size mismatch.
+fn for_each_tdcall_page<E>(
+    range: MemoryRange,
+    mut op: impl FnMut(u64, bool) -> Result<TdcallPageOperationOutcome, E>,
+) -> Result<(), E> {
+    let range = AlignedSubranges::new(range).with_max_range_len(x86defs::X64_LARGE_PAGE_SIZE);
+
+    for mut subrange in range {
+        let mut is_large_page = subrange.alignment(0) == x86defs::X64_LARGE_PAGE_SIZE;
+
+        while !subrange.is_empty() {
+            match op(subrange.start_4k_gpn(), is_large_page)? {
+                TdcallPageOperationOutcome::Advance => {
+                    let page_size = if is_large_page {
+                        x86defs::X64_LARGE_PAGE_SIZE
+                    } else {
+                        x86defs::X64_PAGE_SIZE
+                    };
+
+                    subrange = MemoryRange::new(subrange.start() + page_size..subrange.end())
+                }
+                TdcallPageOperationOutcome::Retry4k => {
+                    assert!(
+                        is_large_page,
+                        "Retry4k requested while already retrying as 4K — would loop forever",
+                    );
+                    is_large_page = false;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

@@ -40,8 +40,25 @@ open_enum! {
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
+        MEM_PAGE_RELEASE = 30,
     }
 }
+
+#[bitfield(u64)]
+pub struct TdConfigFlags {
+    pub gpaw: bool,
+    pub flexible_pending_ve: bool,
+    pub no_rbp_mod: bool,
+    pub maxpa_virt: bool,
+    pub maxgpa_virt: bool,
+    pub tdx_connect: bool,
+    pub page_release: bool,
+    pub sealing: bool,
+    #[bits(56)]
+    pub reserved: u64,
+}
+
+pub type TdgVmRdResult = u64;
 
 /// Level used in various TDG.MEM.PAGE calls for GPA_MAPPING types.
 #[repr(u8)]
@@ -146,6 +163,38 @@ pub struct TdgMemPageAcceptRcx {
     pub gpa_page_number: u64,
     #[bits(12)]
     pub reserved2: u64,
+}
+
+#[bitfield(u64)]
+pub struct TdgMemPageReleaseRcx {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The page number for this release call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(12)]
+    pub reserved2: u64,
+}
+
+#[bitfield(u64)]
+pub struct TdgMemPageReleaseRcxResult {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The page number for this release call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(9)]
+    pub reserved2: u64,
+    #[bits(1)]
+    pub mmio: bool,
+    #[bits(1)]
+    pub pending: bool,
+    #[bits(1)]
+    pub reserved3: u8,
 }
 
 #[bitfield(u64)]
@@ -475,13 +524,20 @@ impl TdxContextCode {
     }
 }
 
+// VCPU-Scope Metadata
 pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000051);
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000052);
 
-/// Extended field code for TDG.VP.WR and TDG.VP.RD
+// TD-Scope Metadata
+pub const TDX_FIELD_CODE_CONFIG_FLAGS: TdxExtendedFieldCode =
+    TdxExtendedFieldCode(0x9110000300000016);
+
+/// Extended field code for the Metadata Access Interface TDCalls:
+/// TDG.VP.WR, TDG.VP.RD, TDG.VM.WR, TDG.VM.RD
 #[bitfield(u64)]
+#[derive(PartialEq, Eq)]
 pub struct TdxExtendedFieldCode {
     #[bits(24)]
     pub field_code: u32,

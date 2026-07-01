@@ -24,11 +24,15 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::TdgPageReleaseError;
+use tdcall::tdcall_vm_rd;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::tdx::TdConfigFlags;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
@@ -76,6 +80,19 @@ impl MshvVtl {
             });
 
         tdcall::accept_pages(&mut MshvVtlTdcall(self), range, attributes)
+    }
+
+    /// Issues tdcalls to release pages.
+    pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdgPageReleaseError> {
+        tdcall::release_pages(&mut MshvVtlTdcall(self), range)
+    }
+
+    /// Issues tdcall to get TD-scoped config flags.
+    pub fn tdx_get_config_flags(&self) -> TdConfigFlags {
+        let res = tdcall_vm_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_CONFIG_FLAGS)
+            .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
+
+        TdConfigFlags::from_bits(res)
     }
 }
 
