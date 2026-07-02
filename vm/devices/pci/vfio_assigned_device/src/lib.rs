@@ -517,13 +517,14 @@ impl VfioAssignedPciDevice {
         })
     }
 
-    fn read_phys_config(&self, offset: u16, value: ByteEnabledDwordRead<'_>) {
-        if let Err(e) = self.vfio_device.read_config(offset, value) {
+    fn read_phys_config(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        if let Err(e) = self.vfio_device.read_config(offset, value.reborrow()) {
             tracelimit::warn_ratelimited!(
                 offset,
                 error = e.as_ref() as &dyn std::error::Error,
                 "VFIO config space read failed"
             );
+            value.set(!0);
         }
     }
 
@@ -1548,7 +1549,7 @@ mod tests {
                 anyhow::bail!("config read offset {offset:#x} len {len:#x} out of range");
             }
             value.set(u32::from_ne_bytes(
-                self.data[cfg_offset..cfg_offset + len].try_into().unwrap(),
+                self.data[cfg_offset..cfg_offset + 4].try_into().unwrap(),
             ));
             Ok(())
         }
