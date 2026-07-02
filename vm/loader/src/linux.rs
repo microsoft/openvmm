@@ -196,6 +196,8 @@ pub enum Error {
     LowTablesTooLarge(u64, u64),
     #[error("too many memory ranges to fit in the {0}-entry e820 map")]
     TooManyMemoryRanges(usize),
+    #[error("acpi tables are empty")]
+    EmptyAcpiTables,
 }
 
 /// ACPI tables to place in guest memory: a one-page RSDP plus the tables it
@@ -546,7 +548,9 @@ fn import_config(
         )
         .map_err(Error::Importer)?;
 
-    // NOTE: A whole page is given to the RSDP for simplicity.
+    if acpi.tables.is_empty() {
+        return Err(Error::EmptyAcpiTables);
+    }
     let acpi_tables_size_pages = align_up_to_page_size(acpi.tables.len() as u64) / HV_PAGE_SIZE;
     importer
         .import_pages(
@@ -1334,5 +1338,26 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::CommandLineTooLong(..)), "got {err:?}");
         assert!(importer.pages.is_empty(), "importer used before the check");
+    }
+
+    #[test]
+    fn import_config_rejects_empty_acpi_tables() {
+        // Empty tables would import zero pages; the loader must reject them
+        // rather than feed page_count == 0 into the importer.
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: Vec::new(),
+        };
+        let mut importer = RecordingImporter::default();
+        let err = import_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &acpi,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EmptyAcpiTables), "got {err:?}");
     }
 }
