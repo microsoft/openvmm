@@ -885,16 +885,29 @@ pub fn set_page_acceptance(
 
     while page_count != 0 {
         // Attempt to validate a large page.
-        // Even when pvalidating a large page, the processor only does a 1 byte read. As a result
-        // mapping a single page is sufficient.
-        let mapping = local_map.map_pages(
-            MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
-            true,
-        );
         if page_base.is_multiple_of(pages_per_large_page) && page_count >= pages_per_large_page {
-            let res = pvalidate(page_base, mapping.data.as_ptr() as u64, true, validate)?;
+            let mapping = local_map.map_pages(
+                MemoryRange::from_4k_gpn_range(page_base..page_base + pages_per_large_page),
+                true,
+            );
+            let va = mapping.data.as_ptr() as u64;
+            let res = pvalidate(page_base, va, true, validate)?;
             match res {
                 AcceptGpaStatus::Success => {
+                    if validate {
+                        // Fix up the cache state of every 4K page that was just
+                        // validated, before it is accessed under its new
+                        // (private) assignment.
+                        for page in 0..pages_per_large_page {
+                            // SAFETY: `va` is the base of a mapping covering
+                            // `pages_per_large_page` readable pages, so
+                            // `va + page * X64_PAGE_SIZE` is a mapped, readable
+                            // page.
+                            unsafe {
+                                cache_lines_fixup_page(va + page * X64_PAGE_SIZE);
+                            }
+                        }
+                    }
                     page_count -= pages_per_large_page;
                     page_base += pages_per_large_page;
                     continue;
@@ -904,33 +917,29 @@ pub fn set_page_acceptance(
         }
 
         // Attempt to validate a regular sized page.
-        let res = pvalidate(page_base, mapping.data.as_ptr() as u64, false, validate)?;
+        let mapping = local_map.map_pages(
+            MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
+            true,
+        );
+        let va = mapping.data.as_ptr() as u64;
+        let res = pvalidate(page_base, va, false, validate)?;
         match res {
             AcceptGpaStatus::Success => {
+                if validate {
+                    // Fix up the cache state of the page just validated, before
+                    // it is accessed under its new (private) assignment.
+                    // SAFETY: `va` is the base of a mapping covering this
+                    // readable page.
+                    unsafe {
+                        cache_lines_fixup_page(va);
+                    }
+                }
                 page_count -= 1;
                 page_base += 1;
             }
             AcceptGpaStatus::Retry => {
                 // Cannot retry on a regular sized page.
                 return Err(AcceptGpaError::Unknown);
-            }
-        }
-    }
-
-    // On acceptance, fix up the cache for every 4K page that was just
-    // validated, before it is accessed under its new (private) assignment.
-    if validate {
-        let mapping = local_map.map_pages(
-            MemoryRange::from_4k_gpn_range(range.start_4k_gpn()..range.end_4k_gpn()),
-            true,
-        );
-        let va = mapping.data.as_ptr() as u64;
-        for page in 0..range.page_count_4k() {
-            // SAFETY: `va` is the base of a local mapping covering
-            // `range.page_count_4k()` pages, so `va + page * X64_PAGE_SIZE` is
-            // a mapped, readable page for every `page` in the range.
-            unsafe {
-                cache_lines_fixup_page(va + page * X64_PAGE_SIZE);
             }
         }
     }
