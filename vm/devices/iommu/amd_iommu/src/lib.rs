@@ -1016,11 +1016,19 @@ impl iommu_common::InterruptRemapper for IommuSharedState {
         match self.remap_msi(device_id, address, data) {
             Ok(result) => Some(result),
             Err(fault) => {
-                self.queue_event(fault.to_event_entry());
+                // This runs at interrupt delivery time (the IOAPIC wiring
+                // translates its routes lazily, on assertion), so a fault here
+                // corresponds to an interrupt actually firing through a bad
+                // entry. Log it, matching hardware which performs the IRTE
+                // lookup at delivery time.
                 tracelimit::warn_ratelimited!(
                     device_id,
-                    "interrupt remapping fault on cached route, masking"
+                    address,
+                    data,
+                    error = &fault as &dyn std::error::Error,
+                    "interrupt remapping fault on registered-route delivery, dropping interrupt"
                 );
+                self.queue_event(fault.to_event_entry());
                 None
             }
         }

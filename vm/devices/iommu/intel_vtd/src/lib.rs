@@ -1036,12 +1036,15 @@ impl SignalMsi for VtdSignalMsi {
             }
             Err(fault) => {
                 drop(state);
-                // MSI is a posted write transaction, so is_write=true.
-                fault.record(&self.shared, true);
                 tracelimit::warn_ratelimited!(
                     source_id,
+                    address,
+                    data,
+                    error = &fault as &dyn std::error::Error,
                     "vtd: MSI remapping fault, interrupt dropped"
                 );
+                // MSI is a posted write transaction, so is_write=true.
+                fault.record(&self.shared, true);
             }
         }
     }
@@ -1054,11 +1057,19 @@ impl iommu_common::InterruptRemapper for VtdSharedState {
             Ok(result) => Some(result),
             Err(fault) => {
                 drop(state);
-                fault.record(self, true);
+                // This runs at interrupt delivery time (the IOAPIC wiring
+                // translates its routes lazily, on assertion), so a fault here
+                // corresponds to an interrupt actually firing through a bad
+                // entry. Record it, matching hardware which performs the IRTE
+                // lookup and records faults at delivery time.
                 tracelimit::warn_ratelimited!(
                     device_id,
-                    "vtd: interrupt remapping fault on cached route, masking"
+                    address,
+                    data,
+                    error = &fault as &dyn std::error::Error,
+                    "vtd: interrupt remapping fault on registered-route delivery, dropping interrupt"
                 );
+                fault.record(self, true);
                 None
             }
         }
