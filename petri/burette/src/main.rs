@@ -135,7 +135,7 @@ struct RunArgs {
     /// Number of parallel iperf3 streams for the TCP network tests.
     /// Values greater than 1 drive many concurrent connections, which is
     /// required to exercise the high-connection-count regime.
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
     net_parallel: u32,
 
     /// Record `perf record -p <pid> -g` traces scoped to each test,
