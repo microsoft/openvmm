@@ -52,10 +52,40 @@ pub struct BuildSelections {
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
+    /// Build a `vmfirmwareigvm` test resource DLL for use with tests that
+    /// exercise the `vmgstool copy-igvmfile` flow.
+    pub vmfirmwareigvm_test_dll: bool,
     pub vmgstool_dev: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
+}
+
+impl BuildSelections {
+    pub fn none() -> Self {
+        Self {
+            openhcl_standard: false,
+            openhcl_standard_dev: false,
+            openhcl_cvm: false,
+            openhcl_linux_direct: false,
+            prep_steps_standard: false,
+            prep_steps_no_vmbus: false,
+            openvmm: false,
+            openvmm_vhost: false,
+            pipette_windows: false,
+            pipette_linux: false,
+            guest_test_uefi: false,
+            tmks: false,
+            tmk_vmm_windows: false,
+            tmk_vmm_linux: false,
+            vmgstool: false,
+            vmfirmwareigvm_test_dll: false,
+            vmgstool_dev: false,
+            tpm_guest_tests_windows: false,
+            tpm_guest_tests_linux: false,
+            test_igvm_agent_rpc_server: false,
+        }
+    }
 }
 
 flowey_request! {
@@ -136,6 +166,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_test_dll::Node>();
         ctx.import::<crate::write_incubator_target_runner::Node>();
     }
 
@@ -204,7 +235,7 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        let register_openhcl_igvm_files = if build_openhcl {
+        let (register_openhcl_igvm_files, igvm_for_dll) = if build_openhcl {
             let openvmm_hcl_profile = if release {
                 OpenvmmHclBuildProfile::OpenvmmHclShip
             } else {
@@ -237,6 +268,15 @@ impl SimpleFlowNode for Node {
             };
             let openhcl_extras_dir = extras_dir.join("openhcl");
 
+            // Capture the IGVM used to build the `vmfirmwareigvm` test DLL
+            // below. x64 uses the CVM recipe (the load-IGVM-from-VMGS boot
+            // test must run as a confidential VM); aarch64 uses the standard
+            // recipe (it only runs non-booting copy-igvmfile tests).
+            let dll_igvm_recipe = match arch {
+                CommonArch::X86_64 => OpenhclIgvmRecipe::X64Cvm,
+                CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+            };
+            let mut igvm_for_dll: Option<ReadVar<PathBuf>> = None;
             let mut register_openhcl_igvm_files = Vec::new();
             for recipe in openhcl_recipes {
                 let (read_openhcl_igvm, openhcl_igvm) = ctx.new_var();
@@ -274,6 +314,18 @@ impl SimpleFlowNode for Node {
                     openhcl_igvm_extras,
                 });
 
+                // Save the per-arch IGVM payload used to build the
+                // `vmfirmwareigvm` test DLL below.
+                if std::mem::discriminant(&recipe) == std::mem::discriminant(&dll_igvm_recipe)
+                    && igvm_for_dll.is_none()
+                {
+                    igvm_for_dll = Some(
+                        read_openhcl_igvm
+                            .clone()
+                            .map(ctx, |o| o.igvm_bin().to_path_buf()),
+                    );
+                }
+
                 register_openhcl_igvm_files.push(read_openhcl_igvm);
 
                 if copy_extras {
@@ -309,9 +361,25 @@ impl SimpleFlowNode for Node {
                 }
             }
 
-            register_openhcl_igvm_files
+            (register_openhcl_igvm_files, igvm_for_dll)
         } else {
-            Vec::new()
+            (Vec::new(), None)
+        };
+
+        let register_vmfirmwareigvm_test_dll = if build.vmfirmwareigvm_test_dll {
+            let igvm_bin = igvm_for_dll.context(
+                "build.vmfirmwareigvm_test_dll requires build.openhcl, and the IGVM recipe for the test DLL",
+            )?;
+            Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_test_dll::Request {
+                arch,
+                igvm_bin,
+                vmfirmwareigvm_test_dll: v,
+            }))
+        } else {
+            if let Some(igvm) = igvm_for_dll {
+                igvm.claim_unused(ctx);
+            }
+            None
         };
 
         let register_openvmm = build.openvmm.then(|| {
@@ -716,6 +784,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmfirmwareigvm_test_dll,
             register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,

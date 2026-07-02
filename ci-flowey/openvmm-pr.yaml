@@ -1771,6 +1771,191 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-openhcl-igvm-test-linux-direct-extras
     displayName: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-extras
     artifact: x64-openhcl-igvm-test-linux-direct-extras
+- job: job22
+  displayName: build vmfirmwareigvm test DLL [x64-windows]
+  pool:
+    demands:
+    - ImageOverride -equals win-amd64-v2
+    name: openvmm-ado-amd-westus2-v6
+  dependsOn:
+  - job0
+  - job11
+  condition: and(succeeded(), not(canceled()))
+  variables:
+  - name: FLOWEY_TEMP_DIR
+    value: $(Build.StagingDirectory)/.flowey-internal
+  steps:
+  - bash: |
+      set -x
+      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+      . "$HOME/.cargo/env"
+      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
+    condition: eq(variables['Agent.OS'], 'Linux')
+    displayName: rustup (Linux)
+  - bash: |
+      set -x
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+      ./rustup-init.exe -y --default-toolchain=1.95.0
+      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
+    condition: eq(variables['Agent.OS'], 'Windows_NT')
+    displayName: rustup (Windows X64)
+  - bash: |
+      set -x
+      rustup show
+    displayName: Verify rustup installation
+  - checkout: self
+    fetchTags: false
+    fetchDepth: 1
+    path: flowey_bootstrap
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+    workingDirectory: ../flowey_bootstrap
+    displayName: Build flowey
+  - bash: |
+      mkdir ./flowey_bootstrap_temp
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
+    workingDirectory: ../flowey_bootstrap
+    displayName: Stage flowey artifact
+  - task: CopyFiles@2
+    displayName: Copy flowey artifact
+    inputs:
+      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
+      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+  - bash: rm -rf ./flowey_bootstrap_temp
+    workingDirectory: ../flowey_bootstrap
+    displayName: Cleanup staged flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-openhcl-igvm-cvm
+    inputs:
+      artifact: x64-openhcl-igvm-cvm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-openhcl-igvm-cvm
+  - bash: |
+      set -e
+      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey.exe"
+      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+    displayName: Set flowey path
+  - bash: |-
+      ESCAPED_AGENT_TEMPDIR=$(
+      cat <<'EOF' | sed 's/\\/\\\\/g'
+      $(FLOWEY_TEMP_DIR)
+      EOF
+      )
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+    displayName: 🌼🔎 Self-check YAML
+  - bash: |
+      set -e
+      echo '"debug"' | $FLOWEY_BIN v 22 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 22 '_internal_WORKING_DIR' --is-raw-string update
+
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 22 'verbose' update
+      ${{ parameters.verbose }}
+      EOF
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-windows-vmfirmwareigvm_test_dll"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmfirmwareigvm_test_dll" | $FLOWEY_BIN v 22 'artifact_publish_from_x64-windows-vmfirmwareigvm_test_dll' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-openhcl-igvm-cvm" | $FLOWEY_BIN v 22 'artifact_use_from_x64-openhcl-igvm-cvm' --is-raw-string update
+    displayName: 🌼🛫 Initialize job
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::install_rust 0
+    displayName: install Rust
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::install_rust 1
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cfg_cargo_common_flags 0
+    displayName: detect active toolchain
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar3
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar3)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 22 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+    displayName: print system info
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+    displayName: set '-Dwarnings' in .cargo/config.toml
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar1
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar2
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar2)
+      path: $(floweyvar1)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: gh-release-download'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::resolve_protoc 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+    displayName: unpack protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      $(FLOWEY_BIN) e 22 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll 0
+    displayName: symlink protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_dll 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 1
+    displayName: determine vmfirmwareigvm_dll env vars
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::run_cargo_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 2
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_test_dll 0
+      $(FLOWEY_BIN) e 22 flowey_core::pipeline::artifact::publish 0
+    displayName: cargo build vmfirmwareigvm_dll
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::cache 3
+    displayName: 'validate cache entry: gh-release-download'
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmfirmwareigvm_test_dll
+    displayName: 🌼📦 Publish x64-windows-vmfirmwareigvm_test_dll
+    artifact: x64-windows-vmfirmwareigvm_test_dll
+  - bash: rm $(AgentTempDirNormal)/bootstrapped-flowey/job22.json
+    displayName: 🌼🧼 Redact bootstrap var db
+  - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+    displayName: 🌼🥾 Publish bootstrapped flowey
+    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
 - job: job10
   displayName: build openhcl [aarch64-linux]
   pool:
@@ -2000,6 +2185,186 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-openhcl-igvm-extras
     displayName: 🌼📦 Publish aarch64-openhcl-igvm-extras
     artifact: aarch64-openhcl-igvm-extras
+- job: job21
+  displayName: build vmfirmwareigvm test DLL [aarch64-windows]
+  pool:
+    demands:
+    - ImageOverride -equals win-amd64-v2
+    name: openvmm-ado-amd-westus2-v6
+  dependsOn:
+  - job0
+  - job10
+  condition: and(succeeded(), not(canceled()))
+  variables:
+  - name: FLOWEY_TEMP_DIR
+    value: $(Build.StagingDirectory)/.flowey-internal
+  steps:
+  - bash: |
+      set -x
+      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+      . "$HOME/.cargo/env"
+      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
+    condition: eq(variables['Agent.OS'], 'Linux')
+    displayName: rustup (Linux)
+  - bash: |
+      set -x
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+      ./rustup-init.exe -y --default-toolchain=1.95.0
+      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
+    condition: eq(variables['Agent.OS'], 'Windows_NT')
+    displayName: rustup (Windows X64)
+  - bash: |
+      set -x
+      rustup show
+    displayName: Verify rustup installation
+  - checkout: self
+    fetchTags: false
+    fetchDepth: 1
+    path: flowey_bootstrap
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+    workingDirectory: ../flowey_bootstrap
+    displayName: Build flowey
+  - bash: |
+      mkdir ./flowey_bootstrap_temp
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
+    workingDirectory: ../flowey_bootstrap
+    displayName: Stage flowey artifact
+  - task: CopyFiles@2
+    displayName: Copy flowey artifact
+    inputs:
+      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
+      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+  - bash: rm -rf ./flowey_bootstrap_temp
+    workingDirectory: ../flowey_bootstrap
+    displayName: Cleanup staged flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download aarch64-openhcl-igvm
+    inputs:
+      artifact: aarch64-openhcl-igvm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-openhcl-igvm
+  - bash: |
+      set -e
+      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey.exe"
+      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+    displayName: Set flowey path
+  - bash: |-
+      ESCAPED_AGENT_TEMPDIR=$(
+      cat <<'EOF' | sed 's/\\/\\\\/g'
+      $(FLOWEY_TEMP_DIR)
+      EOF
+      )
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+    displayName: 🌼🔎 Self-check YAML
+  - bash: |
+      set -e
+      echo '"debug"' | $FLOWEY_BIN v 21 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 21 '_internal_WORKING_DIR' --is-raw-string update
+
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 21 'verbose' update
+      ${{ parameters.verbose }}
+      EOF
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-windows-vmfirmwareigvm_test_dll"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmfirmwareigvm_test_dll" | $FLOWEY_BIN v 21 'artifact_publish_from_aarch64-windows-vmfirmwareigvm_test_dll' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-openhcl-igvm" | $FLOWEY_BIN v 21 'artifact_use_from_aarch64-openhcl-igvm' --is-raw-string update
+    displayName: 🌼🛫 Initialize job
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_rust 0
+    displayName: install Rust
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::install_rust 1
+      $(FLOWEY_BIN) e 21 flowey_lib_common::cfg_cargo_common_flags 0
+    displayName: detect active toolchain
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar3
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar3)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 21 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+    displayName: print system info
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+    displayName: set '-Dwarnings' in .cargo/config.toml
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar1
+      $FLOWEY_BIN v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar2
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar2)
+      path: $(floweyvar1)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: gh-release-download'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 21 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::resolve_protoc 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+    displayName: unpack protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      $(FLOWEY_BIN) e 21 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll 0
+    displayName: symlink protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::build_vmfirmwareigvm_dll 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::run_cargo_build 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::run_cargo_build 1
+    displayName: determine vmfirmwareigvm_dll env vars
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::run_cargo_build 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::run_cargo_build 2
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::build_vmfirmwareigvm_test_dll 0
+      $(FLOWEY_BIN) e 21 flowey_core::pipeline::artifact::publish 0
+    displayName: cargo build vmfirmwareigvm_dll
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::cache 3
+    displayName: 'validate cache entry: gh-release-download'
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmfirmwareigvm_test_dll
+    displayName: 🌼📦 Publish aarch64-windows-vmfirmwareigvm_test_dll
+    artifact: aarch64-windows-vmfirmwareigvm_test_dll
 - job: job9
   displayName: build artifacts (for VMM tests) [x64-linux]
   pool:
@@ -2990,11 +3355,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmm-tests-archive
     displayName: 🌼📦 Publish x64-windows-vmm-tests-archive
     artifact: x64-windows-vmm-tests-archive
-  - bash: rm $(AgentTempDirNormal)/bootstrapped-flowey/job7.json
-    displayName: 🌼🧼 Redact bootstrap var db
-  - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-    displayName: 🌼🥾 Publish bootstrapped flowey
-    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
 - job: job6
   displayName: build artifacts (not for VMM tests) [x64-windows]
   pool:
@@ -4700,6 +5060,7 @@ jobs:
   - job0
   - job11
   - job2
+  - job22
   - job3
   - job7
   condition: and(succeeded(), not(canceled()))
@@ -4783,6 +5144,11 @@ jobs:
       artifact: x64-windows-tpm_guest_tests
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests
   - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-windows-vmfirmwareigvm_test_dll
+    inputs:
+      artifact: x64-windows-vmfirmwareigvm_test_dll
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll
+  - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-windows-vmgstool
     inputs:
       artifact: x64-windows-vmgstool
@@ -4829,6 +5195,7 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-test_igvm_agent_rpc_server" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-test_igvm_agent_rpc_server' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tmk_vmm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-tpm_guest_tests' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmfirmwareigvm_test_dll' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmgstool' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
@@ -4890,8 +5257,9 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 8
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 9
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
@@ -4949,7 +5317,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 17
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -5007,6 +5375,7 @@ jobs:
   - job0
   - job12
   - job2
+  - job22
   - job3
   - job7
   condition: and(succeeded(), not(canceled()))
@@ -5090,6 +5459,11 @@ jobs:
       artifact: x64-windows-tpm_guest_tests
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests
   - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-windows-vmfirmwareigvm_test_dll
+    inputs:
+      artifact: x64-windows-vmfirmwareigvm_test_dll
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll
+  - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-windows-vmgstool
     inputs:
       artifact: x64-windows-vmgstool
@@ -5136,6 +5510,7 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-test_igvm_agent_rpc_server" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-test_igvm_agent_rpc_server' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tmk_vmm" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-tpm_guest_tests' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmfirmwareigvm_test_dll' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmgstool' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
@@ -5194,9 +5569,11 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
@@ -5208,7 +5585,6 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 7
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 8
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
     displayName: print system info
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
@@ -5256,7 +5632,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 17
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -5307,6 +5683,7 @@ jobs:
   - job0
   - job11
   - job2
+  - job22
   - job3
   - job7
   condition: and(succeeded(), not(canceled()))
@@ -5390,6 +5767,11 @@ jobs:
       artifact: x64-windows-tpm_guest_tests
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests
   - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-windows-vmfirmwareigvm_test_dll
+    inputs:
+      artifact: x64-windows-vmfirmwareigvm_test_dll
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll
+  - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-windows-vmgstool
     inputs:
       artifact: x64-windows-vmgstool
@@ -5436,6 +5818,7 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-test_igvm_agent_rpc_server" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-test_igvm_agent_rpc_server' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tmk_vmm" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-tpm_guest_tests" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-tpm_guest_tests' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmfirmwareigvm_test_dll" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmfirmwareigvm_test_dll' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmgstool' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
@@ -5497,8 +5880,9 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 8
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 9
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
@@ -5556,7 +5940,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 16
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 17
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0

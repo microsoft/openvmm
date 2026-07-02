@@ -58,6 +58,7 @@ anyhow.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
+resource_dll_parser.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 static_assertions.workspace = true

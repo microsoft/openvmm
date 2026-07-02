@@ -1291,10 +1291,30 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::OpenhclLinuxDirect { igvm_path, .. }
             | Firmware::OpenhclPcat { igvm_path, .. }
             | Firmware::OpenhclUefi { igvm_path, .. } => {
-                *igvm_path = artifact.erase();
+                *igvm_path = Some(artifact.erase());
             }
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
                 panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
+            }
+        }
+        self
+    }
+
+    /// Configure the VM to load its OpenHCL IGVM file from the VMGS file
+    /// instead of from a path on disk. The IGVM must already be present in
+    /// the VMGS (e.g. injected via `vmgstool copy-igvmfile`).
+    ///
+    /// This is only supported by the Hyper-V backend. Using this with the
+    /// OpenVMM backend will cause VM startup to fail.
+    pub fn with_openhcl_from_vmgs(mut self) -> Self {
+        match &mut self.config.firmware {
+            Firmware::OpenhclLinuxDirect { igvm_path, .. }
+            | Firmware::OpenhclPcat { igvm_path, .. }
+            | Firmware::OpenhclUefi { igvm_path, .. } => {
+                *igvm_path = None;
+            }
+            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
+                panic!("with_openhcl_from_vmgs is only supported for OpenHCL firmware.")
             }
         }
         self
@@ -2444,6 +2464,19 @@ impl Default for TpmConfig {
     }
 }
 
+/// Where the OpenHCL paravisor IGVM file should be loaded from for a given
+/// [`Firmware`] configuration.
+#[cfg_attr(not(windows), expect(dead_code))]
+#[derive(Debug, Copy, Clone)]
+enum OpenhclFirmwareSource<'a> {
+    /// This firmware variant does not involve OpenHCL at all.
+    NotOpenhcl,
+    /// Load the IGVM from the given path on disk.
+    IgvmFile(&'a Path),
+    /// Load the IGVM from the VMGS file (file ID 8, `GUEST_FIRMWARE`).
+    FromVmgs,
+}
+
 /// Hardware sealing policy used by the test infrastructure.
 ///
 /// Maps to Hyper-V `Set-GuestStateEncryptionPolicy` values and
@@ -2474,7 +2507,11 @@ pub enum Firmware {
     /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
     OpenhclLinuxDirect {
         /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        ///
+        /// If `None`, the IGVM file must be loaded by the VMM from elsewhere
+        /// (e.g. injected into the VMGS file via `vmgstool copy-igvmfile`).
+        /// Currently only supported by the Hyper-V backend.
+        igvm_path: Option<ResolvedArtifact>,
         /// OpenHCL configuration
         openhcl_config: OpenHclConfig,
     },
@@ -2494,7 +2531,11 @@ pub enum Firmware {
         /// The guest OS the VM will boot into.
         guest: PcatGuest,
         /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        ///
+        /// If `None`, the IGVM file must be loaded by the VMM from elsewhere
+        /// (e.g. injected into the VMGS file via `vmgstool copy-igvmfile`).
+        /// Currently only supported by the Hyper-V backend.
+        igvm_path: Option<ResolvedArtifact>,
         /// The firmware to use.
         bios_firmware: ResolvedOptionalArtifact,
         /// The SVGA firmware to use.
@@ -2518,7 +2559,11 @@ pub enum Firmware {
         /// The isolation type of the VM.
         isolation: Option<IsolationType>,
         /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        ///
+        /// If `None`, the IGVM file must be loaded by the VMM from elsewhere
+        /// (e.g. injected into the VMGS file via `vmgstool copy-igvmfile`).
+        /// Currently only supported by the Hyper-V backend.
+        igvm_path: Option<ResolvedArtifact>,
         /// UEFI configuration
         uefi_config: UefiConfig,
         /// OpenHCL configuration
@@ -2625,7 +2670,7 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         match arch {
             MachineArch::X86_64 => Firmware::OpenhclLinuxDirect {
-                igvm_path: resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase(),
+                igvm_path: Some(resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase()),
                 openhcl_config: Default::default(),
             },
             MachineArch::Aarch64 => todo!("Linux direct not yet supported on aarch64"),
@@ -2649,7 +2694,7 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         Firmware::OpenhclPcat {
             guest,
-            igvm_path: resolver.require(LATEST_STANDARD_X64).erase(),
+            igvm_path: Some(resolver.require(LATEST_STANDARD_X64).erase()),
             bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
             svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
             openhcl_config: OpenHclConfig {
@@ -2690,7 +2735,7 @@ impl Firmware {
         Firmware::OpenhclUefi {
             guest,
             isolation,
-            igvm_path,
+            igvm_path: Some(igvm_path),
             uefi_config: Default::default(),
             openhcl_config: Default::default(),
         }
@@ -2853,12 +2898,17 @@ impl Firmware {
     }
 
     #[cfg_attr(not(windows), expect(dead_code))]
-    fn openhcl_firmware(&self) -> Option<&Path> {
+    fn openhcl_firmware(&self) -> OpenhclFirmwareSource<'_> {
         match self {
             Firmware::OpenhclLinuxDirect { igvm_path, .. }
             | Firmware::OpenhclUefi { igvm_path, .. }
-            | Firmware::OpenhclPcat { igvm_path, .. } => Some(igvm_path.get()),
-            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+            | Firmware::OpenhclPcat { igvm_path, .. } => match igvm_path.as_ref() {
+                Some(p) => OpenhclFirmwareSource::IgvmFile(p.get()),
+                None => OpenhclFirmwareSource::FromVmgs,
+            },
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => {
+                OpenhclFirmwareSource::NotOpenhcl
+            }
         }
     }
 

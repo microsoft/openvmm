@@ -798,6 +798,47 @@ pub mod artifacts {
         impl IsVmgsTool for VMGSTOOL_DEV_LINUX_AARCH64 {}
         impl IsVmgsTool for VMGSTOOL_DEV_MACOS_AARCH64 {}
     }
+
+    /// Resource DLLs that wrap an OpenHCL IGVM file, for testing the
+    /// `vmgstool copy-igvmfile` flow.
+    pub mod vmfw_dll {
+        use petri_artifacts_common::tags::IsVmfwDll;
+        use petri_artifacts_common::tags::MachineArch;
+        use petri_artifacts_core::declare_artifacts;
+
+        /// Resource id used for the wrapped IGVM in DLLs built from the
+        /// in-tree `vmfirmwareigvm_dll` crate. The id is hard-coded in
+        /// `openhcl/vmfirmwareigvm_dll/resources.rc` (line `1 VMFW ...`).
+        ///
+        /// This matches `ResourceCode::Custom` in the `vmgstool` crate.
+        /// Production DLLs use different (higher-numbered) ids — see the
+        /// other variants of `ResourceCode` in `vmgstool`.
+        pub const CUSTOM_RESOURCE_CODE: u32 = 1;
+
+        declare_artifacts! {
+            /// `vmfirmwareigvm`-style resource DLL wrapping a **CVM** x64
+            /// OpenHCL IGVM file (the `X64Cvm` / `openhcl-cvm` recipe). A
+            /// confidential IGVM is required because Hyper-V only loads the
+            /// firmware IGVM out of the VMGS file for an isolated VM. Used
+            /// to exercise `vmgstool copy-igvmfile` and the
+            /// load-IGVM-from-VMGS boot path.
+            LATEST_CVM_VMFW_DLL_X64,
+            /// `vmfirmwareigvm`-style resource DLL wrapping a standard
+            /// (non-confidential) aarch64 OpenHCL IGVM file. Used to
+            /// exercise `vmgstool copy-igvmfile`.
+            LATEST_STANDARD_VMFW_DLL_AARCH64,
+        }
+
+        impl IsVmfwDll for LATEST_CVM_VMFW_DLL_X64 {
+            const RESOURCE_CODE: u32 = CUSTOM_RESOURCE_CODE;
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsVmfwDll for LATEST_STANDARD_VMFW_DLL_AARCH64 {
+            const RESOURCE_CODE: u32 = CUSTOM_RESOURCE_CODE;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+    }
 }
 
 /// Artifact tag trait declarations

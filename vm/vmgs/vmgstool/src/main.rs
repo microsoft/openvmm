@@ -141,6 +141,11 @@ pub(crate) enum ResourceCode {
     Tdx = 13520,
     #[value(name = "TDX_NO_HCL")]
     TdxNoHcl = 13521,
+    /// Resource ID used by the in-tree `vmfirmwareigvm_dll` crate (and by
+    /// `cargo xflowey custom-vmfirmwareigvm-dll`). Production DLLs use the
+    /// other (higher-numbered) IDs in this enum.
+    #[value(name = "CUSTOM")]
+    Custom = 1,
 }
 
 #[derive(Args)]
@@ -1439,13 +1444,12 @@ async fn read_igvmfile(
         })?;
 
     // Guard against crafted or corrupted DLLs advertising an unreasonable resource size.
-    const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
-    if len > MAX_IGVM_SIZE {
+    if len > resource_dll_parser::MAX_IGVM_SIZE {
         return Err(Error::IgvmFile(anyhow::anyhow!(
             "IGVM resource size {} in '{}' exceeds maximum allowed size of {} bytes",
             len,
             dll_path.display(),
-            MAX_IGVM_SIZE
+            resource_dll_parser::MAX_IGVM_SIZE
         )));
     }
 
@@ -2215,5 +2219,40 @@ mod tests {
             .unwrap();
 
         assert_eq!(buf, read_buf);
+    }
+
+    #[async_test]
+    async fn read_igvmfile_rejects_oversized_resource() {
+        let dir = tempdir().unwrap();
+
+        // Build a valid DLL, then patch the VMFW resource's advertised size
+        // to exceed the MAX_IGVM_SIZE (256 MiB) guard without actually
+        // embedding that many bytes. `read_igvmfile` must reject it before
+        // attempting to read the (nonexistent) payload.
+        let mut dll_data = create_test_vmfw_dll(b"small payload", ResourceCode::Custom as u32);
+
+        // The resource data entry's `Size` field lives at offset 0x5c within
+        // the `.rsrc` section, which `create_test_vmfw_dll` places at file
+        // offset 0x200 (`HEADERS_SIZE`).
+        const SIZE_FIELD_OFFSET: usize = 0x200 + 0x5c;
+        let oversized: u32 = (resource_dll_parser::MAX_IGVM_SIZE as u32) + 1;
+        assert!(
+            dll_data.len() >= SIZE_FIELD_OFFSET + 4,
+            "test DLL too small to patch size field",
+        );
+        dll_data[SIZE_FIELD_OFFSET..SIZE_FIELD_OFFSET + 4]
+            .copy_from_slice(&oversized.to_le_bytes());
+
+        let dll_path = dir.path().join("oversized_vmfw.dll");
+        fs_err::write(&dll_path, &dll_data).unwrap();
+
+        let err = read_igvmfile(&dll_path, ResourceCode::Custom)
+            .await
+            .expect_err("oversized resource must be rejected by the MAX_IGVM_SIZE guard");
+
+        assert!(
+            matches!(err, Error::IgvmFile(_)),
+            "expected Error::IgvmFile for an oversized resource, got: {err:?}",
+        );
     }
 }

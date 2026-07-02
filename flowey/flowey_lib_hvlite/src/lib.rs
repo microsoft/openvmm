@@ -32,6 +32,7 @@ pub mod build_tmk_vmm;
 pub mod build_tmks;
 pub mod build_tpm_guest_tests;
 pub mod build_vmfirmwareigvm_dll;
+pub mod build_vmfirmwareigvm_test_dll;
 pub mod build_vmgstool;
 pub mod build_xtask;
 pub mod cfg_openvmm_magicpath;

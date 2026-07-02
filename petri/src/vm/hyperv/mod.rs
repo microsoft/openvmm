@@ -176,9 +176,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let temp_dir = tempfile::tempdir()?;
 
-        let igvm_file = properties
-            .is_openhcl
-            .then(|| temp_dir.path().join(IGVM_FILE_NAME));
+        // Only set up a local IGVM file path when we actually have an IGVM
+        // file to provide. When `openhcl_firmware()` returns
+        // `OpenhclFirmwareSource::FromVmgs`, the caller has requested that
+        // OpenHCL be loaded from the VMGS file instead.
+        let igvm_file = matches!(
+            config.firmware.openhcl_firmware(),
+            crate::vm::OpenhclFirmwareSource::IgvmFile(_)
+        )
+        .then(|| temp_dir.path().join(IGVM_FILE_NAME));
 
         let mut openhcl_command_line = config.firmware.openhcl_config().map(|c| c.command_line());
 
@@ -410,6 +416,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         };
 
         let hyperv_args = HyperVNewCustomVMArgs {
+            enable_openhcl: properties.is_openhcl,
             firmware_file: igvm_file.clone(),
             firmware_parameters: openhcl_command_line,
             guest_state_path,
@@ -424,13 +431,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
-            // Copy the IGVM file locally, since it may not be accessible by
-            // Hyper-V (e.g., if it is in a WSL filesystem).
-            let local_path = igvm_file.as_ref().unwrap();
-            fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
-                .context("failed to copy igvm file")?;
-            acl_for_vm(local_path, Some(*vm.vmid()), false)
-                .context("failed to set ACL for igvm file")?;
+            if let Some(local_path) = igvm_file.as_ref() {
+                // Copy the IGVM file locally, since it may not be accessible by
+                // Hyper-V (e.g., if it is in a WSL filesystem).
+                let src = match config.firmware.openhcl_firmware() {
+                    crate::vm::OpenhclFirmwareSource::IgvmFile(p) => p,
+                    _ => unreachable!("igvm_file is only set when openhcl_firmware is IgvmFile"),
+                };
+                fs_err::copy(src, local_path).context("failed to copy igvm file")?;
+                acl_for_vm(local_path, Some(*vm.vmid()), false)
+                    .context("failed to set ACL for igvm file")?;
+            }
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {

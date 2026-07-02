@@ -1011,6 +1011,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         let mut use_openhcl_igvm_files_mi_secure_x86 = BTreeMap::new();
 
+        let mut vmfirmwareigvm_test_dll_jobs = Vec::new();
+
         // emit openhcl build job
         for (arch, mi_secure) in [
             (CommonArch::Aarch64, false),
@@ -1065,7 +1067,14 @@ impl IntoPipeline for CheckinGatesCli {
                     .then(|| pipeline.new_typed_artifact(artifact_name_openhcl_baseline(arch)))
                     .unzip();
 
-            // skim off interesting artifacts required by the VMM tests job
+            // skim off interesting artifacts required by the VMM tests job.
+            //
+            // also capture the openhcl IGVM used to build the vmfirmwareigvm
+            // test DLL: x64 wraps the CVM (`X64Cvm`) IGVM because the
+            // load-IGVM-from-VMGS boot test must run as a confidential VM;
+            // aarch64 (which has no CVM and only runs non-booting tests) wraps
+            // the standard IGVM.
+            let mut openhcl_igvm_for_dll = None;
             match (arch, mi_secure) {
                 (CommonArch::X86_64, false) => {
                     vmm_tests_artifacts_windows_x86.use_openhcl_standard =
@@ -1075,6 +1084,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_openhcl_linux_direct = use_openhcl_igvms
                         .get(&OpenhclIgvmRecipe::X64TestLinuxDirect)
                         .cloned();
+                    openhcl_igvm_for_dll =
+                        use_openhcl_igvms.get(&OpenhclIgvmRecipe::X64Cvm).cloned();
                 }
                 (CommonArch::X86_64, true) => {
                     // we'll skim these off later so we can reuse most of the
@@ -1084,8 +1095,35 @@ impl IntoPipeline for CheckinGatesCli {
                 (CommonArch::Aarch64, false) => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_standard =
                         use_openhcl_igvms.get(&OpenhclIgvmRecipe::Aarch64).cloned();
+                    openhcl_igvm_for_dll =
+                        use_openhcl_igvms.get(&OpenhclIgvmRecipe::Aarch64).cloned();
                 }
                 _ => unreachable!(),
+            }
+
+            // Build a `vmfirmwareigvm` resource DLL wrapping the OpenHCL IGVM
+            // captured above, for VMM tests that exercise the `vmgstool
+            // copy-igvmfile` flow. Only emitted for the non-mi-secure builds
+            // (one per arch).
+            if let Some(openhcl_igvm_for_dll) = openhcl_igvm_for_dll {
+                let (pub_vmfw_dll, use_vmfw_dll) = pipeline
+                    .new_typed_artifact(format!("{arch_tag}-windows-vmfirmwareigvm_test_dll"));
+                match arch {
+                    CommonArch::X86_64 => {
+                        vmm_tests_artifacts_windows_x86.use_vmfirmwareigvm_test_dll =
+                            Some(use_vmfw_dll);
+                    }
+                    CommonArch::Aarch64 => {
+                        vmm_tests_artifacts_windows_aarch64.use_vmfirmwareigvm_test_dll =
+                            Some(use_vmfw_dll);
+                    }
+                }
+                vmfirmwareigvm_test_dll_jobs.push((
+                    arch,
+                    arch_tag,
+                    openhcl_igvm_for_dll,
+                    pub_vmfw_dll,
+                ));
             }
 
             let build_openhcl_job_tag = |arch_tag, mi_secure| {
@@ -1771,6 +1809,25 @@ impl IntoPipeline for CheckinGatesCli {
             }
         }
 
+        for (arch, arch_tag, openhcl_igvm_for_dll, pub_vmfw_dll) in vmfirmwareigvm_test_dll_jobs {
+            let dll_job = pipeline
+                .new_job(
+                    FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    format!("build vmfirmwareigvm test DLL [{arch_tag}-windows]"),
+                )
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll::Params {
+                        arch,
+                        openhcl_igvm: ctx.use_typed_artifact(&openhcl_igvm_for_dll),
+                        vmfirmwareigvm_test_dll_artifact: ctx.publish_typed_artifact(pub_vmfw_dll),
+                    }
+                });
+            all_jobs.push(dll_job.finish());
+        }
+
         // all jobs depend on the quick-check gate
         if let Some(ref quick_check) = quick_check_job {
             for job in all_jobs.iter() {
@@ -1866,6 +1923,7 @@ pub mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
     use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
+    use flowey_lib_hvlite::build_vmfirmwareigvm_test_dll::VmfirmwareigvmTestDllOutput;
     use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
     use flowey_lib_hvlite::vmm_tests_artifact_builder;
 
@@ -1896,6 +1954,7 @@ pub mod vmm_tests_artifact_builders {
             prep_steps => PrepStepsOutput,
             vmgstool => VmgstoolOutput,
             vmgstool_dev => VmgstoolOutput,
+            vmfirmwareigvm_test_dll => VmfirmwareigvmTestDllOutput,
             tpm_guest_tests_windows => TpmGuestTestsOutput,
             tpm_guest_tests_linux => TpmGuestTestsOutput,
             test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
@@ -1920,6 +1979,7 @@ pub mod vmm_tests_artifact_builders {
             tmk_vmm => TmkVmmOutput,
             vmgstool => VmgstoolOutput,
             vmgstool_dev => VmgstoolOutput,
+            vmfirmwareigvm_test_dll => VmfirmwareigvmTestDllOutput,
             // linux build machine
             openhcl_standard => OpenhclIgvmOutput,
             pipette_linux_musl => PipetteOutput,

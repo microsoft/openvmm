@@ -153,6 +153,13 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == vmgstool::VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
             _ if id == vmgstool::VMGSTOOL_DEV_NATIVE => vmgstool_dev_native_executable_path(),
 
+            _ if id == vmfw_dll::LATEST_CVM_VMFW_DLL_X64 => {
+                vmfw_dll_path(MachineArch::X86_64)
+            }
+            _ if id == vmfw_dll::LATEST_STANDARD_VMFW_DLL_AARCH64 => {
+                vmfw_dll_path(MachineArch::Aarch64)
+            }
+
             _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
                 tpm_guest_tests_windows_path(MachineArch::X86_64)
             }
@@ -394,6 +401,30 @@ fn vmgstool_dev_native_executable_path() -> anyhow::Result<PathBuf> {
         MissingCommand::Custom {
             description: "vmgstool-dev (Cargo build output must be renamed to match)",
             cmd: "cargo build -p vmgstool --features encryption,test_helpers",
+        },
+    )
+}
+
+/// Path to the `vmfirmwareigvm` resource DLL containing an OpenHCL IGVM
+/// for the given architecture.
+///
+/// The DLL is produced by the `build_vmfirmwareigvm_dll` flowey node and
+/// copied into the VMM tests content directory by `init_vmm_tests_env`.
+fn vmfw_dll_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let filename = match arch {
+        MachineArch::X86_64 => "vmfirmwareigvm-x64.dll",
+        MachineArch::Aarch64 => "vmfirmwareigvm-aarch64.dll",
+    };
+    get_path(
+        Path::new("."),
+        filename,
+        MissingCommand::XFlowey {
+            description: "vmfirmwareigvm test DLL (run via the VMM tests \
+                          flowey job, or build manually with the command below \
+                          and copy the resulting DLL into the test content dir)",
+            // `cargo xflowey custom-vmfirmwareigvm-dll` takes the IGVM
+            // payload path as a positional argument.
+            xflowey_args: &["custom-vmfirmwareigvm-dll", "<path-to-openhcl-igvm>"],
         },
     )
 }

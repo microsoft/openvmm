@@ -97,7 +97,7 @@ function Get-VmSasd
         [System.Object] $Vm
     )
 
-    Get-VmSystemSettings $Vm | Get-CimAssociatedInstance -ResultClassName "Msvm_StorageAllocationSettingData"  
+    Get-VmSystemSettings $Vm | Get-CimAssociatedInstance -ResultClassName "Msvm_StorageAllocationSettingData"
 }
 
 #
@@ -127,6 +127,12 @@ function New-CustomVM
         [string] $GuestStateFilePath = $null,
 
         [bool] $VMBusMessageRedirection = $false,
+
+        # Enable the OpenHCL paravisor (GuestFeatureSet). When set, the
+        # VM is configured to run OpenHCL. If $FirmwareFile is also set,
+        # that path is used as the IGVM file; otherwise Hyper-V loads the
+        # IGVM from the VMGS file (file ID 8, GUEST_FIRMWARE).
+        [bool] $EnableOpenHCL = $false,
 
         [string] $FirmwareFile = $null,
 
@@ -258,11 +264,17 @@ function New-CustomVM
         $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
     }
 
-    if ($FirmwareFile) {
+    if ($EnableOpenHCL) {
         # Enable OpenHCL by feature
         $vssdProperties["GuestFeatureSet"] = 0x00000201
-        # Set the OpenHCL image file path
-        $vssdProperties["FirmwareFile"] = $FirmwareFile
+        if ($FirmwareFile) {
+            # Set the OpenHCL image file path
+            $vssdProperties["FirmwareFile"] = $FirmwareFile
+        }
+        # If $FirmwareFile is not set, Hyper-V will load the IGVM from the
+        # VMGS file (file ID 8, GUEST_FIRMWARE).
+    } elseif ($FirmwareFile) {
+        throw "FirmwareFile was specified but EnableOpenHCL is false"
     }
 
     if ($FirmwareParameters) {
@@ -418,7 +430,7 @@ function New-CustomVM
         }
 
         $vmms | Invoke-CimMethod -Name "ModifyResourceSettings" -Arguments @{
-            "ResourceSettings" = $resourceSettings 
+            "ResourceSettings" = $resourceSettings
         } | Trace-CimMethodExecution -MethodName "ModifyResourceSettings" -CimInstance $vmms | Out-Null
     }
 
@@ -817,14 +829,14 @@ function Add-VmScsiControllerWithId
     )
 
     $Vm | Get-VmScsiControllerWithId -Vsid $Vsid -Expected $false
-    
+
     $vsid = $Vsid.ToString()
     $template = Get-DefaultRasd $SCSI_CONTROLLER_TYPE
     $controllerConfig = Copy-CimInstanceWithNewProperties $template @{ "VirtualSystemIdentifiers" = @("{$vsid}"); "TargetVtl" = $TargetVtl }
     $controllerAddResult = $Vm | Add-VmResourceSettings -Rasd $controllerConfig
     $controller = $controllerAddResult.ResultingResourceSettings[0]
     Write-Host "added controller:" $controller.InstanceId
-    
+
     return $controller
 }
 
@@ -901,7 +913,7 @@ function Set-VmDrive
 
         [switch] $AllowModifyExisting
     )
-    
+
     if ($ControllerVsid) {
         $controller = $Vm | Get-VmScsiControllerWithId -Vsid $ControllerVsid
         $controllerId = $controller.VirtualSystemIdentifiers[0]
@@ -911,7 +923,7 @@ function Set-VmDrive
     }
 
     $vmid = $Vm.Id
-    
+
 
     $controllerPath = Get-CimInstancePath $controller
     Write-Host "modifying controller:" $controller.InstanceId
@@ -923,7 +935,7 @@ function Set-VmDrive
         $driveType = $HARD_DRIVE_TYPE
         $diskType = $HARD_DISK_TYPE
     }
-    
+
     # check if the drive already exists
     $drive = $Vm | Get-VmRasd | Where-Object {
         (($_.ResourceSubType -eq $HARD_DRIVE_TYPE) -or ($_.ResourceSubType -eq $DVD_DRIVE_TYPE)) -and
@@ -960,7 +972,7 @@ function Set-VmDrive
         Write-Host "removing disk:" $disk.InstanceId
         $disk | Remove-VmResourceSettings
     }
-    
+
     # insert the disk if provided
     if ($DiskPath) {
         $diskTemplate = Get-DefaultRasd $diskType
@@ -1025,7 +1037,7 @@ function Restart-OpenHCL
         [switch] $OverrideVersionChecks,
         [switch] $DisableNvmeKeepalive
     )
-    
+
     $vmid = $Vm.Id.tostring();
     $guestManagementService = Get-VmGuestManagementService;
     $options = 0;
@@ -1101,7 +1113,7 @@ function Get-GuestStateFile
     $vssd = Get-VmSystemSettings $Vm
     $guestStateDataRoot = $vssd.GuestStateDataRoot
     $guestStateFile = $vssd.GuestStateFile
-    
+
     return "$guestStateDataRoot\$guestStateFile"
 }
 
