@@ -99,8 +99,6 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
-    /// Enable nested virtualization (VMX/SVM) for the guest.
-    pub nested_virt: bool,
 }
 
 impl Kvm {
@@ -108,17 +106,13 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
-            nested_virt: false,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self {
-            kvm,
-            nested_virt: false,
-        })
+        Ok(Self { kvm })
     }
 }
 
@@ -141,6 +135,10 @@ impl virt::Hypervisor for Kvm {
         virt::PlatformInfo {}
     }
 
+    fn recognizes_nested_virt(&self) -> bool {
+        true
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -149,7 +147,7 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let nested_virt = self.nested_virt;
+        let nested_virt = config.nested_virt;
         let supported_cpuid = self.kvm.supported_cpuid()?;
 
         // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
@@ -274,7 +272,7 @@ impl virt::Hypervisor for Kvm {
             // nested virtualization features leaf (0x4000000A), but only
             // expose it when nested virtualization is enabled.
             let kvm_hv_cpuid = self.kvm.supported_hv_cpuid()?;
-            let nested_leaf = if self.nested_virt {
+            let nested_leaf = if nested_virt {
                 kvm_hv_cpuid
                     .iter()
                     .find(|e| e.function == HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES)
@@ -365,7 +363,7 @@ impl virt::Hypervisor for Kvm {
             vm,
             config,
             cpuid: cpuid_entries,
-            nested_virt: self.nested_virt,
+            nested_virt,
             supported_mce_cap,
         })
     }

@@ -35,12 +35,6 @@ pub struct KvmHandle {
     /// An open `/dev/kvm` file descriptor, open with read and write
     /// permissions.
     pub kvm: std::fs::File,
-    /// Configure the partition for nested virtualization, so that the
-    /// guest can run its own hypervisor (Hyper-V, KVM, etc.).
-    ///
-    /// When false (the default), VMX/SVM CPUID bits and the MS hypervisor
-    /// nested-features leaf are stripped from the guest's view.
-    pub nested_virt: bool,
 }
 
 impl ResourceId<HypervisorKind> for KvmHandle {
@@ -71,13 +65,6 @@ pub struct WhpHandle {
     /// Only supported on x86_64. Setting this to `false` on aarch64 will cause
     /// partition creation to fail.
     pub offload_enlightenments: bool,
-    /// Configure the partition for nested virtualization, so that the
-    /// guest can run its own hypervisor (Hyper-V, KVM, etc.).
-    ///
-    /// Only supported on x86_64. Requires `user_mode_apic = false` and a
-    /// host WHP implementation that exposes nested-virt support; partition
-    /// creation will fail otherwise.
-    pub nested_virt: bool,
 }
 
 impl Default for WhpHandle {
@@ -85,7 +72,6 @@ impl Default for WhpHandle {
         Self {
             user_mode_apic: false,
             offload_enlightenments: true,
-            nested_virt: false,
         }
     }
 }

@@ -1053,6 +1053,13 @@ impl InitializedVm {
             }
         }
 
+        // A backend must explicitly recognize an optional feature; requesting
+        // one it does not recognize fails here rather than being silently
+        // ignored during partition creation.
+        if cfg.hypervisor.nested_virt && !hypervisor.recognizes_nested_virt() {
+            anyhow::bail!("the selected hypervisor does not support nested virtualization");
+        }
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1063,6 +1070,7 @@ impl InitializedVm {
                     .with_isolation
                     .map(|typ| typ.into())
                     .unwrap_or(virt::IsolationType::None),
+                nested_virt: cfg.hypervisor.nested_virt,
             })
             .context("failed to create the prototype partition")?;
 
