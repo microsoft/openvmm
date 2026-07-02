@@ -484,19 +484,36 @@ impl membacking::DmaTarget for IommufdDmaTarget {
         let iova = range.start();
         let user_va = vaddr as u64;
         let length = range.len();
-        // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via eager mapping + VaMapper lifetime.
-        let result = unsafe {
-            self.ctx
-                .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
-                .with_context(|| {
-                    format!(
-                        "iommufd IOAS DMA map failed: iova={iova:#x} user_va={user_va:#x} \
-                         length={length:#x} ioas_id={}",
-                        self.ioas_id
-                    )
-                })
+        // Prefer map-by-file for guest RAM: it is memfd-backed, so the kernel
+        // can pin the folios directly (no host VA pinning). Device BAR memory
+        // is backed by the VFIO cdev fd, which is neither a memfd nor (yet) a
+        // dmabuf, so map-by-file would misinterpret it — keep those on the VA
+        // path. Private/anonymous RAM has no backing fd and also uses the VA
+        // path.
+        let backing = match request.mapping_type {
+            membacking::MappingType::Ram => request
+                .mappable
+                .map(|mappable| (mappable.as_fd().as_raw_fd(), request.file_offset)),
+            membacking::MappingType::Device => None,
         };
+        let result = match backing {
+            Some((fd, file_offset)) => self.ctx.ioas_map_file(
+                self.ioas_id,
+                iova,
+                fd,
+                file_offset,
+                length,
+                request.writable,
+            ),
+            // SAFETY: The caller (DmaMapper in membacking) guarantees that the
+            // host VA is backed and stable via eager mapping + VaMapper
+            // lifetime, satisfying the safety contract of `ioas_map`.
+            None => unsafe {
+                self.ctx
+                    .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
+            },
+        }
+        .with_context(|| format!("failed to map {range} into iommufd IOAS"));
         if let Err(e) = &result {
             if request.mapping_type == membacking::MappingType::Device {
                 // Device BAR memory may not be mappable into the IOMMU (e.g.,
