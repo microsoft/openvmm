@@ -63,7 +63,16 @@ burette run --test network -o network.json
 
 # Test with virtio-net instead of VMBus
 burette run --test network --nic virtio-net -o network.json
+
+# Drive many concurrent TCP connections (high-connection-count regime)
+burette run --test network --net-parallel 128 -o network.json
 ```
+
+The `--net-parallel` flag sets the number of parallel iperf3 streams for
+the TCP tests. It defaults to `1` (single stream); larger values open many
+concurrent connections, which is required to exercise optimizations that
+only matter at high connection counts. Keep the same `--net-parallel` value
+across baseline and candidate runs so `burette compare` lines up.
 
 Reported metrics:
 
