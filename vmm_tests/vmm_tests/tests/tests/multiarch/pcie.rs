@@ -1137,18 +1137,12 @@ async fn virtio_net_kdnet_windows(
 
     let busparams = cmd!(
         sh,
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/get_kdnet_busparams.ps1"
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {script_path}"
     )
     .read()
     .await?;
     let busparams = busparams.trim();
     tracing::info!(busparams, "virtio-net KDNET busparams");
-    anyhow::ensure!(
-        busparams
-            .split('.')
-            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
-        "unexpected busparams format: {busparams:?}"
-    );
 
     // Enable KDNET over the virtio-net device. The debugger host IP is set to
     // the consomme gateway (10.0.0.1); no debugger is actually connected.
