@@ -232,6 +232,11 @@ impl<'a> ByteEnabledDwordRead<'a> {
         &mut self.value.as_mut_bytes()[byte_offset..byte_offset + len]
     }
 
+    /// Get the mask of valid bytes.
+    pub const fn valid_mask(&self) -> u32 {
+        self.byte_enable.mask()
+    }
+
     /// Update the value of the DWORD, honoring byte enables.
     pub fn set(&mut self, value: u32) {
         *self.value = self.byte_enable.merge(*self.value, value);

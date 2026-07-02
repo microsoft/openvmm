@@ -624,7 +624,6 @@ dependencies = [
  "parking_lot",
  "range_map_vec",
  "tracing",
- "zerocopy",
 ]
 
 [[package]]

@@ -382,7 +382,7 @@ impl VfioAssignedPciDevice {
                 ByteEnabledDwordRead::with_all_bytes_enabled(&mut flags),
             )?;
             flags &= 0xf;
-            bar_flags[i] &= flags;
+            bar_flags[i] = flags;
             let encoded = cfg_space::BarEncodingBits::from(bar_flags[i]);
             if encoded.use_pio() {
                 anyhow::bail!("PIO BARs are not supported");

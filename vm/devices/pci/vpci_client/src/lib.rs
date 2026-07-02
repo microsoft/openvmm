@@ -431,7 +431,7 @@ impl VpciDevice {
     /// Reads device configuration space.
     ///
     /// Some values will be handled without communicating with the host.
-    pub fn read_cfg(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+    pub fn read_cfg(&self, offset: u16) -> u32 {
         // For static values, return values from the device's description.
         let value = match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {

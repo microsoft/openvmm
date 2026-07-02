@@ -9,6 +9,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
@@ -1111,7 +1112,8 @@ impl VpciChannel {
             let pci = device.supports_pci().unwrap();
             let mut command = {
                 let mut value_u32 = 0;
-                let value = ByteEnabledDwordRead::with_all_bytes_enabled(&mut value_u32);
+                let value =
+                    ByteEnabledDwordRead::new(&mut value_u32, PciConfigByteEnable::LOW_WORD);
                 pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, value)
                     .now_or_never()
                     .map(|_| value_u32)
@@ -1125,7 +1127,7 @@ impl VpciChannel {
             } else {
                 command &= !mmio;
             }
-            let command = ByteEnabledDwordWrite::with_all_bytes_enabled(command);
+            let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
             pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
         match result {

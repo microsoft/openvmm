@@ -10,6 +10,8 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
@@ -39,15 +41,19 @@ struct FuzzEndpoint {
 }
 
 impl GenericPciBusDevice for FuzzEndpoint {
-    fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> Option<IoResult> {
+    fn pci_cfg_read(
+        &mut self,
+        _offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
         if self.offline {
             return None;
         }
-        *value = self.read_value;
+        value.set(self.read_value);
         Some(IoResult::Ok)
     }
 
-    fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
         if self.offline {
             return None;
         }
@@ -60,11 +66,11 @@ impl GenericPciBusDevice for FuzzEndpoint {
 struct SwitchAdapter(GenericPcieSwitch);
 
 impl GenericPciBusDevice for SwitchAdapter {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         Some(self.0.pci_cfg_read(offset, value))
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         Some(self.0.pci_cfg_write(offset, value))
     }
 
@@ -74,7 +80,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
+        value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
         Some(
             self.0
@@ -88,7 +94,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
+        value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
         Some(
             self.0

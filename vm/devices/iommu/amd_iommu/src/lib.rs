@@ -1784,7 +1784,10 @@ mod tests {
     /// Helper to read a 32-bit PCI config register.
     fn pci_read(dev: &mut AmdIommuDevice, offset: u16) -> u32 {
         let mut value = 0u32;
-        let _ = dev.pci_cfg_read(offset, &mut value);
+        let _ = dev.pci_cfg_read(
+            offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+        );
         value
     }
 
@@ -2481,14 +2484,26 @@ mod tests {
 
         // Configure MSI: address = 0xFEE00000, data = 0x41.
         // Write address low (offset + 4).
-        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 4,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xFEE0_0000),
+        );
         // Write address high (offset + 8) — 64-bit capable.
-        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 8,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0),
+        );
         // Write data (offset + 12 for 64-bit).
-        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 12,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x41),
+        );
         // Enable MSI (write control register at offset + 0, set enable bit).
         let control = pci_read(&mut dev, msi_cap_offset);
-        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(control | (1 << 16)),
+        );
 
         setup_iommu_enabled(&mut dev);
 
@@ -6220,11 +6235,23 @@ mod tests {
         // Enable MSI on PCI config space.
         let iommu_cap_header = pci_read(&mut dev, 0x40);
         let msi_cap_offset = ((iommu_cap_header >> 8) & 0xFF) as u16;
-        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
-        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
-        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 4,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xFEE0_0000),
+        );
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 8,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0),
+        );
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 12,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x41),
+        );
         let control = pci_read(&mut dev, msi_cap_offset);
-        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(control | (1 << 16)),
+        );
 
         setup_iommu_enabled(&mut dev);
 

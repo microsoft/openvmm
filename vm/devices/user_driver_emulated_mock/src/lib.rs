@@ -11,6 +11,8 @@ use crate::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -89,21 +91,29 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
         let bar0_len = !(bars[0] & !0xf) as usize + 1;
 
         // Enable BAR0 at 0, BAR4 at X.
-        device.pci_cfg_write(0x20, 0).unwrap();
-        device.pci_cfg_write(0x24, 0x1).unwrap();
+        device
+            .pci_cfg_write(0x20, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .unwrap();
+        device
+            .pci_cfg_write(0x24, ByteEnabledDwordWrite::with_all_bytes_enabled(0x1))
+            .unwrap();
         device
             .pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
             )
             .unwrap();
 
         // Determine the number of MSI-X vectors.
         let msix_table_size = {
             let mut n = 0;
-            device.pci_cfg_read(0x40, &mut n).unwrap();
+            device
+                .pci_cfg_read(0x40, ByteEnabledDwordRead::with_all_bytes_enabled(&mut n))
+                .unwrap();
             ((n >> 16) & 0x7ff) + 1
         } as usize;
 
@@ -120,7 +130,12 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
                 .mmio_write((0x1 << 32) + i * 16 + 12, &0u32.to_ne_bytes())
                 .unwrap();
         }
-        device.pci_cfg_write(0x40, 0x80000000).unwrap();
+        device
+            .pci_cfg_write(
+                0x40,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+            )
+            .unwrap();
 
         Self {
             device: Arc::new(Mutex::new(device)),

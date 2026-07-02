@@ -488,16 +488,11 @@ impl PciConfigSpace for AssignedPciDevice {
                 value.set(self.bars[i]);
             }
             _ => {
-                let mut phys_u32 = 0;
-                self.read_phys_config(
-                    offset,
-                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut phys_u32),
-                );
-                value.set(if Some(offset as u32) == self.power_reg {
-                    self.power_state | (phys_u32 & !3)
-                } else {
-                    phys_u32
-                });
+                const PMCSR_POWER_STATE_MASK: u32 = 0b11;
+                self.read_phys_config(offset, value.reborrow());
+                if value.valid_mask() & PMCSR_POWER_STATE_MASK != 0 {
+                    value.set(self.power_state | (value.extract() & !PMCSR_POWER_STATE_MASK));
+                }
             }
         }
 

@@ -8,6 +8,8 @@
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use closeable_mutex::CloseableMutex;
 use guestmem::GuestMemory;

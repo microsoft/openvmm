@@ -21,6 +21,8 @@ pub use pci_core::spec::hwid::Subclass;
 use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use futures::StreamExt as _;
 use inspect::Inspect;
@@ -416,13 +418,18 @@ impl ChipsetDevice for RelayedVpciDevice {
 }
 
 impl PciConfigSpace for RelayedVpciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = self.0.read_cfg(offset);
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(self.0.read_cfg(offset));
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.0.write_cfg(offset, value);
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        let new_value = if value.is_full() {
+            value.extract()
+        } else {
+            value.merge(self.0.read_cfg(offset))
+        };
+        self.0.write_cfg(offset, new_value);
         IoResult::Ok
     }
 }

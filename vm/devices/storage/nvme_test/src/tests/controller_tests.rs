@@ -13,6 +13,8 @@ use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -121,24 +123,42 @@ pub async fn instantiate_and_build_admin_queue(
 ) -> NvmeFaultController {
     let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller, fault_configuration);
     // Set the BARs.
-    nvmec.pci_cfg_write(0x10, 0).unwrap();
-    nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
+    nvmec
+        .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+    nvmec
+        .pci_cfg_write(
+            0x20,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(BAR0_LEN as u32),
+        )
+        .unwrap();
 
     // Find the MSI-X cap struct.
     let mut cfg_dword = 0;
-    nvmec.pci_cfg_read(0x34, &mut cfg_dword).unwrap();
+    nvmec
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut cfg_dword),
+        )
+        .unwrap();
     cfg_dword &= 0xff;
     loop {
         // Read a cap struct header and pull out the fields.
         let mut cap_header = 0;
         nvmec
-            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
+            .pci_cfg_read(
+                cfg_dword as u16,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut cap_header),
+            )
             .unwrap();
         if cap_header & 0xff == 0x11 {
             // Read the table BIR and offset.
             let mut table_loc = 0;
             nvmec
-                .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
+                .pci_cfg_read(
+                    cfg_dword as u16 + 4,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut table_loc),
+                )
                 .unwrap();
             // Code in other places assumes that the MSI-X table is at the beginning
             // of BAR 4.  If this becomes a fluid concept, capture the values
@@ -147,7 +167,12 @@ pub async fn instantiate_and_build_admin_queue(
             assert_eq!(table_loc >> 3, 0);
 
             // Found MSI-X, enable it.
-            nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
+            nvmec
+                .pci_cfg_write(
+                    cfg_dword as u16,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+                )
+                .unwrap();
             break;
         }
         // Isolate the ptr to the next cap struct.
@@ -160,7 +185,9 @@ pub async fn instantiate_and_build_admin_queue(
 
     // Turn on MMIO access by writing to the Command register in config space.  Enable
     // MMIO and DMA.
-    nvmec.pci_cfg_write(4, 6).unwrap();
+    nvmec
+        .pci_cfg_write(4, ByteEnabledDwordWrite::with_all_bytes_enabled(6))
+        .unwrap();
 
     // Set the ACQ base.
     let base = acq_buffer.range().gpns()[0] * PAGE_SIZE64;
