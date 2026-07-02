@@ -30,6 +30,18 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tracing::Level;
 
+/// Outcome of watching a freshly-started isolated (CVM) VM.
+enum IsolatedStartOutcome {
+    /// The VM reached a running state.
+    Running,
+    /// The VM failed in the host's management VTL before starting guest VTL0
+    /// (`MSVM_START_VTL0_REQUEST_ERROR`). Carries the joined halt-event detail.
+    StartVtl0Error(String),
+    /// Neither outcome was observed within the watch window; fall back to
+    /// legacy behavior and let downstream waits surface any problem.
+    Indeterminate,
+}
+
 /// A Hyper-V VM
 pub struct HyperVVM {
     // properties
@@ -332,10 +344,107 @@ impl HyperVVM {
     }
 
     /// Start the VM
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        // Isolated (CVM) launches occasionally fail spuriously in the host's
+        // management VTL *before* guest VTL0 starts. On loaded SNP hosts this
+        // shows up as an `MSVM_START_VTL0_REQUEST_ERROR` event (usually paired
+        // with a triple fault) and the VM never reaches a running state. This
+        // is a host-side launch failure rather than a guest event, so retry
+        // the start a few times before giving up.
+        if self.is_isolated {
+            // Number of start attempts before giving up.
+            const CVM_START_ATTEMPTS: u32 = 3;
+
+            for attempt in 1..=CVM_START_ATTEMPTS {
+                self.check_state(VmState::Off).await?;
+                hvc::hvc_start(&self.vmid).await?;
+
+                match self.watch_isolated_start().await? {
+                    IsolatedStartOutcome::Running | IsolatedStartOutcome::Indeterminate => {
+                        return Ok(());
+                    }
+                    IsolatedStartOutcome::StartVtl0Error(detail) => {
+                        if attempt == CVM_START_ATTEMPTS {
+                            anyhow::bail!(
+                                "isolated VM failed to start before VTL0 after \
+                                 {CVM_START_ATTEMPTS} attempts (last: {detail})"
+                            );
+                        }
+                        tracing::warn!(
+                            attempt,
+                            detail,
+                            "isolated VM failed to start before VTL0; retrying"
+                        );
+                        // Make sure the VM is fully off before retrying, and
+                        // advance the event watermark so the next attempt does
+                        // not re-observe this failure.
+                        hvc::hvc_ensure_off(&self.vmid).await?;
+                        self.last_start_time =
+                            Some(Timestamp::now().checked_add(Duration::from_millis(1))?);
+                    }
+                }
+            }
+
+            unreachable!("loop returns or bails on the final attempt");
+        }
+
         self.check_state(VmState::Off).await?;
         hvc::hvc_start(&self.vmid).await?;
         Ok(())
+    }
+
+    /// Watch a freshly-started isolated (CVM) VM until it either reaches a
+    /// running state or reports a pre-VTL0 start failure.
+    async fn watch_isolated_start(&self) -> anyhow::Result<IsolatedStartOutcome> {
+        // A healthy isolated VM reaches a running state within a few seconds,
+        // but keep the window generous for heavily-loaded SNP hosts.
+        const CVM_START_WATCH_TIME: Duration = Duration::from_secs(60);
+
+        let start = Timestamp::now();
+        let mut timer = PolledTimer::new(&self.driver);
+        loop {
+            if self.state().await? == VmState::Running {
+                return Ok(IsolatedStartOutcome::Running);
+            }
+
+            if let Some(detail) = self.start_vtl0_error_detail().await? {
+                return Ok(IsolatedStartOutcome::StartVtl0Error(detail));
+            }
+
+            if Timestamp::now().duration_since(start).unsigned_abs() > CVM_START_WATCH_TIME {
+                return Ok(IsolatedStartOutcome::Indeterminate);
+            }
+
+            timer.sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Returns the joined halt-event detail if the VM failed in the host's
+    /// management VTL before starting guest VTL0 (`MSVM_START_VTL0_REQUEST_ERROR`).
+    async fn start_vtl0_error_detail(&self) -> anyhow::Result<Option<String>> {
+        let events = powershell::hyperv_halt_events(
+            &self.vmid,
+            self.last_start_time.as_ref().unwrap_or(&self.create_time),
+        )
+        .await?;
+
+        if events
+            .iter()
+            .any(|e| e.id == powershell::MSVM_START_VTL0_REQUEST_ERROR)
+        {
+            let detail = events
+                .iter()
+                .map(|e| {
+                    powershell::winevent_name(e.id)
+                        .map(|n| n.to_string())
+                        .unwrap_or(e.id.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(Some(detail))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Attempt to gracefully shut down the VM
