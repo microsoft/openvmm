@@ -20,7 +20,8 @@ pub enum PrepStepsOutput {
         #[serde(rename = "prep_steps.exe")]
         exe: PathBuf,
         #[serde(rename = "prep_steps.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 

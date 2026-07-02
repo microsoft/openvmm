@@ -241,6 +241,10 @@ pub const ACPI_20_TABLE_GUID: Guid = guid::guid!("8868e871-e4f1-11d3-bc22-0080c7
 /// EFI RT Properties Table GUID (UEFI spec 4.6).
 pub const EFI_RT_PROPERTIES_TABLE_GUID: Guid = guid::guid!("eb66918a-7eef-402a-842e-931d21c38ae9");
 
+/// SMBIOS 3.x (64-bit) entry point table GUID for EFI configuration table
+/// entries (SMBIOS spec / UEFI spec).
+pub const SMBIOS3_TABLE_GUID: Guid = guid::guid!("f2fd1544-9794-4a2c-992e-e5bbcf20e394");
+
 /// From UEFI spec 4.6 — EFI_RT_PROPERTIES_TABLE
 ///
 /// Installed in the EFI Configuration Table to tell the OS which runtime

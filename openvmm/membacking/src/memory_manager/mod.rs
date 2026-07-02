@@ -9,6 +9,7 @@ pub use device_memory::DeviceMemoryMapper;
 
 use crate::RemoteProcess;
 use crate::mapping_manager::Mappable;
+use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::VaMapper;
@@ -66,7 +67,6 @@ struct RamBacking {
     /// Prefetch pages at build time.
     prefetch: bool,
     /// THP is enabled for this backing.
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
     /// Host NUMA node for this backing. `None` means OS default placement.
     host_numa_node: Option<u32>,
@@ -146,9 +146,6 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
-    /// Failed to allocate private RAM range.
-    #[error("failed to allocate private RAM range {1}")]
-    PrivateRamAlloc(#[source] io::Error, MemoryRange),
     /// THP requires private memory mode.
     #[error("transparent huge pages requires private memory mode")]
     ThpWithoutPrivateMemory,
@@ -591,48 +588,35 @@ impl GuestMemoryBuilder {
                         .await
                         .expect("regions cannot overlap yet");
 
-                    if let Some(ref mappable) = backing.mappable {
-                        region
-                            .add_mapping(
-                                MemoryRange::new(0..sub_range.len()),
-                                mappable.clone(),
-                                file_offset,
-                                true,
-                                backing.host_numa_node,
-                            )
-                            .await
-                            .map_err(|error| MemoryBuildError::RamMapping {
-                                range: *sub_range,
-                                error,
-                            })?;
-                    } else {
-                        va_mapper
-                            .alloc_range(
-                                sub_range.start() as usize,
-                                sub_range.len() as usize,
-                                backing.host_numa_node,
-                            )
-                            .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *sub_range))?;
-                        va_mapper.set_range_name(
-                            sub_range.start() as usize,
-                            sub_range.len() as usize,
-                            "guest-ram-private",
-                        );
-
-                        #[cfg(target_os = "linux")]
-                        if backing.transparent_hugepages {
-                            if let Err(e) = va_mapper.madvise_hugepage(
-                                sub_range.start() as usize,
-                                sub_range.len() as usize,
-                            ) {
-                                tracing::warn!(
-                                    error = &e as &dyn std::error::Error,
-                                    range = %sub_range,
-                                    "failed to mark RAM as THP eligible"
-                                );
-                            }
-                        }
-                    }
+                    // Register the mapping with the region. File-backed RAM
+                    // passes its `Mappable` so the mapping manager mmaps it.
+                    // Private/anonymous RAM passes `MappingBacking::Private`:
+                    // the mapping manager commits its anonymous pages directly
+                    // (there is no fd to mmap), but it still participates in the
+                    // region-driven DMA machinery (mapped by host VA). Without
+                    // this, an assigned device DMAing to private RAM would take
+                    // IOMMU faults (silent DMA failure).
+                    let backing_kind = match &backing.mappable {
+                        Some(mappable) => MappingBacking::File {
+                            mappable: mappable.clone(),
+                            file_offset,
+                        },
+                        None => MappingBacking::Private {
+                            transparent_hugepages: backing.transparent_hugepages,
+                        },
+                    };
+                    region
+                        .add_mapping(
+                            MemoryRange::new(0..sub_range.len()),
+                            backing_kind,
+                            true,
+                            backing.host_numa_node,
+                        )
+                        .await
+                        .map_err(|error| MemoryBuildError::RamMapping {
+                            range: *sub_range,
+                            error,
+                        })?;
 
                     region
                         .map(MapParams {

@@ -14,6 +14,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
@@ -194,6 +195,19 @@ impl IntoPipeline for VmmTestsRunCli {
         let target_os = target.as_triple().operating_system;
         let target_architecture = target.common_arch()?;
         let target_str = target.as_triple().to_string();
+
+        // Windows *guest* payloads (e.g. pipette) must be PE binaries even when
+        // the VMM host target is Linux. On a non-WSL Linux build host the MSVC
+        // toolchain / Windows SDK is unavailable, so cross-compile those guest
+        // binaries with the GNU (mingw-w64) toolchain instead.
+        let windows_guest_platform =
+            if matches!(FlowPlatform::host(backend_hint), FlowPlatform::Linux(_))
+                && !flowey_cli::running_in_wsl()
+            {
+                CommonPlatform::WindowsGnu
+            } else {
+                CommonPlatform::WindowsMsvc
+            };
 
         let repo_root = crate::repo_root();
 
@@ -395,6 +409,7 @@ impl IntoPipeline for VmmTestsRunCli {
             .dep_on(|ctx| {
                 flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
                     target,
+                    windows_guest_platform,
                     test_content_dir,
                     selections: selections_from_resolved(filter, resolved, target_os),
                     release,

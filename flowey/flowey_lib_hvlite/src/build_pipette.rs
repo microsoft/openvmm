@@ -20,7 +20,8 @@ pub enum PipetteOutput {
         #[serde(rename = "pipette.exe")]
         exe: PathBuf,
         #[serde(rename = "pipette.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 
