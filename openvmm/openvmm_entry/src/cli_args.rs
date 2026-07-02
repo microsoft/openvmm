@@ -854,25 +854,22 @@ flags:
     /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires
-    ///                          user_mode_apic=false and host WHP
-    ///                          support)
-    ///
-    /// KVM parameters (x86_64 guests only):
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires host KVM
-    ///                          nested-virt support)
     ///
     /// Examples:
     ///   --hypervisor whp
     ///   --hypervisor whp:user_mode_apic
     ///   --hypervisor whp:user_mode_apic,no_enlightenments
-    ///   --hypervisor whp:nested_virt
     ///   --hypervisor kvm
-    ///   --hypervisor kvm:nested_virt
     #[clap(long)]
     pub hypervisor: Option<String>,
+
+    /// expose hardware virtualization (VMX/SVM) to the guest so it can run its
+    /// own hypervisor.
+    ///
+    /// Only supported on x86_64, and only by backends that support nested
+    /// virtualization (currently WHP and KVM). Requires host support.
+    #[clap(long)]
+    pub nested_virt: bool,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///

@@ -79,6 +79,23 @@ pub trait Hypervisor: 'static {
     /// generation.
     fn platform_info(&self) -> PlatformInfo;
 
+    /// Reports which optional partition capabilities this backend can honor on
+    /// the current host.
+    ///
+    /// This is a query only: it lets the code that assembles a
+    /// [`ProtoPartitionConfig`] check for support before requesting a
+    /// capability, so that an unsupported request produces a deterministic
+    /// failure rather than being silently ignored.
+    ///
+    /// The default reports no optional capabilities. A backend overrides this
+    /// to advertise only what it supports; anything left at its default
+    /// (`false`) is treated as unsupported. Adding a new capability therefore
+    /// defaults to unsupported everywhere and only requires touching the
+    /// backends that actually support it.
+    fn supported_capabilities(&self) -> SupportedCapabilities {
+        SupportedCapabilities::default()
+    }
+
     /// Returns a new prototype partition from the given configuration.
     fn new_partition<'a>(
         &'a mut self,
@@ -161,6 +178,32 @@ pub struct ProtoPartitionConfig<'a> {
     pub vmtime: &'a VmTimeSource,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor.
+    ///
+    /// The code assembling this config must only set this when the chosen
+    /// backend reports support via [`Hypervisor::supported_capabilities`]; a
+    /// backend that receives an unsupported request may fail partition
+    /// creation.
+    pub nested_virt: bool,
+}
+
+/// Optional partition capabilities a backend can honor.
+///
+/// This is the answer to [`Hypervisor::supported_capabilities`]: a yes/no
+/// declaration per optional feature. Every field defaults to `false`
+/// (unsupported), so a backend names only what it supports and a new field
+/// defaults to unsupported everywhere.
+///
+/// This is distinct from the computed, guest-visible
+/// [`PartitionCapabilities`](crate::PartitionCapabilities): this type gates
+/// whether a partition can be created with a requested feature, whereas that
+/// type describes what the guest ultimately sees.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SupportedCapabilities {
+    /// The backend can expose hardware virtualization (VMX/SVM) so the guest
+    /// can run its own hypervisor.
+    pub nested_virt: bool,
 }
 
 /// Partition creation configuration.

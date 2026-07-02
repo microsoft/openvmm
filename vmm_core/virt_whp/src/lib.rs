@@ -86,8 +86,6 @@ pub struct Whp {
     pub user_mode_apic: bool,
     /// Use the hypervisor's in-built enlightenment support if available.
     pub offload_enlightenments: bool,
-    /// Enable nested virtualization (VMX/SVM) for the guest.
-    pub nested_virt: bool,
 }
 
 #[derive(Inspect)]
@@ -836,13 +834,22 @@ impl virt::Hypervisor for Whp {
         }
     }
 
+    fn supported_capabilities(&self) -> virt::SupportedCapabilities {
+        virt::SupportedCapabilities {
+            // WHP can expose VMX/SVM to the guest on x86-64. Whether the host
+            // WHP build actually supports it is verified during partition
+            // creation.
+            nested_virt: cfg!(guest_arch = "x86_64"),
+        }
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
-        let nested_virt = self.nested_virt;
+        let nested_virt = config.nested_virt;
 
         // Nested virt is x86-only.
         #[cfg(guest_arch = "x86_64")]
