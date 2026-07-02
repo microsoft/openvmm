@@ -1072,3 +1072,165 @@ async fn virtio_net_windows(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot Windows with a virtio-net NIC on PCIe, enable kernel network debugging
+/// (KDNET) over that NIC via `bcdedit`, reboot, and verify that the Microsoft
+/// Kernel Debug Network Adapter appears and can send and receive packets.
+///
+/// When KDNET binds a NIC, the physical device is claimed by the in-box virtio
+/// KDNET transport before the OS driver loads, and `kdnic.sys` exposes a shared
+/// "Microsoft Kernel Debug Network Adapter" to the OS so that normal networking
+/// continues to work alongside the debugger. This validates that our virtio-net
+/// emulation works with the Windows in-box KDNET virtio transport. windbg
+/// connectivity itself is intentionally not exercised.
+///
+/// Uses Windows Server 2025: the `FORCEHVTONOTSHAREDEBUGDEVICE` load option that
+/// steers KDNET onto the PCI device (rather than the Hyper-V synthetic debug
+/// NIC) was added to winload in mid-2021, right at the Server 2022 (20348) fork
+/// boundary, and is not reliably present there.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2025_x64)))]
+async fn virtio_net_kdnet_windows(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let (mut vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_virtio_nic("s0rc0rp0")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.windows_shell();
+
+    // Sanity check: the virtio-net device should be present on the PCI bus even
+    // though no OS driver is installed for it.
+    let devs = parse_guest_pci_devices(OsFlavor::Windows, &agent).await?;
+    tracing::info!(?devs, "guest PCI devices");
+    assert!(
+        devs.iter()
+            .any(|d| d.vendor_id == 0x1af4 && d.device_id == 0x1041),
+        "virtio-net device (VEN_1AF4 DEV_1041) not found on PCI bus"
+    );
+
+    // Determine the virtio-net device's PCI bus/device/function so KDNET's
+    // `busparams` can point at it. The `cmd!` macro treats `{`/`}` as
+    // interpolation, so the PowerShell (which needs braces) is written to a
+    // script file in the guest and executed from there.
+    const BUSPARAMS_SCRIPT: &str = concat!(
+        "$ErrorActionPreference = 'Stop'\r\n",
+        "$d = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'PCI\\VEN_1AF4&DEV_1041*' } | Select-Object -First 1\r\n",
+        "if ($null -eq $d) { throw 'virtio-net device not found' }\r\n",
+        "$bus  = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_BusNumber').Data\r\n",
+        "$addr = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_Address').Data\r\n",
+        "Write-Output ('{0}.{1}.{2}' -f $bus, ($addr -shr 16), ($addr -band 0xffff))\r\n",
+    );
+    let script_path = "C:/get_kdnet_busparams.ps1";
+    agent
+        .write_file(
+            script_path,
+            futures::io::Cursor::new(BUSPARAMS_SCRIPT.as_bytes().to_vec()),
+        )
+        .await
+        .context("failed to write busparams script")?;
+
+    let busparams = cmd!(
+        sh,
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/get_kdnet_busparams.ps1"
+    )
+    .read()
+    .await?;
+    let busparams = busparams.trim();
+    tracing::info!(busparams, "virtio-net KDNET busparams");
+    anyhow::ensure!(
+        busparams
+            .split('.')
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+        "unexpected busparams format: {busparams:?}"
+    );
+
+    // Enable KDNET over the virtio-net device. The debugger host IP is set to
+    // the consomme gateway (10.0.0.1); no debugger is actually connected.
+    cmd!(
+        sh,
+        "bcdedit.exe /dbgsettings net hostip:10.0.0.1 port:50000 key:1.2.3.4 busparams:{busparams}"
+    )
+    .run()
+    .await?;
+    cmd!(sh, "bcdedit.exe /debug on").run().await?;
+
+    // OpenVMM exposes Hyper-V enlightenments, so by default the Windows boot
+    // loader routes network kernel debugging to the synthetic VMBus debug NIC
+    // and ignores `busparams` entirely (see BlBdInitializeDeviceDescriptorEx:
+    // when a hypervisor is detected it overrides the debug device to
+    // PCI_VID_MSHV_SYNTH_NET and marks it Configured). The
+    // `FORCEHVTONOTSHAREDEBUGDEVICE` load option sets ForceNonShared, which
+    // skips that override and forces KDNET to use the PCI device named by
+    // `busparams` — i.e. our virtio-net NIC. Without a bcd id, `/set` targets
+    // the current OS boot entry.
+    cmd!(
+        sh,
+        "bcdedit.exe /set loadoptions FORCEHVTONOTSHAREDEBUGDEVICE"
+    )
+    .run()
+    .await?;
+
+    // Reboot so KDNET binds the NIC on the next boot, then reconnect to pipette
+    // (which runs over VMBus, independent of the virtio NIC).
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+    let sh = agent.windows_shell();
+
+    // Confirm KDNET is configured for NET debugging.
+    let dbgsettings = cmd!(sh, "bcdedit.exe /dbgsettings").read().await?;
+    tracing::info!(%dbgsettings, "bcdedit dbgsettings after reboot");
+    assert!(
+        dbgsettings.to_lowercase().contains("net"),
+        "expected NET debug type in dbgsettings: {dbgsettings}"
+    );
+
+    // The Microsoft Kernel Debug Network Adapter (kdnic) should now be present
+    // and, once DHCP completes, obtain the consomme client address (10.0.0.2).
+    // `ipconfig /all` reports both the adapter description and its address.
+    let mut timer = PolledTimer::new(&driver);
+    let mut kdnic_found = false;
+    let mut found_ip = false;
+    for attempt in 0..30 {
+        let ipconfig = cmd!(sh, "ipconfig /all").read().await?;
+        if ipconfig.contains("Kernel Debug Network Adapter") {
+            if !kdnic_found {
+                tracing::info!(attempt, "found Kernel Debug Network Adapter");
+            }
+            kdnic_found = true;
+            if ipconfig.contains("10.0.0.2") {
+                tracing::info!(attempt, "KDNET adapter got DHCP address");
+                found_ip = true;
+                break;
+            }
+        }
+        tracing::debug!(attempt, "waiting for KDNET adapter / DHCP address...");
+        timer.sleep(Duration::from_secs(2)).await;
+    }
+    assert!(
+        kdnic_found,
+        "Microsoft Kernel Debug Network Adapter did not appear after enabling KDNET"
+    );
+    assert!(
+        found_ip,
+        "KDNET adapter did not get a DHCP address (expected 10.0.0.2)"
+    );
+
+    // Verify the adapter can actually send and receive packets by pinging the
+    // consomme gateway through it.
+    let ping_output = cmd!(sh, "ping -n 4 10.0.0.1").read().await?;
+    tracing::info!(%ping_output, "ping output");
+    assert!(
+        ping_output.contains("Reply from 10.0.0.1"),
+        "ping to consomme gateway failed: {ping_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
