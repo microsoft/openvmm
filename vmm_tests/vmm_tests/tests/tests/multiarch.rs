@@ -131,12 +131,14 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
-/// Verify that the aarch64 Linux direct loader synthesizes SMBIOS (DMI) tables
-/// so the guest can read `/sys/class/dmi/id/*`. The aarch64 ACPI-mode kernel
-/// discovers DMI only via the SMBIOS3 EFI configuration-table entry, so this
-/// exercises that delivery path. There is no configuration surface yet, so the
+/// Verify that the Linux direct loader synthesizes SMBIOS (DMI) tables so the
+/// guest can read `/sys/class/dmi/id/*`. The two architectures exercise
+/// different delivery paths for the same `_SM3_` entry point: on x86 the kernel
+/// brute-force scans the F-segment `[0xF0000, 0x100000)` for the anchor, while
+/// the aarch64 ACPI-mode kernel discovers it only via the SMBIOS3 EFI
+/// configuration-table entry. There is no configuration surface yet, so the
 /// guest reads the fixed default OpenVMM identity.
-#[vmm_test(openvmm_linux_direct_aarch64)]
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
 
