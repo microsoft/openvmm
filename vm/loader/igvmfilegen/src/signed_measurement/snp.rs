@@ -293,6 +293,11 @@ fn sign_id_block_with_temp_key(
     hash.update(id_block.as_bytes());
     let id_block_hash: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hash.finalize().into();
 
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    tracing::info!("Input Hash Base64: {}", b64.encode(&id_block_hash));
+    tracing::info!("Using Temporary Signing Key");
+
     // Sign the hash. Returns r || s in big-endian, each 48 bytes for P-384.
     let signature = key
         .sign_prehash(&id_block_hash)
@@ -311,6 +316,9 @@ fn sign_id_block_with_temp_key(
         s_comp: padded_le_component(sig_s_be),
     };
 
+    tracing::info!("Signature R Base64: {}", b64.encode(sig_r_be));
+    tracing::info!("Signature S Base64: {}", b64.encode(sig_s_be));
+
     // Export the public key as Qx || Qy in big-endian, each 48 bytes for P-384.
     let public_key = key
         .public_key_bytes()
@@ -324,6 +332,9 @@ fn sign_id_block_with_temp_key(
     }
 
     let (qx_be, qy_be) = public_key.split_at(SNP_ECC_KEY_SIZE_BYTES);
+
+    tracing::info!("Public Key Qx Base64: {}", b64.encode(qx_be));
+    tracing::info!("Public Key Qy Base64: {}", b64.encode(qy_be));
     let id_public_key = IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY {
         curve: SNP_ECDSA_CURVE_P384,
         reserved: 0,

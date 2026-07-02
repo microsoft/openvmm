@@ -18,6 +18,7 @@ vbs_defs.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true
+base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
 crypto = { workspace = true, features = ["native"] }
 fs-err.workspace = true
