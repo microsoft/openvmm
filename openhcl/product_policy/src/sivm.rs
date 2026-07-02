@@ -23,7 +23,7 @@ use crate::uefi_security_policy::UefiSecurityPolicy;
 pub struct SivmPolicy {
     /// Reserved: require an ephemeral VMGS. Not enforced at runtime yet.
     #[mesh(1)]
-    pub enforce_ephemeral_vmgs: bool,
+    pub require_ephemeral_vmgs: bool,
 
     /// Refuse to boot unless secure boot is enabled.
     #[mesh(2)]
@@ -39,8 +39,7 @@ pub struct SivmPolicy {
 
     /// Custom UEFI JSON bytes (base64 in manifest JSON). Required in
     /// manifests and asserted non-empty at build time when secure boot
-    /// plus secure-boot-vars or BCD-integrity are set; not validated at
-    /// runtime.
+    /// plus secure-boot-vars or BCD-integrity are set;
     #[mesh(5)]
     #[cfg_attr(
         feature = "manifest",

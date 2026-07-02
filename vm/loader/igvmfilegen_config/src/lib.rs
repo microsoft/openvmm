@@ -113,7 +113,8 @@ pub enum Image {
         /// Optional measured product policy. When `Some`, the IGVM
         /// build emits the policy into the measured VTL2 config region.
         /// The manifest schema is the wire schema; see
-        /// [`product_policy`].
+        /// [`product_policy`]. We don't gate this property behind a feature
+        /// to avoid having multiple igvmfilegen tools with and without the feature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         product_policy: Option<ProductPolicy>,
     },
@@ -382,7 +383,7 @@ mod test {
                 "uefi": true,
                 "product_policy": {
                     "sivm": {
-                        "enforce_ephemeral_vmgs": true,
+                        "require_ephemeral_vmgs": true,
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
                         "require_bcd_integrity": true,
@@ -398,7 +399,7 @@ mod test {
                 ..
             } => match policy {
                 ProductPolicy::Sivm(p) => {
-                    assert!(p.enforce_ephemeral_vmgs);
+                    assert!(p.require_ephemeral_vmgs);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);

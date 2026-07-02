@@ -46,6 +46,16 @@ impl MeasuredProductPolicy {
     }
 }
 
+#[derive(mesh_protobuf::Protobuf)]
+struct ProductPolicyInternal {
+    #[mesh(1)]
+    magic: String,
+    #[mesh(2)]
+    policy: ProductPolicy,
+}
+
+const MAGIC: &str = "OPENHCL_PRODUCT_POLICY";
+
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
 /// a `MeasuredProductPolicy::foo(|body| ...) -> anyhow::Result<Option<T>>`
 /// accessor (`Ok(None)` when the policy is absent or a different
@@ -130,12 +140,15 @@ define_product_policy! {
 pub enum ProductPolicyDecodeError {
     /// `mesh_protobuf` rejected the bytes.
     Mesh(mesh_protobuf::Error),
+    /// The decoded payload did not carry the expected magic header.
+    BadMagic,
 }
 
 impl core::fmt::Display for ProductPolicyDecodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Mesh(_) => write!(f, "product policy mesh decode error"),
+            Self::BadMagic => write!(f, "product policy magic header mismatch"),
         }
     }
 }
@@ -144,19 +157,31 @@ impl core::error::Error for ProductPolicyDecodeError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Mesh(e) => Some(e),
+            Self::BadMagic => None,
         }
     }
 }
 
 /// Encode a policy as `mesh_protobuf` bytes for the IGVM payload.
 pub fn encode_product_policy(policy: &ProductPolicy) -> Vec<u8> {
-    mesh_protobuf::encode(policy.clone())
+    let policy = ProductPolicyInternal {
+        magic: MAGIC.to_string(),
+        policy: policy.clone(),
+    };
+    mesh_protobuf::encode(policy)
 }
 
 /// Decode `mesh_protobuf` bytes. Caller must skip empty payloads
 /// (which signal "no policy installed") before calling.
 pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolicyDecodeError> {
-    mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)
+    let data: ProductPolicyInternal =
+        mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)?;
+
+    if data.magic != MAGIC {
+        return Err(ProductPolicyDecodeError::BadMagic);
+    }
+
+    Ok(data.policy)
 }
 
 pub use uefi_security_policy::UefiSecurityPolicy;
@@ -171,7 +196,7 @@ mod tests {
 
     fn sample_sivm_policy() -> SivmPolicy {
         SivmPolicy {
-            enforce_ephemeral_vmgs: true,
+            require_ephemeral_vmgs: true,
             require_secure_boot: true,
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
@@ -220,6 +245,20 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn decode_rejects_bad_magic() {
+        // A well-formed wrapper whose magic header does not match.
+        let internal = ProductPolicyInternal {
+            magic: "WRONG_MAGIC".to_string(),
+            policy: ProductPolicy::Sivm(sample_sivm_policy()),
+        };
+        let bytes = mesh_protobuf::encode(internal);
+        assert!(matches!(
+            decode_product_policy(&bytes),
+            Err(ProductPolicyDecodeError::BadMagic)
+        ));
+    }
+
     #[cfg(feature = "manifest")]
     mod serde_tests {
         use super::*;
@@ -232,7 +271,7 @@ mod tests {
         fn deserialize_sivm_full() {
             let json = r#"{
                 "sivm": {
-                    "enforce_ephemeral_vmgs": true,
+                    "require_ephemeral_vmgs": true,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": true,
                     "require_bcd_integrity": true,
@@ -242,7 +281,7 @@ mod tests {
             let policy: ProductPolicy = from_json(json).unwrap();
             match policy {
                 ProductPolicy::Sivm(p) => {
-                    assert!(p.enforce_ephemeral_vmgs);
+                    assert!(p.require_ephemeral_vmgs);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
@@ -256,7 +295,7 @@ mod tests {
         fn deserialize_sivm_missing_custom_uefi_json_is_an_error() {
             let json = r#"{
                 "sivm": {
-                    "enforce_ephemeral_vmgs": false,
+                    "require_ephemeral_vmgs": false,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false
@@ -277,7 +316,7 @@ mod tests {
             let json = alloc::format!(
                 r#"{{
                     "sivm": {{
-                        "enforce_ephemeral_vmgs": false,
+                        "require_ephemeral_vmgs": false,
                         "require_secure_boot": false,
                         "require_secure_boot_vars": false,
                         "require_bcd_integrity": false,
@@ -296,7 +335,7 @@ mod tests {
         fn deserialize_sivm_invalid_base64_is_an_error() {
             let json = r#"{
                 "sivm": {
-                    "enforce_ephemeral_vmgs": false,
+                    "require_ephemeral_vmgs": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
@@ -310,7 +349,7 @@ mod tests {
         #[test]
         fn json_round_trip_is_byte_identical() {
             let original = ProductPolicy::Sivm(SivmPolicy {
-                enforce_ephemeral_vmgs: true,
+                require_ephemeral_vmgs: true,
                 require_secure_boot: true,
                 require_secure_boot_vars: true,
                 require_bcd_integrity: true,
@@ -344,7 +383,7 @@ mod tests {
         fn deserialize_rejects_unknown_field() {
             let err = from_json(
                 r#"{"sivm":{
-                    "enforce_ephemeral_vmgs": false,
+                    "require_ephemeral_vmgs": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,

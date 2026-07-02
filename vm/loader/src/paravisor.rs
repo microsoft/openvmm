@@ -1585,7 +1585,7 @@ mod product_policy_tests {
     #[test]
     fn encode_product_policy_bytes_round_trip() {
         let policy = ProductPolicy::Sivm(SivmPolicy {
-            enforce_ephemeral_vmgs: true,
+            require_ephemeral_vmgs: true,
             require_secure_boot: true,
             custom_uefi_json: vec![0xAA, 0xBB, 0xCC, 0xDD],
             ..Default::default()
@@ -1599,7 +1599,7 @@ mod product_policy_tests {
     #[should_panic(expected = "non-empty custom_uefi_json")]
     fn encode_product_policy_bytes_panics_on_empty_custom_uefi_json() {
         let policy = ProductPolicy::Sivm(SivmPolicy {
-            enforce_ephemeral_vmgs: true,
+            require_ephemeral_vmgs: true,
             require_secure_boot: true,
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
