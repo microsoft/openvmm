@@ -3,7 +3,14 @@
 
 //! ECDSA cryptographic operations (key generation, signing, public key export).
 
-#![cfg(any(openssl, all(native, windows)))]
+// The ecdsa module is available on backends that support it: OpenSSL (Linux glibc),
+// SymCrypt (Linux musl), and BCrypt (Windows). On macOS, ECDSA is not yet implemented.
+#![cfg(any(
+    openssl,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 
 #[cfg(openssl)]
 mod ossl;
@@ -14,6 +21,18 @@ use ossl as sys;
 mod win;
 #[cfg(all(native, windows))]
 use win as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt_stub;
+#[cfg(symcrypt)]
+use symcrypt_stub as sys;
+
+// macOS stub: provides the types so the module compiles under clippy,
+// but all operations return an error at runtime.
+#[cfg(all(native, target_os = "macos"))]
+mod mac_stub;
+#[cfg(all(native, target_os = "macos"))]
+use mac_stub as sys;
 
 use thiserror::Error;
 
