@@ -53,7 +53,7 @@ mod tests;
 
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
-pub use workers::NsidConflict;
+pub use workers::AddNamespaceError;
 pub use workers::NvmeControllerClient;
 
 use guestmem::ranges::PagedRange;
@@ -67,6 +67,11 @@ const VENDOR_ID: u16 = pci_core::microsoft::VENDOR_ID;
 const DEVICE_ID: u16 = pci_core::microsoft::DeviceId::NVME.0;
 const NVME_VERSION: u32 = 0x00020000;
 const MAX_QES: u16 = 256;
+/// Maximum valid namespace ID for the NVM subsystem, reported in the `NN`
+/// field of Identify Controller. This is a fixed property of the subsystem
+/// (the size of the NSID address space), identical across all controllers,
+/// and is independent of how many namespaces are currently present.
+const MAX_NSID: u32 = 1024;
 const BAR0_LEN: u64 = 0x10000;
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
