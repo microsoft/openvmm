@@ -65,8 +65,19 @@ pub struct fuse_attr {
     pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
-    pub padding: u32,
+    pub flags: u32,
 }
+
+/*
+ * Flags for `fuse_attr.flags`
+ *
+ * FUSE_ATTR_SUBMOUNT: object is a submount root; the kernel auto-mounts a
+ *   distinct submount (with its own st_dev) at this location. Requires the
+ *   `FUSE_SUBMOUNTS` capability to have been negotiated at init.
+ * FUSE_ATTR_DAX: enable per-inode DAX for this object.
+ */
+pub const FUSE_ATTR_SUBMOUNT: u32 = 1 << 0;
+pub const FUSE_ATTR_DAX: u32 = 1 << 1;
 
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]

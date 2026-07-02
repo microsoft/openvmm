@@ -295,13 +295,24 @@ pub fn analyze_delete_error(error: lx::Error, file_handle: &OwnedHandle) -> Dele
     {
         DeleteErrorAction::ReturnError(error)
     } else if error.value() == lx::EIO {
-        // EIO can come from STATUS_CANNOT_DELETE, which for directories means
-        // the directory is not empty. Check if this is a directory and return
-        // ENOTEMPTY in that case.
-        if is_directory(file_handle) {
-            DeleteErrorAction::ReturnError(lx::Error::ENOTEMPTY)
-        } else {
-            DeleteErrorAction::ReturnError(error)
+        // EIO can come from STATUS_CANNOT_DELETE. Inspect the file's attributes
+        // to decide how to proceed:
+        // - a non-empty directory surfaces as STATUS_CANNOT_DELETE, so map it to
+        //   ENOTEMPTY;
+        // - a read-only file cannot be deleted via the non-POSIX
+        //   FileDispositionInformation path, so clear the read-only attribute and
+        //   retry;
+        // - anything else (including a genuine I/O failure, or a handle without
+        //   FILE_READ_ATTRIBUTES) is returned as-is so the read-only attribute is
+        //   not disturbed.
+        match util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(file_handle) {
+            Ok(info) if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 => {
+                DeleteErrorAction::ReturnError(lx::Error::ENOTEMPTY)
+            }
+            Ok(info) if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_READONLY.0 != 0 => {
+                DeleteErrorAction::TryReadOnlyWorkaround
+            }
+            _ => DeleteErrorAction::ReturnError(error),
         }
     } else {
         DeleteErrorAction::TryReadOnlyWorkaround
@@ -319,17 +330,6 @@ pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Res
                 delete_read_only_file(fs_context, file_handle)
             }
         },
-    }
-}
-
-/// Check if a file handle refers to a directory.
-fn is_directory(file_handle: &OwnedHandle) -> bool {
-    if let Ok(info) =
-        util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(file_handle)
-    {
-        info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
-    } else {
-        false
     }
 }
 

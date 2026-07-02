@@ -26,7 +26,7 @@ pub fn stat_to_fuse_attr(stat: &lx::Stat) -> fuse_attr {
         rdev: stat.device_nr_special as u32,
         // This is `usize` on x64 and `u32` on arm64, avoid a warning.
         blksize: stat.block_size as _,
-        padding: 0,
+        flags: 0,
     }
 }
 

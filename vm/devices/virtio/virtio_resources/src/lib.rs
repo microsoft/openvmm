@@ -60,6 +60,23 @@ pub mod fs {
         SectionFs {
             root_path: String,
         },
+        /// Expose multiple host folders behind a single device, each as a named
+        /// child of a synthetic root. Lets one virtio-fs device (one tag, one
+        /// PCI/MMIO footprint) serve many shares.
+        Aggregate {
+            children: Vec<VirtioFsAggregateChild>,
+        },
+    }
+
+    /// A single host folder exposed as a named child of a [`VirtioFsBackend::Aggregate`].
+    #[derive(MeshPayload)]
+    pub struct VirtioFsAggregateChild {
+        /// Name of this child's directory under the aggregate's synthetic root;
+        /// the guest bind-mounts `<aggregate-mount>/<name>` onto the user's
+        /// target path.
+        pub name: String,
+        pub root_path: String,
+        pub mount_options: String,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioFsHandle {
