@@ -62,9 +62,9 @@ use nvme_spec as spec;
 // Device configuration shared by PCI and NVMe.
 const DOORBELL_STRIDE_BITS: u8 = 2;
 /// Microsoft vendor ID.
-const VENDOR_ID: u16 = 0x1414;
+const VENDOR_ID: u16 = pci_core::microsoft::VENDOR_ID;
 /// Device ID allocated to the OpenVMM NVMe emulator.
-const DEVICE_ID: u16 = 0xc03e;
+const DEVICE_ID: u16 = pci_core::microsoft::DeviceId::NVME.0;
 const NVME_VERSION: u32 = 0x00020000;
 const MAX_QES: u16 = 256;
 const BAR0_LEN: u64 = 0x10000;

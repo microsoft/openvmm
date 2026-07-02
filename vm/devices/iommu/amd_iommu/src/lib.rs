@@ -1070,8 +1070,8 @@ impl AmdIommuDevice {
                 prog_if: ProgrammingInterface(spec::registers::PCI_CLASS_PROG_IF),
                 sub_class: Subclass(spec::registers::PCI_CLASS_SUB),
                 base_class: ClassCode(spec::registers::PCI_CLASS_BASE),
-                type0_sub_vendor_id: 0,
-                type0_sub_system_id: 0,
+                type0_sub_vendor_id: pci_core::microsoft::VENDOR_ID,
+                type0_sub_system_id: pci_core::microsoft::DEFAULT_SUBSYSTEM_ID,
             },
             vec![Box::new(capability), Box::new(msi_capability)],
             vec![],            // No extended capabilities

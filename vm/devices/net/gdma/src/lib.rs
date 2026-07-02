@@ -153,8 +153,8 @@ impl GdmaDevice {
         let (msix, msix_capability) = MsixEmulator::new(4, 64, msi_target);
 
         let hardware_ids = HardwareIds {
-            vendor_id: gdma_defs::VENDOR_ID,
-            device_id: gdma_defs::DEVICE_ID,
+            vendor_id: pci_core::microsoft::VENDOR_ID,
+            device_id: pci_core::microsoft::DeviceId::GDMA.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA,
             sub_class: Subclass::NETWORK_CONTROLLER_ETHERNET,

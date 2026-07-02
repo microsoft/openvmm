@@ -94,6 +94,7 @@
   - [BIOS: Hyper-V PCAT BIOS](./reference/devices/firmware/pcat_bios.md)
   - [Linux Direct](./reference/devices/firmware/linux_direct.md)
 - [Devices]()
+  - [PCI IDs](./reference/devices/pci_ids.md)
   - [Virtio]()
       - [virtio-fs]()
       - [virtio-9p]()

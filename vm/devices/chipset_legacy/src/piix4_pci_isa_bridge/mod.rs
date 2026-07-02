@@ -88,7 +88,7 @@ impl PciIsaBridge {
                 prog_if: ProgrammingInterface::NONE,
                 sub_class: Subclass::BRIDGE_ISA,
                 base_class: ClassCode::BRIDGE,
-                type0_sub_vendor_id: 0x1414,
+                type0_sub_vendor_id: pci_core::microsoft::VENDOR_ID,
                 type0_sub_system_id: 0,
             },
             Vec::new(),

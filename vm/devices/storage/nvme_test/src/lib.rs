@@ -27,8 +27,8 @@ use workers::NsidConflict;
 
 // Device configuration shared by PCI and NVMe.
 const DOORBELL_STRIDE_BITS: u8 = 2;
-const VENDOR_ID: u16 = 0x1414;
-const DEVICE_ID: u16 = 0xc03e;
+const VENDOR_ID: u16 = pci_core::microsoft::VENDOR_ID;
+const DEVICE_ID: u16 = pci_core::microsoft::DeviceId::NVME.0;
 const NVME_VERSION: u32 = 0x00020000;
 const MAX_QES: u16 = 256;
 const BAR0_LEN: u64 = 0x10000;

@@ -24,12 +24,14 @@ const PAGE_SIZE64: u64 = 4096;
 const PAGE_OFFSET_MASK: u64 = PAGE_SIZE64 - 1;
 const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
 
-const VENDOR_ID: u16 = 0x1414;
+const VENDOR_ID: u16 = pci_core::microsoft::VENDOR_ID;
 
 // Microsoft Device IDs assigned to OpenVMM virtual bridges and switch ports.
-const ROOT_PORT_DEVICE_ID: u16 = 0xC030;
-const UPSTREAM_SWITCH_PORT_DEVICE_ID: u16 = 0xC031;
-const DOWNSTREAM_SWITCH_PORT_DEVICE_ID: u16 = 0xC032;
+const ROOT_PORT_DEVICE_ID: u16 = pci_core::microsoft::DeviceId::PCIE_ROOT_PORT.0;
+const UPSTREAM_SWITCH_PORT_DEVICE_ID: u16 =
+    pci_core::microsoft::DeviceId::PCIE_UPSTREAM_SWITCH_PORT.0;
+const DOWNSTREAM_SWITCH_PORT_DEVICE_ID: u16 =
+    pci_core::microsoft::DeviceId::PCIE_DOWNSTREAM_SWITCH_PORT.0;
 
 const MAX_FUNCTIONS_PER_BUS: usize = 256;
 

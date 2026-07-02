@@ -74,10 +74,6 @@ const BAR0_ISR_OFFSET: u16 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
 const BAR0_ISR_SIZE: u16 = 4;
 const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
 
-/// Microsoft's PCI vendor ID, reported as the subsystem vendor ID to identify
-/// OpenVMM as the environment hosting the device.
-const MICROSOFT_VENDOR_ID: u16 = 0x1414;
-
 /// Map a virtio device type to its PCI class/subclass.
 ///
 /// The virtio spec does not require a particular class code — drivers bind on
@@ -97,12 +93,26 @@ fn virtio_class_code(device_id: VirtioDeviceType) -> (ClassCode, Subclass) {
             ClassCode::SIMPLE_COMMUNICATION_CONTROLLER,
             Subclass::SIMPLE_COMMUNICATION_CONTROLLER_OTHER,
         ),
-        // Remaining virtio device types have no well-established class code;
-        // report a generic base system peripheral.
-        _ => (
+        // These device types have no well-established class code; report a
+        // generic base system peripheral.
+        VirtioDeviceType::RNG
+        | VirtioDeviceType::P9
+        | VirtioDeviceType::VSOCK
+        | VirtioDeviceType::FS
+        | VirtioDeviceType::PMEM => (
             ClassCode::BASE_SYSTEM_PERIPHERAL,
             Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
         ),
+        _ => {
+            tracelimit::warn_ratelimited!(
+                device_id = device_id.0,
+                "unknown virtio device type; reporting generic class code"
+            );
+            (
+                ClassCode::BASE_SYSTEM_PERIPHERAL,
+                Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            )
+        }
     }
 }
 
@@ -197,8 +207,8 @@ impl VirtioPciDevice {
             prog_if: ProgrammingInterface::NONE,
             base_class,
             sub_class,
-            type0_sub_vendor_id: MICROSOFT_VENDOR_ID,
-            type0_sub_system_id: 0,
+            type0_sub_vendor_id: pci_core::microsoft::VENDOR_ID,
+            type0_sub_system_id: pci_core::microsoft::DEFAULT_SUBSYSTEM_ID,
         };
 
         let mut caps: Vec<Box<dyn PciCapability>> = vec![
