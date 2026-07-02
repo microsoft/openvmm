@@ -13,10 +13,17 @@ static ECDSA_P384: LazyLock<Result<AlgHandle, EcdsaError>> = LazyLock::new(|| {
     let mut handle = BCRYPT_ALG_HANDLE::default();
     // SAFETY: errors are handled before the handle is used; the handle is
     // closed on drop via `AlgHandle`.
-    unsafe { BCryptOpenAlgorithmProvider(&mut handle, BCRYPT_ECDSA_P384_ALGORITHM, None, 0) }
-        .ok()
-        .map(|()| AlgHandle(handle))
-        .map_err(|e| err(e, "BCryptOpenAlgorithmProvider"))
+    unsafe {
+        BCryptOpenAlgorithmProvider(
+            &mut handle,
+            BCRYPT_ECDSA_P384_ALGORITHM,
+            None,
+            BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0),
+        )
+    }
+    .ok()
+    .map(|()| AlgHandle(handle))
+    .map_err(|e| err(e, "BCryptOpenAlgorithmProvider"))
 });
 
 fn err(e: windows_result::Error, op: &'static str) -> EcdsaError {
@@ -46,9 +53,7 @@ impl Drop for EcdsaKeyPairInner {
 impl EcdsaKeyPairInner {
     pub fn generate(curve: EcdsaCurve) -> Result<Self, EcdsaError> {
         let alg = alg_handle(curve)?;
-        let bits: u32 = match curve {
-            EcdsaCurve::P384 => 384,
-        };
+        let bits = (curve.key_size() * 8) as u32;
 
         let mut key = BCRYPT_KEY_HANDLE::default();
         // SAFETY: FFI call to generate key pair with a valid algorithm handle.
@@ -76,10 +81,10 @@ impl EcdsaKeyPairInner {
             BCryptSignHash(
                 self.handle,
                 None,
-                Some(hash),
+                hash,
                 Some(&mut signature),
                 &mut bytes_written,
-                0,
+                BCRYPT_FLAGS(0),
             )
         }
         .ok()
@@ -121,7 +126,7 @@ impl EcdsaKeyPairInner {
         .map_err(|e| err(e, "BCryptExportKey(data)"))?;
 
         // BCrypt ECC public blob layout: BCRYPT_ECCKEY_BLOB header + X + Y
-        let header_size = std::mem::size_of::<BCRYPT_ECCKEY_BLOB>();
+        let header_size = size_of::<BCRYPT_ECCKEY_BLOB>();
         let key_size = self.curve.key_size();
 
         if (blob_len as usize) < header_size + key_size * 2 {

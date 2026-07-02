@@ -295,7 +295,7 @@ fn sign_id_block_with_temp_key(
 
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
-    tracing::info!("Input Hash Base64: {}", b64.encode(&id_block_hash));
+    tracing::info!("Input Hash Base64: {}", b64.encode(id_block_hash));
     tracing::info!("Using Temporary Signing Key");
 
     // Sign the hash. Returns r || s in big-endian, each 48 bytes for P-384.
