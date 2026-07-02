@@ -209,7 +209,7 @@ pub fn generate_snp_measurement(
         }
     }
 
-    let family_id = *b"msft\0\0\0\0\0\0\0\0\0\0\0\0";
+    let family_id = *b"\0\x08\x01\x01\0\0\0\0\0\0\0\0\0\0\0\0";
     let image_id = *b"underhill\0\0\0\0\0\0\0";
 
     // Generate the PSP ID block format, hash with SHA-384.
@@ -221,7 +221,7 @@ pub fn generate_snp_measurement(
         family_id,
         image_id,
     };
-    
+
     // Print the ID block for reference.
     tracing::info!("SNP ID Block {:x?}", psp_id_block);
 
@@ -277,21 +277,21 @@ fn sign_id_block_with_temp_key(
     ),
     Error,
 > {
-    use symcrypt::ecc::{CurveType, EcKey, EcKeyUsage};
+    use crypto::ecdsa::{EcdsaCurve, EcdsaKeyPair};
 
     // Generate a random P-384 key pair for ECDSA signing.
-    let key = EcKey::generate_key_pair(CurveType::NistP384, EcKeyUsage::EcDsa)
-        .map_err(|e| Error::TempSigning(format!("EcKey::generate_key_pair: {e:?}")))?;
+    let key = EcdsaKeyPair::generate(EcdsaCurve::P384)
+        .map_err(|e| Error::TempSigning(format!("EcdsaKeyPair::generate: {e}")))?;
 
     // Hash the ID block with SHA-384.
     let mut hash = Sha384::new();
     hash.update(id_block.as_bytes());
     let id_block_hash: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hash.finalize().into();
 
-    // Sign the hash. SymCrypt returns r || s in big-endian, each 48 bytes for P-384.
+    // Sign the hash. Returns r || s in big-endian, each 48 bytes for P-384.
     let signature = key
-        .ecdsa_sign(&id_block_hash)
-        .map_err(|e| Error::TempSigning(format!("ecdsa_sign: {e:?}")))?;
+        .sign_prehash(&id_block_hash)
+        .map_err(|e| Error::TempSigning(format!("sign_prehash: {e}")))?;
 
     if signature.len() != SNP_ECC_KEY_SIZE_BYTES * 2 {
         return Err(Error::TempSigning(format!(
@@ -306,10 +306,10 @@ fn sign_id_block_with_temp_key(
         s_comp: padded_le_component(sig_s_be),
     };
 
-    // Export the public key. SymCrypt returns Qx || Qy in big-endian, each 48 bytes for P-384.
+    // Export the public key as Qx || Qy in big-endian, each 48 bytes for P-384.
     let public_key = key
-        .export_public_key()
-        .map_err(|e| Error::TempSigning(format!("export_public_key: {e:?}")))?;
+        .public_key_bytes()
+        .map_err(|e| Error::TempSigning(format!("public_key_bytes: {e}")))?;
 
     if public_key.len() != SNP_ECC_KEY_SIZE_BYTES * 2 {
         return Err(Error::TempSigning(format!(

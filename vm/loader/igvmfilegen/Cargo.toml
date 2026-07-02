@@ -19,6 +19,7 @@ x86defs.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto.workspace = true
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true
@@ -27,7 +28,6 @@ range_map_vec.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
-symcrypt.workspace = true
 thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
