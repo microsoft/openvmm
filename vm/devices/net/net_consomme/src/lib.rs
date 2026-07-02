@@ -378,7 +378,8 @@ impl ConsommeControl {
             .map_err(ConsommeMessageError::Remote)
     }
 
-    /// Unbinds a port and IP family previously reserved with bind_port().
+    /// Unbinds a port previously reserved with bind_port(); `ip_addr` (or `None`)
+    /// selects the address family to unbind.
     pub async fn unbind_port(
         &self,
         protocol: IpProtocol,
