@@ -116,7 +116,10 @@ mod tests {
     fn two_keys_produce_different_public_keys() {
         let key1 = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let key2 = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        assert_ne!(key1.public_key_bytes().unwrap(), key2.public_key_bytes().unwrap());
+        assert_ne!(
+            key1.public_key_bytes().unwrap(),
+            key2.public_key_bytes().unwrap()
+        );
     }
 
     #[test]

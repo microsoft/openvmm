@@ -7,7 +7,7 @@
 use super::EcdsaCurve;
 use super::EcdsaError;
 
-pub struct EcdsaKeyPairInner;
+pub enum EcdsaKeyPairInner {}
 
 impl EcdsaKeyPairInner {
     pub fn generate(_curve: EcdsaCurve) -> Result<Self, EcdsaError> {
@@ -17,10 +17,10 @@ impl EcdsaKeyPairInner {
     }
 
     pub fn sign_prehash(&self, _hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {
-        unreachable!("cannot be constructed")
+        match *self {}
     }
 
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
-        unreachable!("cannot be constructed")
+        match *self {}
     }
 }
