@@ -115,8 +115,13 @@ impl ReadyList {
             let mut inner = self.inner.lock();
             if inner.queued.insert(ft) {
                 inner.queue.push_back(ft);
+                inner.outer.clone()
+            } else {
+                // Already queued, so a poll cycle is already pending to service
+                // this connection. Skip the redundant outer wake to avoid extra
+                // contention under readiness storms.
+                None
             }
-            inner.outer.clone()
         };
         if let Some(outer) = outer {
             outer.wake();
