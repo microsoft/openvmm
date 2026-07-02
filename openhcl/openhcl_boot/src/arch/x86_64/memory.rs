@@ -342,6 +342,15 @@ fn accept_pending_vtl2_memory(
                     _ => unreachable!(),
                 }
 
+                // On SNP, evict any stale private (C=1) cache lines for these
+                // pages before writing the preserved contents back through the
+                // identity mapping.
+                if isolation_type == IsolationType::Snp {
+                    for page_offset in (0..range.len()).step_by(hvdef::HV_PAGE_SIZE as usize) {
+                        super::snp::cache_lines_flush_page(range.start() + page_offset);
+                    }
+                }
+
                 // Copy the buffer back. Use the identity map now that the memory has been accepted.
                 {
                     // SAFETY: Known memory region that was just accepted.

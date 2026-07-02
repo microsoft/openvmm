@@ -42,7 +42,12 @@ pub(super) fn cache_lines_flush_page(addr: u64) {
     let start = addr & !(X64_PAGE_SIZE - 1);
     let end = start + X64_PAGE_SIZE;
 
-    // Make sure there are no pending writes on the cache lines.
+    // Drain any pending stores before the flush. Per the AMD64 APM (vol. 3,
+    // CLFLUSH), CLFLUSH may take effect on a cache line while stores from
+    // earlier store instructions are still pending in the store buffer; such
+    // stores would otherwise re-cache and modify the line after the CLFLUSH has
+    // completed, defeating the eviction. A leading MFENCE forces those stores
+    // to be included in the line that is flushed.
     fence(Ordering::SeqCst);
 
     for addr in (start..end).step_by(FLUSH_SIZE as usize) {
@@ -51,6 +56,16 @@ pub(super) fn cache_lines_flush_page(addr: u64) {
             asm!("clflush [{0}]", in(reg) addr, options(nostack));
         }
     }
+
+    // CLFLUSH is only strongly ordered by MFENCE. Per the AMD64 APM (vol. 3,
+    // CLFLUSH), speculative loads and later memory operations may be reordered
+    // around CLFLUSH, and LFENCE, SFENCE, and serializing instructions are not
+    // ordered with respect to it. In particular, the following PVALIDATE /
+    // VMGEXIT must not be assumed to order these evictions. A trailing MFENCE
+    // is therefore required so the evictions complete before the caller
+    // performs the page-state change or accesses the page under the new C-bit
+    // setting.
+    fence(Ordering::SeqCst);
 }
 
 #[cfg(feature = "cvm_boot_log")]
@@ -670,6 +685,13 @@ impl Ghcb {
 
         flush_tlb();
 
+        // No post-acceptance flush of the private (C=1) cache lines is needed
+        // here, unlike the shared -> private transition in
+        // `accept_pending_vtl2_memory`. That path preserves the page contents
+        // and later reads them back for integrity checks, so stale private
+        // lines left over from speculation must be evicted before the
+        // authoritative write-back. Here the previous contents are
+        // intentionally zeroed over, so any stale private lines are irrelevant.
         ghcb_access::zero_page();
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
