@@ -145,6 +145,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == cca::ROOTFS => cca_package_path("rootfs.ext2", "CCA emulation rootfs"),
             _ if id == cca::E2FSCK => cca_buildroot_host_sbin_path("e2fsck", "CCA buildroot host e2fsck"),
             _ if id == cca::RESIZE2FS => cca_buildroot_host_sbin_path("resize2fs", "CCA buildroot host resize2fs"),
+            _ if id == cca::DEBUGFS => cca_buildroot_host_sbin_path("debugfs", "CCA buildroot host debugfs"),
             _ if id == cca::GUEST_DISK => cca_package_path("guest-disk.img", "CCA guest disk"),
             _ if id == cca::PLANE0_LINUX_IMAGE => cca_plane0_linux_image_path(),
             _ if id == cca::KVMTOOL_EFI => cca_package_path("KVMTOOL_EFI.fd", "CCA kvmtool EFI firmware"),
