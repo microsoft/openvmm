@@ -132,6 +132,12 @@ struct RunArgs {
     #[arg(long, default_value = "consomme")]
     backend: NetBackend,
 
+    /// Number of parallel iperf3 streams for the TCP network tests.
+    /// Values greater than 1 drive many concurrent connections, which is
+    /// required to exercise the high-connection-count regime.
+    #[arg(long, default_value = "1")]
+    net_parallel: u32,
+
     /// Record `perf record -p <pid> -g` traces scoped to each test,
     /// saving per-test .data files in this directory. Linux only.
     #[arg(long)]
@@ -325,6 +331,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     diag: args.diag,
                     nic: args.nic,
                     backend: args.backend,
+                    parallel: args.net_parallel,
                     perf_dir: args.perf_dir.clone(),
                 };
 
