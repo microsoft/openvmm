@@ -26,6 +26,7 @@ use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
+use parking_lot::Mutex;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
@@ -47,6 +48,8 @@ use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::collections::hash_map;
 use std::io;
 use std::io::ErrorKind;
@@ -58,8 +61,11 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use thiserror::Error;
 
 #[derive(InspectMut)]
@@ -70,6 +76,93 @@ pub(crate) struct Tcp {
     listeners: HashMap<PortForwardKey, TcpListener>,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
+    #[inspect(skip)]
+    ready: Arc<ReadyList>,
+}
+
+/// Tracks which TCP connections need polling, so that `poll_tcp` can service
+/// only the connections that have pending work instead of walking every
+/// connection on every wake. Connections are enqueued when the guest touches
+/// them and when their per-connection [`Waker`] fires from socket or DNS
+/// readiness.
+#[derive(Default)]
+struct ReadyList {
+    inner: Mutex<ReadyInner>,
+}
+
+#[derive(Default)]
+struct ReadyInner {
+    queue: VecDeque<FourTuple>,
+    queued: HashSet<FourTuple>,
+    outer: Option<Waker>,
+}
+
+impl ReadyList {
+    /// Enqueues a connection for polling without waking the outer task. Used
+    /// from within a poll cycle, where `poll_tcp` drains the queue regardless.
+    fn enqueue(&self, ft: FourTuple) {
+        let mut inner = self.inner.lock();
+        if inner.queued.insert(ft) {
+            inner.queue.push_back(ft);
+        }
+    }
+
+    /// Enqueues a connection and wakes the outer task so a new poll cycle
+    /// runs. Used from connection wakers fired by socket or DNS readiness,
+    /// which may happen on another thread.
+    fn wake(&self, ft: FourTuple) {
+        let outer = {
+            let mut inner = self.inner.lock();
+            if inner.queued.insert(ft) {
+                inner.queue.push_back(ft);
+            }
+            inner.outer.clone()
+        };
+        if let Some(outer) = outer {
+            outer.wake();
+        }
+    }
+
+    /// Records the outer task waker so connection wakers can re-drive polling.
+    fn set_outer(&self, waker: &Waker) {
+        let mut inner = self.inner.lock();
+        if !inner.outer.as_ref().is_some_and(|w| w.will_wake(waker)) {
+            inner.outer = Some(waker.clone());
+        }
+    }
+
+    /// Takes the set of connections that need polling this cycle.
+    fn drain(&self) -> VecDeque<FourTuple> {
+        let mut inner = self.inner.lock();
+        inner.queued.clear();
+        std::mem::take(&mut inner.queue)
+    }
+
+    /// Builds a [`Waker`] that re-enqueues `ft` when the connection's socket or
+    /// DNS backend signals readiness.
+    fn waker_for(self: &Arc<Self>, ft: FourTuple) -> Waker {
+        Waker::from(Arc::new(ConnWaker {
+            ready: self.clone(),
+            ft,
+        }))
+    }
+}
+
+/// Per-connection waker: waking it marks the connection ready for the next
+/// `poll_tcp` cycle.
+struct ConnWaker {
+    ready: Arc<ReadyList>,
+    ft: FourTuple,
+}
+
+impl Wake for ConnWaker {
+    fn wake(self: Arc<Self>) {
+        self.ready.wake(self.ft);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ready.wake(self.ft);
+    }
 }
 
 /// Aggregate statistics across all TCP connections for inspect/diagnostics.
@@ -143,6 +236,7 @@ impl Tcp {
                 tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
             },
             aggregate_stats: TcpAggregateStats::default(),
+            ready: Arc::new(ReadyList::default()),
         }
     }
 }
@@ -172,6 +266,10 @@ struct TcpConnection {
     backend: TcpBackend,
     #[inspect(flatten)]
     inner: TcpConnectionInner,
+    /// Per-connection waker used to re-enqueue this connection when its socket
+    /// or DNS backend becomes ready. Created lazily on first poll.
+    #[inspect(skip)]
+    waker: Option<Waker>,
 }
 
 #[derive(Inspect)]
@@ -357,6 +455,9 @@ impl TcpState {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
+        let ready = self.inner.tcp.ready.clone();
+        ready.set_outer(cx.waker());
+
         // Check for any new incoming connections
         self.inner
             .tcp
@@ -421,6 +522,7 @@ impl<T: Client> Access<'_, T> {
                                 tracing::trace!(?ft, "TCP connection established");
                                 e.insert(conn);
                                 self.inner.tcp.aggregate_stats.connections_accepted.increment();
+                                ready.enqueue(ft);
                             }
                             hash_map::Entry::Occupied(_) => {
                                 tracing::warn!(
@@ -435,35 +537,51 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(_) => false,
             });
-        // Check for any new incoming data
-        self.inner.tcp.connections.retain(|ft, conn| {
+
+        // Service only the connections that have pending work: those marked
+        // ready by guest activity this cycle, or by their own socket/DNS waker
+        // firing. Each connection is polled with its own waker so a later
+        // readiness event re-enqueues just that connection instead of forcing a
+        // walk of every connection.
+        for ft in ready.drain() {
+            let super::Consomme {
+                tcp, state, dns, ..
+            } = &mut *self.inner;
+            let Some(conn) = tcp.connections.get_mut(&ft) else {
+                continue;
+            };
+            let conn_waker = conn
+                .waker
+                .get_or_insert_with(|| ready.waker_for(ft))
+                .clone();
+            let mut conn_cx = Context::from_waker(&conn_waker);
             let mut sender = Sender {
-                ft,
-                state: &mut self.inner.state,
+                ft: &ft,
+                state,
                 client: self.client,
             };
             let keep = match &mut conn.backend {
-                TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
-                    Some(dns) => conn
-                        .inner
-                        .poll_dns_backend(cx, &mut sender, dns_handler, dns),
+                TcpBackend::Dns(dns_handler) => match dns {
+                    Some(dns) => {
+                        conn.inner
+                            .poll_dns_backend(&mut conn_cx, &mut sender, dns_handler, dns)
+                    }
                     None => {
                         tracing::warn!("DNS TCP connection without DNS resolver, dropping");
                         false
                     }
                 },
                 TcpBackend::Socket(opt_socket) => {
-                    conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
+                    conn.inner
+                        .poll_socket_backend(&mut conn_cx, &mut sender, opt_socket)
                 }
             };
             if !keep {
-                self.inner
-                    .tcp
-                    .aggregate_stats
-                    .record_close(conn.inner.last_close_reason);
+                let reason = conn.inner.last_close_reason;
+                tcp.aggregate_stats.record_close(reason);
+                tcp.connections.remove(&ft);
             }
-            keep
-        })
+        }
     }
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
@@ -492,6 +610,14 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
+
+        // The sockets were rebuilt on a new driver, so any previously
+        // registered readiness wakeups are gone. Mark every connection ready so
+        // the next poll re-registers each one with the new driver.
+        let ready = self.inner.tcp.ready.clone();
+        for ft in self.inner.tcp.connections.keys() {
+            ready.enqueue(*ft);
+        }
     }
 
     pub(crate) fn handle_tcp(
@@ -529,6 +655,7 @@ impl<T: Client> Access<'_, T> {
             state: &mut self.inner.state,
         };
 
+        let mut mark_ready = false;
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
                 let keep = e.get_mut().inner.handle_packet(&mut sender, &tcp)?;
@@ -545,6 +672,7 @@ impl<T: Client> Access<'_, T> {
                     // every guest packet would trigger a zero-payload ACK back,
                     // doubling packet rate and creating an ACK storm.
                     e.get_mut().inner.send_next(&mut sender, AckPolicy::Defer);
+                    mark_ready = true;
                 } else {
                     self.inner
                         .tcp
@@ -617,10 +745,14 @@ impl<T: Client> Access<'_, T> {
                         .aggregate_stats
                         .connections_initiated
                         .increment();
+                    mark_ready = true;
                 } else {
                     // Ignore the packet.
                 }
             }
+        }
+        if mark_ready {
+            self.inner.tcp.ready.enqueue(ft);
         }
         Ok(())
     }
@@ -867,6 +999,7 @@ impl TcpConnection {
         Ok(Self {
             backend: TcpBackend::Socket(Some(socket)),
             inner,
+            waker: None,
         })
     }
 
@@ -889,6 +1022,7 @@ impl TcpConnection {
                 PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
             )),
             inner,
+            waker: None,
         })
     }
 
@@ -918,6 +1052,7 @@ impl TcpConnection {
         Ok(Self {
             backend: TcpBackend::Dns(DnsTcpHandler::new(flow)),
             inner,
+            waker: None,
         })
     }
 }
