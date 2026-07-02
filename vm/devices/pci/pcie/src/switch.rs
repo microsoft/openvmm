@@ -22,8 +22,10 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::pci::PcieDpcRoutingAction;
 use chipset_device::poll_device::PollDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -324,6 +326,88 @@ impl GenericPcieSwitch {
         )
     }
 
+    /// Route AER injection to the appropriate downstream topology target.
+    fn route_aer_inject(&mut self, bus: u8, function: u8, injection: PciAerInjection) -> bool {
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            return false;
+        }
+
+        let secondary_bus = *upstream_bus_range.start();
+        if bus == secondary_bus {
+            if let Some((_, _, downstream_port)) = self
+                .downstream_ports
+                .iter_mut()
+                .find(|(devfn, _, _)| *devfn == function)
+            {
+                return downstream_port.port.inject_local_aer_state(injection);
+            }
+            return false;
+        }
+
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&bus) {
+                return downstream_port
+                    .port
+                    .inject_child_aer(bus, function, injection)
+                    .unwrap_or(false);
+            }
+        }
+
+        false
+    }
+
+    /// Route a DPC action toward the target device, applying it at the first
+    /// DPC-capable port encountered walking back upstream from the device.
+    fn route_dpc_inject(&mut self, bus: u8, function: u8, action: PcieDpcRoutingAction) -> bool {
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            return false;
+        }
+
+        let secondary_bus = *upstream_bus_range.start();
+        let source_id = ((bus as u16) << 8) | function as u16;
+
+        // The target device is itself a downstream switch port on the
+        // secondary bus.
+        if bus == secondary_bus {
+            if let Some((_, _, downstream_port)) = self
+                .downstream_ports
+                .iter_mut()
+                .find(|(devfn, _, _)| *devfn == function)
+            {
+                return downstream_port.port.apply_dpc_action(source_id, action);
+            }
+            return false;
+        }
+
+        // The target device is further downstream behind one of the DSPs.
+        for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            if downstream_bus_range == (0..=0) {
+                continue;
+            }
+
+            if downstream_bus_range.contains(&bus) {
+                // Deeper ports (closer to the device) get first chance to
+                // contain the error.
+                if downstream_port.port.route_child_dpc(bus, function, action) {
+                    return true;
+                }
+
+                // Otherwise this DSP is the closest port to the device.
+                return downstream_port.port.apply_dpc_action(source_id, action);
+            }
+        }
+
+        false
+    }
+
     /// Attach the provided `GenericPciBusDevice` to the port identified.
     pub fn add_pcie_device(
         &mut self,
@@ -498,6 +582,34 @@ impl PciConfigSpace for GenericPcieSwitch {
         let value = ByteEnabledDwordWrite::with_all_bytes_enabled(value);
         let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
         self.bus_cfg_handler.write(addr, value, &mut callback)
+    }
+
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        injection: PciAerInjection,
+    ) -> bool {
+        if self.route_aer_inject(target_bus, function, injection) {
+            return true;
+        }
+
+        if target_bus == secondary_bus && function == 0 {
+            return false;
+        }
+
+        false
+    }
+
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        action: PcieDpcRoutingAction,
+    ) -> bool {
+        self.route_dpc_inject(target_bus, function, action)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -698,6 +810,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::SwitchAdapter;
     use pci_core::msi::MsiConnection;
 
     /// Builds a switch definition with `downstream_port_count` uniform
@@ -1493,54 +1606,6 @@ mod tests {
             assert_eq!(*downstream_bus_range.end(), 0x20);
         } else {
             panic!("missing downstream port 1");
-        }
-    }
-
-    /// Adapts a `GenericPcieSwitch` to the `GenericPciBusDevice` trait so it
-    /// can be attached to a downstream port as a linked device in tests.
-    struct SwitchAdapter(GenericPcieSwitch);
-
-    impl GenericPciBusDevice for SwitchAdapter {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
-            Some(PciConfigSpace::pci_cfg_read(&mut self.0, offset, value))
-        }
-
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
-            Some(PciConfigSpace::pci_cfg_write(&mut self.0, offset, value))
-        }
-
-        fn pci_cfg_read_with_routing(
-            &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: &mut u32,
-        ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_read_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
-        }
-
-        fn pci_cfg_write_with_routing(
-            &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: u32,
-        ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_write_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
         }
     }
 

@@ -255,6 +255,35 @@ pub struct PciePortConfig {
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+    // NOTE: `MeshPayload` assigns wire field numbers by declaration order, so
+    // new fields MUST be appended here (after `cxl`) to avoid changing the
+    // numbers of existing fields and breaking wire compatibility.
+    /// Optional AER configuration to expose on this port.
+    pub aer: Option<PcieAerConfig>,
+    /// Optional DPC configuration to expose on this port.
+    pub dpc: Option<PcieDpcConfig>,
+}
+
+/// Optional AER capability configuration for a PCIe port.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub struct PcieAerConfig {
+    /// Default value for the AER Correctable Error Mask register.
+    pub correctable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Mask register.
+    pub uncorrectable_mask: Option<u32>,
+    /// Default value for the AER Uncorrectable Error Severity register.
+    pub uncorrectable_severity_mask: Option<u32>,
+}
+
+/// Optional DPC capability configuration for a PCIe port.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub struct PcieDpcConfig {
+    /// Advertise software trigger support in DPC Capability.
+    pub software_trigger_supported: bool,
+    /// Advertise poisoned TLP egress blocking support in DPC Capability.
+    pub poisoned_tlp_egress_blocking_supported: bool,
+    /// Advertise DL_Active ERR_COR signaling support in DPC Capability.
+    pub dl_active_err_cor_signaling_supported: bool,
 }
 
 #[derive(Debug, MeshPayload)]

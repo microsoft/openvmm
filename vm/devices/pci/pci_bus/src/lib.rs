@@ -22,8 +22,10 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciAerInjection;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigByteEnable;
+use chipset_device::pci::PcieDpcRoutingAction;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
@@ -149,6 +151,38 @@ pub trait GenericPciBusDevice: 'static + Send {
         } else {
             Some(IoResult::Ok)
         }
+    }
+
+    /// Inject a PCIe AER event with routing context.
+    ///
+    /// Returns `Some(true)` if the target consumed the injection,
+    /// `Some(false)` if not supported/not found, and `None` if the backing
+    /// device is no longer responding.
+    fn pci_inject_aer_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        _target_bus: u8,
+        _function: u8,
+        _injection: PciAerInjection,
+    ) -> Option<bool> {
+        Some(false)
+    }
+
+    /// Route a DPC action toward the device at `target_bus`/`function`,
+    /// applying it at the first DPC-capable port encountered while walking
+    /// back upstream from the device.
+    ///
+    /// Returns `Some(true)` if a DPC-capable port handled the action,
+    /// `Some(false)` if no DPC-capable port was found, and `None` if the
+    /// backing device is no longer responding.
+    fn pci_inject_dpc_with_routing(
+        &mut self,
+        _secondary_bus: u8,
+        _target_bus: u8,
+        _function: u8,
+        _action: PcieDpcRoutingAction,
+    ) -> Option<bool> {
+        Some(false)
     }
 }
 

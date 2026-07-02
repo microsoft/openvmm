@@ -451,10 +451,12 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum ExtendedCapabilityId: u16 {
             #![expect(missing_docs)] // self explanatory variants
+            AER   = 0x01,
             ACS   = 0x0D,
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
+            DPC   = 0x1D,
             DVSEC = 0x23,
         }
     }
@@ -1170,6 +1172,395 @@ pub mod caps {
             #[bits(9)]
             _reserved: u16,
         }
+    }
+
+    /// Advanced Error Reporting (AER) extended capability.
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod aer {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the AER Extended Capability structure.
+            ///
+            /// This models the non-Flit-Mode structure through offset 0x44.
+            pub enum AerExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                UNCORRECTABLE_ERROR_STATUS = 0x04,
+                UNCORRECTABLE_ERROR_MASK = 0x08,
+                UNCORRECTABLE_ERROR_SEVERITY = 0x0C,
+                CORRECTABLE_ERROR_STATUS = 0x10,
+                CORRECTABLE_ERROR_MASK = 0x14,
+                ADVANCED_ERROR_CAPABILITIES_AND_CONTROL = 0x18,
+                HEADER_LOG_0 = 0x1C,
+                HEADER_LOG_1 = 0x20,
+                HEADER_LOG_2 = 0x24,
+                HEADER_LOG_3 = 0x28,
+                ROOT_ERROR_COMMAND = 0x2C,
+                ROOT_ERROR_STATUS = 0x30,
+                ERROR_SOURCE_IDENTIFICATION = 0x34,
+                TLP_PREFIX_LOG_0 = 0x38,
+                TLP_PREFIX_LOG_1 = 0x3C,
+                TLP_PREFIX_LOG_2 = 0x40,
+                TLP_PREFIX_LOG_3 = 0x44,
+            }
+        }
+
+        /// Uncorrectable Error Status register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct UncorrectableErrorStatus {
+            pub undefined: bool,
+            #[bits(3)]
+            _reserved0: u8,
+            pub data_link_protocol_error_status: bool,
+            pub surprise_down_error_status: bool,
+            #[bits(6)]
+            _reserved1: u8,
+            pub poisoned_tlp_received_status: bool,
+            pub flow_control_protocol_error_status: bool,
+            pub completion_timeout_status: bool,
+            pub completer_abort_status: bool,
+            pub unexpected_completion_status: bool,
+            pub receiver_overflow_status: bool,
+            pub malformed_tlp_status: bool,
+            pub ecrc_error_status: bool,
+            pub unsupported_request_error_status: bool,
+            pub acs_violation_status: bool,
+            pub uncorrectable_internal_error_status: bool,
+            pub mc_blocked_tlp_status: bool,
+            pub atomicop_egress_blocked_status: bool,
+            pub tlp_prefix_blocked_error_status: bool,
+            pub poisoned_tlp_egress_blocked_status: bool,
+            pub dmwr_request_egress_blocked_status: bool,
+            pub ide_check_failed_status: bool,
+            pub misrouted_ide_tlp_status: bool,
+            pub pcrc_check_failed_status: bool,
+            pub tlp_translation_egress_blocked_status: bool,
+        }
+
+        /// Uncorrectable Error Mask register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct UncorrectableErrorMask {
+            pub undefined: bool,
+            #[bits(3)]
+            _reserved0: u8,
+            pub data_link_protocol_error_mask: bool,
+            pub surprise_down_error_mask: bool,
+            #[bits(6)]
+            _reserved1: u8,
+            pub poisoned_tlp_received_mask: bool,
+            pub flow_control_protocol_error_mask: bool,
+            pub completion_timeout_mask: bool,
+            pub completer_abort_mask: bool,
+            pub unexpected_completion_mask: bool,
+            pub receiver_overflow_mask: bool,
+            pub malformed_tlp_mask: bool,
+            pub ecrc_error_mask: bool,
+            pub unsupported_request_error_mask: bool,
+            pub acs_violation_mask: bool,
+            pub uncorrectable_internal_error_mask: bool,
+            pub mc_blocked_tlp_mask: bool,
+            pub atomicop_egress_blocked_mask: bool,
+            pub tlp_prefix_blocked_error_mask: bool,
+            pub poisoned_tlp_egress_blocked_mask: bool,
+            pub dmwr_request_egress_blocked_mask: bool,
+            pub ide_check_failed_mask: bool,
+            pub misrouted_ide_tlp_mask: bool,
+            pub pcrc_check_failed_mask: bool,
+            pub tlp_translation_egress_blocked_mask: bool,
+        }
+
+        /// Uncorrectable Error Severity register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct UncorrectableErrorSeverity {
+            pub undefined: bool,
+            #[bits(3)]
+            _reserved0: u8,
+            pub data_link_protocol_error_severity: bool,
+            pub surprise_down_error_severity: bool,
+            #[bits(6)]
+            _reserved1: u8,
+            pub poisoned_tlp_received_severity: bool,
+            pub flow_control_protocol_error_severity: bool,
+            pub completion_timeout_error_severity: bool,
+            pub completer_abort_error_severity: bool,
+            pub unexpected_completion_error_severity: bool,
+            pub receiver_overflow_severity: bool,
+            pub malformed_tlp_severity: bool,
+            pub ecrc_error_severity: bool,
+            pub unsupported_request_error_severity: bool,
+            pub acs_violation_severity: bool,
+            pub uncorrectable_internal_error_severity: bool,
+            pub mc_blocked_tlp_severity: bool,
+            pub atomicop_egress_blocked_severity: bool,
+            pub tlp_prefix_blocked_error_severity: bool,
+            pub poisoned_tlp_egress_blocked_severity: bool,
+            pub dmwr_request_egress_blocked_severity: bool,
+            pub ide_check_failed_severity: bool,
+            pub misrouted_ide_tlp_severity: bool,
+            pub pcrc_check_failed_severity: bool,
+            pub tlp_translation_egress_blocked_severity: bool,
+        }
+
+        /// Correctable Error Status register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct CorrectableErrorStatus {
+            pub receiver_error_status: bool,
+            #[bits(5)]
+            _reserved0: u8,
+            pub bad_tlp_status: bool,
+            pub bad_dllp_status: bool,
+            pub replay_num_rollover_status: bool,
+            #[bits(3)]
+            _reserved1: u8,
+            pub replay_timer_timeout_status: bool,
+            pub advisory_non_fatal_error_status: bool,
+            pub corrected_internal_error_status: bool,
+            pub header_log_overflow_status: bool,
+            #[bits(16)]
+            _reserved2: u16,
+        }
+
+        /// Correctable Error Mask register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct CorrectableErrorMask {
+            pub receiver_error_mask: bool,
+            #[bits(5)]
+            _reserved0: u8,
+            pub bad_tlp_mask: bool,
+            pub bad_dllp_mask: bool,
+            pub replay_num_rollover_mask: bool,
+            #[bits(3)]
+            _reserved1: u8,
+            pub replay_timer_timeout_mask: bool,
+            pub advisory_non_fatal_error_mask: bool,
+            pub corrected_internal_error_mask: bool,
+            pub header_log_overflow_mask: bool,
+            #[bits(16)]
+            _reserved2: u16,
+        }
+
+        /// Advanced Error Capabilities and Control register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AdvancedErrorCapabilitiesAndControl {
+            #[bits(5)]
+            pub first_error_pointer: u8,
+            pub ecrc_generation_capable: bool,
+            pub ecrc_generation_enable: bool,
+            pub ecrc_check_capable: bool,
+            pub ecrc_check_enable: bool,
+            pub multiple_header_recording_capable: bool,
+            pub multiple_header_recording_enable: bool,
+            pub tlp_prefix_log_present: bool,
+            pub completion_timeout_prefix_header_log_capable: bool,
+            #[bits(5)]
+            pub header_log_size: u8,
+            pub logged_tlp_was_flit_mode: bool,
+            #[bits(5)]
+            pub logged_tlp_size: u8,
+            #[bits(8)]
+            _reserved: u8,
+        }
+
+        /// Root Error Command register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct RootErrorCommand {
+            pub correctable_error_reporting_enable: bool,
+            pub non_fatal_error_reporting_enable: bool,
+            pub fatal_error_reporting_enable: bool,
+            #[bits(29)]
+            _reserved: u32,
+        }
+
+        /// Root Error Status register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct RootErrorStatus {
+            pub err_cor_received: bool,
+            pub multiple_err_cor_received: bool,
+            pub err_fatal_nonfatal_received: bool,
+            pub multiple_err_fatal_nonfatal_received: bool,
+            pub first_uncorrectable_fatal: bool,
+            pub non_fatal_error_messages_received: bool,
+            pub fatal_error_messages_received: bool,
+            #[bits(2)]
+            pub err_cor_subclass: u8,
+            #[bits(18)]
+            _reserved: u32,
+            #[bits(5)]
+            pub advanced_error_interrupt_message_number: u8,
+        }
+
+        /// Error Source Identification register.
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct ErrorSourceIdentification {
+            pub err_cor_source_identification: u16,
+            pub err_fatal_nonfatal_source_identification: u16,
+        }
+
+        /// RW1C mask for `UncorrectableErrorStatus` bits modeled in this emulator.
+        pub const UNC_ERR_STATUS_RW1C_MASK: u32 = 0xffff_f030;
+        /// RW1C mask for `CorrectableErrorStatus` bits modeled in this emulator.
+        pub const COR_ERR_STATUS_RW1C_MASK: u32 = 0x0000_f1c1;
+        /// Writable bit mask for `RootErrorCommand`.
+        pub const ROOT_ERR_COMMAND_RW_MASK: u32 = 0x0000_0007;
+        /// RW1C mask for `RootErrorStatus` bits.
+        pub const ROOT_ERR_STATUS_RW1C_MASK: u32 = 0x0000_007f;
+
+        /// Default value for the Uncorrectable Error Severity register.
+        pub const DEFAULT_UNC_ERR_SEVERITY: u32 =
+            (1 << 4) | (1 << 5) | (1 << 13) | (1 << 17) | (1 << 18);
+        /// Default value for the Uncorrectable Error Mask register.
+        pub const DEFAULT_UNC_ERR_MASK: u32 = (1 << 22) | (1 << 26);
+        /// Default value for the Correctable Error Mask register.
+        pub const DEFAULT_COR_ERR_MASK: u32 = (1 << 13) | (1 << 14) | (1 << 15);
+
+        /// Writable bits in `AdvancedErrorCapabilitiesAndControl`.
+        pub const AER_CAP_CTL_ECRC_GEN_ENABLE_BIT: u32 = 1 << 6;
+        /// Writable bits in `AdvancedErrorCapabilitiesAndControl`.
+        pub const AER_CAP_CTL_ECRC_CHK_ENABLE_BIT: u32 = 1 << 8;
+        /// Writable bits in `AdvancedErrorCapabilitiesAndControl`.
+        pub const AER_CAP_CTL_MULTI_HEADER_RECORDING_ENABLE_BIT: u32 = 1 << 10;
+        /// Writable bit mask in `AdvancedErrorCapabilitiesAndControl`.
+        pub const AER_CAP_CTL_WRITABLE_MASK: u32 = AER_CAP_CTL_ECRC_GEN_ENABLE_BIT
+            | AER_CAP_CTL_ECRC_CHK_ENABLE_BIT
+            | AER_CAP_CTL_MULTI_HEADER_RECORDING_ENABLE_BIT;
+    }
+
+    /// Downstream Port Containment (DPC) extended capability.
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod dpc {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the DPC Extended Capability structure (non-Flit).
+            pub enum DpcExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPABILITY_CONTROL = 0x04,
+                STATUS_SOURCE_ID = 0x08,
+                RP_PIO_STATUS = 0x0C,
+                RP_PIO_MASK = 0x10,
+                RP_PIO_SEVERITY = 0x14,
+                RP_PIO_SYSERROR = 0x18,
+                RP_PIO_EXCEPTION = 0x1C,
+                RP_PIO_HEADER_LOG_0 = 0x20,
+                RP_PIO_HEADER_LOG_1 = 0x24,
+                RP_PIO_HEADER_LOG_2 = 0x28,
+                RP_PIO_HEADER_LOG_3 = 0x2C,
+                RP_PIO_IMPSPEC_LOG = 0x30,
+                RP_PIO_TLP_PREFIX_LOG_0 = 0x34,
+                RP_PIO_TLP_PREFIX_LOG_1 = 0x38,
+                RP_PIO_TLP_PREFIX_LOG_2 = 0x3C,
+                RP_PIO_TLP_PREFIX_LOG_3 = 0x40,
+            }
+        }
+
+        /// DPC Capability register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcCapability {
+            #[bits(5)]
+            pub dpc_interrupt_message_number: u8,
+            pub rp_extensions_for_dpc: bool,
+            pub poisoned_tlp_egress_blocking_supported: bool,
+            pub dpc_software_triggering_supported: bool,
+            #[bits(4)]
+            pub rp_pio_log_size_3_0: u8,
+            pub dl_active_err_cor_signaling_supported: bool,
+            pub rp_pio_log_size_4: bool,
+            #[bits(2)]
+            _reserved: u8,
+        }
+
+        /// DPC Control register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcControl {
+            #[bits(2)]
+            pub dpc_trigger_enable: u8,
+            pub dpc_completion_control: bool,
+            pub dpc_interrupt_enable: bool,
+            pub dpc_err_cor_enable: bool,
+            pub poisoned_tlp_egress_blocking_enable: bool,
+            pub dpc_software_trigger: bool,
+            pub dl_active_err_cor_enable: bool,
+            pub dpc_sig_sfw_enable: bool,
+            #[bits(7)]
+            _reserved: u8,
+        }
+
+        /// DPC Status register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcStatus {
+            pub dpc_trigger_status: bool,
+            #[bits(2)]
+            pub dpc_trigger_reason: u8,
+            pub dpc_interrupt_status: bool,
+            pub dpc_rp_busy: bool,
+            #[bits(2)]
+            pub dpc_trigger_reason_extension: u8,
+            pub _reserved0: bool,
+            #[bits(5)]
+            pub rp_pio_first_error_pointer: u8,
+            pub dpc_sig_sfw_status: bool,
+            #[bits(2)]
+            _reserved1: u8,
+        }
+
+        /// DPC Error Source ID register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DpcErrorSourceId {
+            pub dpc_error_source_id: u16,
+        }
+
+        pub const DPC_CONTROL_TRIGGER_ENABLE_MASK: u16 = 0x0003;
+        pub const DPC_CONTROL_INTERRUPT_ENABLE_BIT: u16 = 1 << 3;
+        pub const DPC_CONTROL_POISONED_TLP_EGRESS_BLOCKING_ENABLE_BIT: u16 = 1 << 5;
+        pub const DPC_CONTROL_SOFTWARE_TRIGGER_BIT: u16 = 1 << 6;
+        pub const DPC_CONTROL_DL_ACTIVE_ERR_COR_ENABLE_BIT: u16 = 1 << 7;
+        pub const DPC_CONTROL_SIG_SFW_ENABLE_BIT: u16 = 1 << 8;
+
+        pub const DPC_CONTROL_RW_MASK_BASE: u16 = 0x011f;
+        pub const DPC_STATUS_RW1C_MASK: u16 = (1 << 0) | (1 << 3) | (1 << 13);
+
+        /// Valid bit mask for the RP PIO registers (Status/Mask/Severity/
+        /// SysError/Exception). One bit per completion-error type: Cfg/IO/Mem
+        /// each with UR Cpl, CA Cpl, and CTO, at bits {0,1,2}, {8,9,10}, and
+        /// {16,17,18} respectively.
+        pub const RP_PIO_VALID_MASK: u32 = 0x0007_0707;
+
+        /// RP PIO Log Size (in DWORDs) advertised by Root Ports. A value of 4
+        /// covers the 4-DWORD RP PIO Header Log; the ImpSpec and TLP Prefix
+        /// logs (which require a log size of 5 or greater) are not present.
+        pub const RP_PIO_LOG_SIZE_DW: u8 = 4;
+
+        /// Default value of the RP PIO First Error Pointer: 31, pointing at the
+        /// permanently-reserved bit, which indicates that no RP PIO error is
+        /// logged.
+        pub const RP_PIO_FIRST_ERROR_POINTER_NONE: u8 = 0x1f;
+
+        pub const DPC_TRIGGER_REASON_UNMASKED_UNCORRECTABLE: u8 = 0b00;
+        pub const DPC_TRIGGER_REASON_EXTENSION: u8 = 0b11;
+        pub const DPC_TRIGGER_REASON_EXTENSION_SOFTWARE_TRIGGER: u8 = 0b01;
     }
 
     /// Designated Vendor-Specific Extended Capability (DVSEC)

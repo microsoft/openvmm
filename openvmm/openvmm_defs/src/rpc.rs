@@ -17,6 +17,46 @@ use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum PcieAerErrorKind {
+    Correctable,
+    Uncorrectable,
+}
+
+#[derive(Debug, MeshPayload, Clone)]
+pub struct PcieAerInjectRequest {
+    /// Target device Requester ID (Bus<<8 | DevFn) that generated the error.
+    ///
+    /// The handling port is discovered automatically by walking the topology.
+    pub target: u16,
+    pub error_kind: PcieAerErrorKind,
+    /// Error status bits for COR/UNC status register based on `error_kind`.
+    pub status_bits: u32,
+    pub header_log: [u32; 4],
+}
+
+#[derive(Debug, MeshPayload, Clone)]
+pub struct PcieDpcInjectRequest {
+    /// Target device Requester ID (Bus<<8 | DevFn) behind the port that should
+    /// enter DPC containment.
+    ///
+    /// The containing port is discovered automatically by walking the topology.
+    pub target: u16,
+    /// When true, immediately clear RP Busy on the containing port right after
+    /// triggering DPC (phase 2 folded into the same call), modeling the Root
+    /// Port firmware completing recovery.
+    pub complete: bool,
+    /// When set, the target (source) device's Uncorrectable Error Status is
+    /// updated with these bits, as if it detected the uncorrectable error that
+    /// triggered DPC. The containing port itself is not updated (DPC contains
+    /// the error); the event is reflected in the containing port's DPC
+    /// registers.
+    pub uncorrectable_status_bits: Option<u32>,
+    /// Header Log recorded on the source device alongside
+    /// `uncorrectable_status_bits`.
+    pub header_log: [u32; 4],
+}
+
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
@@ -47,6 +87,16 @@ pub enum VmRpc {
     /// handle to write to (typically a temporary file that gets renamed
     /// into place on success).
     DumpState(FailableRpc<File, ()>),
+    // NOTE: `MeshPayload` assigns wire field numbers by declaration order, so
+    // new variants MUST be appended here (at the end) to avoid changing the
+    // numbers of existing variants and breaking wire compatibility.
+    /// Inject an AER event at runtime, reported by a target device identified
+    /// by its Requester ID (`Bus << 8 | DevFn`). The handling root port is
+    /// located automatically by decoding bus ranges; no port name is used.
+    InjectPcieAer(FailableRpc<PcieAerInjectRequest, ()>),
+    /// Trigger DPC containment at runtime for a target device, identified by
+    /// its Requester ID. The containing port is located automatically.
+    InjectPcieDpc(FailableRpc<PcieDpcInjectRequest, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -82,6 +132,8 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::InjectPcieAer(_) => "InjectPcieAer",
+            VmRpc::InjectPcieDpc(_) => "InjectPcieDpc",
             VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)

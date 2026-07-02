@@ -448,6 +448,50 @@ impl GenericPcieRootComplex {
         root_port.port.hotplug_remove_device()
     }
 
+    /// Returns whether this root complex decodes the given bus number.
+    pub fn decodes_bus(&self, bus: u8) -> bool {
+        (self.start_bus..=self.end_bus).contains(&bus)
+    }
+
+    /// Find the root port whose downstream (secondary..=subordinate) bus range
+    /// decodes `bus`.
+    ///
+    /// This is the port through which a device on `bus` is reached, and acts as
+    /// the AER error handler for that device.
+    pub(crate) fn find_root_port_for_bus(&mut self, bus: u8) -> Option<&mut PcieDownstreamPort> {
+        self.devices.iter_mut().find_map(|(_, d)| match d {
+            BusDevice::RootPort { port, .. } => {
+                let range = port.port.cfg_space.assigned_bus_range();
+                (range != (0..=0) && range.contains(&bus)).then_some(&mut port.port)
+            }
+            BusDevice::Rciep { .. } => None,
+        })
+    }
+
+    /// Test-only accessor: borrow a root port's downstream port by name.
+    #[cfg(test)]
+    pub(crate) fn test_root_port(&self, name: &str) -> &PcieDownstreamPort {
+        self.devices
+            .iter()
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name: n, port } if n.as_ref() == name => Some(&port.port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
+            .expect("root port should exist")
+    }
+
+    /// Test-only accessor: mutably borrow a root port's downstream port by name.
+    #[cfg(test)]
+    pub(crate) fn test_root_port_mut(&mut self, name: &str) -> &mut PcieDownstreamPort {
+        self.devices
+            .iter_mut()
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name: n, port } if n.as_ref() == name => Some(&mut port.port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
+            .expect("root port should exist")
+    }
+
     /// Attach a Root Complex Integrated Endpoint (RCiEP) at the given
     /// devfn (device << 3 | function) on the start bus of this root complex.
     ///
@@ -561,7 +605,7 @@ impl GenericPcieRootComplex {
     }
 }
 
-fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
+pub(crate) fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
     assert!(end_bus >= start_bus);
     let bus_count = (end_bus as u16) - (start_bus as u16) + 1;
     (bus_count as u64) * (MAX_FUNCTIONS_PER_BUS as u64) * PAGE_SIZE64
@@ -787,9 +831,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     value,
                 )
                 .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.write_u32(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port.port.write_cfg_space(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }

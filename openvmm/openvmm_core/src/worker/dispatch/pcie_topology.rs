@@ -12,6 +12,8 @@ use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
 use pcie::GenericPciePortDefinition;
+use pcie::PcieAerSettings;
+use pcie::PcieDpcSettings;
 use pcie::PciePortSettings;
 
 /// Builds root-port PCIe settings from manifest flags.
@@ -23,6 +25,16 @@ fn build_root_port_settings(rp_cfg: &PciePortConfig) -> PciePortSettings {
         acs_capabilities_supported: rp_cfg
             .acs_capabilities_supported
             .unwrap_or(DEFAULT_ACS_CAP_MASK),
+        aer: rp_cfg.aer.map(|aer| PcieAerSettings {
+            correctable_mask: aer.correctable_mask,
+            uncorrectable_mask: aer.uncorrectable_mask,
+            uncorrectable_severity_mask: aer.uncorrectable_severity_mask,
+        }),
+        dpc: rp_cfg.dpc.map(|dpc| PcieDpcSettings {
+            software_trigger_supported: dpc.software_trigger_supported,
+            poisoned_tlp_egress_blocking_supported: dpc.poisoned_tlp_egress_blocking_supported,
+            dl_active_err_cor_signaling_supported: dpc.dl_active_err_cor_signaling_supported,
+        }),
         cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
             CxlFlexBusPortDvsecCapability::new()
                 .with_cache_capable(true)

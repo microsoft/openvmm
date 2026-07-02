@@ -140,6 +140,36 @@ impl MsiCapability {
         self.state.lock().interrupt.as_mut().map(|i| i.interrupt())
     }
 
+    /// Signals MSI using a specific message number.
+    pub fn signal_message_number(&self, message_number: u8) {
+        let state = self.state.lock();
+        if let Some(interrupt) = &state.interrupt {
+            interrupt.deliver_message_number(message_number, state.multiple_message_enable);
+        }
+    }
+
+    /// Returns the MSI message number used by the PCIe capability path
+    /// (for example, hotplug notifications).
+    ///
+    /// This currently returns the default PCIe mapping value of 0.
+    pub fn pcie_interrupt_message_number(&self) -> u8 {
+        0
+    }
+
+    /// Returns the MSI message number used by the AER capability path.
+    ///
+    /// This currently returns the default AER mapping value of 0.
+    pub fn aer_interrupt_message_number(&self) -> u8 {
+        0
+    }
+
+    /// Returns the MSI message number used by the DPC capability path.
+    ///
+    /// This currently returns the default DPC mapping value of 0.
+    pub fn dpc_interrupt_message_number(&self) -> u8 {
+        0
+    }
+
     fn len_bytes(&self) -> usize {
         let mut len = 8; // Base: ID + Next + Control + Message Address Low
         if self.addr_64bit {

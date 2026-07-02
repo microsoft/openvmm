@@ -77,7 +77,9 @@ use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
+use openvmm_defs::config::PcieAerConfig;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieDpcConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -219,6 +221,18 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
                     devfn: None,
                     hotplug: switch_cli.hotplug,
                     acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+                    aer: switch_cli.aer.map(|aer| PcieAerConfig {
+                        correctable_mask: aer.correctable_mask,
+                        uncorrectable_mask: aer.uncorrectable_mask,
+                        uncorrectable_severity_mask: aer.uncorrectable_severity_mask,
+                    }),
+                    dpc: switch_cli.dpc.map(|dpc| PcieDpcConfig {
+                        software_trigger_supported: dpc.software_trigger_supported,
+                        poisoned_tlp_egress_blocking_supported: dpc
+                            .poisoned_tlp_egress_blocking_supported,
+                        dl_active_err_cor_signaling_supported: dpc
+                            .dl_active_err_cor_signaling_supported,
+                    }),
                     cxl: false,
                 })
                 .collect(),
@@ -826,6 +840,7 @@ async fn vm_config_from_command_line(
             port_name: cxl_test.pcie_port.clone(),
             resource: CxlTestDeviceHandle {
                 hdm_size_bytes: cxl_test.hdm_size,
+                aer: cxl_test.aer,
             }
             .into_resource(),
         });
@@ -863,6 +878,18 @@ async fn vm_config_from_command_line(
                 devfn: port_cli.devfn,
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
+                aer: port_cli.aer.map(|aer| PcieAerConfig {
+                    correctable_mask: aer.correctable_mask,
+                    uncorrectable_mask: aer.uncorrectable_mask,
+                    uncorrectable_severity_mask: aer.uncorrectable_severity_mask,
+                }),
+                dpc: port_cli.dpc.map(|dpc| PcieDpcConfig {
+                    software_trigger_supported: dpc.software_trigger_supported,
+                    poisoned_tlp_egress_blocking_supported: dpc
+                        .poisoned_tlp_egress_blocking_supported,
+                    dl_active_err_cor_signaling_supported: dpc
+                        .dl_active_err_cor_signaling_supported,
+                }),
                 cxl: port_cli.cxl,
             })
             .collect();

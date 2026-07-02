@@ -280,7 +280,7 @@ complex name:
 name:
 
 ```sh
---pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
+--pcie-root-port rc0:rp0,hotplug,acs=0x005f,aer,cxl
 ```
 
 - `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
@@ -292,12 +292,23 @@ name:
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
+- `aer`: enables the Advanced Error Reporting (AER) extended capability
+  on this root port with default register values.
+- `aer_ce_mask=<mask>`: sets the default AER Correctable Error
+  Mask register value (`u32`, decimal or `0x`-prefixed hex).
+- `aer_uce_mask=<mask>`: sets the default AER Uncorrectable
+  Error Mask register value (`u32`, decimal or `0x`-prefixed hex).
+- `aer_uce_sev=<mask>`: sets the default AER
+  Uncorrectable Error Severity register value (`u32`, decimal or
+  `0x`-prefixed hex).
+- `dpc`: enables the Downstream Port Containment (DPC) extended capability
+  on this root port with default settings.
 - `cxl`: marks the root port as CXL-capable.
 
 `--pcie-switch` accepts optional comma-separated options as well:
 
 ```sh
---pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f
+--pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f,aer
 ```
 
 - `num_downstream_ports=<N>`: number of downstream ports for the switch.
@@ -305,6 +316,19 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+- `aer`: enables the AER extended capability on all downstream switch
+  ports with default register values.
+- `aer_ce_mask=<mask>`: sets the default AER Correctable Error
+  Mask register value for all downstream switch ports (`u32`, decimal or
+  `0x`-prefixed hex).
+- `aer_uce_mask=<mask>`: sets the default AER Uncorrectable
+  Error Mask register value for all downstream switch ports (`u32`,
+  decimal or `0x`-prefixed hex).
+- `aer_uce_sev=<mask>`: sets the default AER
+  Uncorrectable Error Severity register value for all downstream switch
+  ports (`u32`, decimal or `0x`-prefixed hex).
+- `dpc`: enables the Downstream Port Containment (DPC) extended capability
+  on all downstream switch ports with default settings.
 
 ### Generic initiators
 

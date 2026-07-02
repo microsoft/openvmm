@@ -399,6 +399,16 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         &mut self.capabilities
     }
 
+    /// Get extended capabilities.
+    pub fn extended_capabilities(&self) -> &[Box<dyn PciExtendedCapability>] {
+        &self.extended_capabilities
+    }
+
+    /// Get extended capabilities mutably.
+    pub fn extended_capabilities_mut(&mut self) -> &mut [Box<dyn PciExtendedCapability>] {
+        &mut self.extended_capabilities
+    }
+
     /// Get multi-function bit
     pub fn multi_function_bit(&self) -> bool {
         self.multi_function_bit
@@ -1042,6 +1052,16 @@ impl ConfigSpaceType0Emulator {
         self.common.set_interrupt_pin(pin, line)
     }
 
+    /// Get the list of PCIe extended capabilities.
+    pub fn extended_capabilities(&self) -> &[Box<dyn PciExtendedCapability>] {
+        self.common.extended_capabilities()
+    }
+
+    /// Get the list of PCIe extended capabilities (mutable).
+    pub fn extended_capabilities_mut(&mut self) -> &mut [Box<dyn PciExtendedCapability>] {
+        self.common.extended_capabilities_mut()
+    }
+
     /// Resets the configuration space state.
     pub fn reset(&mut self) {
         self.common.reset();
@@ -1582,6 +1602,16 @@ impl ConfigSpaceType1Emulator {
     /// Get the list of PCI capabilities (mutable).
     pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
         self.common.capabilities_mut()
+    }
+
+    /// Get the list of PCIe extended capabilities.
+    pub fn extended_capabilities(&self) -> &[Box<dyn PciExtendedCapability>] {
+        self.common.extended_capabilities()
+    }
+
+    /// Get the list of PCIe extended capabilities (mutable).
+    pub fn extended_capabilities_mut(&mut self) -> &mut [Box<dyn PciExtendedCapability>] {
+        self.common.extended_capabilities_mut()
     }
 
     /// Finds a BAR + offset by address.

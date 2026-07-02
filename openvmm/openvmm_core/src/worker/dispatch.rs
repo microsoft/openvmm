@@ -3781,6 +3781,97 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::InjectPcieAer(rpc) => {
+                        rpc.handle_failable(async |request: openvmm_defs::rpc::PcieAerInjectRequest| {
+                            let openvmm_defs::rpc::PcieAerInjectRequest {
+                                target,
+                                error_kind,
+                                status_bits,
+                                header_log,
+                            } = request;
+
+                            let target_bus = (target >> 8) as u8;
+                            let rc = self
+                                .inner
+                                .pcie_root_complexes
+                                .iter()
+                                .find(|rc| rc.lock().decodes_bus(target_bus))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "no root complex decodes bus {target_bus:#x} for target {target:#06x}"
+                                    )
+                                })?;
+
+                            let kind = match error_kind {
+                                openvmm_defs::rpc::PcieAerErrorKind::Correctable => {
+                                    chipset_device::pci::PciAerErrorKind::Correctable
+                                }
+                                openvmm_defs::rpc::PcieAerErrorKind::Uncorrectable => {
+                                    chipset_device::pci::PciAerErrorKind::Uncorrectable
+                                }
+                            };
+
+                            rc.lock().inject_aer(
+                                target,
+                                pcie::PcieAerInjectRequest {
+                                    kind,
+                                    status_bits,
+                                    header_log,
+                                },
+                            )?;
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::InjectPcieDpc(rpc) => {
+                        rpc.handle_failable(async |request: openvmm_defs::rpc::PcieDpcInjectRequest| {
+                            let openvmm_defs::rpc::PcieDpcInjectRequest {
+                                target,
+                                complete,
+                                uncorrectable_status_bits,
+                                header_log,
+                            } = request;
+
+                            let target_bus = (target >> 8) as u8;
+                            let rc = self
+                                .inner
+                                .pcie_root_complexes
+                                .iter()
+                                .find(|rc| rc.lock().decodes_bus(target_bus))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "no root complex decodes bus {target_bus:#x} for target {target:#06x}"
+                                    )
+                                })?;
+
+                            // DPC is triggered by an uncorrectable error. When
+                            // status bits are supplied, record them as the
+                            // uncorrectable error on the source device;
+                            // otherwise trigger DPC without recording an error.
+                            let aer = uncorrectable_status_bits.map(|status_bits| {
+                                pcie::PcieAerInjectRequest {
+                                    kind: chipset_device::pci::PciAerErrorKind::Uncorrectable,
+                                    status_bits,
+                                    header_log,
+                                }
+                            });
+
+                            let mut rc = rc.lock();
+                            rc.inject_dpc_begin(target, aer)?;
+                            if complete {
+                                // Immediately clear RP Busy, modeling the Root
+                                // Port firmware completing recovery. Real
+                                // firmware clears RP Busy in microseconds,
+                                // whereas a separate manual completion could be
+                                // too slow and let the guest time out.
+                                rc.inject_dpc_complete(target)?;
+                            }
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await

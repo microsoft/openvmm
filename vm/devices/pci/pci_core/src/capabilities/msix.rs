@@ -217,6 +217,21 @@ impl MsiInterrupt {
     pub fn interrupt(&self) -> Interrupt {
         Interrupt::from_target(MsiInterruptTarget(self.0.clone()))
     }
+
+    pub(crate) fn deliver_message_number(&self, message_number: u8, multiple_message_enable: u8) {
+        let mut state = self.0.lock();
+        if state.enabled {
+            let mask = if multiple_message_enable == 0 {
+                0
+            } else {
+                (1u32 << multiple_message_enable) - 1
+            };
+            let data = (state.data & !mask) | ((message_number as u32) & mask);
+            state.target.signal_msi(state.address, data);
+        } else {
+            state.pending = true;
+        }
+    }
 }
 
 /// [`InterruptTarget`] for MSI-X vectors that lazily allocates an irqfd
