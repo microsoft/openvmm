@@ -842,6 +842,7 @@ impl VmService {
             // the historical defaults (none of which is Exit), so the
             // ExitRequested event handled below is unreachable here.
             guest_power_actions: GuestPowerActions::default(),
+            crash_dump_path: None,
         };
 
         // Spawn the controller task.

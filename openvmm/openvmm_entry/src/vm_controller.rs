@@ -126,6 +126,8 @@ pub struct VmController {
     pub(crate) processors: u32,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) guest_power_actions: GuestPowerActions,
+    /// If set, write a `.vmrs` dump to this path when the guest triple-faults.
+    pub(crate) crash_dump_path: Option<PathBuf>,
 }
 
 /// The action to take for each guest power event.
@@ -275,6 +277,31 @@ impl VmController {
                 },
                 Event::Halt(reason) => {
                     tracing::info!(?reason, "guest halted");
+                    // On a guest crash, write a .vmrs dump before applying the
+                    // configured crash action (which may reset or exit the VM).
+                    if matches!(reason, HaltReason::TripleFault { .. }) {
+                        if let Some(path) = self.crash_dump_path.clone() {
+                            tracing::info!(
+                                path = %path.display(),
+                                "dumping VM state on guest crash"
+                            );
+                            match self.handle_dump_state(&path).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        path = %path.display(),
+                                        "VM state dumped to VMRS file on guest crash"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        path = %path.display(),
+                                        "failed to dump VM state on guest crash"
+                                    );
+                                }
+                            }
+                        }
+                    }
                     let action = action_for(&reason, &self.guest_power_actions);
                     match action {
                         GuestPowerAction::Exit(code) => {

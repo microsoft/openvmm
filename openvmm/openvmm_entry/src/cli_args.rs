@@ -976,6 +976,12 @@ flags:
     #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
     pub guest_crash_action: GuestPowerAction,
 
+    /// when the guest triple-faults, write a WinDbg-compatible `.vmrs` dump of
+    /// VP state and memory to the specified path before applying the crash
+    /// action
+    #[clap(long, value_name = "PATH")]
+    pub crash_dump_path: Option<PathBuf>,
+
     /// what to do when the guest watchdog fires (the guest stopped petting it):
     /// reset the VM (default), halt it for inspection, or exit the VMM process
     /// (use `exit:<code>` to set the exit status). Requires `--guest-watchdog`.

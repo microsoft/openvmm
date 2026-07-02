@@ -2739,6 +2739,7 @@ async fn run_control_inner(
             crash: opt.guest_crash_action,
             watchdog: opt.guest_watchdog_action,
         },
+        crash_dump_path: opt.crash_dump_path.clone(),
     };
 
     // Spawn the VmController as a task.
