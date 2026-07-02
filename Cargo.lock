@@ -7574,6 +7574,7 @@ dependencies = [
  "minimal_rt_build",
  "tmk_core",
  "tmk_macros",
+ "tmk_protocol",
  "x86defs",
 ]
 
@@ -8173,6 +8174,7 @@ dependencies = [
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "zerocopy",
 ]
 

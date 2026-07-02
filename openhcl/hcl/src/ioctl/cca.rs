@@ -16,6 +16,7 @@ use crate::ioctl::GetRegError;
 use crate::ioctl::HvError;
 use crate::ioctl::SetRegError;
 use crate::ioctl::ioctls::hcl_realm_config;
+use crate::ioctl::ioctls::hcl_rsi_ipa_state_read;
 use crate::ioctl::ioctls::hcl_rsi_set_mem_perm;
 use crate::ioctl::ioctls::hcl_rsi_sysreg_read;
 use crate::ioctl::ioctls::hcl_rsi_sysreg_write;
@@ -33,6 +34,13 @@ use hvdef::HvRegisterValue;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use user_driver::memory::MemoryBlock;
+
+#[derive(Debug, Error)]
+#[expect(missing_docs)]
+pub enum GetIpaStateError {
+    #[error("RSI IPA state read ioctl failed")]
+    Ioctl(#[source] nix::Error),
+}
 
 /// CCA: Structure mirroring the data returned by RMM in the RSI_REALM_CONFIG call.
 #[repr(C, align(0x1000))]
@@ -68,6 +76,18 @@ pub struct mshv_rsi_set_mem_perm {
     pub _pad: [u8; 7],
     pub base_addr: u64,
     pub top_addr: u64,
+}
+
+/// CCA: Structure used by the hcl_rsi_ipa_state_read ioctl.
+/// Caller sets fipa to the faulting IPA. On return the state
+/// contains the corresponding RIPAS state.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct mshv_rsi_get_ipa_state {
+    /// Faulting ipa to have its state queried
+    pub fipa: u64,
+    /// RIPAS state returned for fipa
+    pub state: u64,
 }
 
 /// SystemReg is following encoding used by MSR/MRS which is different with
@@ -202,6 +222,11 @@ impl ProcessorRunner<'_, Cca> {
     ) -> Result<(), GetRegError> {
         self.hcl
             .rsi_sysreg_read(vtl, encode_rsi_sysreg(name), value)
+    }
+
+    /// Get the ipa ripas state from the RMM
+    pub fn cca_ipa_state_read(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.hcl.rsi_get_ipa_state(fipa)
     }
 
     /// Update the address of the `plane_run` structure in `mshv_vtl_run.context`.
@@ -469,6 +494,26 @@ impl MshvVtl {
         }
         Ok(())
     }
+
+    /// Get the ipa RIPAS state
+    pub fn rsi_get_ipa_state(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        let mut plane_state = mshv_rsi_get_ipa_state {
+            fipa,
+            state: u64::MAX,
+        };
+
+        // SAFETY: Calling hcl_rsi_ipa_state_read ioctl with the correct arguments.
+        unsafe {
+            hcl_rsi_ipa_state_read(self.file.as_raw_fd(), &mut plane_state)
+                .map_err(GetIpaStateError::Ioctl)?;
+        }
+
+        if plane_state.state >= u8::MAX as u64 {
+            return Ok(None);
+        }
+
+        Ok(Some(plane_state.state))
+    }
 }
 
 impl Hcl {
@@ -500,5 +545,10 @@ impl Hcl {
     /// setting memory permissions
     pub fn rsi_set_mem_perm(&self, vtl: GuestVtl, range: MemoryRange) -> Result<(), HvError> {
         self.mshv_vtl.rsi_set_mem_perm(vtl, &range)
+    }
+
+    /// getting ipa RIPAS state
+    pub fn rsi_get_ipa_state(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.mshv_vtl.rsi_get_ipa_state(fipa)
     }
 }
