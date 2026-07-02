@@ -6957,6 +6957,58 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
     );
 }
 
+#[async_test]
+async fn rndis_invalid_packet_complete(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    // Send a completion for a transaction_id that was never allocated.
+    channel
+        .write(OutgoingPacket {
+            transaction_id: u32::MAX as u64,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    // Inject an RX packet. Should be able to read the packet from the guest channel.
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx(0, vec![0xAA; 60]);
+    }
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => {}
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("worker should keep processing after invalid completion");
+}
+
 /// Helper: builds an RSS-enable parameter block that the set_rss_parameter
 /// OID path accepts.
 fn build_rss_enable_params() -> Vec<u8> {
