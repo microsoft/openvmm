@@ -3168,8 +3168,8 @@ impl LoadedVmInner {
                             })
                         };
 
-                        super::vm_loaders::linux::AcpiTables {
-                            rdsp: tables.rdsp,
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
                             tables: tables.tables,
                         }
                     })?;
