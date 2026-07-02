@@ -664,15 +664,8 @@ impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
         // and temp bin file still exists.
         self.temp_dir.upgrade().context("VM no longer exists")?;
         if hvc::hvc_state(&self.vmid).await? == VmState::Running {
-            Ok(Some(
-                powershell::run_get_vm_screenshot(
-                    &self.vmid,
-                    image,
-                    &self.ps_mod,
-                    &self.temp_bin_path,
-                )
-                .await?,
-            ))
+            powershell::run_get_vm_screenshot(&self.vmid, image, &self.ps_mod, &self.temp_bin_path)
+                .await
         } else {
             Ok(None)
         }

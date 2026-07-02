@@ -842,7 +842,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
     Guid::from_str(&vmid).context("invalid vmid")
 }
 
-/// Runs New-VM with the given arguments.
+/// Runs Remove-VM with the given arguments.
 pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
     run_host_cmd(
         PowerShellBuilder::new()
@@ -1836,7 +1836,7 @@ pub async fn run_get_vm_screenshot(
     image: &mut Vec<u8>,
     ps_mod: &Path,
     temp_bin_path: &Path,
-) -> anyhow::Result<VmScreenshotMeta> {
+) -> anyhow::Result<Option<VmScreenshotMeta>> {
     // execute wmi via powershell
     let output = run_host_cmd(
         PowerShellBuilder::new()
@@ -1856,6 +1856,13 @@ pub async fn run_get_vm_screenshot(
 
     // parse output
     let (x, y) = output.split_once(',').context("invalid dimensions")?;
+
+    // If we're racing with a shutdown `Get-VmScreenshot` can return empty
+    // dimensions. Treat this as "no screenshot available" rather than an error.
+    if x.is_empty() || y.is_empty() {
+        return Ok(None);
+    }
+
     let x = x.parse().context("invalid x dimension")?;
     let y = y.parse().context("invalid y dimension")?;
     let (widthsize, heightsize) = (x as usize, y as usize);
@@ -1888,11 +1895,11 @@ pub async fn run_get_vm_screenshot(
         out_pixel[2] = in_pixel[0] << 3;
     }
 
-    Ok(VmScreenshotMeta {
+    Ok(Some(VmScreenshotMeta {
         color: image::ExtendedColorType::Rgb8,
         width: x,
         height: y,
-    })
+    }))
 }
 
 /// Run Set-TurnOffOnGuestRestart commandlet
