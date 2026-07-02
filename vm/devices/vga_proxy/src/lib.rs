@@ -136,7 +136,7 @@ impl PciConfigSpace for VgaProxyDevice {
                     value.merge(proxy.vga_proxy_pci_read(offset).await)
                 };
                 proxy.vga_proxy_pci_write(offset, new_value).await
-             }
+            }
         };
 
         self.pending_actions

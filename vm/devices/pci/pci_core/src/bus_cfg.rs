@@ -251,7 +251,11 @@ mod tests {
     }
 
     impl PciBusCfgAccessCallbacks for DeferredCallbacks {
-        fn read(&mut self, addr: PciConfigAddress, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        fn read(
+            &mut self,
+            addr: PciConfigAddress,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> IoResult {
             self.reads.push(addr);
             match self.read_action {
                 ReadAction::Ok(read_value) => {

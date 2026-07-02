@@ -225,36 +225,46 @@ struct VfioPciDevice {
 }
 
 impl ConfigSpaceRead for VfioPciDevice {
-    fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32> {
-        if (offset as u64) + 4 > self.config_size {
-            anyhow::bail!("config read offset {offset:#x} out of range");
+    fn read_config(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> anyhow::Result<()> {
+        let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
+        let cfg_offset = (offset as u64) + (byte_offset as u64);
+        if cfg_offset + (len as u64) > self.config_size {
+            anyhow::bail!(
+                "config read offset {offset:#x} (byte offset {byte_offset:#x}, length {len:#x}) out of range"
+            );
         }
-        let mut buf = [0u8; 4];
         let n = self
             .device
             .as_ref()
-            .read_at(&mut buf, self.config_offset + offset as u64)
+            .read_at(
+                value.into_valid_byte_slice(),
+                self.config_offset + cfg_offset,
+            )
             .with_context(|| format!("failed to read config at offset {offset:#x}"))?;
         anyhow::ensure!(
-            n == 4,
-            "short config read at offset {offset:#x}: got {n} bytes"
+            n == len,
+            "short config read at offset {offset:#x}: got {n} bytes expected {len}"
         );
-        Ok(u32::from_ne_bytes(buf))
+        Ok(())
     }
 }
 
 impl VfioPciDevice {
-    fn write_config_u32(&self, offset: u16, value: u32) -> anyhow::Result<()> {
-        if (offset as u64) + 4 > self.config_size {
-            anyhow::bail!("config write offset {offset:#x} out of range");
+    fn write_config(&self, offset: u16, value: ByteEnabledDwordWrite) -> anyhow::Result<()> {
+        let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
+        let cfg_offset = (offset as u64) + (byte_offset as u64);
+        if cfg_offset + (len as u64) > self.config_size {
+            anyhow::bail!(
+                "config write offset {offset:#x} (byte offset {byte_offset:#x}, length {len:#x}) out of range"
+            );
         }
         let n = self
             .device
             .as_ref()
-            .write_at(&value.to_ne_bytes(), self.config_offset + offset as u64)?;
+            .write_at(value.as_valid_byte_slice(), self.config_offset + cfg_offset)?;
         anyhow::ensure!(
-            n == 4,
-            "short config write at offset {offset:#x}: wrote {n} bytes"
+            n == len,
+            "short config write at offset {offset:#x}: wrote {n} bytes expected {len}"
         );
         Ok(())
     }
@@ -366,9 +376,14 @@ impl VfioAssignedPciDevice {
                 continue;
             }
 
-            let flags = vfio_device.read_config_u32(HeaderType00::BAR0.0 + (i as u16) * 4)? & 0xf;
-            bar_flags[i] = flags;
-            let encoded = cfg_space::BarEncodingBits::from(flags);
+            let mut flags = 0;
+            vfio_device.read_config(
+                HeaderType00::BAR0.0 + (i as u16) * 4,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut flags),
+            )?;
+            flags &= 0xf;
+            bar_flags[i] &= flags;
+            let encoded = cfg_space::BarEncodingBits::from(bar_flags[i]);
             if encoded.use_pio() {
                 anyhow::bail!("PIO BARs are not supported");
             }
@@ -502,27 +517,18 @@ impl VfioAssignedPciDevice {
         })
     }
 
-    fn read_phys_config(&self, offset: u16) -> u32 {
-        match self.vfio_device.read_config_u32(offset) {
-            Ok(value) => value,
-            Err(e) => {
-                tracelimit::warn_ratelimited!(
-                    offset,
-                    error = e.as_ref() as &dyn std::error::Error,
-                    "VFIO config space read failed"
-                );
-                !0
-            }
+    fn read_phys_config(&self, offset: u16, value: ByteEnabledDwordRead<'_>) {
+        if let Err(e) = self.vfio_device.read_config(offset, value) {
+            tracelimit::warn_ratelimited!(
+                offset,
+                error = e.as_ref() as &dyn std::error::Error,
+                "VFIO config space read failed"
+            );
         }
     }
 
     fn write_phys_config(&self, offset: u16, value: ByteEnabledDwordWrite) {
-        let value = if value.is_full() {
-            value.extract()
-        } else {
-            value.merge(self.read_phys_config(offset))
-        };
-        if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
+        if let Err(e) = self.vfio_device.write_config(offset, value) {
             tracelimit::warn_ratelimited!(
                 offset,
                 error = e.as_ref() as &dyn std::error::Error,
@@ -820,8 +826,8 @@ fn read_physical_bar_addresses(pci_id: &str) -> anyhow::Result<[u64; 6]> {
 /// Abstraction over PCI config space reads, allowing the capability
 /// discovery logic to be tested without a real VFIO device.
 trait ConfigSpaceRead {
-    /// Read a DWORD from PCI config space at the given DWORD-aligned offset.
-    fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32>;
+    /// Read a partial DWORD from PCI config space at the given DWORD-aligned offset.
+    fn read_config(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> anyhow::Result<()>;
 }
 
 /// Results from walking both the standard and extended PCI capability chains.
@@ -867,10 +873,16 @@ fn discover_capabilities(
 
     // --- Standard capability chain (offsets < 0x100) ---
 
-    let cap_ptr_dword = match config.read_config_u32(HeaderType00::RESERVED_CAP_PTR.0) {
-        Ok(v) => v,
-        Err(_) => return result,
-    };
+    let mut cap_ptr_dword = 0;
+    if config
+        .read_config(
+            HeaderType00::RESERVED_CAP_PTR.0,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut cap_ptr_dword),
+        )
+        .is_err()
+    {
+        return result;
+    }
     let mut cap_ptr = (cap_ptr_dword & 0xFC) as u16; // mask off reserved bits [1:0]
     let mut iterations = 0usize;
 
@@ -883,10 +895,16 @@ fn discover_capabilities(
         }
         iterations += 1;
 
-        let header = match config.read_config_u32(cap_ptr) {
-            Ok(v) => v,
-            Err(_) => break,
-        };
+        let mut header = 0;
+        if config
+            .read_config(
+                cap_ptr,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+            )
+            .is_err()
+        {
+            break;
+        }
         let cap_id = (header & 0xFF) as u8;
         let next_ptr = ((header >> 8) & 0xFC) as u16;
 
@@ -896,18 +914,30 @@ fn discover_capabilities(
             let table_count = (msg_ctrl & 0x7FF) + 1;
 
             // Table Offset/BIR (second DWORD of the capability).
-            let table_dword = match config.read_config_u32(cap_ptr + 4) {
-                Ok(v) => v,
-                Err(_) => break,
-            };
+            let mut table_dword = 0;
+            if config
+                .read_config(
+                    cap_ptr + 4,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut table_dword),
+                )
+                .is_err()
+            {
+                break;
+            }
             let table_bir = (table_dword & 0x7) as u8;
             let table_offset = table_dword & !0x7;
 
             // PBA Offset/BIR (third DWORD of the capability).
-            let pba_dword = match config.read_config_u32(cap_ptr + 8) {
-                Ok(v) => v,
-                Err(_) => break,
-            };
+            let mut pba_dword = 0;
+            if config
+                .read_config(
+                    cap_ptr + 8,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut pba_dword),
+                )
+                .is_err()
+            {
+                break;
+            }
             let pba_bir = (pba_dword & 0x7) as u8;
             let pba_offset = pba_dword & !0x7;
 
@@ -955,7 +985,14 @@ fn discover_capabilities(
     // --- Extended capability chain (offsets 0x100+) ---
 
     // Check if extended caps are reachable by probing the first offset.
-    if config.read_config_u32(caps::EXT_CAP_START).is_ok() {
+    let mut ext_cap_header = 0;
+    if config
+        .read_config(
+            caps::EXT_CAP_START,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut ext_cap_header),
+        )
+        .is_ok()
+    {
         let mut offset = caps::EXT_CAP_START;
         let mut iterations = 0usize;
 
@@ -969,9 +1006,16 @@ fn discover_capabilities(
             }
             iterations += 1;
 
-            let Ok(header) = config.read_config_u32(offset) else {
+            let mut header = 0;
+            if config
+                .read_config(
+                    offset,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+                )
+                .is_err()
+            {
                 break;
-            };
+            }
 
             if header == 0 {
                 break;
@@ -1150,7 +1194,7 @@ impl ChipsetDevice for VfioAssignedPciDevice {
 
 impl PciConfigSpace for VfioAssignedPciDevice {
     fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
-        value.set(match HeaderType00(offset) {
+        match HeaderType00(offset) {
             // BAR registers: return locally cached values.
             HeaderType00::BAR0
             | HeaderType00::BAR1
@@ -1159,7 +1203,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             | HeaderType00::BAR4
             | HeaderType00::BAR5 => {
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
-                self.bars[i]
+                value.set(self.bars[i]);
             }
             // MSI-X capability first DWORD: merge hardware ID/NextPtr (low
             // 16 bits) with emulator's Message Control (high 16 bits). The
@@ -1168,20 +1212,21 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             // capability chain remains intact.
             offset if self.msix.as_ref().is_some_and(|m| offset.0 == m.cap_offset) => {
                 let msix = self.msix.as_ref().unwrap();
-                // Read the full DWORD from hardware.
-                let mut emu = self.read_phys_config(offset.0);
-                // Overwrite the high word with the emulator.
-                msix.capability.read(
-                    0,
-                    ByteEnabledDwordRead::new(&mut emu, PciConfigByteEnable::HIGH_WORD),
-                );
-                emu
+                // The low word (if targeted) comes from hardware.
+                if let Some(v) = value.restrict(PciConfigByteEnable::LOW_WORD) {
+                    self.read_phys_config(offset.0, v);
+                }
+                // The high word (if targeted) comes from the emulator.
+                if let Some(v) = value.restrict(PciConfigByteEnable::HIGH_WORD) {
+                    msix.capability.read(0, v);
+                }
             }
             // Everything else: read from physical device, applying any
             // config space patches.
             _ => {
-                let hw = self.read_phys_config(offset);
+                self.read_phys_config(offset, value.reborrow());
                 if let Some(patch) = self.config_patches.get(&offset) {
+                    let hw = value.extract();
                     let patched = (hw & !patch.mask) | (patch.value & patch.mask);
                     tracing::trace!(
                         offset = format_args!("{offset:#x}"),
@@ -1189,12 +1234,10 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         patched = format_args!("{patched:#010x}"),
                         "applied config space patch"
                     );
-                    patched
-                } else {
-                    hw
+                    value.set(patched);
                 }
             }
-        });
+        }
 
         IoResult::Ok
     }
@@ -1203,7 +1246,10 @@ impl PciConfigSpace for VfioAssignedPciDevice {
         match HeaderType00(offset) {
             // Command register: track MMIO enable/disable.
             HeaderType00::STATUS_COMMAND => {
-                let mse_mask: u32 = cfg_space::Command::new().with_mmio_enabled(true).into_bits().into();
+                let mse_mask: u32 = cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits()
+                    .into();
                 if value.valid_mask() & mse_mask != 0 {
                     let command = cfg_space::Command::from_bits(value.extract_low());
                     let new_mmio_enabled = command.mmio_enabled();
@@ -1255,8 +1301,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         // If the write fails, leave BARs unmapped to
                         // avoid SIGBUS from VFIO mmaps that are still
                         // faulting.
-                        let value = value.merge(self.read_phys_config(offset));
-                        if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
+                        if let Err(e) = self.vfio_device.write_config(offset, value) {
                             tracelimit::warn_ratelimited!(
                                 offset,
                                 error = e.as_ref() as &dyn std::error::Error,
@@ -1307,8 +1352,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     match self.msix_enable() {
                         Ok(()) => {
                             let msix = self.msix.as_mut().unwrap();
-                            msix.capability
-                                .write(0, value);
+                            msix.capability.write(0, value);
                             msix.enabled = true;
                         }
                         Err(e) => {
@@ -1322,14 +1366,12 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 } else if was_enabled && !new_enabled {
                     // Write capability first to disable vectors,
                     // then tear down VFIO mapping.
-                    msix.capability
-                        .write(0, value);
+                    msix.capability.write(0, value);
                     self.msix_disable();
                     self.msix.as_mut().unwrap().enabled = false;
                 } else {
                     // No enable/disable transition — just forward.
-                    msix.capability
-                        .write(0, value);
+                    msix.capability.write(0, value);
                 }
                 // Skip write_phys_config for MSI-X control register.
                 return IoResult::Ok;
@@ -1494,14 +1536,21 @@ mod tests {
     }
 
     impl ConfigSpaceRead for MockConfigSpace {
-        fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32> {
+        fn read_config(
+            &self,
+            offset: u16,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> anyhow::Result<()> {
             let off = offset as usize;
-            if off + 4 > self.data.len() {
-                anyhow::bail!("config read offset {offset:#x} out of range");
+            let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
+            let cfg_offset = off + byte_offset as usize;
+            if cfg_offset + len > self.data.len() {
+                anyhow::bail!("config read offset {offset:#x} len {len:#x} out of range");
             }
-            Ok(u32::from_ne_bytes(
-                self.data[off..off + 4].try_into().unwrap(),
-            ))
+            value.set(u32::from_ne_bytes(
+                self.data[cfg_offset..cfg_offset + len].try_into().unwrap(),
+            ));
+            Ok(())
         }
     }
 

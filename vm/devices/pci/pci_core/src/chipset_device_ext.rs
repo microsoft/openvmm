@@ -8,9 +8,9 @@ use crate::spec::hwid::HardwareIds;
 use crate::spec::hwid::ProgrammingInterface;
 use crate::spec::hwid::Subclass;
 use chipset_device::ChipsetDevice;
-use chipset_device::pci::PciConfigSpace;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigSpace;
 
 /// An extension trait to simplify probing PCI [`ChipsetDevice`] devices.
 pub trait PciChipsetDeviceExt: ChipsetDevice + PciConfigSpace {
@@ -36,7 +36,8 @@ where
                 .now_or_never()
                 .map(|_| buf_u32)
                 .unwrap_or(0);
-            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(!0)).unwrap();
+            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(!0))
+                .unwrap();
             let mut buf_u32 = 0;
             let buf = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf_u32);
             masks[i] = self
@@ -44,7 +45,8 @@ where
                 .now_or_never()
                 .map(|_| buf_u32)
                 .unwrap_or(0);
-            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(old)).unwrap();
+            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(old))
+                .unwrap();
         }
         masks
     }

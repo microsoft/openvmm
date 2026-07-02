@@ -224,7 +224,7 @@ impl PciConfigSpace for HostPciBridge {
                 // Configuration registers 70-71 are reserved. Only 72-73 (the top 16
                 // bits of this four-byte range) are defined. We'll therefore shift
                 // off the bottom portion.
-                let mut new_smm_word = value.merge_low(self.state.smm_config_word);
+                let mut new_smm_word = value.merge_high(self.state.smm_config_word);
 
                 // If the register is "locked" (i.e. bit 4 has been set), then
                 // all of the other bits become read-only.

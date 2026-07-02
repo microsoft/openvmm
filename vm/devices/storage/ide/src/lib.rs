@@ -1056,11 +1056,15 @@ impl PciConfigSpace for IdeDevice {
             tracing::trace!(?offset, ?value, "ide pci config space write");
 
             match offset {
-                IdeConfigSpace::PRIMARY_TIMING_REG_ADDR => value.merge_into(&mut self.bus_master_state.timing_reg),
+                IdeConfigSpace::PRIMARY_TIMING_REG_ADDR => {
+                    value.merge_into(&mut self.bus_master_state.timing_reg)
+                }
                 IdeConfigSpace::SECONDARY_TIMING_REG_ADDR => {
                     value.merge_into(&mut self.bus_master_state.secondary_timing_reg)
                 }
-                IdeConfigSpace::UDMA_CTL_REG_ADDR => value.merge_into(&mut self.bus_master_state.dma_ctl_reg),
+                IdeConfigSpace::UDMA_CTL_REG_ADDR => {
+                    value.merge_into(&mut self.bus_master_state.dma_ctl_reg)
+                }
                 _ => tracing::trace!(?offset, "undefined ide pci config space write"),
             }
         }

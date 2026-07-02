@@ -912,11 +912,19 @@ mod tests {
     struct MockDevice;
 
     impl GenericPciBusDevice for MockDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, _value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             None
         }
 
-        fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        fn pci_cfg_write(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
             None
         }
     }
@@ -934,12 +942,20 @@ mod tests {
     }
 
     impl GenericPciBusDevice for MultiFunctionMockDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, _value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             self.stats.lock().direct_reads += 1;
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        fn pci_cfg_write(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
             self.stats.lock().direct_writes += 1;
             Some(IoResult::Ok)
         }
@@ -1195,8 +1211,18 @@ mod tests {
         assert_eq!(
             stats.forward_writes,
             vec![
-                (1, 0, 0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0xAAAA_0000)),
-                (1, 2, 0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0xBBBB_0000))
+                (
+                    1,
+                    0,
+                    0x10,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xAAAA_0000)
+                ),
+                (
+                    1,
+                    2,
+                    0x14,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xBBBB_0000)
+                )
             ]
         );
     }

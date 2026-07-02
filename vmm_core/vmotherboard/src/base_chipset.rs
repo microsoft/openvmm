@@ -664,7 +664,11 @@ mod weak_mutex_pci {
     pub struct WeakMutexPciDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
 
     impl GenericPciBusDevice for WeakMutexPciDeviceWrapper {
-        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             Some(
                 self.0
                     .upgrade()?

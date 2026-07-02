@@ -8,8 +8,8 @@ use crate::io::IoError;
 use crate::io::IoResult;
 use inspect::Inspect;
 use inspect::InspectMut;
-use zerocopy::IntoBytes;
 use mesh::MeshPayload;
+use zerocopy::IntoBytes;
 
 /// Byte enables for the four lanes of a PCI configuration DWORD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, MeshPayload)]

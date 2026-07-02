@@ -762,9 +762,10 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     value.set(!0);
                     IoResult::Ok
                 }),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.read_byte_enabled(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port
+                .port
+                .cfg_space
+                .read_byte_enabled(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_read(addr, value),
         }
     }
@@ -785,9 +786,10 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     value,
                 )
                 .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.write_byte_enabled(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port
+                .port
+                .cfg_space
+                .write_byte_enabled(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }
@@ -880,11 +882,19 @@ impl RootPort {
         }
     }
 
-    fn forward_cfg_read(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordRead<'_>) -> IoResult {
+    fn forward_cfg_read(
+        &mut self,
+        addr: PciConfigAddress,
+        value: ByteEnabledDwordRead<'_>,
+    ) -> IoResult {
         self.port.forward_cfg_read_with_routing(addr, value)
     }
 
-    fn forward_cfg_write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
+    fn forward_cfg_write(
+        &mut self,
+        addr: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
         self.port.forward_cfg_write_with_routing(addr, value)
     }
 }
@@ -1099,7 +1109,11 @@ mod tests {
     }
 
     impl GenericPciBusDevice for DeferredEndpoint {
-        fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             let mut state = self.state.lock();
             if state.defer_reads {
                 let (deferred, token) = defer_read();
@@ -1128,7 +1142,11 @@ mod tests {
     struct SwitchAdapter(Arc<Mutex<GenericPcieSwitch>>);
 
     impl GenericPciBusDevice for SwitchAdapter {
-        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             Some(self.0.lock().pci_cfg_read(offset, value))
         }
 
@@ -1517,7 +1535,13 @@ mod tests {
         state.lock().pending_write.take().unwrap().complete();
         poll_root(&mut rc);
         full_write_token.write_future().await.unwrap();
-        assert_eq!(state.lock().writes.pop(), Some((0, ByteEnabledDwordWrite::with_all_bytes_enabled(0xaabb_ccdd))));
+        assert_eq!(
+            state.lock().writes.pop(),
+            Some((
+                0,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xaabb_ccdd)
+            ))
+        );
 
         let full_write = rc.mmio_write(ENDPOINT_ECAM, 0x1122_3344u32.as_bytes());
         let IoResult::Defer(full_write_token) = full_write else {
@@ -1571,7 +1595,9 @@ mod tests {
                 SWITCH_BUS,
                 0,
                 0x18,
-                ByteEnabledDwordWrite::with_all_bytes_enabled((10u32 << 16) | ((SWITCH_INTERNAL_BUS as u32) << 8) | SWITCH_BUS as u32),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    (10u32 << 16) | ((SWITCH_INTERNAL_BUS as u32) << 8) | SWITCH_BUS as u32,
+                ),
             )
             .unwrap();
         switch
@@ -1581,9 +1607,11 @@ mod tests {
                 SWITCH_INTERNAL_BUS,
                 0,
                 0x18,
-                ByteEnabledDwordWrite::with_all_bytes_enabled(((ENDPOINT_BUS as u32) << 16)
-                    | ((ENDPOINT_BUS as u32) << 8)
-                    | SWITCH_INTERNAL_BUS as u32),
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    ((ENDPOINT_BUS as u32) << 16)
+                        | ((ENDPOINT_BUS as u32) << 8)
+                        | SWITCH_INTERNAL_BUS as u32,
+                ),
             )
             .unwrap();
 
@@ -1832,12 +1860,16 @@ mod tests {
         // Test that forwarding returns Ok but doesn't crash when bus range is invalid
         let addr = PciConfigAddress::new(1, 0, 0x0).unwrap();
         let mut value = 0u32;
-        let result = root_port
-            .port
-            .forward_cfg_read_with_routing(addr, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value));
+        let result = root_port.port.forward_cfg_read_with_routing(
+            addr,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+        );
         assert!(matches!(result, IoResult::Ok));
 
-        let result = root_port.port.forward_cfg_write_with_routing(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
+        let result = root_port.port.forward_cfg_write_with_routing(
+            addr,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(value),
+        );
         assert!(matches!(result, IoResult::Ok));
     }
 

@@ -1509,7 +1509,6 @@ impl ConfigSpaceType1Emulator {
         self.read(addr, value)
     }
 
-
     /// Write to the config space.
     pub fn write(&mut self, address: PciConfigAddress, val: ByteEnabledDwordWrite) -> IoResult {
         use cfg_space::HeaderType01;
@@ -1601,7 +1600,6 @@ impl ConfigSpaceType1Emulator {
 
         self.write(addr, value)
     }
-
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.
     pub fn is_pcie_device(&self) -> bool {

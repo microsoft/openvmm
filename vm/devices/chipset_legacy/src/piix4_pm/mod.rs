@@ -390,7 +390,9 @@ impl PciConfigSpace for Piix4Pm {
             }
             ConfigSpace::COUNT_A => value.merge_into(&mut self.state.counter_info_a),
             ConfigSpace::COUNT_B => value.merge_into(&mut self.state.counter_info_b),
-            ConfigSpace::GENERAL_PURPOSE => value.merge_into(&mut self.state.general_purpose_config_info),
+            ConfigSpace::GENERAL_PURPOSE => {
+                value.merge_into(&mut self.state.general_purpose_config_info)
+            }
             ConfigSpace::ACTIVITY_A => value.merge_into(&mut self.state.device_activity_flags[0]),
             ConfigSpace::ACTIVITY_B => value.merge_into(&mut self.state.device_activity_flags[1]),
             ConfigSpace::RESOURCE_A => value.merge_into(&mut self.state.device_resource_flags[0]),

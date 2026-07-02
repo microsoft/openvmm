@@ -292,7 +292,10 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                                 self.device.supports_pio().unwrap().io_write(address, &data);
                             self.handle_write_result(id, result);
                         }
-                        DeviceRequest::PciConfigRead(ReadRequest { id, address, size }, byte_enable) => {
+                        DeviceRequest::PciConfigRead(
+                            ReadRequest { id, address, size },
+                            byte_enable,
+                        ) => {
                             assert_eq!(size, 4);
                             let mut data_u32 = 0;
                             let mut value = ByteEnabledDwordRead::new(&mut data_u32, byte_enable);
@@ -303,7 +306,10 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                                 .pci_cfg_read(address, value.reborrow());
                             self.handle_read_result(id, result, data_u32.to_ne_bytes().to_vec());
                         }
-                        DeviceRequest::PciConfigWrite(WriteRequest { id, address, data }, byte_enable) => {
+                        DeviceRequest::PciConfigWrite(
+                            WriteRequest { id, address, data },
+                            byte_enable,
+                        ) => {
                             let value = ByteEnabledDwordWrite::new(data, byte_enable);
                             let result = self
                                 .device

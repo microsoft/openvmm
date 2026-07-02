@@ -2009,33 +2009,84 @@ mod tests {
         let base_address = 0x80000000;
         guest_driver.start_device(base_address).await;
         for i in 0..6 {
-            let result = pci.lock().pci_cfg_write(0x10 + 4 * i, ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff));
+            let result = pci.lock().pci_cfg_write(
+                0x10 + 4 * i,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+            );
             complete_write(result).await;
         }
 
         let mut value = 0;
-        pci.lock().pci_cfg_read(0x10, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value & 0xfffffff0, 0xfffff000);
         assert_eq!(value & 0x4, 0x4); // 64-bit BAR
         assert_eq!(value & 0x8, 0x8); // prefetchable
-        pci.lock().pci_cfg_read(0x14, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0xffffffff);
-        pci.lock().pci_cfg_read(0x18, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x18,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x1c, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x1c,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x20, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x20,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x24, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x24,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
 
-        complete_write(pci.lock().pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0x20))).await;
-        complete_write(pci.lock().pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0x0))).await;
-        pci.lock().pci_cfg_read(0x10, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0x20)),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0x0)),
+        )
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value & 0xfffffff0, 0);
         assert_eq!(value & 0x4, 0x4); // 64-bit BAR
         assert_eq!(value & 0x8, 0x8); // prefetchable
-        pci.lock().pci_cfg_read(0x14, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
 
         complete_write(
@@ -2051,13 +2102,31 @@ mod tests {
         .await;
 
         // Writes to BAR address are not allowed once MMIO is enabled.
-        complete_write(pci.lock().pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff))).await;
-        complete_write(pci.lock().pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff))).await;
-        pci.lock().pci_cfg_read(0x10, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value & 0xfffffff0, 0);
         assert_eq!(value & 0x4, 0x4); // 64-bit BAR
         assert_eq!(value & 0x8, 0x8); // prefetchable
-        pci.lock().pci_cfg_read(0x14, ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
     }
 
@@ -2209,36 +2278,45 @@ mod tests {
         };
 
         let bar_address1 = 0x2000000000;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(u32::try_from(bar_address1 >> 32).unwrap())),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 >> 32).unwrap(),
+            ),
+        ))
         .await;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(u32::try_from(bar_address1 & 0xffffffff).unwrap())),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 & 0xffffffff).unwrap(),
+            ),
+        ))
         .await;
 
         let bar_address2: u64 = 0x4000;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x1c, ByteEnabledDwordWrite::with_all_bytes_enabled(u32::try_from(bar_address2 >> 32).unwrap())),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 >> 32).unwrap(),
+            ),
+        ))
         .await;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x18, ByteEnabledDwordWrite::with_all_bytes_enabled(u32::try_from(bar_address2 & 0xffffffff).unwrap())),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 & 0xffffffff).unwrap(),
+            ),
+        ))
         .await;
 
         complete_write(
             pci.lock().pci_cfg_write(
                 0x4,
                 ByteEnabledDwordWrite::with_all_bytes_enabled(
-                pci_core::spec::cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32),
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
             ),
         )
         .await;
