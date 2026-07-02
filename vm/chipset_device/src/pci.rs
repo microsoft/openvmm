@@ -4,10 +4,14 @@
 //! PCI configuration space access
 
 use crate::ChipsetDevice;
+use crate::io::IoError;
 use crate::io::IoResult;
+use inspect::Inspect;
+use inspect::InspectMut;
+use zerocopy::IntoBytes;
 
 /// Byte enables for the four lanes of a PCI configuration DWORD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
 pub struct PciConfigByteEnable(u8);
 
 impl PciConfigByteEnable {
@@ -37,19 +41,30 @@ impl PciConfigByteEnable {
     }
 
     /// Create byte enables for an access at `offset` with byte length `len`.
-    pub const fn from_offset_len(offset: u16, len: usize) -> Option<Self> {
+    pub const fn from_offset_len(offset: u16, len: usize) -> Result<Self, IoError> {
         let lane = (offset & 0x3) as u8;
         match len {
-            1 => Some(Self(1 << lane)),
-            2 if lane & 1 == 0 && lane <= 2 => Some(Self(0x3 << lane)),
-            4 if lane == 0 => Some(Self::FULL),
-            _ => None,
+            1 => Ok(Self(1 << lane)),
+            2 if lane & 1 == 0 && lane <= 2 => Ok(Self(0x3 << lane)),
+            4 if lane == 0 => Ok(Self::FULL),
+            2 | 4 => Err(IoError::UnalignedAccess),
+            _ => Err(IoError::InvalidAccessSize),
         }
+    }
+
+    /// Returns the byte offset of the first enabled byte in the DWORD and the number of enabled bytes.
+    pub const fn to_byte_offset_len(self) -> (u16, usize) {
+        (self.0.trailing_zeros() as u16, self.0.count_ones() as usize)
     }
 
     /// Raw byte-lane bits.
     pub const fn bits(self) -> u8 {
         self.0
+    }
+
+    /// Returns true if all byte lanes are enabled.
+    pub const fn is_full(self) -> bool {
+        self.0 == 0xf
     }
 
     /// `u32` mask corresponding to the enabled byte lanes.
@@ -90,7 +105,7 @@ impl PciConfigByteEnable {
 }
 
 /// A DWORD value with byte enables for PCI configuration space write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
 pub struct ByteEnabledDwordWrite {
     value: u32,
     byte_enable: PciConfigByteEnable,
@@ -108,6 +123,21 @@ impl ByteEnabledDwordWrite {
     /// Create a full-DWORD value with all byte lanes enabled.
     pub const fn with_all_bytes_enabled(value: u32) -> Self {
         Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Create a byte-enabled DWORD value from a slice of bytes.
+    pub fn from_intercept_buffer(byte_enable: PciConfigByteEnable, buffer: &[u8]) -> Self {
+        let mut temp: u32 = 0;
+        let (byte_offset, len) = byte_enable.to_byte_offset_len();
+        assert!(len <= buffer.len());
+        let byte_offset = byte_offset as usize;
+        temp.as_mut_bytes()[byte_offset..byte_offset + len].copy_from_slice(buffer);
+        Self::new(temp, byte_enable)
+    }
+
+    /// Returns true if all byte lanes are enabled.
+    pub const fn is_full(self) -> bool {
+        self.byte_enable.is_full()
     }
 
     /// Get the mask of valid bytes.
@@ -154,7 +184,7 @@ impl ByteEnabledDwordWrite {
 }
 
 /// A DWORD value with byte enables for PCI configuration space read.
-#[derive(Debug)]
+#[derive(Debug, InspectMut)]
 pub struct ByteEnabledDwordRead<'a> {
     value: &'a mut u32,
     byte_enable: PciConfigByteEnable,
@@ -169,6 +199,19 @@ impl<'a> ByteEnabledDwordRead<'a> {
     /// Create a full-DWORD value with all byte lanes enabled.
     pub const fn with_all_bytes_enabled(value: &'a mut u32) -> Self {
         Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Retrieve the underlying byte enable.
+    pub const fn byte_enable(&self) -> PciConfigByteEnable {
+        self.byte_enable
+    }
+
+    /// Fill the intercept buffer with the enabled byte lanes of the DWORD.
+    pub fn fill_intercept_buffer(self, buffer: &mut [u8]) {
+        let (byte_offset, len) = self.byte_enable.to_byte_offset_len();
+        let byte_offset = byte_offset as usize;
+        let src = self.value.as_bytes()[byte_offset..byte_offset + len].as_ref();
+        buffer.copy_from_slice(src);
     }
 
     /// Update the value of the DWORD, honoring byte enables.
@@ -231,7 +274,7 @@ impl<'a> ByteEnabledDwordRead<'a> {
 }
 
 /// A PCI configuration space request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
 pub struct PciConfigAddress {
     /// Target bus number.
     pub bus: u8,
@@ -434,10 +477,22 @@ mod tests {
             0b1111
         );
 
-        assert_eq!(PciConfigByteEnable::from_offset_len(1, 2), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(3, 2), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(1, 4), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(0, 3), None);
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(1, 2),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(3, 2),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(1, 4),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(0, 3),
+            Err(IoError::InvalidAccessSize)
+        ));
     }
 
     #[test]
@@ -459,6 +514,22 @@ mod tests {
         assert_eq!(byte_enable.mask(), 0xffff_ffff);
         assert_eq!(byte_enable.extract(0x1234_5678), 0x1234_5678);
         assert_eq!(byte_enable.merge(0xaaaa_aaaa, 0x1234_5678), 0x1234_5678);
+    }
+
+    #[test]
+    fn byte_enabled_intercept_buffers_copy_selected_lanes() {
+        let write = ByteEnabledDwordWrite::from_intercept_buffer(
+            PciConfigByteEnable::HIGH_WORD,
+            &[0x22, 0x11],
+        );
+        assert_eq!(write.extract(), 0x1122_0000);
+        assert_eq!(write.merge(0xaabb_ccdd), 0x1122_ccdd);
+
+        let mut value = 0x5566_7788;
+        let read = ByteEnabledDwordRead::new(&mut value, PciConfigByteEnable::HIGH_WORD);
+        let mut buffer = [0; 2];
+        read.fill_intercept_buffer(&mut buffer);
+        assert_eq!(buffer, [0x66, 0x55]);
     }
 
     #[test]

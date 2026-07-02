@@ -32,9 +32,7 @@ struct VfioType1DmaTarget {
 
 impl membacking::DmaTarget for VfioType1DmaTarget {
     unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
-        let vaddr = request
-            .host_va
-            .expect("VFIO type1 requires host VA (registered with needs_va=true)");
+        let vaddr = request.host_va;
         let range = request.range;
         let _span = tracing::info_span!("vfio map", %range).entered();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
@@ -432,13 +430,14 @@ impl VfioContainerManager {
             container: container.clone(),
         });
 
-        // Register as a DMA mapper — the region manager will create a
-        // VaMapper internally (since needs_va is true) and replay all
-        // existing active sub-mappings (guest RAM + any active device
-        // BARs) into this container's IOMMU.
+        // Register as a DMA mapper. This target programs the IOMMU by host VA,
+        // so it does not require a backing fd (needs_fd = false) and is
+        // compatible with private RAM. The region manager replays all existing
+        // active sub-mappings (guest RAM + any active device BARs) into this
+        // container's IOMMU.
         let dma_handle = self
             .dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register VFIO container with region manager")?;
 
@@ -480,9 +479,7 @@ struct IommufdDmaTarget {
 
 impl membacking::DmaTarget for IommufdDmaTarget {
     unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
-        let vaddr = request
-            .host_va
-            .expect("iommufd IOAS map requires host VA (registered with needs_va=true)");
+        let vaddr = request.host_va;
         let range = request.range;
         let iova = range.start();
         let user_va = vaddr as u64;
@@ -595,8 +592,10 @@ impl IoasManager {
             ctx: ctx.clone(),
             ioas_id,
         });
+        // This target programs the IOMMU by host VA, so it does not require a
+        // backing fd (needs_fd = false) and is compatible with private RAM.
         let dma_handle = dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register iommufd IOAS with region manager")?;
 

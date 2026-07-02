@@ -610,6 +610,7 @@ dependencies = [
  "mesh",
  "tdisp",
  "vmcore",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4213,6 +4214,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "static_assertions",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -6162,6 +6164,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "mesh",
+ "pci_core",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
