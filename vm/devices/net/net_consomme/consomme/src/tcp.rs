@@ -714,12 +714,10 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
-        tcp.emit(
-            &mut tcp_packet,
-            &dst_ip_addr,
-            &src_ip_addr,
-            &ChecksumCapabilities::default(),
-        );
+        // Checksum is filled by `fill_checksum` below, after the payload is copied in.
+        let mut checksum_caps = ChecksumCapabilities::default();
+        checksum_caps.tcp = smoltcp::phy::Checksum::None;
+        tcp.emit(&mut tcp_packet, &dst_ip_addr, &src_ip_addr, &checksum_caps);
 
         // Copy payload into TCP packet
         if let Some(payload) = &payload {
