@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ArtifactSource;
 use petri_artifacts_core::AsArtifactHandle;
@@ -952,10 +953,14 @@ pub fn get_path(
         get_repo_root()?.join(search_path)
     };
 
+    // Return a descriptive error (including the path we looked for) rather than
+    // writing to stderr, so callers that expect a possible miss — e.g.
+    // `resolve_source` falling back to a remote URL — can recover silently.
     let full_path = file_path.join(file_name);
     if !full_path.exists() {
-        eprintln!("Failed to find {:?}.", full_path);
-        missing_cmd.to_error()?;
+        missing_cmd
+            .to_error()
+            .with_context(|| format!("failed to find {}", full_path.display()))?;
     }
 
     Ok(full_path)
