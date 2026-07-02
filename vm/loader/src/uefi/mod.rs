@@ -330,6 +330,8 @@ pub enum Error {
     InvalidSharedGpaBoundary,
     #[error("Invalid config type")]
     InvalidConfigType(String),
+    #[error("x86_64 UEFI firmware requires the hypervisor to be enabled")]
+    HvRequired,
     #[error("Importer error")]
     Importer(#[source] anyhow::Error),
     #[error("PageTableBuilder: {0}")]
@@ -389,11 +391,22 @@ pub mod x86_64 {
     pub const CONFIG_BLOB_GPA_BASE: u64 = MISC_PAGES_GPA_BASE + MISC_PAGES_SIZE; // 0x709000
 
     /// Load a UEFI image with the provided config type.
+    ///
+    /// `hv_enabled` indicates whether the hypervisor (HV#1) enlightenments are
+    /// exposed to the guest. On x86_64 the firmware always runs under Hyper-V,
+    /// so `false` is rejected with [`Error::HvRequired`]. This parameter exists
+    /// to keep a uniform signature with the aarch64 loader, where it selects the
+    /// SEC platform type.
     pub fn load(
         importer: &mut dyn ImageLoad<X86Register>,
         image: &[u8],
         config: ConfigType,
+        hv_enabled: bool,
     ) -> Result<LoadInfo, Error> {
+        if !hv_enabled {
+            return Err(Error::HvRequired);
+        }
+
         if image.len() != IMAGE_SIZE as usize {
             return Err(Error::InvalidImageSize);
         }
@@ -873,10 +886,20 @@ pub mod aarch64 {
     pub const CONFIG_BLOB_GPA_BASE: u64 = 0x824000;
 
     /// Load a UEFI image with the provided config type.
+    ///
+    /// `hv_enabled` indicates whether the hypervisor (HV#1) enlightenments are
+    /// exposed to the guest. It selects the SEC platform type passed to the
+    /// firmware in `x2` at SEC entry:
+    /// [`HYPERV`](loader_defs::uefi::SecPlatformType::HYPERV) when `true`, or
+    /// [`GENERIC`](loader_defs::uefi::SecPlatformType::GENERIC) when `false` so
+    /// the firmware does not attempt to use hypervisor-specific facilities.
+    /// `GENERIC` is required to boot UEFI without hypervisor support (e.g.
+    /// aarch64 KVM).
     pub fn load(
         importer: &mut dyn ImageLoad<Aarch64Register>,
         image: &[u8],
         config: ConfigType,
+        hv_enabled: bool,
     ) -> Result<LoadInfo, Error> {
         if image.len() != IMAGE_SIZE as usize {
             return Err(Error::InvalidImageSize);
@@ -957,6 +980,15 @@ pub mod aarch64 {
         import_reg(Aarch64Register::X0(0x1000))?;
         import_reg(Aarch64Register::Pc(0x1000))?;
         import_reg(Aarch64Register::X1(stack_end))?;
+
+        // Pass the SEC platform type to the firmware in x2, so it knows whether
+        // to use hypervisor-specific facilities.
+        let platform_type = if hv_enabled {
+            loader_defs::uefi::SecPlatformType::HYPERV
+        } else {
+            loader_defs::uefi::SecPlatformType::GENERIC
+        };
+        import_reg(Aarch64Register::X2(platform_type.0))?;
 
         import_reg(Aarch64Register::Ttbr0El1(page_table_offset))?;
 

@@ -163,6 +163,43 @@ async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
     Ok(())
 }
 
+/// Boot aarch64 Linux direct with the hypervisor (HV#1) enlightenments
+/// disabled.
+///
+/// Exercises the no-hv configuration: no hypervisor enlightenments and, as a
+/// consequence, no VMBus. Virtio-vsock provides the pipette transport.
+#[openvmm_test(linux_direct_aarch64)]
+async fn boot_no_hv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot aarch64 Linux via UEFI with the hypervisor (HV#1) enlightenments
+/// disabled.
+///
+/// Exercises the aarch64 UEFI no-hv path, where the loader passes the `Generic`
+/// SEC platform type to the firmware in `x2`. With VMBus disabled, the guest
+/// boots from PCIe NVMe and uses virtio-vsock for the pipette transport.
+#[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+async fn boot_no_hv_uefi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot with private anonymous memory instead of shared memory sections.
 #[openvmm_test(
     linux_direct_x64,

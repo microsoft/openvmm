@@ -454,7 +454,7 @@ impl IgvmfilegenRegister for X86Register {
         image: &[u8],
         config: loader::uefi::ConfigType,
     ) -> Result<loader::uefi::LoadInfo, loader::uefi::Error> {
-        loader::uefi::x86_64::load(importer, image, config)
+        loader::uefi::x86_64::load(importer, image, config, true)
     }
 
     fn load_linux_kernel_and_initrd<F>(
@@ -509,7 +509,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         image: &[u8],
         config: loader::uefi::ConfigType,
     ) -> Result<loader::uefi::LoadInfo, loader::uefi::Error> {
-        loader::uefi::aarch64::load(importer, image, config)
+        loader::uefi::aarch64::load(importer, image, config, true)
     }
 
     fn load_linux_kernel_and_initrd<F>(

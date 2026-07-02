@@ -147,6 +147,7 @@ impl PetriVmConfigOpenVmm {
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
+            no_hv: properties.no_hv,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -582,7 +583,7 @@ impl PetriVmConfigOpenVmm {
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
-                with_hv: true,
+                with_hv: !properties.no_hv,
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
@@ -726,6 +727,7 @@ struct PetriVmConfigSetupCore<'a> {
     enable_serial: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
+    no_hv: bool,
 }
 
 struct SerialData {
@@ -908,6 +910,7 @@ impl PetriVmConfigSetupCore<'_> {
                     bios_guid: Guid::new_random(),
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
+                    enable_hv: !self.no_hv,
                 }
             }
             (

@@ -102,6 +102,7 @@ pub fn aarch64_initial_regs(
             Aarch64Register::Pc(v) => state.registers.pc = v,
             Aarch64Register::X0(v) => state.registers.x0 = v,
             Aarch64Register::X1(v) => state.registers.x1 = v,
+            Aarch64Register::X2(v) => state.registers.x2 = v,
             Aarch64Register::Cpsr(v) => state.registers.cpsr = v,
             Aarch64Register::Ttbr0El1(v) => state.system_registers.ttbr0_el1 = v,
             Aarch64Register::MairEl1(v) => state.system_registers.mair_el1 = v,
