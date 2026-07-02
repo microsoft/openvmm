@@ -60,7 +60,6 @@ use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
-use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
@@ -792,6 +791,19 @@ mod saved_state {
             #[mesh(4)]
             pub interrupt_status: u32,
         }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "virtio.transport.pci")]
+        pub struct CfgCapSavedState {
+            #[mesh(1)]
+            pub bar: u8,
+            #[mesh(2)]
+            pub id: u8,
+            #[mesh(3)]
+            pub offset: u32,
+            #[mesh(4)]
+            pub length: u32,
+        }
     }
 
     use super::*;
@@ -837,6 +849,35 @@ mod saved_state {
             }
             self.pci.msix_config_vector = state.msix_config_vector;
 
+            Ok(())
+        }
+    }
+
+    impl SaveRestore for VirtioPciCfgCapability {
+        type SavedState = state::CfgCapSavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            let state = self.state.lock();
+            Ok(state::CfgCapSavedState {
+                bar: state.bar,
+                id: state.id,
+                offset: state.offset,
+                length: state.length,
+            })
+        }
+
+        fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::CfgCapSavedState {
+                bar,
+                id,
+                offset,
+                length,
+            } = saved_state;
+            let mut state = self.state.lock();
+            state.bar = bar;
+            state.id = id;
+            state.offset = offset;
+            state.length = length;
             Ok(())
         }
     }
@@ -1053,53 +1094,6 @@ impl PciCapability for VirtioPciCfgCapability {
 
     fn reset(&mut self) {
         *self.state.lock() = PciCfgAccessState::default();
-    }
-}
-
-impl SaveRestore for VirtioPciCfgCapability {
-    type SavedState = pci_cfg_cap_state::SavedState;
-
-    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        let state = self.state.lock();
-        Ok(pci_cfg_cap_state::SavedState {
-            bar: state.bar,
-            id: state.id,
-            offset: state.offset,
-            length: state.length,
-        })
-    }
-
-    fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
-        let pci_cfg_cap_state::SavedState {
-            bar,
-            id,
-            offset,
-            length,
-        } = saved_state;
-        let mut state = self.state.lock();
-        state.bar = bar;
-        state.id = id;
-        state.offset = offset;
-        state.length = length;
-        Ok(())
-    }
-}
-
-mod pci_cfg_cap_state {
-    use mesh::payload::Protobuf;
-    use vmcore::save_restore::SavedStateRoot;
-
-    #[derive(Protobuf, SavedStateRoot)]
-    #[mesh(package = "virtio.transport.pci.cfg_cap")]
-    pub struct SavedState {
-        #[mesh(1)]
-        pub bar: u8,
-        #[mesh(2)]
-        pub id: u8,
-        #[mesh(3)]
-        pub offset: u32,
-        #[mesh(4)]
-        pub length: u32,
     }
 }
 
