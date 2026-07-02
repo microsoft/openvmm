@@ -4,8 +4,8 @@
 //! Bindings for the Linux iommufd subsystem (`/dev/iommu`).
 //!
 //! Provides safe wrappers around `IOMMU_IOAS_ALLOC`, `IOMMU_IOAS_MAP`,
-//! `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls, which together support
-//! identity DMA mapping via an IOAS.
+//! `IOMMU_IOAS_MAP_FILE`, `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls,
+//! which together support identity DMA mapping via an IOAS.
 
 use anyhow::Context as _;
 use std::fs;
@@ -22,6 +22,7 @@ const IOMMUFD_CMD_DESTROY: u8 = IOMMUFD_CMD_BASE;
 const IOMMUFD_CMD_IOAS_ALLOC: u8 = IOMMUFD_CMD_BASE + 1;
 const IOMMUFD_CMD_IOAS_MAP: u8 = IOMMUFD_CMD_BASE + 5;
 const IOMMUFD_CMD_IOAS_UNMAP: u8 = IOMMUFD_CMD_BASE + 6;
+const IOMMUFD_CMD_IOAS_MAP_FILE: u8 = IOMMUFD_CMD_BASE + 15;
 
 /// Flags for `IOMMU_IOAS_MAP`.
 pub const IOMMU_IOAS_MAP_FIXED_IOVA: u32 = 1 << 0;
@@ -58,6 +59,14 @@ mod ioctl {
         super::IommuIoasMap
     );
     nix::ioctl_readwrite_bad!(
+        iommu_ioas_map_file,
+        request_code_none!(
+            super::IOMMUFD_TYPE as u32,
+            super::IOMMUFD_CMD_IOAS_MAP_FILE as u32
+        ),
+        super::IommuIoasMapFile
+    );
+    nix::ioctl_readwrite_bad!(
         iommu_ioas_unmap,
         request_code_none!(
             super::IOMMUFD_TYPE as u32,
@@ -89,6 +98,17 @@ pub struct IommuIoasMap {
     pub ioas_id: u32,
     pub __reserved: u32,
     pub user_va: u64,
+    pub length: u64,
+    pub iova: u64,
+}
+
+#[repr(C)]
+pub struct IommuIoasMapFile {
+    pub size: u32,
+    pub flags: u32,
+    pub ioas_id: u32,
+    pub fd: i32,
+    pub start: u64,
     pub length: u64,
     pub iova: u64,
 }
@@ -177,6 +197,48 @@ impl IommufdCtx {
         unsafe {
             ioctl::iommu_ioas_map(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_IOAS_MAP failed")?;
+        }
+        Ok(())
+    }
+
+    /// Map a file/memfd range into an IOAS at a fixed IOVA via
+    /// `IOMMU_IOAS_MAP_FILE`.
+    ///
+    /// Unlike [`Self::ioas_map`], the kernel pins the backing folios directly
+    /// from `fd`, so no host VA is required. `start` is the byte offset within
+    /// the file (must be page-aligned). Requires a kernel with
+    /// `IOMMU_IOAS_MAP_FILE` (Linux 6.13+).
+    pub fn ioas_map_file(
+        &self,
+        ioas_id: u32,
+        iova: u64,
+        fd: RawFd,
+        start: u64,
+        length: u64,
+        writable: bool,
+    ) -> anyhow::Result<()> {
+        let mut flags = IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_READABLE;
+        if writable {
+            flags |= IOMMU_IOAS_MAP_WRITEABLE;
+        }
+        let mut cmd = IommuIoasMapFile {
+            size: size_of::<IommuIoasMapFile>() as u32,
+            flags,
+            ioas_id,
+            fd,
+            start,
+            length,
+            iova,
+        };
+        // SAFETY: the iommufd fd is valid and the struct is correctly sized and
+        // constructed. `fd` is only read during the ioctl.
+        unsafe {
+            ioctl::iommu_ioas_map_file(self.file.as_raw_fd(), &mut cmd).with_context(|| {
+                format!(
+                    "IOMMU_IOAS_MAP_FILE failed: iova={iova:#x} fd={fd} \
+                     start={start:#x} length={length:#x} ioas_id={ioas_id}"
+                )
+            })?;
         }
         Ok(())
     }
