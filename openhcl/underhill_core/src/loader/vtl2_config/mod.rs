@@ -464,6 +464,14 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
     };
 
+    // Product policy support is not compiled in; the measured config must
+    // not carry one.
+    #[cfg(not(feature = "product_policy"))]
+    assert_eq!(
+        measured_config.product_policy_size, 0,
+        "measured config carries a product policy but the product_policy feature is not enabled"
+    );
+
     drop(mapping);
 
     let vtom_offset_bit = if measured_config.vtom_offset_bit == 0 {
