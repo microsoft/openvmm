@@ -191,6 +191,15 @@ impl BufferAccess for BufferPool {
         self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data);
     }
 
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        let mut offset = self.offset(id) + RX_HEADER_LEN;
+        for segment in segments {
+            self.buffers.write_at(offset, segment);
+            offset += segment.len() as u32;
+        }
+        self.write_header(id, metadata);
+    }
+
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
         #[repr(C)]
         #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
