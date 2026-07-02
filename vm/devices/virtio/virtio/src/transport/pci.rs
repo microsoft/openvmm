@@ -47,6 +47,8 @@ use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::cfg_space_emu::IntxInterrupt;
 use pci_core::msi::MsiTarget;
+use pci_core::spec::caps::COMMON_HEADER_END;
+use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -56,6 +58,10 @@ use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
+use vmcore::save_restore::NoSavedState;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
@@ -129,6 +135,12 @@ struct PciTransport {
     msix_config_vector: u16,
     #[inspect(hex)]
     shared_memory_size: u64,
+    /// Shared window state for the `VIRTIO_PCI_CAP_PCI_CFG` capability.
+    #[inspect(skip)]
+    pci_cfg_access: Arc<Mutex<PciCfgAccessState>>,
+    /// Config-space offset of the `pci_cfg_data` window.
+    #[inspect(hex)]
+    pci_cfg_data_offset: u16,
 }
 
 impl TransportOps for PciTransport {
@@ -304,6 +316,25 @@ impl VirtioPciDevice {
                 .map_err(io::Error::other)?;
         }
 
+        // Add the VIRTIO_PCI_CAP_PCI_CFG capability last. It provides an
+        // alternative access path to the virtio BAR regions through PCI
+        // configuration space. The `pci_cfg_data` window is serviced by
+        // `pci_cfg_read`/`pci_cfg_write` below, using the shared window state.
+        let pci_cfg_access = Arc::new(Mutex::new(PciCfgAccessState::default()));
+        caps.push(Box::new(VirtioPciCfgCapability {
+            state: pci_cfg_access.clone(),
+        }));
+        // Capabilities are laid out consecutively starting at the end of the
+        // common PCI header in the order they appear in `caps`; the pci_cfg
+        // capability is last, so its offset is the header end plus the total
+        // length of all preceding capabilities.
+        let pci_cfg_cap_offset = COMMON_HEADER_END
+            + caps[..caps.len() - 1]
+                .iter()
+                .map(|c| c.len() as u16)
+                .sum::<u16>();
+        let pci_cfg_data_offset = pci_cfg_cap_offset + VIRTIO_PCI_CFG_DATA_OFFSET;
+
         let mut config_space = ConfigSpaceType0Emulator::new(hardware_ids, caps, Vec::new(), bars);
         let interrupt_kind = match interrupt_model {
             PciInterruptModel::Msix(_) => InterruptKind::Msix(msix.unwrap()),
@@ -322,6 +353,8 @@ impl VirtioPciDevice {
                 interrupt_status: Arc::new(Mutex::new(0)),
                 msix_config_vector: 0,
                 shared_memory_size,
+                pci_cfg_access,
+                pci_cfg_data_offset,
             },
         })
     }
@@ -517,6 +550,120 @@ impl VirtioPciDevice {
         });
     }
 
+    /// Service a read of the `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
+    ///
+    /// The accessed bytes are placed at their natural position within the
+    /// returned dword (`offset & 3`), matching how the PCI configuration
+    /// mechanism extracts sub-dword accesses. The device-config region is
+    /// owned by the async device task and is therefore deferred; that path
+    /// fills the low bytes of the dword, so it is only accurate for
+    /// dword-aligned device-config accesses (the common case).
+    fn read_pci_cfg_data(&mut self, value: &mut u32) -> IoResult {
+        let (bar, offset, length) = {
+            let state = self.pci.pci_cfg_access.lock();
+            (state.bar, state.offset, state.length)
+        };
+        // Per the virtio spec, length MUST be 1, 2, or 4 and offset MUST be a
+        // multiple of length. Reject anything else without panicking.
+        if !matches!(length, 1 | 2 | 4) {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+        if !offset.is_multiple_of(length) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+        let len = length as usize;
+        if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET as u32 {
+            return defer_config_read(
+                &self.core.device_sender,
+                (offset - BAR0_DEVICE_CFG_OFFSET as u32) as u16,
+                len as u8,
+            );
+        }
+        let byte = (offset & 3) as usize;
+        let mut buf = [0u8; 4];
+        let result = self.read_pci_cfg_bar(bar, offset, &mut buf[byte..byte + len]);
+        if let IoResult::Ok = result {
+            *value = u32::from_le_bytes(buf);
+        }
+        result
+    }
+
+    /// Service a write of the `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
+    fn write_pci_cfg_data(&mut self, value: u32) -> IoResult {
+        let (bar, offset, length) = {
+            let state = self.pci.pci_cfg_access.lock();
+            (state.bar, state.offset, state.length)
+        };
+        if !matches!(length, 1 | 2 | 4) {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+        if !offset.is_multiple_of(length) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+        let len = length as usize;
+        let byte = (offset & 3) as usize;
+        let bytes = value.to_le_bytes();
+        let data = &bytes[byte..byte + len];
+        if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET as u32 {
+            return defer_config_write(
+                &self.core.device_sender,
+                (offset - BAR0_DEVICE_CFG_OFFSET as u32) as u16,
+                data,
+            );
+        }
+        self.write_pci_cfg_bar(bar, offset, data)
+    }
+
+    /// Read `data.len()` bytes from a synchronous BAR region (BAR0 transport or
+    /// BAR2 MSI-X) on behalf of a `pci_cfg_data` access. The device-config
+    /// region must be handled separately via deferral by the caller.
+    fn read_pci_cfg_bar(&mut self, bar: u8, offset: u32, data: &mut [u8]) -> IoResult {
+        match bar {
+            0 => self.read_transport(offset as u16, data),
+            2 => read_as_u32_chunks(offset as u16, data, |offset| {
+                if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
+                    msix.read_u32(offset as u64)
+                } else {
+                    !0
+                }
+            }),
+            _ => return IoResult::Err(IoError::InvalidRegister),
+        }
+        IoResult::Ok
+    }
+
+    /// Write `data` to a synchronous BAR region (BAR0 transport or BAR2 MSI-X)
+    /// on behalf of a `pci_cfg_data` access. The device-config region must be
+    /// handled separately via deferral by the caller.
+    fn write_pci_cfg_bar(&mut self, bar: u8, offset: u32, data: &[u8]) -> IoResult {
+        match bar {
+            0 => self.write_transport(offset as u16, data),
+            2 => {
+                write_as_u32_chunks(
+                    offset as u16,
+                    data,
+                    |offset, request_type| match request_type {
+                        ReadWriteRequestType::Write(value) => {
+                            if let InterruptKind::Msix(msix) = &mut self.pci.interrupt_kind {
+                                msix.write_u32(offset as u64, value)
+                            }
+                            None
+                        }
+                        ReadWriteRequestType::Read => {
+                            if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
+                                Some(msix.read_u32(offset as u64))
+                            } else {
+                                Some(!0)
+                            }
+                        }
+                    },
+                );
+            }
+            _ => return IoResult::Err(IoError::InvalidRegister),
+        }
+        IoResult::Ok
+    }
+
     /// Replay MMIO accesses that were stalled while the transport was busy.
     fn replay_stalled_io(&mut self) {
         let stalled = std::mem::take(&mut self.core.stalled_io);
@@ -646,7 +793,7 @@ mod saved_state {
     impl SaveRestore for VirtioPciDevice {
         type SavedState = state::SavedState;
 
-        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 common: self.core.save_common()?,
                 msix_config_vector: self.pci.msix_config_vector,
@@ -664,10 +811,7 @@ mod saved_state {
             })
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let saved_queue_count = state.queues.len();
             self.core.restore_common(
                 &mut self.pci,
@@ -782,12 +926,138 @@ impl MmioIntercept for VirtioPciDevice {
 }
 
 impl PciConfigSpace for VirtioPciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        if offset == self.pci.pci_cfg_data_offset {
+            let mut dword = 0;
+            let result = self.read_pci_cfg_data(&mut dword);
+            if let IoResult::Ok = result {
+                value.set(dword);
+            }
+            return result;
+        }
         self.pci.config_space.read_byte_enabled(offset, value)
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        if offset == self.pci.pci_cfg_data_offset {
+            return self.write_pci_cfg_data(value.merge(0));
+        }
         self.pci.config_space.write_byte_enabled(offset, value)
+    }
+}
+
+/// Length of the `virtio_pci_cfg_cap` structure: the 16-byte `virtio_pci_cap`
+/// header plus the trailing 4-byte `pci_cfg_data` window.
+const VIRTIO_PCI_CFG_CAP_LEN: u8 = 20;
+/// Byte offset of the `pci_cfg_data` window within `virtio_pci_cfg_cap`.
+const VIRTIO_PCI_CFG_DATA_OFFSET: u16 = 16;
+
+/// Shared window state for the `VIRTIO_PCI_CAP_PCI_CFG` capability.
+///
+/// The driver programs `bar`, `offset`, and `length` by writing the
+/// capability's config-space fields, then reads or writes the `pci_cfg_data`
+/// window to perform an access into the selected BAR region. Both the
+/// capability (which owns the field writes) and [`VirtioPciDevice`] (which
+/// services the `pci_cfg_data` window) hold a clone of this state.
+#[derive(Debug, Default, Inspect)]
+struct PciCfgAccessState {
+    bar: u8,
+    id: u8,
+    #[inspect(hex)]
+    offset: u32,
+    #[inspect(hex)]
+    length: u32,
+}
+
+/// The `VIRTIO_PCI_CAP_PCI_CFG` capability (`virtio_pci_cfg_cap`).
+///
+/// Provides an alternative access path to the virtio BAR regions purely
+/// through PCI configuration space, for drivers or firmware that cannot map
+/// the device's memory BARs. See the virtio 1.x spec, "PCI configuration
+/// access capability". The `pci_cfg_data` window itself is serviced by
+/// [`VirtioPciDevice`], which has access to the BAR regions; this capability
+/// only tracks the programmed `bar`/`offset`/`length` fields.
+struct VirtioPciCfgCapability {
+    state: Arc<Mutex<PciCfgAccessState>>,
+}
+
+impl Inspect for VirtioPciCfgCapability {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let state = self.state.lock();
+        req.respond()
+            .field("label", "virtio-pci-cfg")
+            .field("bar", state.bar)
+            .field("id", state.id)
+            .hex("offset", state.offset)
+            .hex("length", state.length);
+    }
+}
+
+impl PciCapability for VirtioPciCfgCapability {
+    fn label(&self) -> &str {
+        "virtio-pci-cfg"
+    }
+
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::VENDOR_SPECIFIC
+    }
+
+    fn len(&self) -> usize {
+        VIRTIO_PCI_CFG_CAP_LEN as usize
+    }
+
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        let state = self.state.lock();
+        let dword = match offset {
+            // cap_vndr | cap_next (filled in by the config space emulator) |
+            // cap_len | cfg_type
+            0 => {
+                CapabilityId::VENDOR_SPECIFIC.0 as u32
+                    | (VIRTIO_PCI_CFG_CAP_LEN as u32) << 16
+                    | (VirtioPciCapType::PCI_CFG.0 as u32) << 24
+            }
+            // bar | id | padding
+            4 => state.bar as u32 | (state.id as u32) << 8,
+            8 => state.offset,
+            12 => state.length,
+            // pci_cfg_data is serviced by VirtioPciDevice::pci_cfg_read.
+            _ => 0,
+        };
+        value.set(dword);
+    }
+
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
+        let mut state = self.state.lock();
+        match offset {
+            // The header dword (cap_vndr/cap_next/cap_len/cfg_type) is
+            // read-only.
+            0 => {}
+            4 => {
+                let merged = val.merge(state.bar as u32 | (state.id as u32) << 8);
+                state.bar = merged as u8;
+                state.id = (merged >> 8) as u8;
+            }
+            8 => state.offset = val.merge(state.offset),
+            12 => state.length = val.merge(state.length),
+            // pci_cfg_data is serviced by VirtioPciDevice::pci_cfg_write.
+            _ => {}
+        }
+    }
+
+    fn reset(&mut self) {
+        *self.state.lock() = PciCfgAccessState::default();
+    }
+}
+
+impl SaveRestore for VirtioPciCfgCapability {
+    type SavedState = NoSavedState;
+
+    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        Ok(NoSavedState)
+    }
+
+    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+        Ok(())
     }
 }
 
