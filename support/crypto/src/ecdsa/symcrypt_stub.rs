@@ -12,7 +12,6 @@ fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> EcdsaError {
 
 pub struct EcdsaKeyPairInner {
     key: symcrypt::ecc::EcKey,
-    curve: EcdsaCurve,
 }
 
 impl EcdsaKeyPairInner {
@@ -23,7 +22,7 @@ impl EcdsaKeyPairInner {
         let key =
             symcrypt::ecc::EcKey::generate_key_pair(curve_type, symcrypt::ecc::EcKeyUsage::EcDsa)
                 .map_err(|e| err(e, "generating ECDSA key pair"))?;
-        Ok(Self { key, curve })
+        Ok(Self { key })
     }
 
     pub fn sign_prehash(&self, hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {

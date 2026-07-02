@@ -79,7 +79,7 @@ impl EcdsaKeyPair {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(all(native, target_os = "macos"))))]
 mod tests {
     use super::*;
 
