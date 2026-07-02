@@ -273,10 +273,6 @@ fn inject_files_into_cca_rootfs(
         );
     }
 
-    tracing::info!(
-        "rootfs.ext2 updated successfully with cca firmwares, paravisor, and tests injected using debugfs"
-    );
-
     Ok(())
 }
 fn run_shrinkwrap_cca_test(
@@ -633,8 +629,6 @@ fn write_output_newline(
     output_send: &mpsc::Sender<String>,
     line_was_empty: bool,
 ) {
-    let _ = std::io::stdout().write_all(b"\n");
-    let _ = std::io::stdout().flush();
     let _ = output_send.send("\n".to_owned());
 
     if line_was_empty {
