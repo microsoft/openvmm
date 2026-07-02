@@ -63,12 +63,19 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, Serial16550DeviceHandle>
             .configure
             .new_line(IRQ_LINE_SET, "interrupt", resource.irq);
 
+        let io = serial_core::debugger::apply_debugger_mode(
+            resource.debugger_mode,
+            input.task_driver_source.simple(),
+            input.device_name,
+            io.0.into_io(),
+        );
+
         let device = Serial16550::new(
             input.device_name.to_string(),
             resource.base,
             resource.register_width,
             interrupt,
-            io.0.into_io(),
+            io,
             resource.wait_for_rts,
         )
         .map_err(Resolve16550Error::Configuration)?;
