@@ -206,8 +206,9 @@ impl IommufdCtx {
     ///
     /// Unlike [`Self::ioas_map`], the kernel pins the backing folios directly
     /// from `fd`, so no host VA is required. `start` is the byte offset within
-    /// the file (must be page-aligned). Requires a kernel with
-    /// `IOMMU_IOAS_MAP_FILE` (Linux 6.13+).
+    /// the file; like [`Self::ioas_map`], both `start` and `length` must be
+    /// page-aligned. Requires a kernel with `IOMMU_IOAS_MAP_FILE` (Linux
+    /// 6.13+).
     pub fn ioas_map_file(
         &self,
         ioas_id: u32,
@@ -233,12 +234,8 @@ impl IommufdCtx {
         // SAFETY: the iommufd fd is valid and the struct is correctly sized and
         // constructed. `fd` is only read during the ioctl.
         unsafe {
-            ioctl::iommu_ioas_map_file(self.file.as_raw_fd(), &mut cmd).with_context(|| {
-                format!(
-                    "IOMMU_IOAS_MAP_FILE failed: iova={iova:#x} fd={fd} \
-                     start={start:#x} length={length:#x} ioas_id={ioas_id}"
-                )
-            })?;
+            ioctl::iommu_ioas_map_file(self.file.as_raw_fd(), &mut cmd)
+                .context("IOMMU_IOAS_MAP_FILE failed")?;
         }
         Ok(())
     }

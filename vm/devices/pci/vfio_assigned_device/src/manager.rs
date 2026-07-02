@@ -513,13 +513,7 @@ impl membacking::DmaTarget for IommufdDmaTarget {
                     .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
             },
         }
-        .with_context(|| {
-            format!(
-                "iommufd IOAS DMA map failed: iova={iova:#x} user_va={user_va:#x} \
-                 length={length:#x} ioas_id={}",
-                self.ioas_id
-            )
-        });
+        .with_context(|| format!("failed to map {range} into iommufd IOAS"));
         if let Err(e) = &result {
             if request.mapping_type == membacking::MappingType::Device {
                 // Device BAR memory may not be mappable into the IOMMU (e.g.,
