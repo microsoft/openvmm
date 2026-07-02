@@ -20,6 +20,7 @@ use crate::spec::queue::*;
 use crate::spec::*;
 use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
+use chipset_device::io::IoError;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -1831,7 +1832,183 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     assert_eq!(buf, 12);
     next_cap_offset = header[1] as u32;
+    assert_ne!(next_cap_offset, 0);
+
+    // The final capability is VIRTIO_PCI_CAP_PCI_CFG (the PCI configuration
+    // access capability). Its length is 20 bytes: the 16-byte virtio_pci_cap
+    // header plus the trailing 4-byte pci_cfg_data window.
+    let mut header = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+    let header = header.to_le_bytes();
+    assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
+    assert_eq!(header[3], VirtioPciCapType::PCI_CFG.0);
+    assert_eq!(header[2], 20);
+    // bar/id/offset/length are all zero until the driver programs them.
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    next_cap_offset = header[1] as u32;
     assert_eq!(next_cap_offset, 0);
+}
+
+/// Walk the capability list and return the config-space offset of the
+/// VIRTIO_PCI_CAP_PCI_CFG capability (identified by cfg_type == PCI_CFG).
+fn find_pci_cfg_cap_offset(dev: &mut VirtioPciDevice) -> u16 {
+    let mut next = 0;
+    dev.pci_cfg_read(
+        0x34,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut next),
+    )
+    .unwrap();
+    while next != 0 {
+        let mut header = 0;
+        dev.pci_cfg_read(
+            next as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 && header[3] == VirtioPciCapType::PCI_CFG.0
+        {
+            return next as u16;
+        }
+        next = header[1] as u32;
+    }
+    panic!("VIRTIO_PCI_CAP_PCI_CFG capability not found");
+}
+
+/// Exercise the VIRTIO_PCI_CAP_PCI_CFG `pci_cfg_data` window: program the
+/// bar/offset/length fields via config space, then read/write BAR regions
+/// through the window and confirm the accesses reach the same registers as
+/// direct MMIO.
+#[async_test]
+async fn verify_pci_cfg_access_window(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Program the window to point at BAR0 offset 0 (device_feature_select), a
+    // 4-byte access.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    // Reading the window returns the current device_feature_select (0).
+    let mut val = 0xdead_beef;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 0);
+
+    // Writing the window updates device_feature_select; a direct MMIO read of
+    // the same register must observe the change.
+    dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap();
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 2);
+
+    // Verify the write went to the real register by mapping BAR0 and reading
+    // device_feature_select directly.
+    let bar_address1: u64 = 0x2000000000;
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x4,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
+    )
+    .unwrap();
+    let mut mmio = [0u8; 4];
+    dev.mmio_read(bar_address1, &mut mmio).unwrap();
+    assert_eq!(u32::from_le_bytes(mmio), 2);
+
+    // An invalid length (per spec must be 1, 2, or 4) is rejected with an
+    // access-size error; a non-multiple offset is rejected as unaligned. Both
+    // paths return an error without panicking.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(3))
+        .unwrap(); // length = 3 (invalid)
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+
+    // A valid length with a misaligned offset is rejected as unaligned.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::UnalignedAccess)
+    ));
 }
 
 #[async_test]
