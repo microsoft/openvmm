@@ -5603,7 +5603,6 @@ dependencies = [
  "smmu",
  "sparse_mmap",
  "state_unit",
- "storvsp",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
