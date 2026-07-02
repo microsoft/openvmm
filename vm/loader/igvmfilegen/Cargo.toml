@@ -19,7 +19,7 @@ x86defs.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-crypto.workspace = true
+crypto = { workspace = true, features = ["native"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true

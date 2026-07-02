@@ -6,12 +6,12 @@
 #![cfg(any(openssl, all(native, windows)))]
 
 #[cfg(openssl)]
-pub(crate) mod ossl;
+mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
 #[cfg(all(native, windows))]
-pub(crate) mod win;
+mod win;
 #[cfg(all(native, windows))]
 use win as sys;
 

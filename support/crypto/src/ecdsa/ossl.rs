@@ -34,17 +34,18 @@ impl EcdsaKeyPairInner {
             .pkey
             .ec_key()
             .map_err(|e| err(e, "getting EC key from PKey"))?;
-        let sig = openssl::ecdsa::EcdsaSig::sign(hash, &ec_key)
-            .map_err(|e| err(e, "ECDSA sign"))?;
+        let sig =
+            openssl::ecdsa::EcdsaSig::sign(hash, &ec_key).map_err(|e| err(e, "ECDSA sign"))?;
 
         let key_size = self.curve.key_size();
-        let mut r_bytes = sig.r().to_vec_padded(key_size as i32).map_err(|e| err(e, "padding r"))?;
-        let mut s_bytes = sig.s().to_vec_padded(key_size as i32).map_err(|e| err(e, "padding s"))?;
-
-        // to_vec_padded returns big-endian, already the right size.
-        // Ensure exact size (should already be, but be defensive).
-        r_bytes.resize(key_size, 0);
-        s_bytes.resize(key_size, 0);
+        let r_bytes = sig
+            .r()
+            .to_vec_padded(key_size as i32)
+            .map_err(|e| err(e, "padding r"))?;
+        let s_bytes = sig
+            .s()
+            .to_vec_padded(key_size as i32)
+            .map_err(|e| err(e, "padding s"))?;
 
         let mut result = Vec::with_capacity(key_size * 2);
         result.extend_from_slice(&r_bytes);

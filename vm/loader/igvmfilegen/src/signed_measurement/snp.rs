@@ -209,7 +209,12 @@ pub fn generate_snp_measurement(
         }
     }
 
-    let family_id = *b"\0\x08\x01\x01\0\0\0\0\0\0\0\0\0\0\0\0";
+    // Underhill family ID for the SNP ID block.
+    const UNDERHILL_FAMILY_ID: [u8; 16] = [
+        0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    let family_id = UNDERHILL_FAMILY_ID;
     let image_id = *b"underhill\0\0\0\0\0\0\0";
 
     // Generate the PSP ID block format, hash with SHA-384.
@@ -265,9 +270,9 @@ fn padded_le_component(input_be: &[u8]) -> [u8; SNP_ECC_COMPONENT_SIZE_BYTES] {
     out
 }
 
-/// Generate a temporary ECDSA P-384 key pair using SymCrypt, sign the
-/// SHA-384 hash of the ID block, and return the signature + public key
-/// in the format expected by `IGVM_VHS_SNP_ID_BLOCK`.
+/// Generate a temporary ECDSA P-384 key pair using the selected `crypto`
+/// backend, sign the SHA-384 hash of the ID block, and return the signature
+/// + public key in the format expected by `IGVM_VHS_SNP_ID_BLOCK`.
 fn sign_id_block_with_temp_key(
     id_block: &SnpPspIdBlock,
 ) -> Result<
