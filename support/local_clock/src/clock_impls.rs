@@ -126,6 +126,8 @@ mod tests {
 
         let delta = new_time - time;
 
+        // cannot use assert_eq, because there is a *bit* of extra time elapsed
+        // aside from the thread sleep.
         eprintln!("delta: {delta:?}");
         assert!(delta >= LocalClockDelta::from_millis(999)); // allow for rounding to lose a milli
         assert!(delta < std::time::Duration::from_secs(2).into()); // sanity check
@@ -159,6 +161,8 @@ mod tests {
 
         let delta = new_time - time;
 
+        // cannot use assert_eq, because there is a *bit* of extra time elapsed
+        // aside from the thread sleep.
         eprintln!("delta: {delta:?}");
         assert!(delta >= LocalClockDelta::from_millis(999)); // allow for rounding to lose a milli
         assert!(delta < std::time::Duration::from_secs(2).into()); // sanity check
