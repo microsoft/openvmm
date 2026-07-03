@@ -29,7 +29,7 @@ impl hypervisor_resources::HypervisorProbe for KvmProbe {
     }
 
     fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
-        for &(key, _val) in params {
+        if let Some(&(key, _val)) = params.first() {
             anyhow::bail!("unknown kvm parameter: {key}");
         }
         let kvm = open_kvm().context("KVM is not available")?;
