@@ -821,12 +821,15 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 })
             });
 
-            let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
+            let ivhd_total = size_of::<ivrs::IvhdType11>() + dev_entries_size;
 
-            // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
-            // as type 11h but supports both BDF and ACPI HID device entries.
-            // We use it as the superset format; our entries are all BDF-based.
-            let ivhd = ivrs::IvhdType40::new(
+            // Type 11h is the extended IVHD format (§5.2.2.3) carrying the
+            // EFR image. We use 11h (not the byte-identical 40h) because the
+            // Microsoft hypervisor's IVRS parser in Windows Server 2022 only
+            // accepts types 10h/11h and rejects the IVRS as a bad ACPI table
+            // otherwise; our device entries are all BDF-based, so the 40h
+            // "mixed format" superset buys us nothing.
+            let ivhd = ivrs::IvhdType11::new(
                 config.device_id,
                 config.capability_offset,
                 config.mmio_base,
