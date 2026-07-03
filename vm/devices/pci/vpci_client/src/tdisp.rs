@@ -445,12 +445,7 @@ impl VpciClientTdispState {
 
         let target_protocol = match self.isolation_type {
             IsolationType::Snp => TdispGuestProtocolType::AmdSevTioV1,
-            IsolationType::Tdx => {
-                tracing::warn!(
-                    "query_capabilities: VM is running with TDX isolation (NOT SUPPORTED)"
-                );
-                anyhow::bail!("TDX isolation is not currently supported for TDISP")
-            }
+            IsolationType::Tdx => TdispGuestProtocolType::IntelTdxConnectV1,
             IsolationType::Vbs => {
                 tracing::warn!(
                     "query_capabilities: VM is running with VBS isolation (NOT SUPPORTED)"
@@ -479,9 +474,7 @@ impl VpciClientTdispState {
             "tdisp_query_capabilities: device interface info",
         );
 
-        // TDISP TODO: Support TDX + CCA
-        let expected_guest_protocol = TdispGuestProtocolType::AmdSevTioV1;
-        if device_interface_info.guest_protocol_type == expected_guest_protocol as i32 {
+        if device_interface_info.guest_protocol_type == target_protocol.into() {
             tracing::info!(
                 ?device_interface_info.guest_protocol_type,
                 "tdisp_query_capabilities: TDISP is supported",
@@ -491,7 +484,7 @@ impl VpciClientTdispState {
         } else {
             tracing::info!(
                 ?device_interface_info.guest_protocol_type,
-                ?expected_guest_protocol,
+                ?target_protocol,
                 "tdisp_query_capabilities: device does not support a guest protocol we support",
             );
 
