@@ -1254,7 +1254,19 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibilit
             _ => return Err((HvError::InvalidParameter, 0)),
         };
 
-        self.vp
+        let bad_gpn = 0x25AF00;
+
+        // Determine if any call is made to change the visibility of this bad gpn and log it
+        if gpa_pages.contains(&bad_gpn) {
+            tracing::error!(
+                ?visibility,
+                bad_gpn = bad_gpn,
+                "[!!!!] modify_gpa_visibility called with bad gpn"
+            );
+        }
+
+        let res = self
+            .vp
             .cvm_partition()
             .isolated_memory_protector
             .change_host_visibility(
@@ -1262,7 +1274,27 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibilit
                 shared,
                 gpa_pages,
                 &mut self.vp.tlb_flush_lock_access(),
-            )
+            );
+
+        // Format gpa_pages into hex and decimal address printouts
+        let gpa_pages_hex: Vec<String> = gpa_pages
+            .iter()
+            .map(|page| format!("{:#x}", page))
+            .collect();
+        let gpa_pages_dec: Vec<String> = gpa_pages.iter().map(|page| format!("{}", page)).collect();
+
+        match res {
+            Ok(_) => {}
+            Err((err, _)) => tracing::error!(
+                ?visibility,
+                pages = gpa_pages.len(),
+                error = %err,
+                gpa_pages_hex = ?gpa_pages_hex,
+                gpa_pages_dec = ?gpa_pages_dec,
+                "modify_gpa_visibility failed"
+            ),
+        }
+        res
     }
 }
 

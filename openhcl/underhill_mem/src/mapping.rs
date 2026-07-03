@@ -207,10 +207,18 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
             if !valid_memory.check_valid(gpn) {
                 match valid_memory.memory_type() {
                     GuestValidMemoryType::Shared => {
+                        // A backtrace (only captured when RUST_BACKTRACE is
+                        // enabled) identifies the specific guest action path
+                        // that drove this access, e.g. instruction emulation,
+                        // hypercall argument marshalling, DMA, or register
+                        // state access.
                         tracelimit::warn_ratelimited!(
                             ?address,
                             ?len,
                             ?write,
+                            view_type = ?self.view_type,
+                            vtl = ?self.vtl,
+                            backtrace = %std::backtrace::Backtrace::capture(),
                             "tried to access private page using shared mapping"
                         );
                         guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
@@ -219,10 +227,18 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                         ))
                     }
                     GuestValidMemoryType::Encrypted => {
+                        // A backtrace (only captured when RUST_BACKTRACE is
+                        // enabled) identifies the specific guest action path
+                        // that drove this access, e.g. instruction emulation,
+                        // hypercall argument marshalling, DMA, or register
+                        // state access.
                         tracelimit::warn_ratelimited!(
                             ?address,
                             ?len,
                             ?write,
+                            view_type = ?self.view_type,
+                            vtl = ?self.vtl,
+                            backtrace = %std::backtrace::Backtrace::capture(),
                             "tried to access shared page using private mapping"
                         );
                         guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
@@ -250,7 +266,20 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                     };
 
                     if !check_bitmap.page_state(gpn) {
-                        tracelimit::warn_ratelimited!(?address, ?len, ?write, ?self.view_type, "VTL 1 permissions violation");
+                        // A backtrace (only captured when RUST_BACKTRACE is
+                        // enabled) identifies the specific guest action path
+                        // that drove this access, e.g. instruction emulation,
+                        // hypercall argument marshalling, DMA, or register
+                        // state access.
+                        tracelimit::warn_ratelimited!(
+                            ?address,
+                            ?len,
+                            ?write,
+                            view_type = ?self.view_type,
+                            vtl = ?self.vtl,
+                            backtrace = %std::backtrace::Backtrace::capture(),
+                            "VTL 1 permissions violation"
+                        );
 
                         return guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
                             guestmem::GuestMemoryErrorKind::VtlProtected,
