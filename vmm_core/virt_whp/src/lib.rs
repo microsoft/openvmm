@@ -1116,11 +1116,8 @@ impl WhpPartitionInner {
                     .with_flush_guest_physical_hypercall(true)
                     .with_enlightened_npt_tlb(true);
                 cpuid.push(
-                    virt::CpuidLeaf::new(
-                        hvdef::HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES,
-                        [0; 4],
-                    )
-                    .masked([u32::from(flush_gpa_mask), 0, 0, 0]),
+                    virt::CpuidLeaf::new(hvdef::HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES, [0; 4])
+                        .masked([u32::from(flush_gpa_mask), 0, 0, 0]),
                 );
             }
 
