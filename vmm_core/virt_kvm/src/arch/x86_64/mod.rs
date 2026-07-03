@@ -152,6 +152,12 @@ impl virt::Hypervisor for Kvm {
         let nested_virt = self.nested_virt;
         let supported_cpuid = self.kvm.supported_cpuid()?;
 
+        // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
+        // offset 0x2F0) when the guest's IA32_MCG_CAP advertises MCG_CMCI_P.
+        // Query which MCE capability bits this host allows us to set so that
+        // bind() can advertise CMCI to the guest where supported (Intel).
+        let supported_mce_cap = self.kvm.supported_mce_cap()?;
+
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
             .iter()
@@ -360,6 +366,7 @@ impl virt::Hypervisor for Kvm {
             config,
             cpuid: cpuid_entries,
             nested_virt: self.nested_virt,
+            supported_mce_cap,
         })
     }
 }
@@ -370,6 +377,9 @@ pub struct KvmProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
+    /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
+    /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
+    supported_mce_cap: u64,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -484,6 +494,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
+            mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
         });
 
@@ -739,6 +750,21 @@ impl virt::BindProcessor for KvmProcessorBinder {
                         .with_vmx_enabled_outside_smx(ecx.vmx()),
                 ),
             )])?;
+        }
+
+        // Advertise CMCI support (MCG_CMCI_P) in the guest's IA32_MCG_CAP when
+        // the host permits it. KVM's in-kernel LAPIC only exposes the CMCI LVT
+        // register (APIC offset 0x2F0) when MCG_CMCI_P is set, yet KVM defaults
+        // MCG_CAP with it clear; without it, a guest that programs the CMCI LVT
+        // via an x2APIC MSR takes a #GP. Preserve the default bank count and
+        // other capability bits.
+        if self.partition.mce_cmci_supported {
+            let mut mcg_cap = [0u64];
+            kvm.get_msrs(&[x86defs::X86X_MSR_MCG_CAP], &mut mcg_cap)?;
+            let cap = x86defs::McgCap::from(mcg_cap[0]);
+            if !cap.cmci_p() {
+                kvm.setup_mce(cap.with_cmci_p(true).into())?;
+            }
         }
 
         // Set per-VP CPUID entries, fixing up APIC ID fields.

@@ -214,6 +214,44 @@ pub const X86X_MSR_SYSENTER_ESP: u32 = 0x175;
 pub const X86X_MSR_SYSENTER_EIP: u32 = 0x176;
 pub const X86X_MSR_MCG_CAP: u32 = 0x179;
 pub const X86X_MSR_MCG_STATUS: u32 = 0x17a;
+
+/// [`X86X_MSR_MCG_CAP`] (MSR 0x179): global machine-check capability register.
+///
+/// Layout per the Intel SDM Volume 3B, Section 18.3.1.1 / Figure 18-2
+/// (doc 325384-092).
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct McgCap {
+    /// Number of hardware unit error-reporting banks.
+    pub count: u8,
+    /// `MCG_CTL_P`: `IA32_MCG_CTL` MSR is present.
+    pub ctl_p: bool,
+    /// `MCG_EXT_P`: extended machine-check state MSRs (at 0x180) are present.
+    pub ext_p: bool,
+    /// `MCG_CMCI_P`: corrected MC error counting/signaling extension present.
+    pub cmci_p: bool,
+    /// `MCG_TES_P`: threshold-based error status present.
+    pub tes_p: bool,
+    /// `MCG_SEAM_NR_P`: `IA32_MCG_STATUS.SEAM_NR` (bit 12) is supported.
+    pub seam_nr_p: bool,
+    #[bits(3)]
+    _reserved: u8,
+    /// `MCG_EXT_CNT`: number of extended machine-check state registers
+    /// (meaningful only when `ext_p` is set).
+    pub ext_cnt: u8,
+    /// `MCG_SER_P`: software error recovery is supported.
+    pub ser_p: bool,
+    /// `MCG_EMC_P`: enhanced machine-check capability (firmware-first
+    /// signaling) is supported.
+    pub emc_p: bool,
+    /// `MCG_ELOG_P`: extended error logging is supported.
+    pub elog_p: bool,
+    /// `MCG_LMCE_P`: local machine-check exception is supported.
+    pub lmce_p: bool,
+    #[bits(36)]
+    _reserved2: u64,
+}
+
 pub const X86X_IA32_MSR_MISC_ENABLE: u32 = 0x1a0;
 pub const X86X_MSR_MTRR_PHYSBASE0: u32 = 0x200;
 pub const X86X_MSR_MTRR_FIX64K_00000: u32 = 0x0250;
