@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
+use fs_err::PathExt;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ArtifactSource;
 use petri_artifacts_core::AsArtifactHandle;
@@ -942,7 +943,7 @@ pub fn get_path(
 
     if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
         let full_path = Path::new(&env_dir).join(file_name);
-        if full_path.try_exists()? {
+        if full_path.fs_err_try_exists()? {
             return Ok(full_path);
         }
     }
@@ -957,7 +958,7 @@ pub fn get_path(
     // writing to stderr, so callers that expect a possible miss — e.g.
     // `resolve_source` falling back to a remote URL — can recover silently.
     let full_path = file_path.join(file_name);
-    if !full_path.exists() {
+    if !full_path.fs_err_try_exists()? {
         missing_cmd
             .to_error()
             .with_context(|| format!("failed to find {}", full_path.display()))?;
