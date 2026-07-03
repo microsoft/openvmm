@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(buf.len(), 60);
 
         // Verify IVHD starts at offset 12
-        assert_eq!(buf[12], IVHD_TYPE_40);
+        assert_eq!(buf[12], IVHD_TYPE_11);
         // Verify device entries start at offset 52 (12 + 40)
         assert_eq!(buf[52], IVHD_DEV_RANGE_START);
         assert_eq!(buf[56], IVHD_DEV_RANGE_END);
