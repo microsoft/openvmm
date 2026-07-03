@@ -954,9 +954,6 @@ pub fn get_path(
         get_repo_root()?.join(search_path)
     };
 
-    // Return a descriptive error (including the path we looked for) rather than
-    // writing to stderr, so callers that expect a possible miss — e.g.
-    // `resolve_source` falling back to a remote URL — can recover silently.
     let full_path = file_path.join(file_name);
     if !full_path.fs_err_try_exists()? {
         missing_cmd
