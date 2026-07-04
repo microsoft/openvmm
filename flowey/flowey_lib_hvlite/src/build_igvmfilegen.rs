@@ -64,27 +64,27 @@ impl FlowNode for Node {
                 m
             });
 
-        for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
-            // igvmfilegen depends on `crypto` with the `native` + `vendored`
-            // features enabled, which builds OpenSSL from source on Linux. That
-            // build needs the OpenSSL headers and a working perl (for OpenSSL's
-            // `./Configure`). Ubuntu's base `perl` package ships these modules,
-            // but minimal Fedora/Azure Linux images do not, so install them
-            // explicitly. On non-Linux hosts this request is a no-op.
-            let ssl_pkgs = match ctx.platform() {
-                FlowPlatform::Linux(
-                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
-                ) => vec!["openssl-devel".into(), "perl".into()],
-                _ => vec!["libssl-dev".into()],
-            };
-            let pre_build_deps =
-                vec![
-                    ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                        package_names: ssl_pkgs,
-                        done: v,
-                    }),
-                ];
+        // `crypto`'s vendored OpenSSL build needs the headers and perl.
+        let ssl_pkgs: Vec<String> = match ctx.platform() {
+            FlowPlatform::Linux(distro) => match distro {
+                FlowPlatformLinuxDistro::Ubuntu => vec!["libssl-dev".into()],
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
+                    vec!["openssl-devel".into(), "perl".into()]
+                }
+                FlowPlatformLinuxDistro::Arch => vec!["openssl".into(), "perl".into()],
+                FlowPlatformLinuxDistro::Nix => Vec::new(),
+                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            },
+            _ => Vec::new(),
+        };
+        let ssl_dep = (!ssl_pkgs.is_empty()).then(|| {
+            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                package_names: ssl_pkgs,
+                done: v,
+            })
+        });
 
+        for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "igvmfilegen".into(),
                 out_name: "igvmfilegen".into(),
@@ -94,7 +94,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps,
+                pre_build_deps: ssl_dep.clone().into_iter().collect(),
                 output: v,
             });
 
