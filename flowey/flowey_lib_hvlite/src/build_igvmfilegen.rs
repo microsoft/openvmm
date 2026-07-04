@@ -48,6 +48,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -64,6 +65,26 @@ impl FlowNode for Node {
             });
 
         for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
+            // igvmfilegen depends on `crypto` with the `native` + `vendored`
+            // features enabled, which builds OpenSSL from source on Linux. That
+            // build needs the OpenSSL headers and a working perl (for OpenSSL's
+            // `./Configure`). Ubuntu's base `perl` package ships these modules,
+            // but minimal Fedora/Azure Linux images do not, so install them
+            // explicitly. On non-Linux hosts this request is a no-op.
+            let ssl_pkgs = match ctx.platform() {
+                FlowPlatform::Linux(
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
+                ) => vec!["openssl-devel".into(), "perl".into()],
+                _ => vec!["libssl-dev".into()],
+            };
+            let pre_build_deps =
+                vec![
+                    ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: ssl_pkgs,
+                        done: v,
+                    }),
+                ];
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "igvmfilegen".into(),
                 out_name: "igvmfilegen".into(),
@@ -73,7 +94,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps: Vec::new(),
+                pre_build_deps,
                 output: v,
             });
 
