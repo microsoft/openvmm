@@ -18,6 +18,7 @@ use nvme_resources::fault::FaultConfiguration;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use petri::ApicMode;
+use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -45,6 +46,49 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
         .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot the guest-test UEFI image, which purposefully triple-faults itself via
+/// an expiring watchdog, with `--crash-dump-path` configured. Verify that the
+/// worker wrote a well-formed `.vmrs` crash dump before signaling the halt.
+#[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
+async fn crash_dump_on_triple_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
+    let dump_path = dump_dir.path().join("crash.vmrs");
+    let dump_path_str = dump_path.to_string_lossy().into_owned();
+
+    let vm = config
+        .with_windows_secure_boot_template()
+        .modify_backend(move |b| {
+            b.with_custom_config(move |c| c.crash_dump_path = Some(dump_path_str))
+        })
+        .run_without_agent()
+        .await?;
+
+    // The guest triple-faults; the worker writes the dump before notifying the
+    // client, so the file is present once teardown reports the crash.
+    let halt_reason = vm.wait_for_teardown().await?;
+    if halt_reason.reason != PetriHaltReason::TripleFault {
+        anyhow::bail!("expected TripleFault, got {halt_reason:?}");
+    }
+
+    // Validate the dump is a well-formed HyperV saved-state file by reading a
+    // required key back out of it.
+    let file = std::fs::File::open(&dump_path)
+        .with_context(|| format!("crash dump not found at {}", dump_path.display()))?;
+    let reader =
+        hvs_file::reader::HvsFileReader::open(file).context("failed to parse .vmrs crash dump")?;
+    anyhow::ensure!(
+        reader
+            .read_int("/savedstate/VmVersion")
+            .context("missing VmVersion")?
+            != 0,
+        "crash dump has an invalid VmVersion"
+    );
+
     Ok(())
 }
 
