@@ -50,6 +50,12 @@ open_enum! {
         VP_INVGLA = 27,
         MR_KEY_GET = 29,
         MEM_PAGE_RELEASE = 30,
+        // Intel TDX Connect (ABI EAS 2.1 v0.61); numeric leaves from the
+        // TDX Module Base Spec. TDG.TDI.VALIDATE (would be 69) is deprecated.
+        TDI_RD = 67,
+        TDI_START = 68,
+        DMAR_ACCEPT = 70,
+        TDI_MMIO_ACCEPT = 71,
     }
 }
 
@@ -256,6 +262,51 @@ pub struct TdgMemPageAttrWriteR8 {
     pub l2_vm3: GpaVmAttributesMask,
 }
 
+/// RDX (`DMAR_TARGET`) input to TDG.DMAR.ACCEPT. `vm_idx` = 0 for a
+/// non-partitioned TD or L1; 1-3 select L2 VM1-VM3 (reassignment path).
+#[bitfield(u64)]
+pub struct DmarTarget {
+    pub vm_idx: u8,
+    #[bits(56)]
+    pub reserved: u64,
+}
+
+/// RCX (`GPA_BASE_AND_LVL`) input to TDG.TDI.MMIO.ACCEPT; also decodes the
+/// resumed GPA returned in RCX. Mirrors [`TdgMemPageAcceptRcx`].
+#[bitfield(u64)]
+pub struct TdgTdiMmioAcceptRcx {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The MMIO page number for this accept call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(12)]
+    pub reserved2: u64,
+}
+
+/// R9 (`RANGE_SIZE_OFFSET`) input to TDG.TDI.MMIO.ACCEPT; also the remaining
+/// size/offset returned in R9 on resume (once the R9 output path is plumbed).
+#[bitfield(u64)]
+pub struct TdgTdiMmioAcceptR9 {
+    /// Number of pages to accept.
+    pub range_size: u32,
+    /// Starting sub-range offset, in pages.
+    pub range_offset: u32,
+}
+
+open_enum! {
+    /// RDX `FIELD` code selector for TDG.TDI.RD (field code, bits 7:0).
+    pub enum TdiRdField: u64 {
+        GET_TDISP_VERSION = 0x01,
+        GET_TDISP_STATE = 0x02,
+        GET_TDISP_REPORT_HASH = 0x03,
+        GET_DEVICE_ATTESTATION_INFO_HASH = 0x04,
+        GET_BIND_SESSION_ID = 0x05,
+    }
+}
+
 /// The value specified in `r11` when making a TD vmcall, specified by `r10 =
 /// 0`.
 #[repr(u64)]
@@ -435,6 +486,17 @@ open_enum! {
         TD_EXIT_ON_L2_VM_EXIT = 0x00001141,
         TD_EXIT_ON_L2_TO_L1 = 0x00001142,
         GLA_NOT_CANONICAL = 0xC0001160,
+        // TDX Connect status codes (TDX Module Base Spec). Stored as the high
+        // 32 bits of the 64-bit RAX status, matching the convention used by the
+        // codes above (e.g. OPERAND_INVALID is Intel's 0xC0000100_00000000).
+        DMAR_INVALID_MAPPING_STATE = 0xC0000F07,
+        TDI_INVALID_STATE = 0xC0000F11,
+        IDE_STREAM_INVALID_STATE = 0xC0000F24,
+        MMIO_TDI_OWNER_MISMATCH = 0xC0000F27,
+        TDI_NOT_PRESENT = 0xC0000F40,
+        TDI_INVALID_METADATA = 0xC0000F41,
+        MMIO_PAGE_NOT_IN_ASSOC_RANGE = 0xC0000F4C,
+        MMIO_INVALID_HPA_OFFSET = 0xC0000F4D,
     }
 }
 
