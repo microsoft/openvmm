@@ -25,7 +25,7 @@ pub struct SivmPolicy {
     #[mesh(1)]
     pub require_ephemeral_vmgs: bool,
 
-    /// Refuse to boot unless secure boot is enabled.
+    /// Require secure boot is enabled.
     #[mesh(2)]
     pub require_secure_boot: bool,
 

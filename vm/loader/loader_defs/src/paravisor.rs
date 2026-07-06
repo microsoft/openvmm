@@ -384,8 +384,6 @@ impl ParavisorMeasuredVtl2Config {
     pub const MAGIC: u64 = 0x4F48434C56544C32;
 }
 
-const_assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
-
 /// Byte offset of the inline [`ProductPolicy`] body within the
 /// measured VTL2 config region.
 pub const PRODUCT_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl2Config>();

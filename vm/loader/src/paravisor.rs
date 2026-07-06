@@ -1592,6 +1592,7 @@ mod product_policy_tests {
         });
         let bytes = encode_product_policy_bytes(&policy);
         let decoded = decode_product_policy(&bytes).unwrap();
+        // Test that the decoded policy matches the original policy
         assert_eq!(decoded, policy);
     }
 
@@ -1661,6 +1662,7 @@ mod product_policy_tests {
             &region[PRODUCT_POLICY_INLINE_OFFSET..PRODUCT_POLICY_INLINE_OFFSET + bytes.len()],
         )
         .unwrap();
+        // Test that the decoded policy matches the original policy
         assert_eq!(decoded, policy);
     }
 }

@@ -17,6 +17,7 @@ pub fn decode(buf: &[u8], size: usize) -> anyhow::Result<MeasuredProductPolicy> 
         .map_err(anyhow::Error::from)
         .context("product policy decode failed")?;
 
+    // Integrity check to ensure we are enforcing the complete policy
     let encoded_len = product_policy::encode_product_policy(&policy).len();
     if encoded_len != size {
         anyhow::bail!(
