@@ -954,7 +954,12 @@ flags:
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable OpenHCL's guest crash dump device, targeting the specified path
+    /// Enable OpenHCL's guest crash dump device, targeting the specified path.
+    ///
+    /// This exposes an emulated crash dump device to the guest running *inside*
+    /// OpenHCL; the guest OS writes its own crash dump (e.g. a Linux kernel
+    /// core) through it. This is distinct from `--crash-dump-path`, which dumps
+    /// the entire VM's state from the host when the guest triple-faults.
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
@@ -977,8 +982,12 @@ flags:
     pub guest_crash_action: GuestPowerAction,
 
     /// when the guest triple-faults, write a WinDbg-compatible `.vmrs` dump of
-    /// VP state and memory to the specified path before applying the crash
-    /// action
+    /// the whole VM's VP state and guest memory to the specified path before
+    /// applying the crash action
+    ///
+    /// This is a host-side, whole-VM dump triggered by a triple fault, distinct
+    /// from `--openhcl-dump-path` (an in-guest OpenHCL crash dump device driven
+    /// by the guest OS).
     #[clap(long, value_name = "PATH")]
     pub crash_dump_path: Option<PathBuf>,
 

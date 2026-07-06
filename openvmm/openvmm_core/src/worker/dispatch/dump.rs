@@ -32,6 +32,8 @@ impl LoadedVm {
     /// The VPs are already halted at that point, so this dumps directly
     /// without pausing/resuming. The dump is written to a sibling temporary
     /// file and renamed into place so readers never observe a partial dump.
+    /// Any existing dump at `path` is overwritten, so repeated crashes replace
+    /// the previous dump.
     pub(super) async fn write_crash_dump(&mut self, path: &Path) -> anyhow::Result<()> {
         let mut tmp = OsString::from(path.as_os_str());
         tmp.push(".tmp");
@@ -43,8 +45,17 @@ impl LoadedVm {
             let _ = std::fs::remove_file(tmp_path);
             return Err(err);
         }
-        std::fs::rename(tmp_path, path)
-            .with_context(|| format!("failed to rename crash dump to {}", path.display()))?;
+
+        // Remove any existing dump first: on Windows `rename` fails if the
+        // destination already exists, and each crash should overwrite the
+        // previous dump. If the rename still fails, clean up the temp file so
+        // we don't leave a partial `.tmp` behind.
+        let _ = std::fs::remove_file(path);
+        if let Err(err) = std::fs::rename(tmp_path, path) {
+            let _ = std::fs::remove_file(tmp_path);
+            return Err(err)
+                .with_context(|| format!("failed to rename crash dump to {}", path.display()));
+        }
         Ok(())
     }
 

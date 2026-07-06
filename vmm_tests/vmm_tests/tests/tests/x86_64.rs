@@ -61,6 +61,10 @@ async fn crash_dump_on_triple_fault(
     let dump_path_str = dump_path.to_string_lossy().into_owned();
 
     let vm = config
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 256 * 1024 * 1024,
+            ..Default::default()
+        })
         .modify_backend(move |b| {
             b.with_custom_config(move |c| c.crash_dump_path = Some(dump_path_str))
         })
