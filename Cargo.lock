@@ -3657,7 +3657,6 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
- "scsidisk_resources",
  "vm_resource",
 ]
 

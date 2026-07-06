@@ -2779,21 +2779,23 @@ async fn new_underhill_vm(
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
                     } => {
                         let disk =
                             disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
                                 .await?;
-                        let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        ));
+
+                        let path = ide_resources::IdePath { channel, drive };
+                        let params = controllers
+                            .ide_disk_params
+                            .iter()
+                            .find(|(p, _)| *p == path)
+                            .map(|(_, dp)| dp.clone())
+                            .unwrap_or_default();
+                        let scsi_disk =
+                            Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params));
 
                         // Only disks, not DVD drives, get IDE accelerator channels.
-                        storvsp_ide_disks.push((
-                            ide_resources::IdePath { channel, drive },
-                            storvsp::ScsiControllerDisk::new(scsi_disk),
-                        ));
+                        storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));
 
                         ide::DriveMedia::hard_disk(disk)
                     }

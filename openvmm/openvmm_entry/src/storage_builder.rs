@@ -346,7 +346,6 @@ impl StorageBuilder {
                     GuestMedia::Disk {
                         disk_type: disk,
                         read_only,
-                        disk_parameters: None,
                     }
                 };
 

@@ -1553,9 +1553,6 @@ impl InitializedVm {
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        // Parameters are applied by StorvspIdeResolver when
-                        // resolving the accelerator's SimpleScsiDiskHandle.
-                        disk_parameters: _,
                     } => {
                         let disk =
                             open_simple_disk(&resolver, disk_type, read_only, &driver_source)
