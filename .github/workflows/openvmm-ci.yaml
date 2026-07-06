@@ -1188,6 +1188,14 @@ jobs:
         name: x64-openhcl-igvm-uefi-custom-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-uefi-custom-extras/
         include-hidden-files: true
+    - name: 🌼🧼 Redact bootstrap var db
+      run: rm $AgentTempDirNormal/bootstrapped-flowey/job11.json
+      shell: bash
+    - name: 🌼🥾 Publish bootstrapped flowey
+      uses: actions/upload-artifact@v7
+      with:
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-9
+        path: ${{ runner.temp }}/bootstrapped-flowey
   job12:
     name: build openhcl (mi-secure) [x64-linux]
     runs-on:
@@ -5255,6 +5263,7 @@ jobs:
       contents: read
       id-token: write
     needs:
+    - job11
     - job2
     - job3
     - job9
@@ -5263,9 +5272,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-11,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-prep_steps,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-9,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-prep_steps,x64-linux-vmm-tests-archive,x64-openhcl-igvm-uefi-custom,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-11" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-9" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -5274,7 +5283,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-11/flowey
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-9/flowey
 
         echo '"debug"' | flowey v 24 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey v 24 '_internal_WORKING_DIR' --is-raw-string update
@@ -5289,6 +5298,7 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-openvmm_vhost" | flowey v 24 'artifact_use_from_x64-linux-openvmm_vhost' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-prep_steps" | flowey v 24 'artifact_use_from_x64-linux-prep_steps' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmm-tests-archive" | flowey v 24 'artifact_use_from_x64-linux-vmm-tests-archive' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-openhcl-igvm-uefi-custom" | flowey v 24 'artifact_use_from_x64-openhcl-igvm-uefi-custom' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-tmks" | flowey v 24 'artifact_use_from_x64-tmks' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-pipette" | flowey v 24 'artifact_use_from_x64-windows-pipette' --is-raw-string update
       shell: bash
@@ -5351,13 +5361,14 @@ jobs:
         flowey e 24 flowey_lib_common::system_info 0
         flowey e 24 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 24 flowey_lib_hvlite::run_cargo_nextest_run 0
-        flowey e 24 flowey_core::pipeline::artifact::resolve 8
+        flowey e 24 flowey_core::pipeline::artifact::resolve 9
         flowey e 24 flowey_core::pipeline::artifact::resolve 2
         flowey e 24 flowey_core::pipeline::artifact::resolve 3
         flowey e 24 flowey_core::pipeline::artifact::resolve 4
+        flowey e 24 flowey_core::pipeline::artifact::resolve 7
         flowey e 24 flowey_core::pipeline::artifact::resolve 1
         flowey e 24 flowey_core::pipeline::artifact::resolve 0
-        flowey e 24 flowey_core::pipeline::artifact::resolve 7
+        flowey e 24 flowey_core::pipeline::artifact::resolve 8
       shell: bash
     - name: creating new test content dir
       run: flowey e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
@@ -5525,6 +5536,7 @@ jobs:
       contents: read
       id-token: write
     needs:
+    - job11
     - job2
     - job3
     - job9
@@ -5572,7 +5584,7 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: '{x64-guest_test_uefi,x64-linux-musl-openvmm,x64-linux-musl-openvmm_vhost,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-musl-vmm-tests-archive,x64-linux-prep_steps,x64-tmks,x64-windows-pipette}'
+        pattern: '{x64-guest_test_uefi,x64-linux-musl-openvmm,x64-linux-musl-openvmm_vhost,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-musl-vmm-tests-archive,x64-linux-prep_steps,x64-openhcl-igvm-uefi-custom,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
@@ -5607,6 +5619,7 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-tmk_vmm" | flowey v 25 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-vmm-tests-archive" | flowey v 25 'artifact_use_from_x64-linux-musl-vmm-tests-archive' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-prep_steps" | flowey v 25 'artifact_use_from_x64-linux-prep_steps' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-openhcl-igvm-uefi-custom" | flowey v 25 'artifact_use_from_x64-openhcl-igvm-uefi-custom' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-tmks" | flowey v 25 'artifact_use_from_x64-tmks' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-pipette" | flowey v 25 'artifact_use_from_x64-windows-pipette' --is-raw-string update
       shell: bash
@@ -5666,13 +5679,14 @@ jobs:
         flowey e 25 flowey_lib_common::system_info 0
         flowey e 25 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 25 flowey_lib_hvlite::run_cargo_nextest_run 0
-        flowey e 25 flowey_core::pipeline::artifact::resolve 8
+        flowey e 25 flowey_core::pipeline::artifact::resolve 9
         flowey e 25 flowey_core::pipeline::artifact::resolve 4
         flowey e 25 flowey_core::pipeline::artifact::resolve 1
         flowey e 25 flowey_core::pipeline::artifact::resolve 2
+        flowey e 25 flowey_core::pipeline::artifact::resolve 7
         flowey e 25 flowey_core::pipeline::artifact::resolve 3
         flowey e 25 flowey_core::pipeline::artifact::resolve 0
-        flowey e 25 flowey_core::pipeline::artifact::resolve 7
+        flowey e 25 flowey_core::pipeline::artifact::resolve 8
       shell: bash
     - name: creating new test content dir
       run: flowey e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
@@ -9049,11 +9063,3 @@ jobs:
         name: x64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-archive/
         include-hidden-files: true
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job9.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v7
-      with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-11
-        path: ${{ runner.temp }}/bootstrapped-flowey

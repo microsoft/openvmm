@@ -1079,6 +1079,12 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_openhcl_uefi_custom = use_openhcl_igvms
                         .get(&OpenhclIgvmRecipe::X64UefiCustom)
                         .cloned();
+                    vmm_tests_artifacts_linux_x86.use_openhcl_uefi_custom = use_openhcl_igvms
+                        .get(&OpenhclIgvmRecipe::X64UefiCustom)
+                        .cloned();
+                    vmm_tests_artifacts_linux_musl_x86.use_openhcl_uefi_custom = use_openhcl_igvms
+                        .get(&OpenhclIgvmRecipe::X64UefiCustom)
+                        .cloned();
                 }
                 (CommonArch::X86_64, true) => {
                     // we'll skim these off later so we can reuse most of the
@@ -1882,6 +1888,7 @@ pub mod vmm_tests_artifact_builders {
             // linux build machine
             openvmm => OpenvmmOutput,
             openvmm_vhost => OpenvmmVhostOutput,
+            openhcl_uefi_custom => OpenhclIgvmOutput,
             pipette_linux_musl => PipetteOutput,
             prep_steps => PrepStepsOutput,
             // any machine
