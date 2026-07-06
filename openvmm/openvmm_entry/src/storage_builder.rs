@@ -711,11 +711,7 @@ impl StorageBuilder {
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
-        if !self.storvsp_ide_handles.is_empty() {
-            anyhow::ensure!(
-                config.vmbus.is_some(),
-                "IDE accelerator requires VMBus to be enabled"
-            );
+        if config.vmbus.is_some() {
             config.vmbus_devices.append(&mut self.storvsp_ide_handles);
         }
 
