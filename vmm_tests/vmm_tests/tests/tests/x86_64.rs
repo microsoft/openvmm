@@ -61,7 +61,6 @@ async fn crash_dump_on_triple_fault(
     let dump_path_str = dump_path.to_string_lossy().into_owned();
 
     let vm = config
-        .with_windows_secure_boot_template()
         .modify_backend(move |b| {
             b.with_custom_config(move |c| c.crash_dump_path = Some(dump_path_str))
         })
