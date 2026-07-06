@@ -99,6 +99,8 @@ const ECAP_VALUE: u64 = EcapReg::new()
     .with_qi(true)
     .with_ir(true)
     .with_eim(true)
+    .with_pt(true)
+    .with_sc(true)
     .with_iro(Reg::IVA.0 / 16)
     .with_mhmv(15) // max IM field in interrupt cache invalidation (4-bit max)
     .into_bits();

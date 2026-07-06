@@ -11,6 +11,8 @@ pub use chipset_resources::i440bx_host_pci_bridge::GpaState;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -157,13 +159,13 @@ impl ChipsetDevice for HostPciBridge {
 }
 
 impl PciConfigSpace for HostPciBridge {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = match ConfigSpace(offset) {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(match ConfigSpace(offset) {
             // for bug-for-bug compat with the hyper-v implementation: return
             // hardcoded status register instead of letting the config space
             // emulator take care of it
             _ if offset == pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0 => 0x02000006,
-            _ if offset < 0x40 => return self.cfg_space.read_u32(offset, value),
+            _ if offset < 0x40 => return self.cfg_space.read_byte_enabled(offset, value),
             ConfigSpace::PAM1 => self.state.pam_reg1,
             ConfigSpace::PAM2 => self.state.pam_reg2,
             ConfigSpace::DRB_1 => self.state.host_pci_dram1,
@@ -198,29 +200,31 @@ impl PciConfigSpace for HostPciBridge {
                 tracing::debug!(?offset, "unimplemented config space read");
                 return IoResult::Err(IoError::InvalidRegister);
             }
-        };
+        });
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         match ConfigSpace(offset) {
-            _ if offset < 0x40 => return self.cfg_space.write_u32(offset, value),
-            ConfigSpace::DRB_1 => self.state.host_pci_dram1 = value,
-            ConfigSpace::DRB_2 => self.state.host_pci_dram2 = value,
+            _ if offset < 0x40 => return self.cfg_space.write_byte_enabled(offset, value),
+            ConfigSpace::DRB_1 => value.merge_into(&mut self.state.host_pci_dram1),
+            ConfigSpace::DRB_2 => value.merge_into(&mut self.state.host_pci_dram2),
             ConfigSpace::PAM1 => {
+                let value = value.merge(self.state.pam_reg1);
                 self.adjust_bios_override_ranges(value, self.state.pam_reg2, false);
             }
             ConfigSpace::PAM2 => {
+                let value = value.merge(self.state.pam_reg2);
                 self.adjust_bios_override_ranges(self.state.pam_reg1, value, false);
             }
-            ConfigSpace::BSPAD_1 => self.state.bios_scratch1 = value,
-            ConfigSpace::BSPAD_2 => self.state.bios_scratch2 = value,
+            ConfigSpace::BSPAD_1 => value.merge_into(&mut self.state.bios_scratch1),
+            ConfigSpace::BSPAD_2 => value.merge_into(&mut self.state.bios_scratch2),
             ConfigSpace::SMRAM => {
                 // Configuration registers 70-71 are reserved. Only 72-73 (the top 16
                 // bits of this four-byte range) are defined. We'll therefore shift
                 // off the bottom portion.
-                let mut new_smm_word = (value >> 16) as u16;
+                let mut new_smm_word = value.merge_high(self.state.smm_config_word);
 
                 // If the register is "locked" (i.e. bit 4 has been set), then
                 // all of the other bits become read-only.

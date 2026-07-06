@@ -1111,6 +1111,19 @@ impl ConfigSpaceType0Emulator {
         self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
     }
 
+    /// Read a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
+    pub fn read_byte_enabled(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.read(addr, value)
+    }
+
     /// Write to the config space.
     pub fn write(&mut self, address: PciConfigAddress, val: ByteEnabledDwordWrite) -> IoResult {
         use cfg_space::HeaderType00;
@@ -1163,6 +1176,19 @@ impl ConfigSpaceType0Emulator {
         };
 
         self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
+    }
+
+    /// Write a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
+    pub fn write_byte_enabled(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.write(addr, value)
     }
 
     /// Finds a BAR + offset by address.
@@ -1470,6 +1496,19 @@ impl ConfigSpaceType1Emulator {
         self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
     }
 
+    /// Read a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
+    pub fn read_byte_enabled(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.read(addr, value)
+    }
+
     /// Write to the config space.
     pub fn write(&mut self, address: PciConfigAddress, val: ByteEnabledDwordWrite) -> IoResult {
         use cfg_space::HeaderType01;
@@ -1547,6 +1586,19 @@ impl ConfigSpaceType1Emulator {
         };
 
         self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
+    }
+
+    /// Write a byte-enabled DWORD to the config space. `offset` must be 32-bit aligned.
+    pub fn write_byte_enabled(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        if !offset.is_multiple_of(4) {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
+            return IoResult::Err(IoError::InvalidRegister);
+        };
+
+        self.write(addr, value)
     }
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.

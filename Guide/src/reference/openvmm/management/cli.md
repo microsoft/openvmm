@@ -58,29 +58,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
-    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
-    virt). The host must expose virtualization extensions to the VM
-    running OpenVMM.
-
-  KVM accepts the following parameters (x86_64 guests only):
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor. Off by default: when enabled, a Windows guest detects
-    nested virtualization support and turns on Virtual Secure Mode (VSM),
-    which hurts performance and breaks boot while VMBus devices are in use.
-    The host must support KVM nested virtualization; the backend validates
-    this and fails early if it does not.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
-  --hypervisor whp:nested_virt
   --hypervisor kvm
-  --hypervisor kvm:nested_virt
   ```
+* `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
+  can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
+  and only by backends that support nested virtualization (currently WHP and
+  KVM); requesting it with a backend that does not support it fails early. The
+  host must expose virtualization extensions to the VM running OpenVMM. When
+  enabled, a guest may detect nested virtualization and turn on features such
+  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
+  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  `--hypervisor whp:user_mode_apic`.
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS

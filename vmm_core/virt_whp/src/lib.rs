@@ -86,8 +86,6 @@ pub struct Whp {
     pub user_mode_apic: bool,
     /// Use the hypervisor's in-built enlightenment support if available.
     pub offload_enlightenments: bool,
-    /// Enable nested virtualization (VMX/SVM) for the guest.
-    pub nested_virt: bool,
 }
 
 #[derive(Inspect)]
@@ -836,13 +834,17 @@ impl virt::Hypervisor for Whp {
         }
     }
 
+    fn recognizes_nested_virt(&self) -> bool {
+        cfg!(guest_arch = "x86_64")
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
-        let nested_virt = self.nested_virt;
+        let nested_virt = config.nested_virt;
 
         // Nested virt is x86-only.
         #[cfg(guest_arch = "x86_64")]
@@ -1095,6 +1097,30 @@ impl WhpPartitionInner {
                     );
                     hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
                 }
+            }
+
+            if nested_virt {
+                // WORKAROUND: The L0 hypervisor advertises the enlightened
+                // guest-physical-address flush hypercall
+                // (HvCallFlushGuestPhysicalAddressSpace / ...List) in the nested
+                // features cpuid leaf whenever a partition is nested-capable,
+                // but the hypercall is actually rejected at dispatch for exo
+                // (WHP) partitions. Mask off the flush-GPA enlightenment bits so
+                // that the guest hypervisor falls back to non-enlightened
+                // NPT/EPT TLB invalidation instead of issuing a hypercall that
+                // will fail.
+                //
+                // Both the Intel (flush_guest_physical_hypercall) and AMD
+                // (enlightened_npt_tlb) bits are cleared unconditionally; only
+                // the platform-relevant bit is ever set in the passthrough
+                // value.
+                let flush_gpa_mask = hvdef::HvNestedVirtFeaturesEax::new()
+                    .with_flush_guest_physical_hypercall(true)
+                    .with_enlightened_npt_tlb(true);
+                cpuid.push(
+                    virt::CpuidLeaf::new(hvdef::HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES, [0; 4])
+                        .masked([u32::from(flush_gpa_mask), 0, 0, 0]),
+                );
             }
 
             cpuid.extend(config.cpuid);

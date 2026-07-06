@@ -19,9 +19,6 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub const VENDOR_ID: u16 = 0x1414;
-pub const DEVICE_ID: u16 = 0x00BA;
-
 pub const PAGE_SIZE32: u32 = 4096;
 pub const PAGE_SIZE64: u64 = 4096;
 

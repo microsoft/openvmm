@@ -18,6 +18,8 @@ use crate::spec::VgaPort;
 use crate::spec::VgaSequencerReg;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use framebuffer::FramebufferLocalControl;
 use guestmem::GuestMemory;
 use guestmem::MapRom;
@@ -612,11 +614,11 @@ impl Emulator {
     pub fn notify_pci_config_access_write(
         &mut self,
         in_reg_address: u16,
-        io_data: u32,
+        io_data: ByteEnabledDwordWrite,
     ) -> IoResult {
         tracing::trace!(
             reg = ?HeaderType00(in_reg_address),
-            io_data,
+            ?io_data,
             "pci config write"
         );
 
@@ -624,6 +626,7 @@ impl Emulator {
             HeaderType00::STATUS_COMMAND => {
                 // Write the command register portion of the status/command register
                 // The WHQL video tests require that these bits be read-only: 0x06FFF800
+                let io_data = io_data.merge(self.state.persistent_state.video_pci_status);
                 self.state.persistent_state.video_pci_status = io_data & 0x07FF;
             }
 
@@ -636,6 +639,7 @@ impl Emulator {
                 // to guarantee that the plug-n-play software
                 // allocates an address range that is correctly sized and
                 // aligned.
+                let io_data = io_data.merge(self.state.persistent_state.s3.linear_addr_window);
                 self.s3_set_linear_address_base(io_data as u64 & 0xFC000000); // S3 device
             }
 
@@ -646,11 +650,13 @@ impl Emulator {
             | HeaderType00::BAR5 => return IoResult::Err(IoError::InvalidRegister),
 
             HeaderType00::LATENCY_INTERRUPT => {
+                let io_data = io_data.merge(self.state.persistent_state.interrupt_line_info);
                 self.state.persistent_state.interrupt_line_info = io_data;
             }
 
             HeaderType00::EXPANSION_ROM_BASE => {
                 if let Some(rom) = &self.rom {
+                    let io_data = io_data.merge(self.state.persistent_state.expansion_rom_base);
                     let reg = io_data & 0xFFFF0001;
                     if reg != self.state.persistent_state.expansion_rom_base {
                         self.state.persistent_state.expansion_rom_base = reg;
@@ -671,7 +677,7 @@ impl Emulator {
             }
 
             reg => {
-                tracing::warn!(?reg, data = io_data, "unhandled vga config space write");
+                tracing::warn!(?reg, data = ?io_data, "unhandled vga config space write");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         }
@@ -682,13 +688,13 @@ impl Emulator {
     pub fn notify_pci_config_access_read(
         &self,
         in_reg_address: u16,
-        io_data: &mut u32,
+        mut io_data: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
         tracing::trace!(
             reg = ?HeaderType00(in_reg_address),
             "pci config read"
         );
-        *io_data = match HeaderType00(in_reg_address) {
+        io_data.set(match HeaderType00(in_reg_address) {
             HeaderType00::DEVICE_VENDOR => {
                 // Use constant Vendor ID and configured Device ID
                 spec::PCI_VENDOR_ID as u32 | ((spec::PCI_DEVICE_ID as u32) << 16)
@@ -735,11 +741,11 @@ impl Emulator {
                 tracing::warn!(?reg, "unhandled vga config space read");
                 return IoResult::Err(IoError::InvalidRegister);
             }
-        };
+        });
 
         tracing::trace!(
             reg = ?HeaderType00(in_reg_address),
-            io_data,
+            ?io_data,
             "pci config read finished"
         );
         IoResult::Ok

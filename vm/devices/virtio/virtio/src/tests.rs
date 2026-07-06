@@ -22,6 +22,9 @@ use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
 use futures::StreamExt;
@@ -527,26 +530,41 @@ impl VirtioTestGuest {
     ) {
         let bar_address1: u64 = 0x10000000000;
         dev.pci_device
-            .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+            .pci_cfg_write(
+                0x14,
+                ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+            )
             .unwrap();
         dev.pci_device
-            .pci_cfg_write(0x10, bar_address1 as u32)
+            .pci_cfg_write(
+                0x10,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+            )
             .unwrap();
 
         let bar_address2: u64 = 0x20000000000;
         dev.pci_device
-            .pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
+            .pci_cfg_write(
+                0x1c,
+                ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+            )
             .unwrap();
         dev.pci_device
-            .pci_cfg_write(0x18, bar_address2 as u32)
+            .pci_cfg_write(
+                0x18,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+            )
             .unwrap();
 
         dev.pci_device
             .pci_cfg_write(
                 0x4,
-                cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
+                ByteEnabledDwordWrite::new(
+                    cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                    PciConfigByteEnable::LOW_WORD,
+                ),
             )
             .unwrap();
 
@@ -618,7 +636,12 @@ impl VirtioTestGuest {
                 .unwrap();
         }
         // enable all device MSI interrupts
-        dev.pci_device.pci_cfg_write(0x40, 0x80000000).unwrap();
+        dev.pci_device
+            .pci_cfg_write(
+                0x40,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+            )
+            .unwrap();
         // run device — use the write_u32 test helper to bypass MmioIntercept
         // stall/deferred logic.
         let current = dev.pci_device.read_u32(20);
@@ -1617,7 +1640,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut capabilities = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(4, &mut capabilities)
+        .pci_cfg_read(
+            4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut capabilities),
+        )
         .unwrap();
     assert_eq!(
         capabilities,
@@ -1629,14 +1655,20 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut next_cap_offset = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(0x34, &mut next_cap_offset)
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut next_cap_offset),
+        )
         .unwrap();
     assert_ne!(next_cap_offset, 0);
 
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::MSIX.0);
@@ -1646,7 +1678,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1656,17 +1691,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
 
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x38);
     next_cap_offset = header[1] as u32;
@@ -1675,7 +1719,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1683,17 +1730,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 20);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x38);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 4);
     next_cap_offset = header[1] as u32;
@@ -1702,7 +1758,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1710,17 +1769,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x3c);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 4);
     next_cap_offset = header[1] as u32;
@@ -1729,7 +1797,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1737,17 +1808,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x40);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 12);
     next_cap_offset = header[1] as u32;
@@ -1761,30 +1841,45 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     let bar_address1: u64 = 0x2000000000;
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+        .pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+        )
         .unwrap();
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x10, bar_address1 as u32)
+        .pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+        )
         .unwrap();
 
     let bar_address2: u64 = 0x4000;
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
+        .pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+        )
         .unwrap();
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x18, bar_address2 as u32)
+        .pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+        )
         .unwrap();
 
     pci_test_device
         .pci_device
         .pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
 
@@ -2898,20 +2993,37 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     .unwrap();
 
     let bar_address1: u64 = 0x10000000000;
-    dev.pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
-        .unwrap();
-    dev.pci_cfg_write(0x10, bar_address1 as u32).unwrap();
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+    )
+    .unwrap();
 
     let bar_address2: u64 = 0x20000000000;
-    dev.pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
-        .unwrap();
-    dev.pci_cfg_write(0x18, bar_address2 as u32).unwrap();
+    dev.pci_cfg_write(
+        0x1c,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x18,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+    )
+    .unwrap();
 
     dev.pci_cfg_write(
         0x4,
-        cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
     )
     .unwrap();
 
@@ -2957,7 +3069,11 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     dev.mmio_write(bar_address1 + 28, &1u16.to_le_bytes())
         .unwrap();
     // Enable all MSI interrupts
-    dev.pci_cfg_write(0x40, 0x80000000).unwrap();
+    dev.pci_cfg_write(
+        0x40,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+    )
+    .unwrap();
 
     // Attempt DRIVER_OK — enable() will fail (use write_u32 to bypass deferred IO)
     let current = dev.read_u32(20);
@@ -3727,19 +3843,37 @@ impl PciTestTransport {
         .unwrap();
 
         let bar_address: u64 = 0x10000000000;
-        dev.pci_cfg_write(0x14, (bar_address >> 32) as u32).unwrap();
-        dev.pci_cfg_write(0x10, bar_address as u32).unwrap();
+        dev.pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address >> 32) as u32),
+        )
+        .unwrap();
+        dev.pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address as u32),
+        )
+        .unwrap();
 
         let bar_address2: u64 = 0x20000000000;
-        dev.pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
-            .unwrap();
-        dev.pci_cfg_write(0x18, bar_address2 as u32).unwrap();
+        dev.pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+        )
+        .unwrap();
+        dev.pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+        )
+        .unwrap();
 
         dev.pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
 
@@ -3786,7 +3920,11 @@ impl PciTestTransport {
             dev.mmio_write(bar_address + 28, &1u16.to_le_bytes())
                 .unwrap();
         }
-        dev.pci_cfg_write(0x40, 0x80000000).unwrap();
+        dev.pci_cfg_write(
+            0x40,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+        )
+        .unwrap();
 
         Self { dev }
     }
@@ -3981,13 +4119,24 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
     .unwrap();
 
     let bar_address: u64 = 0x10000000000;
-    dev.pci_cfg_write(0x14, (bar_address >> 32) as u32).unwrap();
-    dev.pci_cfg_write(0x10, bar_address as u32).unwrap();
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address as u32),
+    )
+    .unwrap();
     dev.pci_cfg_write(
         0x4,
-        cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
     )
     .unwrap();
 
@@ -4344,17 +4493,26 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     // Configure BARs on the target device so doorbells can be registered.
     let bar_address1: u64 = 0x10000000000;
     dev2.pci_device
-        .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+        .pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+        )
         .unwrap();
     dev2.pci_device
-        .pci_cfg_write(0x10, bar_address1 as u32)
+        .pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+        )
         .unwrap();
     dev2.pci_device
         .pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
     // Reset counter to isolate restore behavior.

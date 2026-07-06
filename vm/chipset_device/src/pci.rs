@@ -8,10 +8,11 @@ use crate::io::IoError;
 use crate::io::IoResult;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::MeshPayload;
 use zerocopy::IntoBytes;
 
 /// Byte enables for the four lanes of a PCI configuration DWORD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, MeshPayload)]
 pub struct PciConfigByteEnable(u8);
 
 impl PciConfigByteEnable {
@@ -135,9 +136,21 @@ impl ByteEnabledDwordWrite {
         Self::new(temp, byte_enable)
     }
 
+    /// Retrieve a mutable slice of the enabled byte lanes of the DWORD.
+    pub fn as_valid_byte_slice(&self) -> &[u8] {
+        let (byte_offset, len) = self.byte_enable.to_byte_offset_len();
+        let byte_offset = byte_offset as usize;
+        &self.value.as_bytes()[byte_offset..byte_offset + len]
+    }
+
     /// Returns true if all byte lanes are enabled.
     pub const fn is_full(self) -> bool {
         self.byte_enable.is_full()
+    }
+
+    /// Retrieve the underlying byte enable.
+    pub const fn byte_enable(&self) -> PciConfigByteEnable {
+        self.byte_enable
     }
 
     /// Get the mask of valid bytes.
@@ -208,10 +221,20 @@ impl<'a> ByteEnabledDwordRead<'a> {
 
     /// Fill the intercept buffer with the enabled byte lanes of the DWORD.
     pub fn fill_intercept_buffer(self, buffer: &mut [u8]) {
+        let src = self.into_valid_byte_slice();
+        buffer.copy_from_slice(src);
+    }
+
+    /// Retrieve a mutable slice of the enabled byte lanes of the DWORD.
+    pub fn into_valid_byte_slice(self) -> &'a mut [u8] {
         let (byte_offset, len) = self.byte_enable.to_byte_offset_len();
         let byte_offset = byte_offset as usize;
-        let src = self.value.as_bytes()[byte_offset..byte_offset + len].as_ref();
-        buffer.copy_from_slice(src);
+        &mut self.value.as_mut_bytes()[byte_offset..byte_offset + len]
+    }
+
+    /// Get the mask of valid bytes.
+    pub const fn valid_mask(&self) -> u32 {
+        self.byte_enable.mask()
     }
 
     /// Update the value of the DWORD, honoring byte enables.
@@ -316,9 +339,9 @@ impl PciConfigAddress {
 /// Implemented by devices which have a PCI config space.
 pub trait PciConfigSpace: ChipsetDevice {
     /// Dispatch a PCI config space read to the device with the given address.
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult;
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult;
     /// Dispatch a PCI config space write to the device with the given address.
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult;
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult;
 
     /// Handle a PCI configuration space read with full routing context.
     ///
@@ -356,12 +379,12 @@ pub trait PciConfigSpace: ChipsetDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
+        mut value: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
         if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_read(offset, value)
         } else {
-            *value = !0;
+            value.set(!0);
             IoResult::Ok
         }
     }
@@ -401,7 +424,7 @@ pub trait PciConfigSpace: ChipsetDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
+        value: ByteEnabledDwordWrite,
     ) -> IoResult {
         if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_write(offset, value)
