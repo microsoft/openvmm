@@ -153,24 +153,25 @@ fn validate_product_policy_for_build(policy: &ProductPolicy) {
 }
 
 /// Build the fixed-size measured VTL2 config region image: the struct
-/// followed by the optional policy body, zero-padded to
-/// `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE`. Every
+/// followed by the optional (encoded) product policy body, zero-padded
+/// to `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE`. Every
 /// byte is measured.
 fn build_measured_vtl2_config_region(
     mut config: ParavisorMeasuredVtl2Config,
-    policy_bytes: Option<&[u8]>,
+    product_policy: Option<&ProductPolicy>,
 ) -> Vec<u8> {
-    let policy = policy_bytes.unwrap_or(&[]);
-    config.product_policy_size = policy.len() as u32;
+    let policy_bytes = product_policy.map(encode_product_policy_bytes);
+    let policy_bytes = policy_bytes.as_deref().unwrap_or(&[]);
+    config.product_policy_size = policy_bytes.len() as u32;
 
     let buf_bytes = (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize);
     let mut buf = vec![0u8; buf_bytes];
 
     let struct_bytes = config.as_bytes();
     buf[..struct_bytes.len()].copy_from_slice(struct_bytes);
-    if !policy.is_empty() {
+    if !policy_bytes.is_empty() {
         let off = PRODUCT_POLICY_INLINE_OFFSET;
-        buf[off..off + policy.len()].copy_from_slice(policy);
+        buf[off..off + policy_bytes.len()].copy_from_slice(policy_bytes);
     }
     buf
 }
@@ -958,8 +959,6 @@ where
         )
         .map_err(Error::Importer)?;
 
-    let product_policy_bytes = product_policy.map(encode_product_policy_bytes);
-
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: shared_gpa_boundary_bits.unwrap_or(0),
@@ -968,8 +967,7 @@ where
         reserved: [0; 4],
     };
 
-    let region_image =
-        build_measured_vtl2_config_region(vtl2_measured_config, product_policy_bytes.as_deref());
+    let region_image = build_measured_vtl2_config_region(vtl2_measured_config, product_policy);
 
     importer
         .import_pages(
@@ -1530,8 +1528,6 @@ where
     )?;
     importer.import_parameter(dt_parameter_area, 0, IgvmParameterType::DeviceTree)?;
 
-    let product_policy_bytes = product_policy.map(encode_product_policy_bytes);
-
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: 0,
@@ -1540,8 +1536,7 @@ where
         reserved: [0; 4],
     };
 
-    let region_image =
-        build_measured_vtl2_config_region(vtl2_measured_config, product_policy_bytes.as_deref());
+    let region_image = build_measured_vtl2_config_region(vtl2_measured_config, product_policy);
 
     importer
         .import_pages(
@@ -1647,7 +1642,7 @@ mod product_policy_tests {
             ..Default::default()
         });
         let bytes = encode_product_policy_bytes(&policy);
-        let region = build_measured_vtl2_config_region(cfg, Some(&bytes));
+        let region = build_measured_vtl2_config_region(cfg, Some(&policy));
         assert_eq!(
             region.len(),
             (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
