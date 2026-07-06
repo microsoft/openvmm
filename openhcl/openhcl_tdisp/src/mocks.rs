@@ -11,13 +11,18 @@ use crate::TdispResourceValidationInterface;
 
 /// Recorded call to [`TdispNoopResourceValidator::tdisp_unblock_mmio`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(missing_docs)]
 pub struct UnblockedMmioRange {
+    /// The VTL the MMIO range was unblocked for.
     pub target_vtl: Vtl,
+    /// Identifies the TDI device (not a VPCI ID).
     pub device_id: u16,
+    /// The base guest physical address of the unblocked MMIO range.
     pub base_gpa: u64,
+    /// The offset within `range_id` that unblocking started from.
     pub base_offset: u32,
+    /// The length in bytes of the unblocked MMIO range.
     pub length_in_bytes: u32,
+    /// Identifies which MMIO range was unblocked.
     pub range_id: u16,
 }
 

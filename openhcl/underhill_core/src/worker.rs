@@ -3393,30 +3393,31 @@ async fn new_underhill_vm(
                 use openhcl_tdisp::TdispResourceValidationInterface;
                 #[cfg(feature = "dev_snp_ohcl_tio_support")]
                 use openhcl_tdisp::TdispSevTioResourceValidator;
+                use openhcl_tdisp::TdispTdxConnectResourceValidator;
                 use openhcl_tdisp::mocks::TdispNoopResourceValidator;
 
                 use vpci_relay::*;
 
-                let TDX_TEST = true;
-
-                // Create a resource validator based on the test scenario. If it's a real CVM,
-                // we'll use a real resource validator. Otherwise, we'll use the noop validator.
-                #[cfg(feature = "dev_snp_ohcl_tio_support")]
-                let resource_validator: Option<
-                    Arc<dyn TdispResourceValidationInterface>,
-                > = if !test_tdisp_flow && !TDX_TEST {
-                    Some(Arc::new(TdispSevTioResourceValidator::new(
-                        vtom.unwrap_or(0),
-                    )?))
-                } else {
-                    Some(Arc::new(TdispNoopResourceValidator::new()))
-                };
-
-                // If TDISP feature is not enabled, we'll use the noop validator.
-                #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
-                let resource_validator: Option<
-                    Arc<dyn TdispResourceValidationInterface>,
-                > = Some(Arc::new(TdispNoopResourceValidator::new()));
+                // The mock TDISP flow always uses the no-op validator. Otherwise
+                // pick a validator by isolation type. SEV-TIO stays behind its
+                // feature; TDX Connect and the no-op validator are always
+                // available. Isolation types without a real validator (or with
+                // SEV-TIO compiled out) fall through to the no-op validator.
+                let resource_validator: Option<Arc<dyn TdispResourceValidationInterface>> =
+                    if test_tdisp_flow {
+                        Some(Arc::new(TdispNoopResourceValidator::new()))
+                    } else {
+                        match isolation {
+                            virt::IsolationType::Tdx => Some(Arc::new(
+                                TdispTdxConnectResourceValidator::new(vtom.unwrap_or(0))?,
+                            )),
+                            #[cfg(feature = "dev_snp_ohcl_tio_support")]
+                            virt::IsolationType::Snp => Some(Arc::new(
+                                TdispSevTioResourceValidator::new(vtom.unwrap_or(0))?,
+                            )),
+                            _ => Some(Arc::new(TdispNoopResourceValidator::new())),
+                        }
+                    };
 
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),

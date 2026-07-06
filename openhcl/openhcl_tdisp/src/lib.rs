@@ -11,6 +11,8 @@
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 mod sevtio;
 
+mod tdxconnect;
+
 pub mod mocks;
 
 // Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
@@ -40,6 +42,8 @@ pub use tdisp_proto::TdispTdiState;
 
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 pub use sevtio::TdispSevTioResourceValidator;
+
+pub use tdxconnect::TdispTdxConnectResourceValidator;
 
 use hvdef::Vtl;
 use tdisp_proto::TdispCommandRequestBind;
