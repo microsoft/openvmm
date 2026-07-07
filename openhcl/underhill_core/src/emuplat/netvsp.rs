@@ -794,8 +794,10 @@ impl HclNetworkVFManagerWorker {
     ///
     /// Assumes the worker is not in shutdown.
     /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
-    /// arrival/removal notifications are updated immediately. Otherwise the bus
-    /// change is recorded on `self.vtl0_bus_control` and the guest-facing state
+    /// arrival/removal notifications are updated immediately. When it is
+    /// `Reconfiguring` and a VF is still offered to the guest, that VF is
+    /// revoked before the new bus state is recorded. Otherwise the bus change
+    /// is recorded on `self.vtl0_bus_control` and the guest-facing state
     /// remains cleared until the VTL2 device is started again.
     async fn update_vtl0_vf(
         &mut self,
@@ -1130,7 +1132,9 @@ impl HclNetworkVFManagerWorker {
                 if self.guest_state.is_offered_to_guest().await {
                     // If reconfigure VF did not revoke the VTL0 VF, revoke it.
                     *self.guest_state.vtl0_vfid.lock().await = None;
-                    self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
+                    let old_bus_control =
+                        std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::NotPresent);
+                    self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
                         .await;
                 }
                 *vtl2_device_state = Vtl2DeviceState::Missing;
