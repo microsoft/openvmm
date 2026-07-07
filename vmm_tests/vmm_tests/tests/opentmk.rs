@@ -5,7 +5,7 @@
 //!
 //! Each test boots a Hyper-V VM with OpenHCL as the paravisor and a specific
 //! OpenTMK test selection (patched in by [`petri::UefiGuest::opentmk`]), waits
-//! for the guest to stream its results over COM2, and asserts every check
+//! for the guest to stream its results over COM1, and asserts every check
 //! passed. Variants cover a non-isolated VM and SNP/TDX confidential VMs.
 
 #![forbid(unsafe_code)]
@@ -29,7 +29,7 @@ struct OpentmkArtifacts<T: PetriVmmBackend> {
 }
 
 /// Build the embedded config selecting the `hyperv` backend and the given
-/// `test`. Must match [`opentmk_protocol::TestConfig`].
+/// `test`. Must match `opentmk_protocol::TestConfig`.
 fn opentmk_config_json(test: &str) -> Vec<u8> {
     format!(r#"{{"backend":"hyperv","test":"{test}"}}"#).into_bytes()
 }
@@ -56,7 +56,7 @@ fn resolve_opentmk_openhcl<T: PetriVmmBackend>(
     Some(OpentmkArtifacts { vm })
 }
 
-/// Boot the OpenTMK guest, wait for its COM2 results, and assert every check passed.
+/// Boot the OpenTMK guest, wait for its COM1 results, and assert every check passed.
 fn run_opentmk_uefi<T: PetriVmmBackend>(
     params: petri::PetriTestParams<'_>,
     artifacts: OpentmkArtifacts<T>,

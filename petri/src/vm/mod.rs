@@ -1954,13 +1954,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.remove_pcie_device(port_name).await
     }
 
-    /// Scan the guest's COM2 output for OpenTMK results, returning once the run
+    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
     /// completes or `timeout` elapses. Requires a [`UefiGuest::OpenTmk`] guest.
     pub async fn wait_for_opentmk(
         &mut self,
         timeout: Duration,
     ) -> anyhow::Result<crate::opentmk::TmkRun> {
-        tracing::info!("Waiting for OpenTMK results on COM2...");
+        tracing::info!("Waiting for OpenTMK results on COM1...");
         self.runtime.wait_for_opentmk(timeout).await
     }
 
@@ -2158,7 +2158,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         let _ = port_name;
         anyhow::bail!("PCIe hotplug not supported by this backend")
     }
-    /// Scan the guest's COM2 output for OpenTMK results, returning once the run
+    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
     /// completes or `timeout` elapses.
     async fn wait_for_opentmk(
         &mut self,
@@ -3076,7 +3076,7 @@ impl UefiGuest {
     /// Registers the `.efi` for `arch` and records `config_json` to patch into
     /// it; the VHD is built lazily when the boot drive is first requested, so
     /// this is safe to call while only collecting artifact requirements.
-    /// `config_json` must be a valid [`opentmk_protocol::TestConfig`].
+    /// `config_json` must be a valid `opentmk_protocol::TestConfig`.
     pub fn opentmk(resolver: &ArtifactResolver<'_>, arch: MachineArch, config_json: &[u8]) -> Self {
         use petri_artifacts_vmm_test::artifacts::opentmk::*;
         let efi = match arch {
