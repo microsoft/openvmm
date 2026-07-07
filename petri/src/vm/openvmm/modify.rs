@@ -64,8 +64,8 @@ impl PetriVmConfigOpenVmm {
                 }
                 .into_resource(),
             });
-            if let LoadMode::Uefi { enable_battery, .. } = &mut self.config.load_mode {
-                *enable_battery = true;
+            if let LoadMode::Uefi { config, .. } = &mut self.config.load_mode {
+                config.enable_battery = true;
             }
         }
         self

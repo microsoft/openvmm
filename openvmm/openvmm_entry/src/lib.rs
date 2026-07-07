@@ -71,7 +71,6 @@ use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
-use openvmm_defs::config::IgvmUefiConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -86,12 +85,12 @@ use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UefiConfig;
 use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
-use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -1107,13 +1106,6 @@ async fn vm_config_from_command_line(
 
     let has_com3 = serial2_cfg.is_some();
     let igvm_uses_uefi_helper = opt.igvm.as_ref().is_some_and(|igvm| igvm.uefi);
-    let igvm_vtl2_relocation_type = opt.igvm_vtl2_relocation_type.unwrap_or({
-        if igvm_uses_uefi_helper {
-            Vtl2BaseAddressType::File
-        } else {
-            Vtl2BaseAddressType::MemoryLayout { size: None }
-        }
-    });
 
     let mut chipset = VmManifestBuilder::new(
         if igvm_uses_uefi_helper {
@@ -1228,6 +1220,25 @@ async fn vm_config_from_command_line(
 
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
+    let uefi_config = UefiConfig {
+        enable_debugging: opt.uefi_debug,
+        enable_memory_protections: opt.uefi_enable_memory_protections,
+        disable_frontpage: opt.disable_frontpage,
+        enable_tpm: opt.tpm,
+        enable_battery: opt.battery,
+        enable_serial: any_serial_configured,
+        enable_vpci_boot: false,
+        uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
+            UefiConsoleModeCli::Default => UefiConsoleMode::Default,
+            UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
+            UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
+            UefiConsoleModeCli::None => UefiConsoleMode::None,
+        }),
+        default_boot_always_attempt: opt.default_boot_always_attempt,
+        bios_guid,
+        enable_vmbus: !opt.no_vmbus,
+        force_dma_bounce: opt.uefi_force_dma_bounce,
+    };
 
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
@@ -1255,26 +1266,8 @@ async fn vm_config_from_command_line(
         load_mode = LoadMode::Igvm {
             file,
             cmdline,
-            vtl2_base_address: igvm_vtl2_relocation_type,
-            uefi_config: igvm.uefi.then(|| IgvmUefiConfig {
-                enable_debugging: opt.uefi_debug,
-                enable_memory_protections: opt.uefi_enable_memory_protections,
-                disable_frontpage: opt.disable_frontpage,
-                enable_tpm: opt.tpm,
-                enable_battery: opt.battery,
-                enable_serial: any_serial_configured,
-                enable_vpci_boot: false,
-                uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
-                    UefiConsoleModeCli::Default => UefiConsoleMode::Default,
-                    UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
-                    UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
-                    UefiConsoleModeCli::None => UefiConsoleMode::None,
-                }),
-                default_boot_always_attempt: opt.default_boot_always_attempt,
-                bios_guid,
-                enable_vmbus: !opt.no_vmbus,
-                force_dma_bounce: opt.uefi_force_dma_bounce,
-            }),
+            vtl2_base_address: opt.igvm_vtl2_relocation_type,
+            uefi: igvm.uefi,
             com_serial: has_com3.then(|| SerialInformation {
                 io_port: ComPort::Com3.io_port(),
                 irq: ComPort::Com3.irq().into(),
@@ -1296,8 +1289,6 @@ async fn vm_config_from_command_line(
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
         };
     } else if opt.uefi {
-        use openvmm_defs::config::UefiConsoleMode;
-
         with_hv = true;
 
         let firmware = fs_err::File::open(
@@ -1311,23 +1302,7 @@ async fn vm_config_from_command_line(
         //       appears to be a GRUB memory protection fault. Memory protections are therefore only enabled if configured.
         load_mode = LoadMode::Uefi {
             firmware: firmware.into(),
-            enable_debugging: opt.uefi_debug,
-            enable_memory_protections: opt.uefi_enable_memory_protections,
-            disable_frontpage: opt.disable_frontpage,
-            enable_tpm: opt.tpm,
-            enable_battery: opt.battery,
-            enable_serial: any_serial_configured,
-            enable_vpci_boot: false,
-            uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
-                UefiConsoleModeCli::Default => UefiConsoleMode::Default,
-                UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
-                UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
-                UefiConsoleModeCli::None => UefiConsoleMode::None,
-            }),
-            default_boot_always_attempt: opt.default_boot_always_attempt,
-            bios_guid,
-            enable_vmbus: !opt.no_vmbus,
-            force_dma_bounce: opt.uefi_force_dma_bounce,
+            config: uefi_config,
         };
     } else {
         // Linux Direct

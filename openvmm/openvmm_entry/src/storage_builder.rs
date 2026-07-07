@@ -779,12 +779,8 @@ impl StorageBuilder {
 
                             // Tell UEFI to try to enumerate VPCI devices since there
                             // might be an NVMe namespace to boot from.
-                            if let LoadMode::Uefi {
-                                enable_vpci_boot: vpci_boot,
-                                ..
-                            } = &mut config.load_mode
-                            {
-                                *vpci_boot = true;
+                            if let LoadMode::Uefi { config, .. } = &mut config.load_mode {
+                                config.enable_vpci_boot = true;
                             }
                         }
                     }
@@ -809,12 +805,8 @@ impl StorageBuilder {
 
             // Tell UEFI to try to enumerate VPCI devices since there might be
             // an NVMe namespace to boot from.
-            if let LoadMode::Uefi {
-                enable_vpci_boot: vpci_boot,
-                ..
-            } = &mut config.load_mode
-            {
-                *vpci_boot = true;
+            if let LoadMode::Uefi { config, .. } = &mut config.load_mode {
+                config.enable_vpci_boot = true;
             }
         }
 

@@ -812,7 +812,6 @@ fn load_igvm_x86(
     vtl2_protectable_ram.sort_by_key(|r| r.start());
 
     let mut page_table_cpu_state: Option<CpuPagingState> = None;
-
     // If requested, filter to VTL2-related directives only.
     let pt_range = page_table_fixup.as_ref().map_or(MemoryRange::EMPTY, |x| {
         MemoryRange::new(x.gpa..x.gpa + x.size)

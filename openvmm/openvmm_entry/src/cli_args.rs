@@ -660,8 +660,8 @@ options:
 
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
-    #[clap(long, requires("igvm"), value_parser = parse_vtl2_relocation)]
-    pub igvm_vtl2_relocation_type: Option<Vtl2BaseAddressType>,
+    #[clap(long, requires("igvm"), default_value = "auto=filesize", value_parser = parse_vtl2_relocation)]
+    pub igvm_vtl2_relocation_type: Vtl2BaseAddressType,
 
     /// add a virtio_9p device (e.g. myfs,C:\)
     ///
@@ -1288,11 +1288,9 @@ impl Options {
     /// Validates IGVM-specific option combinations.
     pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
         if self.igvm.as_ref().is_some_and(|igvm| igvm.uefi)
-            && self
-                .igvm_vtl2_relocation_type
-                .is_some_and(|relocation| !matches!(relocation, Vtl2BaseAddressType::File))
+            && !matches!(self.igvm_vtl2_relocation_type, Vtl2BaseAddressType::File)
         {
-            anyhow::bail!("--igvm type=uefi implies --igvm-vtl2-relocation-type disable");
+            anyhow::bail!("--igvm type=uefi requires --igvm-vtl2-relocation-type disable");
         }
         Ok(())
     }
