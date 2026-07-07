@@ -814,31 +814,63 @@ impl HclNetworkVFManagerWorker {
                 present = bus_control.is_some(),
                 "VTL0 VF device change"
             );
-            if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent) {
-                self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control.unwrap())
-            } else if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
-                self.vtl0_bus_control = Vtl0Bus::HiddenNotPresent;
-            } else if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
-                let bus_control = bus_control
-                    .map(Vtl0Bus::Present)
-                    .unwrap_or(Vtl0Bus::NotPresent);
-                *self.guest_state.vtl0_vfid.lock().await = vtl0_vfid_from_bus_control(&bus_control);
-                let old_bus_control = std::mem::replace(&mut self.vtl0_bus_control, bus_control);
-                match self.vtl0_bus_control {
-                    Vtl0Bus::Present(_) => self.notify_vtl0_vf_arrival(),
-                    Vtl0Bus::NotPresent => {
-                        self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
-                            .await
-                    }
-                    _ => unreachable!(),
+            // The reaction to a VTL0 VF add/remove depends on both the current
+            // VTL0 bus visibility and backing VTL2 device state.
+            match (*vtl2_device_state, &self.vtl0_bus_control) {
+                // The VF is hidden from the guest (e.g. prepared for hibernate).
+                // Store the new backing state; it will be surfaced to the guest
+                // if/when it is unhidden.
+                (_, Vtl0Bus::HiddenNotPresent) => {
+                    self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control.unwrap());
                 }
-            } else {
+                (_, Vtl0Bus::HiddenPresent(_)) => {
+                    self.vtl0_bus_control = Vtl0Bus::HiddenNotPresent;
+                }
+                // The VTL2 device is present; apply the VTL0 change immediately.
+                (Vtl2DeviceState::Present, _) => {
+                    let bus_control = bus_control
+                        .map(Vtl0Bus::Present)
+                        .unwrap_or(Vtl0Bus::NotPresent);
+                    *self.guest_state.vtl0_vfid.lock().await =
+                        vtl0_vfid_from_bus_control(&bus_control);
+                    let old_bus_control =
+                        std::mem::replace(&mut self.vtl0_bus_control, bus_control);
+                    match self.vtl0_bus_control {
+                        Vtl0Bus::Present(_) => self.notify_vtl0_vf_arrival(),
+                        Vtl0Bus::NotPresent => {
+                            self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
+                                .await
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                // The VTL2 device is reconfiguring. If the reconfigure did not
+                // revoke the VTL0 VF, then VTL0 bus must be changing to NotPresent,
+                // so revoke the VTL0 VF. Then store the new VTL0 bus state.
+                (Vtl2DeviceState::Reconfiguring, _) => {
+                    if self.guest_state.is_offered_to_guest().await {
+                        tracing::info!(
+                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
+                            "Revoking VTL0 VF"
+                        );
+                        *self.guest_state.vtl0_vfid.lock().await = None;
+                        let old_bus_control =
+                            std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::NotPresent);
+                        self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
+                            .await;
+                    }
+                    self.vtl0_bus_control = bus_control
+                        .map(Vtl0Bus::Present)
+                        .unwrap_or(Vtl0Bus::NotPresent);
+                }
                 // When the VTL2 device is restored, the VTL0 update will be applied.
-                assert_eq!(*self.guest_state.offered_to_guest.lock().await, false);
-                assert!(self.guest_state.vtl0_vfid.lock().await.is_none());
-                self.vtl0_bus_control = bus_control
-                    .map(Vtl0Bus::Present)
-                    .unwrap_or(Vtl0Bus::NotPresent);
+                (Vtl2DeviceState::Missing | Vtl2DeviceState::DeviceEnumerated, _) => {
+                    assert!(!self.guest_state.is_offered_to_guest().await);
+                    assert!(self.guest_state.vtl0_vfid.lock().await.is_none());
+                    self.vtl0_bus_control = bus_control
+                        .map(Vtl0Bus::Present)
+                        .unwrap_or(Vtl0Bus::NotPresent);
+                }
             }
         })
         .await
@@ -1066,8 +1098,9 @@ impl HclNetworkVFManagerWorker {
     ///
     /// Assumes the worker is not in shutdown.
     /// On success, returns `Ok(None)` and sets device state to `Present` when the device has
-    /// started up. If retries have run out, sets device state to `Missing` and returns an
-    /// error; otherwise, `Ok(Some(backoff))` with updated retry timing.
+    /// started up. If retries have run out, revokes any still-offered VTL0 VF,
+    /// sets device state to `Missing`, and returns an error; otherwise,
+    /// `Ok(Some(backoff))` with updated retry timing.
     async fn reconfigure_vf_restart(
         &mut self,
         vtl2_device_state: &mut Vtl2DeviceState,
@@ -1093,7 +1126,13 @@ impl HclNetworkVFManagerWorker {
                     attempts = backoff.attempts,
                     "VTL2 device restart not ready after VF reconfiguration"
                 );
-                // Stop further attempts.
+                // Stop further attempts and treat the VTL2 device as missing.
+                if self.guest_state.is_offered_to_guest().await {
+                    // If reconfigure VF did not revoke the VTL0 VF, revoke it.
+                    *self.guest_state.vtl0_vfid.lock().await = None;
+                    self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
+                        .await;
+                }
                 *vtl2_device_state = Vtl2DeviceState::Missing;
                 anyhow::bail!("vtl2 device not ready")
             }
