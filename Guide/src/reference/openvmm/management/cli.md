@@ -59,12 +59,30 @@ as well as the generated CLI help (via `cargo run -- --help`).
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
 
+  KVM accepts the following parameters (x86_64 guests only):
+  * `hv=<spec>`: choose which Hyper-V enlightenments OpenVMM advertises to
+    the guest and enables in KVM. The spec is a preset name (`default`,
+    `windows`, `none`) followed by `+flag` / `+no_flag` toggles, for example
+    `hv=windows+no_evmcs`. See [Hyper-V enlightenments](../hyperv_enlightenments.md)
+    for the presets, every flag, the host auto-detection, and the nested guest
+    notes.
+  * `cpu=<model>`: present a named CPU model to the guest by masking the host
+    CPUID down to that model's feature set (guest features = host AND model).
+    `host` or `max` (the default) pass the host features through unchanged. See
+    [Guest CPU models](../cpu_models.md) for the masking rules and the full list
+    of selectable models.
+
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
+  --nested-virt --hypervisor kvm:hv=windows+no_evmcs
+  --hypervisor kvm:hv=default+stimer_direct+reenlightenment
+  --hypervisor kvm:hv=none+time+frequencies+synic+stimer+vapic+spinlocks=0x1fff
+  --hypervisor kvm:cpu=Skylake-Client
+  --hypervisor kvm:cpu=EPYC-Milan
   ```
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
