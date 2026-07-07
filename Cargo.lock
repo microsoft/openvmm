@@ -624,7 +624,6 @@ dependencies = [
  "parking_lot",
  "range_map_vec",
  "tracing",
- "zerocopy",
 ]
 
 [[package]]
@@ -3739,7 +3738,9 @@ name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
+ "crypto",
  "fs-err",
  "hex",
  "hvdef",
@@ -8755,7 +8756,6 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
- "gdma_defs",
  "get_helpers",
  "get_protocol",
  "getrandom 0.4.2",
@@ -8804,6 +8804,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",

@@ -266,6 +266,7 @@ impl VirtioDevice for Device {
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
+            .with_status(true)
             .with_csum(csum)
             .with_guest_csum(true)
             .with_host_tso4(host_tso)

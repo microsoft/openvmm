@@ -123,18 +123,26 @@ impl Table for Ivrs {
 
 const_assert_eq!(size_of::<Ivrs>(), 12);
 
-/// IVHD type 40h header (§5.2.2.3, Table 99).
+/// IVHD type 11h header (§5.2.2.3, Table 99).
 ///
-/// "Mixed format" IVHD block. Types 10h, 11h, and 40h all share the same
-/// first 24 bytes; types 11h and 40h extend this with EFR/EFR2 register
-/// images (bytes 24..40). The distinction between 11h and 40h is that
-/// type 40h can contain both fixed-length (BDF-based) and variable-length
-/// (ACPI HID-based) device entries, while 11h is limited to fixed-length
-/// entries. Both types require `IVinfo[EFRSup] = 1`.
+/// Extended IVHD block with EFR image. Types 10h, 11h, and 40h all share
+/// the same first 24 bytes; types 11h and 40h extend this with EFR/EFR2
+/// register images (bytes 24..40) and are byte-identical apart from the
+/// type field. Type 40h additionally permits variable-length (ACPI
+/// HID-based) device entries, whereas 11h is limited to fixed-length
+/// (BDF-based) entries. Both require `IVinfo[EFRSup] = 1`.
+///
+/// We emit type 11h rather than 40h because it is the most broadly
+/// compatible extended format: the Microsoft hypervisor's boot-time IVRS
+/// parser (as shipped in Windows Server 2022 / build 20348) only
+/// recognizes types 10h and 11h and rejects the whole IVRS as a bad ACPI
+/// table if it finds no matching IVHD, whereas type 40h support is newer.
+/// Type 11h is accepted by that parser, newer hypervisor builds, and
+/// Linux. Our device entries are all BDF-based, so 40h buys us nothing.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
-pub struct IvhdType40 {
-    /// IVHD type: always [`IVHD_TYPE_40`].
+pub struct IvhdType11 {
+    /// IVHD type: always [`IVHD_TYPE_11`].
     pub ivhd_type: u8,
     /// Flags (§5.2.2.2, Table 87).
     pub flags: u8,
@@ -159,8 +167,8 @@ pub struct IvhdType40 {
     pub efr_register2: u64_ne,
 }
 
-impl IvhdType40 {
-    /// Create a new IVHD type 40h header.
+impl IvhdType11 {
+    /// Create a new IVHD type 11h header.
     pub fn new(
         device_id: u16,
         capability_offset: u16,
@@ -169,7 +177,7 @@ impl IvhdType40 {
         efr: u64,
     ) -> Self {
         Self {
-            ivhd_type: IVHD_TYPE_40,
+            ivhd_type: IVHD_TYPE_11,
             flags: 0,
             length: (size_of::<Self>() as u16).into(),
             device_id: device_id.into(),
@@ -196,7 +204,7 @@ impl IvhdType40 {
     }
 }
 
-const_assert_eq!(size_of::<IvhdType40>(), 40);
+const_assert_eq!(size_of::<IvhdType11>(), 40);
 
 /// IVHD 4-byte device entry (§5.2.2.7, Table 93).
 ///
@@ -340,11 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ivhd_type40_defaults() {
-        let ivhd = IvhdType40::new(0x0002, 0x40, 0xFD00_0000, 0, 0xC0);
-        assert_eq!(ivhd.ivhd_type, IVHD_TYPE_40);
+    fn test_ivhd_type11_defaults() {
+        let ivhd = IvhdType11::new(0x0002, 0x40, 0xFD00_0000, 0, 0xC0);
+        assert_eq!(ivhd.ivhd_type, IVHD_TYPE_11);
         assert_eq!(ivhd.flags, 0);
-        assert_eq!(ivhd.length.get(), size_of::<IvhdType40>() as u16);
+        assert_eq!(ivhd.length.get(), size_of::<IvhdType11>() as u16);
         assert_eq!(ivhd.device_id.get(), 0x0002);
         assert_eq!(ivhd.capability_offset.get(), 0x40);
         assert_eq!(ivhd.iommu_base_address.get(), 0xFD00_0000);
@@ -356,8 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ivhd_type40_with_length() {
-        let ivhd = IvhdType40::new(0x0002, 0x40, 0xFD00_0000, 0, 0).with_length(48);
+    fn test_ivhd_type11_with_length() {
+        let ivhd = IvhdType11::new(0x0002, 0x40, 0xFD00_0000, 0, 0).with_length(48);
         assert_eq!(ivhd.length.get(), 48);
     }
 
@@ -397,8 +405,8 @@ mod tests {
         // Build a minimal IVRS: header + IVHD + two device entries
         let ivrs = Ivrs::new(0x0040_3000);
         let dev_entries_size = 2 * size_of::<IvhdDeviceEntry4>() as u16;
-        let ivhd_total = size_of::<IvhdType40>() as u16 + dev_entries_size;
-        let ivhd = IvhdType40::new(0x0002, 0x40, 0xFD00_0000, 0, 0).with_length(ivhd_total);
+        let ivhd_total = size_of::<IvhdType11>() as u16 + dev_entries_size;
+        let ivhd = IvhdType11::new(0x0002, 0x40, 0xFD00_0000, 0, 0).with_length(ivhd_total);
 
         let range_start = IvhdDeviceEntry4::range_start(0x0001, 0);
         let range_end = IvhdDeviceEntry4::range_end(0xFFFF);
@@ -417,7 +425,7 @@ mod tests {
         assert_eq!(buf.len(), 60);
 
         // Verify IVHD starts at offset 12
-        assert_eq!(buf[12], IVHD_TYPE_40);
+        assert_eq!(buf[12], IVHD_TYPE_11);
         // Verify device entries start at offset 52 (12 + 40)
         assert_eq!(buf[52], IVHD_DEV_RANGE_START);
         assert_eq!(buf[56], IVHD_DEV_RANGE_END);

@@ -652,6 +652,8 @@ mod weak_mutex_pci {
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;
@@ -662,7 +664,11 @@ mod weak_mutex_pci {
     pub struct WeakMutexPciDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
 
     impl GenericPciBusDevice for WeakMutexPciDeviceWrapper {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             Some(
                 self.0
                     .upgrade()?
@@ -673,7 +679,7 @@ mod weak_mutex_pci {
             )
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
             Some(
                 self.0
                     .upgrade()?
@@ -690,7 +696,7 @@ mod weak_mutex_pci {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: &mut u32,
+            value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
             Some(
                 self.0
@@ -708,7 +714,7 @@ mod weak_mutex_pci {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: u32,
+            value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
             Some(
                 self.0

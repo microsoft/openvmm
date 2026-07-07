@@ -593,9 +593,7 @@ impl ChipsetDevice for GenericPcieRootComplex {
 
 impl PollDevice for GenericPcieRootComplex {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        let mut callback =
-            PciBusCfgAccessCallbackView::new(&self.start_bus, &self.end_bus, &mut self.devices);
-        self.bus_cfg_handler.poll(cx, &mut callback);
+        self.bus_cfg_handler.poll(cx);
     }
 }
 
@@ -744,10 +742,10 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
 }
 
 impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+    fn read(&mut self, addr: PciConfigAddress, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         let Some(target) = self.route_cfg_access(addr) else {
             tracing::trace!(?addr, "unroutable config space access");
-            *value = !0;
+            value.set(!0);
             return IoResult::Ok;
         };
 
@@ -758,20 +756,21 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     addr.bus,
                     addr.device_function,
                     addr.byte_offset(),
-                    value,
+                    value.reborrow(),
                 )
                 .unwrap_or_else(|| {
-                    *value = !0;
+                    value.set(!0);
                     IoResult::Ok
                 }),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.read_u32(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port
+                .port
+                .cfg_space
+                .read_byte_enabled(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_read(addr, value),
         }
     }
 
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+    fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
         let Some(target) = self.route_cfg_access(addr) else {
             tracing::trace!(?addr, "unroutable config space access");
             return IoResult::Ok;
@@ -787,9 +786,10 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
                     value,
                 )
                 .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => {
-                port.port.cfg_space.write_u32(addr.byte_offset(), value)
-            }
+            CfgAccessTarget::RootPort(port) => port
+                .port
+                .cfg_space
+                .write_byte_enabled(addr.byte_offset(), value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }
@@ -882,11 +882,19 @@ impl RootPort {
         }
     }
 
-    fn forward_cfg_read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+    fn forward_cfg_read(
+        &mut self,
+        addr: PciConfigAddress,
+        value: ByteEnabledDwordRead<'_>,
+    ) -> IoResult {
         self.port.forward_cfg_read_with_routing(addr, value)
     }
 
-    fn forward_cfg_write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+    fn forward_cfg_write(
+        &mut self,
+        addr: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
         self.port.forward_cfg_write_with_routing(addr, value)
     }
 }
@@ -1065,6 +1073,8 @@ mod tests {
     use chipset_device::io::deferred::DeferredWrite;
     use chipset_device::io::deferred::defer_read;
     use chipset_device::io::deferred::defer_write;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigSpace;
     use cxl_spec::CxlComponentRegisterType;
     use cxl_spec::component_registers::test_helper::TestCxlComponentRegisterBlock;
@@ -1082,7 +1092,7 @@ mod tests {
         defer_writes: bool,
         pending_read: Option<DeferredRead>,
         pending_write: Option<DeferredWrite>,
-        writes: Vec<(u16, u32)>,
+        writes: Vec<(u16, ByteEnabledDwordWrite)>,
     }
 
     impl DeferredEndpointState {
@@ -1099,7 +1109,11 @@ mod tests {
     }
 
     impl GenericPciBusDevice for DeferredEndpoint {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             let mut state = self.state.lock();
             if state.defer_reads {
                 let (deferred, token) = defer_read();
@@ -1107,12 +1121,12 @@ mod tests {
                 Some(IoResult::Defer(token))
             } else {
                 assert_eq!(offset, 0);
-                *value = state.read_value;
+                value.set(state.read_value);
                 Some(IoResult::Ok)
             }
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
             let mut state = self.state.lock();
             state.writes.push((offset, value));
             if state.defer_writes {
@@ -1128,11 +1142,15 @@ mod tests {
     struct SwitchAdapter(Arc<Mutex<GenericPcieSwitch>>);
 
     impl GenericPciBusDevice for SwitchAdapter {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             Some(self.0.lock().pci_cfg_read(offset, value))
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
             Some(self.0.lock().pci_cfg_write(offset, value))
         }
 
@@ -1142,7 +1160,7 @@ mod tests {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: &mut u32,
+            value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
             Some(self.0.lock().pci_cfg_read_with_routing(
                 secondary_bus,
@@ -1159,7 +1177,7 @@ mod tests {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: u32,
+            value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
             Some(self.0.lock().pci_cfg_write_with_routing(
                 secondary_bus,
@@ -1358,9 +1376,9 @@ mod tests {
         let mut rc = instantiate_root_complex(0, 0, 1);
 
         let endpoint1 = TestPcieEndpoint::new(
-            |offset, value| match offset {
+            |offset, mut value| match offset {
                 0x0 => {
-                    *value = 0xAAAA_AAAA;
+                    value.set(0xAAAA_AAAA);
                     Some(IoResult::Ok)
                 }
                 _ => Some(IoResult::Err(IoError::InvalidRegister)),
@@ -1416,9 +1434,9 @@ mod tests {
         assert_eq!(value_32, 0xFFFF_FFFF);
 
         let endpoint = TestPcieEndpoint::new(
-            |offset, value| match offset {
+            |offset, mut value| match offset {
                 0x0 => {
-                    *value = 0xDEAD_BEEF;
+                    value.set(0xDEAD_BEEF);
                     Some(IoResult::Ok)
                 }
                 _ => Some(IoResult::Err(IoError::InvalidRegister)),
@@ -1506,23 +1524,7 @@ mod tests {
         ));
 
         let partial_write = rc.mmio_write(ENDPOINT_ECAM + 1, &[0xaa]);
-        let IoResult::Defer(partial_write_token) = partial_write else {
-            panic!("sub-dword downstream config write should defer on read-for-write");
-        };
-        state
-            .lock()
-            .pending_read
-            .take()
-            .unwrap()
-            .complete(&0x1122_3344u32.as_bytes()[..4]);
-        poll_root(&mut rc);
-        partial_write_token.write_future().await.unwrap();
-        let mut expected = 0x1122_3344u32.to_ne_bytes();
-        expected[1] = 0xaa;
-        assert_eq!(
-            state.lock().writes.pop(),
-            Some((0, u32::from_ne_bytes(expected)))
-        );
+        assert!(matches!(partial_write, IoResult::Ok));
 
         state.lock().defer_reads = false;
         state.lock().defer_writes = true;
@@ -1533,7 +1535,13 @@ mod tests {
         state.lock().pending_write.take().unwrap().complete();
         poll_root(&mut rc);
         full_write_token.write_future().await.unwrap();
-        assert_eq!(state.lock().writes.pop(), Some((0, 0xaabb_ccdd)));
+        assert_eq!(
+            state.lock().writes.pop(),
+            Some((
+                0,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xaabb_ccdd)
+            ))
+        );
 
         let full_write = rc.mmio_write(ENDPOINT_ECAM, 0x1122_3344u32.as_bytes());
         let IoResult::Defer(full_write_token) = full_write else {
@@ -1587,7 +1595,9 @@ mod tests {
                 SWITCH_BUS,
                 0,
                 0x18,
-                (10u32 << 16) | ((SWITCH_INTERNAL_BUS as u32) << 8) | SWITCH_BUS as u32,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    (10u32 << 16) | ((SWITCH_INTERNAL_BUS as u32) << 8) | SWITCH_BUS as u32,
+                ),
             )
             .unwrap();
         switch
@@ -1597,9 +1607,11 @@ mod tests {
                 SWITCH_INTERNAL_BUS,
                 0,
                 0x18,
-                ((ENDPOINT_BUS as u32) << 16)
-                    | ((ENDPOINT_BUS as u32) << 8)
-                    | SWITCH_INTERNAL_BUS as u32,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    ((ENDPOINT_BUS as u32) << 16)
+                        | ((ENDPOINT_BUS as u32) << 8)
+                        | SWITCH_INTERNAL_BUS as u32,
+                ),
             )
             .unwrap();
 
@@ -1848,12 +1860,16 @@ mod tests {
         // Test that forwarding returns Ok but doesn't crash when bus range is invalid
         let addr = PciConfigAddress::new(1, 0, 0x0).unwrap();
         let mut value = 0u32;
-        let result = root_port
-            .port
-            .forward_cfg_read_with_routing(addr, &mut value);
+        let result = root_port.port.forward_cfg_read_with_routing(
+            addr,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+        );
         assert!(matches!(result, IoResult::Ok));
 
-        let result = root_port.port.forward_cfg_write_with_routing(addr, value);
+        let result = root_port.port.forward_cfg_write_with_routing(
+            addr,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(value),
+        );
         assert!(matches!(result, IoResult::Ok));
     }
 
@@ -2092,9 +2108,9 @@ mod tests {
 
         // Attach an RCiEP at device 0 function 0 (devfn 0).
         let rciep = TestPcieEndpoint::new(
-            |offset, value| {
+            |offset, mut value| {
                 if offset == 0 {
-                    *value = 0xDEAD_BEEF;
+                    value.set(0xDEAD_BEEF);
                 }
                 Some(IoResult::Ok)
             },
@@ -2139,9 +2155,9 @@ mod tests {
             .unwrap();
 
         let rciep = TestPcieEndpoint::new(
-            |offset, value| {
+            |offset, mut value| {
                 if offset == 0 {
-                    *value = 0xCAFE_F00D;
+                    value.set(0xCAFE_F00D);
                 }
                 Some(IoResult::Ok)
             },

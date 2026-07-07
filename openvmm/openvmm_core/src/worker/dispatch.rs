@@ -23,6 +23,9 @@ use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
+use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
@@ -1050,6 +1053,13 @@ impl InitializedVm {
             }
         }
 
+        // A backend must explicitly recognize an optional feature; requesting
+        // one it does not recognize fails here rather than being silently
+        // ignored during partition creation.
+        if cfg.hypervisor.nested_virt && !hypervisor.recognizes_nested_virt() {
+            anyhow::bail!("the selected hypervisor does not support nested virtualization");
+        }
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1060,6 +1070,7 @@ impl InitializedVm {
                     .with_isolation
                     .map(|typ| typ.into())
                     .unwrap_or(virt::IsolationType::None),
+                nested_virt: cfg.hypervisor.nested_virt,
             })
             .context("failed to create the prototype partition")?;
 
@@ -4176,11 +4187,7 @@ struct WeakMutexPciBusDevice(
 );
 
 impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
-    fn pci_cfg_read(
-        &mut self,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4190,7 +4197,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4206,8 +4213,8 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4223,8 +4230,8 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        value: ByteEnabledDwordWrite,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?

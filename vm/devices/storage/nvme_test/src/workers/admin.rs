@@ -8,6 +8,7 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::MAX_NSID;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
@@ -362,10 +363,17 @@ enum Event {
     NamespaceChange(u32),
 }
 
-/// Error returned when adding a namespace with a conflicting ID.
+/// Error returned when a namespace cannot be added.
 #[derive(Debug, Error)]
-#[error("namespace id conflict for {0}")]
-pub struct NsidConflict(u32);
+pub enum AddNamespaceError {
+    /// A namespace with this ID already exists.
+    #[error("namespace id conflict for {0}")]
+    Conflict(u32),
+    /// The namespace ID is outside the valid range supported by the
+    /// subsystem (see the `NN` field of Identify Controller).
+    #[error("namespace id {0} is out of range (must be 1..={MAX_NSID})")]
+    OutOfRange(u32),
+}
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
@@ -382,14 +390,17 @@ impl AdminHandler {
         state: Option<&mut AdminState>,
         nsid: u32,
         disk: Disk,
-    ) -> Result<(), NsidConflict> {
+    ) -> Result<(), AddNamespaceError> {
+        if nsid == 0 || nsid > MAX_NSID {
+            return Err(AddNamespaceError::OutOfRange(nsid));
+        }
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
                 nsid,
                 disk,
             ))),
-            btree_map::Entry::Occupied(_) => return Err(NsidConflict(nsid)),
+            btree_map::Entry::Occupied(_) => return Err(AddNamespaceError::Conflict(nsid)),
         };
 
         if let Some(state) = state {
@@ -783,17 +794,27 @@ impl AdminHandler {
                 }
             }
             spec::Cns::NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             cns => {
@@ -820,7 +841,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.namespaces.keys().copied().max().unwrap_or(0),
+            nn: MAX_NSID,
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),

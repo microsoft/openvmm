@@ -199,11 +199,6 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-// TODO: Move to hsm crate in future.
-// AZIHSM VPCI IDs
-const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
-const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
-
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -3383,8 +3378,8 @@ async fn new_underhill_vm(
 
                 // Allow MANA devices.
                 relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(gdma_defs::VENDOR_ID),
-                    device_id: Some(gdma_defs::DEVICE_ID),
+                    vendor_id: Some(pci_core::microsoft::VENDOR_ID),
+                    device_id: Some(pci_core::microsoft::DeviceId::GDMA.0),
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
                     sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
@@ -3395,8 +3390,8 @@ async fn new_underhill_vm(
 
                 // Allow Azi HSM devices.
                 relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(AZIHSM_VPCI_VENDOR_ID), // Microsoft vendor ID
-                    device_id: Some(AZIHSM_VPCI_DEVICE_ID), // Azi HSM device ID
+                    vendor_id: Some(pci_core::microsoft::VENDOR_ID), // Microsoft vendor ID
+                    device_id: Some(pci_core::microsoft::DeviceId::AZIHSM.0), // Azi HSM device ID
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NONE),
                     sub_class: Some(Subclass::NONE),

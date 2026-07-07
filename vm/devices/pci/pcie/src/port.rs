@@ -7,6 +7,8 @@ use anyhow::bail;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigAddress;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
@@ -671,7 +673,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_read_with_routing(
         &mut self,
         addr: PciConfigAddress,
-        value: &mut u32,
+        mut value: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
         let bus_range = self.cfg_space.assigned_bus_range();
 
@@ -679,7 +681,7 @@ impl PcieDownstreamPort {
         // and the access should not have been routed to this port.
         if bus_range == (0..=0) {
             tracelimit::warn_ratelimited!("invalid access: port bus number range not configured");
-            *value = !0;
+            value.set(!0);
             return IoResult::Ok;
         }
 
@@ -689,14 +691,14 @@ impl PcieDownstreamPort {
             tracelimit::warn_ratelimited!(
                 "bus number to access not within port's bus number range"
             );
-            *value = !0;
+            value.set(!0);
             return IoResult::Ok;
         }
 
         // If there is no device connected to the port, then we should return all-1s.
         let Some((_, device)) = &mut self.link else {
             tracing::trace!("no device connected to port");
-            *value = !0;
+            value.set(!0);
             return IoResult::Ok;
         };
 
@@ -707,11 +709,11 @@ impl PcieDownstreamPort {
                 addr.bus,
                 addr.device_function,
                 addr.byte_offset(),
-                value,
+                value.reborrow(),
             )
             .unwrap_or_else(|| {
                 tracelimit::warn_ratelimited!("failed to read from connected device");
-                *value = !0;
+                value.set(!0);
                 IoResult::Ok
             })
     }
@@ -721,7 +723,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_write_with_routing(
         &mut self,
         addr: PciConfigAddress,
-        value: u32,
+        value: ByteEnabledDwordWrite,
     ) -> IoResult {
         let bus_range = self.cfg_space.assigned_bus_range();
 
@@ -910,11 +912,19 @@ mod tests {
     struct MockDevice;
 
     impl GenericPciBusDevice for MockDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             None
         }
 
-        fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
             None
         }
     }
@@ -924,7 +934,7 @@ mod tests {
         direct_reads: usize,
         forward_reads: Vec<(u8, u8, u16)>,
         direct_writes: usize,
-        forward_writes: Vec<(u8, u8, u16, u32)>,
+        forward_writes: Vec<(u8, u8, u16, ByteEnabledDwordWrite)>,
     }
 
     struct MultiFunctionMockDevice {
@@ -932,12 +942,20 @@ mod tests {
     }
 
     impl GenericPciBusDevice for MultiFunctionMockDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             self.stats.lock().direct_reads += 1;
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
             self.stats.lock().direct_writes += 1;
             Some(IoResult::Ok)
         }
@@ -948,13 +966,13 @@ mod tests {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: &mut u32,
+            mut value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
             self.stats
                 .lock()
                 .forward_reads
                 .push((target_bus, function, offset));
-            *value = 0x1234_5678;
+            value.set(0x1234_5678);
             Some(IoResult::Ok)
         }
 
@@ -964,7 +982,7 @@ mod tests {
             target_bus: u8,
             function: u8,
             offset: u16,
-            value: u32,
+            value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
             self.stats
                 .lock()
@@ -1113,14 +1131,14 @@ mod tests {
         assert!(matches!(
             port.forward_cfg_read_with_routing(
                 PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
-                &mut value
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
             ),
             IoResult::Ok
         ));
         assert!(matches!(
             port.forward_cfg_read_with_routing(
                 PciConfigAddress::new(1, 3, 0x14 / 4).unwrap(),
-                &mut value
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value)
             ),
             IoResult::Ok
         ));
@@ -1176,14 +1194,14 @@ mod tests {
         assert!(matches!(
             port.forward_cfg_write_with_routing(
                 PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
-                0xAAAA_0000
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xAAAA_0000)
             ),
             IoResult::Ok
         ));
         assert!(matches!(
             port.forward_cfg_write_with_routing(
                 PciConfigAddress::new(1, 2, 0x14 / 4).unwrap(),
-                0xBBBB_0000
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xBBBB_0000)
             ),
             IoResult::Ok
         ));
@@ -1192,7 +1210,20 @@ mod tests {
         assert_eq!(stats.direct_writes, 0);
         assert_eq!(
             stats.forward_writes,
-            vec![(1, 0, 0x10, 0xAAAA_0000), (1, 2, 0x14, 0xBBBB_0000)]
+            vec![
+                (
+                    1,
+                    0,
+                    0x10,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xAAAA_0000)
+                ),
+                (
+                    1,
+                    2,
+                    0x14,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xBBBB_0000)
+                )
+            ]
         );
     }
 
