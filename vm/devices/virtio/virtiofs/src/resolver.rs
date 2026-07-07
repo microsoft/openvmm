@@ -68,7 +68,11 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                         Some(&LxVolumeOptions::from_option_string(&child.mount_options)),
                     )
                     .map_err(|e| {
-                        anyhow::anyhow!("failed to add virtiofs root {}: {:?}", child.name, e)
+                        anyhow::anyhow!(
+                            "failed to add virtiofs aggregate child '{}' (root_path='{}'): {e}",
+                            child.name,
+                            child.root_path
+                        )
                     })?;
                 }
                 VirtioFsDevice::new(input.driver_source, &resource.tag, fs, 0, None)
