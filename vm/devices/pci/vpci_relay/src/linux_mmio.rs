@@ -43,30 +43,63 @@ impl MemoryAccess for DirectMmioInstance {
         self.0
     }
 
-    fn read(&mut self, addr: u64) -> u32 {
+    fn read(&mut self, addr: u64, data: &mut [u8]) {
         let offset = addr
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
             .unwrap_or(!0);
-        match self.1.read_volatile(offset) {
-            Ok(v) => v,
+        let res = match data.len() {
+            1 => self.1.read_volatile::<[u8; 1]>(offset).map(|v| v.to_vec()),
+            2 => self.1.read_volatile::<[u8; 2]>(offset).map(|v| v.to_vec()),
+            4 => self.1.read_volatile::<[u8; 4]>(offset).map(|v| v.to_vec()),
+            _ => {
+                tracelimit::error_ratelimited!(
+                    addr,
+                    len = data.len(),
+                    "vpci mmio read failure: unsupported length"
+                );
+                data.fill(!0);
+                return;
+            }
+        };
+        match res {
+            Ok(value) => data.copy_from_slice(&value),
             Err(err) => {
                 tracelimit::error_ratelimited!(
                     addr,
                     error = &err as &dyn std::error::Error,
                     "vpci mmio read failure"
                 );
-                !0
+                data.fill(!0);
             }
         }
     }
 
-    fn write(&mut self, addr: u64, value: u32) {
+    fn write(&mut self, addr: u64, value: &[u8]) {
         let offset = addr
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
             .unwrap_or(!0);
-        if let Err(err) = self.1.write_volatile(offset, &value) {
+        let res = match value.len() {
+            1 => self
+                .1
+                .write_volatile(offset, &<[u8; 1]>::try_from(value).unwrap()),
+            2 => self
+                .1
+                .write_volatile(offset, &<[u8; 2]>::try_from(value).unwrap()),
+            4 => self
+                .1
+                .write_volatile(offset, &<[u8; 4]>::try_from(value).unwrap()),
+            _ => {
+                tracelimit::error_ratelimited!(
+                    addr,
+                    len = value.len(),
+                    "vpci mmio write failure: unsupported length"
+                );
+                return;
+            }
+        };
+        if let Err(err) = res {
             tracelimit::error_ratelimited!(
                 addr,
                 value,
@@ -105,27 +138,22 @@ impl MemoryAccess for HypercallMmioInstance {
         self.0
     }
 
-    fn read(&mut self, addr: u64) -> u32 {
-        let mut data = [0; 4];
-        match self.1.mmio_read(addr, &mut data) {
-            Ok(()) => u32::from_ne_bytes(data),
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    addr,
-                    error = &err as &dyn std::error::Error,
-                    "vpci mmio read failure"
-                );
-                !0
-            }
+    fn read(&mut self, addr: u64, data: &mut [u8]) {
+        if let Err(err) = self.1.mmio_read(addr, data) {
+            tracelimit::error_ratelimited!(
+                addr,
+                error = &err as &dyn std::error::Error,
+                "vpci mmio read failure"
+            );
+            data.fill(!0);
         }
     }
 
-    fn write(&mut self, addr: u64, value: u32) {
-        let data = value.to_ne_bytes();
-        if let Err(err) = self.1.mmio_write(addr, &data) {
+    fn write(&mut self, addr: u64, data: &[u8]) {
+        if let Err(err) = self.1.mmio_write(addr, data) {
             tracelimit::error_ratelimited!(
                 addr,
-                value,
+                data,
                 error = &err as &dyn std::error::Error,
                 "vpci mmio write failure"
             );
