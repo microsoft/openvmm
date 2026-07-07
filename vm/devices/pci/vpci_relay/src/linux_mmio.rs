@@ -49,9 +49,18 @@ impl MemoryAccess for DirectMmioInstance {
             .and_then(|o| o.try_into().ok())
             .unwrap_or(!0);
         let res = match data.len() {
-            1 => self.1.read_volatile::<[u8; 1]>(offset).map(|v| v.to_vec()),
-            2 => self.1.read_volatile::<[u8; 2]>(offset).map(|v| v.to_vec()),
-            4 => self.1.read_volatile::<[u8; 4]>(offset).map(|v| v.to_vec()),
+            1 => self
+                .1
+                .read_volatile::<[u8; 1]>(offset)
+                .map(|v| data.copy_from_slice(&v)),
+            2 => self
+                .1
+                .read_volatile::<[u8; 2]>(offset)
+                .map(|v| data.copy_from_slice(&v)),
+            4 => self
+                .1
+                .read_volatile::<[u8; 4]>(offset)
+                .map(|v| data.copy_from_slice(&v)),
             _ => {
                 tracelimit::error_ratelimited!(
                     addr,
@@ -62,16 +71,13 @@ impl MemoryAccess for DirectMmioInstance {
                 return;
             }
         };
-        match res {
-            Ok(value) => data.copy_from_slice(&value),
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    addr,
-                    error = &err as &dyn std::error::Error,
-                    "vpci mmio read failure"
-                );
-                data.fill(!0);
-            }
+        if let Err(err) = res {
+            tracelimit::error_ratelimited!(
+                addr,
+                error = &err as &dyn std::error::Error,
+                "vpci mmio read failure"
+            );
+            data.fill(!0);
         }
     }
 

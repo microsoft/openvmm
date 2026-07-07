@@ -446,7 +446,7 @@ impl VpciDevice {
     /// Offset must be u32 aligned.
     pub fn read_cfg(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         // For static values, return values from the device's description.
-        let value = match HeaderType00(offset) {
+        match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
                 let shadows = self.shadows.lock();
                 self.config_space
@@ -496,7 +496,6 @@ impl VpciDevice {
                 .read(self.dev.id, offset, value.reborrow()),
         };
         tracing::trace!(?offset, ?value, "config space read");
-        value
     }
 
     /// Writes device configuration space.
