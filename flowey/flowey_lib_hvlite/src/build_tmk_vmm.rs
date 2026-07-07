@@ -3,8 +3,8 @@
 
 //! Build TMK binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -15,7 +15,8 @@ pub enum TmkVmmOutput {
         #[serde(rename = "tmk_vmm.exe")]
         exe: PathBuf,
         #[serde(rename = "tmk_vmm.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
     LinuxBin {
         #[serde(rename = "tmk_vmm")]
@@ -31,7 +32,6 @@ flowey_request! {
     pub struct Request {
         pub profile: CommonProfile,
         pub target: CommonTriple,
-        pub unstable_whp: bool,
         pub tmk_vmm: WriteVar<TmkVmmOutput>,
     }
 }
@@ -53,28 +53,19 @@ impl FlowNode for Node {
                 let Request {
                     target,
                     profile,
-                    unstable_whp,
                     tmk_vmm,
                 } = r;
-                m.entry((target, profile, unstable_whp))
-                    .or_default()
-                    .push(tmk_vmm);
+                m.entry((target, profile)).or_default().push(tmk_vmm);
                 m
             });
 
-        for ((target, profile, unstable_whp), tmk_vmm) in requests {
-            let features = if unstable_whp && target == CommonTriple::AARCH64_WINDOWS_MSVC {
-                ["unstable_whp".to_owned()].into()
-            } else {
-                Default::default()
-            };
-
+        for ((target, profile), tmk_vmm) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "tmk_vmm".into(),
                 out_name: "tmk_vmm".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile: profile.into(),
-                features,
+                features: Default::default(),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,

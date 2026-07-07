@@ -40,7 +40,7 @@ impl LinuxDirectSerialAgent {
     pub(crate) async fn run_command(&mut self, command: &str) -> anyhow::Result<String> {
         self.init_busybox_if_necessary().await?;
         let bytes = self.run_command_core(command).await?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(String::from_utf8_lossy(bytes.trim_ascii()).into_owned())
     }
 
     async fn run_command_core(&mut self, command: &str) -> anyhow::Result<Vec<u8>> {
@@ -51,9 +51,6 @@ impl LinuxDirectSerialAgent {
         const COMMAND_END_SIGNAL: &str = "== Petri Command Complete ==";
         let command = format!("({command}) > /dev/ttyS1\necho {COMMAND_END_SIGNAL} > /dev/ttyS1\n");
 
-        // When reading the output there will be a trailing newline.
-        const COMMAND_END_SIGNAL_READ: &str = "== Petri Command Complete ==\r\n";
-
         self.write.write_all(command.as_bytes()).await?;
 
         let mut output = Vec::new();
@@ -62,8 +59,12 @@ impl LinuxDirectSerialAgent {
             let n = self.read.read(&mut buf).await?;
             tracing::debug!(buf = ?&buf[..n], "read serial bytes from guest");
             output.extend_from_slice(&buf[..n]);
-            if output.ends_with(COMMAND_END_SIGNAL_READ.as_bytes()) {
-                output.truncate(output.len() - COMMAND_END_SIGNAL_READ.len());
+            if let Some(pos) = output
+                .windows(COMMAND_END_SIGNAL.len())
+                .rev()
+                .position(|window| window == COMMAND_END_SIGNAL.as_bytes())
+            {
+                output.truncate(pos);
                 break;
             }
         }

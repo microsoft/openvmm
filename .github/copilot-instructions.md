@@ -80,16 +80,24 @@ Both OpenVMM and OpenHCL process data from untrusted sources. Code must
 
 ## Testing
 
-Run tests with cargo-nextest in the specific packages you are modifying:
+Run tests with cargo-nextest using the `agent` profile, which suppresses
+output for passing tests and only shows slow/failing tests:
 ```bash
-cargo nextest run -p <package-name>
+cargo nextest run --profile agent -p <package-name>
 ```
+
+**Do NOT pipe test output to `grep`, `tail`, or other filters.** The `agent`
+profile already minimizes output. Piping hides failures and makes hangs
+invisible.
 
 For VMM test validation during development, use `cargo xflowey vmm-tests-run`:
 ```bash
-# Run a specific test
-cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir <output-dir>
+cargo xflowey vmm-tests-run --filter "test(my_test_name)"
 ```
+Do not pass `--dir` — it is only required when cross-compiling for Windows
+from WSL2 (where the output directory must be on the Windows filesystem, e.g.,
+`--dir /mnt/d/vmm_tests`). For native host tests it is unnecessary.
+
 This automatically discovers artifacts, builds dependencies, and runs tests.
 See `Guide/src/dev_guide/tests/vmm.md` for details.
 
@@ -138,7 +146,7 @@ locally, avoiding slow push-and-wait cycles.
 2. **Check compilation:** `cargo check -p <package>` — fast type-check.
 3. **Clippy:** `cargo clippy --all-targets -p <package>` — lint.
 4. **Doc:** `cargo doc --no-deps -p <package>` — catch doc errors.
-5. **Unit tests:** `cargo nextest run -p <package>` — run the crate's
+5. **Unit tests:** `cargo nextest run --profile agent -p <package>` — run the crate's
    tests. If nextest is not installed, use `cargo test -p <package>`.
 6. **Formatting:** `cargo xtask fmt --fix` — run last, since earlier
    fixes may introduce formatting changes.

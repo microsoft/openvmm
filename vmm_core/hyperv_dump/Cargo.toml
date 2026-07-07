@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hyperv_dump"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hvdef.workspace = true
+hvs_file.workspace = true
+memory_range.workspace = true
+static_assertions.workspace = true
+virt.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+pal.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

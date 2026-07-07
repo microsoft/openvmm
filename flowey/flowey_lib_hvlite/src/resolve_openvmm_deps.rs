@@ -2,21 +2,20 @@
 // Licensed under the MIT License.
 
 //! Download various pre-built `openvmm-deps` dependencies, or use a local path if specified.
+//!
+//! The openvmm-deps release publishes separate archives:
+//! - `openvmm-deps.{arch}.{ver}.tar.gz` — SDK tools (dbgrd, shell, sysroot, petritools)
+//! - `openvmm-test-initrd.{arch}.{ver}.tar.gz` — shared test initrd
+//! - `openvmm-test-linux-{kernel_ver}.{arch}.{ver}.tar.gz` — test kernel
 
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum OpenvmmDepsArch {
-    X86_64,
-    Aarch64,
-}
+use std::collections::BTreeSet;
 
 /// Which file to extract from the openvmm-deps archive.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenvmmDepFile {
-    LinuxTestKernel,
-    LinuxTestInitrd,
     OpenhclCpioDbgrd,
     OpenhclCpioShell,
     OpenhclSysroot,
@@ -24,13 +23,8 @@ pub enum OpenvmmDepFile {
 }
 
 impl OpenvmmDepFile {
-    pub fn filename(self, arch: OpenvmmDepsArch) -> &'static str {
+    pub fn filename(self) -> &'static str {
         match self {
-            Self::LinuxTestKernel => match arch {
-                OpenvmmDepsArch::X86_64 => "vmlinux",
-                OpenvmmDepsArch::Aarch64 => "Image",
-            },
-            Self::LinuxTestInitrd => "initrd",
             Self::OpenhclCpioDbgrd => "dbgrd.cpio.gz",
             Self::OpenhclCpioShell => "shell.cpio.gz",
             Self::OpenhclSysroot => "sysroot.tar.gz",
@@ -45,14 +39,14 @@ flowey_config! {
         /// Specify version of the github release to pull from
         pub version: Option<String>,
         /// Use locally downloaded openvmm-deps, keyed by architecture
-        pub local_paths: BTreeMap<OpenvmmDepsArch, ConfigVar<PathBuf>>,
+        pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
 }
 
 flowey_request! {
     pub enum Request {
         /// Get the path to a specific dep file
-        Get(OpenvmmDepFile, OpenvmmDepsArch, WriteVar<PathBuf>),
+        Get(OpenvmmDepFile, CommonArch, WriteVar<PathBuf>),
     }
 }
 
@@ -74,7 +68,7 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let version = config.version;
         let local_paths = config.local_paths;
-        let mut deps: BTreeMap<(OpenvmmDepFile, OpenvmmDepsArch), Vec<WriteVar<PathBuf>>> =
+        let mut deps: BTreeMap<(OpenvmmDepFile, CommonArch), Vec<WriteVar<PathBuf>>> =
             BTreeMap::new();
 
         for req in requests {
@@ -99,9 +93,6 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        // Which architectures have at least one dep requested?
-        let needs_arch = |arch: OpenvmmDepsArch| deps.keys().any(|(_, a)| *a == arch);
-
         if !local_paths.is_empty() {
             ctx.emit_rust_step("use local openvmm-deps", |ctx| {
                 let deps = deps.claim(ctx);
@@ -110,7 +101,7 @@ impl FlowNodeWithConfig for Node {
                     .map(|(arch, var)| (arch, var.claim(ctx)))
                     .collect();
                 move |rt| {
-                    let resolved_paths: BTreeMap<OpenvmmDepsArch, PathBuf> = local_paths
+                    let resolved_paths: BTreeMap<CommonArch, PathBuf> = local_paths
                         .into_iter()
                         .map(|(arch, var)| (arch, rt.read(var)))
                         .collect();
@@ -119,7 +110,7 @@ impl FlowNodeWithConfig for Node {
                         let base_dir = resolved_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })?;
-                        let path = base_dir.join(dep.filename(arch));
+                        let path = base_dir.join(dep.filename());
                         rt.write_all(vars, &path)
                     }
 
@@ -130,67 +121,65 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let extract_tar_bz2_deps =
-            flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
+        let version = version.expect("local requests handled above");
 
-        let download_archive = |arch: OpenvmmDepsArch, ctx: &mut NodeCtx<'_>| {
-            let version = version.clone().expect("local requests handled above");
-            let arch_str = match arch {
-                OpenvmmDepsArch::X86_64 => "x86_64",
-                OpenvmmDepsArch::Aarch64 => "aarch64",
-            };
-            ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
-                needs_auth: false,
-                tag: version.clone(),
-                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.bz2"),
-                path: v,
+        // Determine which architectures we need to download.
+        let needed_archs: BTreeSet<CommonArch> = deps.keys().map(|(_, arch)| *arch).collect();
+
+        let persistent_dir = ctx.persistent_dir();
+
+        // Download each unique architecture.
+        let downloads: BTreeMap<CommonArch, ReadVar<PathBuf>> = needed_archs
+            .into_iter()
+            .map(|arch| {
+                let arch_str = match arch {
+                    CommonArch::X86_64 => "x86_64",
+                    CommonArch::Aarch64 => "aarch64",
+                };
+                let file_name = format!("openvmm-deps.{arch_str}.{version}.tar.gz");
+                let path = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+                    repo_owner: "microsoft".into(),
+                    repo_name: "openvmm-deps".into(),
+                    needs_auth: false,
+                    tag: version.clone(),
+                    file_name,
+                    path: v,
+                });
+                (arch, path)
             })
-        };
-
-        let openvmm_deps_tar_bz2_x64 = needs_arch(OpenvmmDepsArch::X86_64)
-            .then(|| download_archive(OpenvmmDepsArch::X86_64, ctx));
-        let openvmm_deps_tar_bz2_aarch64 = needs_arch(OpenvmmDepsArch::Aarch64)
-            .then(|| download_archive(OpenvmmDepsArch::Aarch64, ctx));
+            .collect();
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
-            let extract_tar_bz2_deps = extract_tar_bz2_deps.claim(ctx);
-            let openvmm_deps_tar_bz2_x64 = openvmm_deps_tar_bz2_x64.claim(ctx);
-            let openvmm_deps_tar_bz2_aarch64 = openvmm_deps_tar_bz2_aarch64.claim(ctx);
+            let persistent_dir = persistent_dir.claim(ctx);
+            let downloads: BTreeMap<_, _> = downloads
+                .into_iter()
+                .map(|(key, var)| (key, var.claim(ctx)))
+                .collect();
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
+            let version = version.clone();
             move |rt| {
-                let extract_dir_x64 = openvmm_deps_tar_bz2_x64
-                    .map(|file| {
-                        let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
-                            rt,
-                            extract_tar_bz2_deps.clone(),
-                            &file,
-                            &version,
-                        )
-                    })
-                    .transpose()?;
-                let extract_dir_aarch64 = openvmm_deps_tar_bz2_aarch64
-                    .map(|file| {
-                        let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
-                            rt,
-                            extract_tar_bz2_deps.clone(),
-                            &file,
-                            &version,
-                        )
-                    })
-                    .transpose()?;
+                let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
-                let base_dir = |arch| match arch {
-                    OpenvmmDepsArch::X86_64 => extract_dir_x64.clone().unwrap(),
-                    OpenvmmDepsArch::Aarch64 => extract_dir_aarch64.clone().unwrap(),
-                };
+                // Extract each downloaded archive, keyed by architecture.
+                let extract_dirs: BTreeMap<CommonArch, PathBuf> = downloads
+                    .into_iter()
+                    .map(|(arch, var)| {
+                        let file = rt.read(var);
+                        let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
+                            rt,
+                            persistent_dir.as_deref(),
+                            &file,
+                            &version,
+                        )?;
+                        Ok((arch, dir))
+                    })
+                    .collect::<anyhow::Result<_>>()?;
 
                 for ((dep, arch), vars) in deps {
-                    let path = base_dir(arch).join(dep.filename(arch));
+                    let extract_dir = extract_dirs
+                        .get(&arch)
+                        .expect("archive was downloaded for this arch");
+                    let path = extract_dir.join(dep.filename());
                     rt.write_all(vars, &path)
                 }
 

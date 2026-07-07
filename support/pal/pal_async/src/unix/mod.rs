@@ -11,11 +11,13 @@ use cfg_if::cfg_if;
 
 pub mod local;
 pub mod pipe;
+pub mod process;
 pub mod wait;
 
 cfg_if! {
     if #[cfg(target_os = "linux")] {
         pub mod epoll;
+        mod epoll_uring;
 
         pub use epoll::EpollDriver as DefaultDriver;
         pub use epoll::EpollPool as DefaultPool;

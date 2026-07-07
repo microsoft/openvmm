@@ -326,7 +326,6 @@ impl ChangeDeviceState for FramebufferDevice {
 
     async fn reset(&mut self) {
         let mut inner = self.inner.lock();
-        inner.mapping_state = Default::default();
         if let Some(mut state) = inner.mapping_state.take() {
             state.mem.unmap_from_guest();
         }

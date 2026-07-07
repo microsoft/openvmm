@@ -8,7 +8,6 @@ use crate::OpenHclServicingFlags;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
-use crate::Vtl;
 use crate::run_host_cmd;
 use crate::vm::append_cmdline;
 use anyhow::Context;
@@ -290,16 +289,16 @@ pub struct HyperVNewCustomVMArgs {
     pub hw_threads_per_core: Option<u64>,
     /// Processors per socket
     pub max_processors_per_numa_node: Option<u64>,
-    /// SCSI controllers and associated drives/disks
-    pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
+    /// VMBus storage controllers (SCSI and NVMe), keyed by VSID
+    pub storage_controllers: HashMap<Guid, HyperVVmbusStorageController>,
     /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+    /// Physical NVMe devices, used exclusively in closed source tests
+    pub physical_nvme_devices: HashMap<Guid, crate::PhysicalNvmeDevice>,
     /// Temporary file containing initial machine configuration data
     pub imc_hiv: Option<NamedTempFile>,
     /// Enable COM1 at \\.\pipe\<VMID>-1
     pub com_1: bool,
-    /// Enable COM2 at \\.\pipe\<VMID>-2
-    pub com_2: bool,
     /// Enable COM3 at \\.\pipe\<VMID>-3
     pub com_3: bool,
     /// Enable the TPM
@@ -308,11 +307,21 @@ pub struct HyperVNewCustomVMArgs {
     pub management_vtl_settings: Option<NamedTempFile>,
 }
 
-/// Hyper-V SCSI controller
-pub struct HyperVScsiController {
-    /// The VTL to assign the storage controller to
-    pub target_vtl: Vtl,
-    /// Drives (with any inserted disks) attached to this storage controller
+/// VMBus storage controller type
+pub enum HyperVVmbusStorageType {
+    /// SCSI controller (Msvm_ResourceAllocationSettingData)
+    Scsi,
+    /// NVMe emulator controller (created via closed-source HvlDeviceHost module)
+    Nvme,
+}
+
+/// VMBus storage controller configuration (SCSI or NVMe), keyed by VSID.
+pub struct HyperVVmbusStorageController {
+    /// Controller type
+    pub controller_type: HyperVVmbusStorageType,
+    /// Target VTL
+    pub target_vtl: crate::Vtl,
+    /// Drives attached to this controller, keyed by LUN (SCSI) or namespace ID (NVMe).
     pub drives: HashMap<u32, HyperVDrive>,
 }
 
@@ -412,19 +421,34 @@ impl HyperVNewCustomVMArgs {
                 anyhow::bail!("OpenHCL is required to set GuestStateEncryptionPolicy");
             }
 
-            let encryption_cli = match guest_state_encryption_policy {
-                HyperVGuestStateEncryptionPolicy::Default => "AUTO",
-                HyperVGuestStateEncryptionPolicy::None => "NONE",
-                HyperVGuestStateEncryptionPolicy::GspById => "GSP_BY_ID",
-                HyperVGuestStateEncryptionPolicy::GspKey => "GSP_KEY",
-                policy => {
-                    anyhow::bail!("encryption policy not supported over command line: {policy:?}")
+            // Hardware sealing is encoded by the host as a combined
+            // `GuestStateEncryptionPolicy` value, but is plumbed over the
+            // OpenHCL command line as two separate settings: the encryption
+            // policy (`HARDWARE_SEALING`) and the sealing policy id
+            // (`HASH`/`SIGNER`). A single exhaustive match keeps the two
+            // encodings in sync and forces new variants to be handled here.
+            let (encryption_cli, sealing_cli) = match guest_state_encryption_policy {
+                HyperVGuestStateEncryptionPolicy::Default => ("AUTO", None),
+                HyperVGuestStateEncryptionPolicy::None => ("NONE", None),
+                HyperVGuestStateEncryptionPolicy::GspById => ("GSP_BY_ID", None),
+                HyperVGuestStateEncryptionPolicy::GspKey => ("GSP_KEY", None),
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy => {
+                    ("HARDWARE_SEALING", Some("HASH"))
+                }
+                HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy => {
+                    ("HARDWARE_SEALING", Some("SIGNER"))
                 }
             };
             append_cmdline(
                 &mut self.firmware_parameters,
                 format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
             );
+            if let Some(sealing_cli) = sealing_cli {
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    format!("HCL_HARDWARE_SEALING_POLICY={sealing_cli}"),
+                );
+            }
             self.guest_state_encryption_policy = None;
         }
 
@@ -438,6 +462,7 @@ impl HyperVNewCustomVMArgs {
     ) -> anyhow::Result<HyperVNewCustomVMArgs> {
         use crate::ApicMode;
         use crate::IsolationType;
+        use crate::PetriHardwareSealingPolicy;
         use crate::PetriVmgsResource;
         use crate::SecureBootTemplate;
         use petri_artifacts_common::tags::MachineArch;
@@ -451,6 +476,7 @@ impl HyperVNewCustomVMArgs {
             proc_topology,
             vmgs,
             tpm,
+            physical_nvme_devices,
             ..
         } = config;
 
@@ -521,20 +547,46 @@ impl HyperVNewCustomVMArgs {
                         .unwrap_or(false),
                 )
             }),
-            guest_state_encryption_policy: firmware
-                .is_openhcl()
-                .then(|| vmgs.encryption_policy())
-                .flatten()
-                .map(|p| match p {
-                    GuestStateEncryptionPolicy::Auto => HyperVGuestStateEncryptionPolicy::Default,
-                    GuestStateEncryptionPolicy::None(_) => HyperVGuestStateEncryptionPolicy::None,
-                    GuestStateEncryptionPolicy::GspById(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspById
+            guest_state_encryption_policy: {
+                // A requested hardware sealing policy takes precedence over the
+                // VMGS-derived encryption policy: it maps to a dedicated
+                // `GuestStateEncryptionPolicy` value that selects hardware
+                // sealing as the exclusive encryption source.
+                let hardware_sealing = tpm.as_ref().and_then(|t| match t.hardware_sealing_policy {
+                    PetriHardwareSealingPolicy::Default => None,
+                    PetriHardwareSealingPolicy::HashPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy)
                     }
-                    GuestStateEncryptionPolicy::GspKey(_) => {
-                        HyperVGuestStateEncryptionPolicy::GspKey
+                    PetriHardwareSealingPolicy::SignerPolicy => {
+                        Some(HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy)
                     }
-                }),
+                });
+                if let Some(policy) = hardware_sealing {
+                    if !firmware.is_openhcl() {
+                        anyhow::bail!("hardware sealing policy requires OpenHCL firmware");
+                    }
+                    Some(policy)
+                } else {
+                    firmware
+                        .is_openhcl()
+                        .then(|| vmgs.encryption_policy())
+                        .flatten()
+                        .map(|p| match p {
+                            GuestStateEncryptionPolicy::Auto => {
+                                HyperVGuestStateEncryptionPolicy::Default
+                            }
+                            GuestStateEncryptionPolicy::None(_) => {
+                                HyperVGuestStateEncryptionPolicy::None
+                            }
+                            GuestStateEncryptionPolicy::GspById(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspById
+                            }
+                            GuestStateEncryptionPolicy::GspKey(_) => {
+                                HyperVGuestStateEncryptionPolicy::GspKey
+                            }
+                        })
+                }
+            },
             memory: Some(memory.startup_bytes),
             vp_count: Some(proc_topology.vp_count as u64),
             // TODO: fix this mapping, and/or update petri to better match
@@ -567,12 +619,12 @@ impl HyperVNewCustomVMArgs {
             firmware_file: None,
             firmware_parameters: None,
             guest_state_path: None,
-            scsi_controllers: HashMap::new(),
+            storage_controllers: HashMap::new(),
             ide_controllers: HashMap::new(),
-            com_2: false,
             com_3: false,
             imc_hiv: None,
             management_vtl_settings: None,
+            physical_nvme_devices: physical_nvme_devices.clone(),
         })
     }
 }
@@ -599,9 +651,28 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         }
     });
 
-    let scsi_controllers = (!args.scsi_controllers.is_empty()).then(|| {
-        ps::HashTable::new(args.scsi_controllers.into_iter().map(
-            |(vsid, HyperVScsiController { target_vtl, drives })| {
+    // Partition storage controllers into SCSI and NVMe.
+    let mut scsi_map: HashMap<Guid, HyperVVmbusStorageController> = HashMap::new();
+    let mut nvme_map: HashMap<Guid, HyperVVmbusStorageController> = HashMap::new();
+    for (vsid, controller) in args.storage_controllers {
+        match controller.controller_type {
+            HyperVVmbusStorageType::Scsi => {
+                scsi_map.insert(vsid, controller);
+            }
+            HyperVVmbusStorageType::Nvme => {
+                nvme_map.insert(vsid, controller);
+            }
+        }
+    }
+
+    let scsi_controllers = (!scsi_map.is_empty()).then(|| {
+        ps::HashTable::new(scsi_map.into_iter().map(
+            |(
+                vsid,
+                HyperVVmbusStorageController {
+                    target_vtl, drives, ..
+                },
+            )| {
                 (
                     format!("\"{vsid}\""),
                     ps::Value::new(ps::HashTable::new([
@@ -648,11 +719,74 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             ))
         });
 
+    // Serialize NVMe controllers as a hashtable keyed by VSID.
+    // Each value: @{ Vtl = N; Drives = @("path1", "path2", ...) }
+    // New-CustomVM imports HvlDeviceHost internally and calls New-NvmeEmulatorRasd.
+    let nvme_controllers = if nvme_map.is_empty() {
+        None
+    } else {
+        let mut nvme_entries = Vec::new();
+        for (
+            vsid,
+            HyperVVmbusStorageController {
+                target_vtl, drives, ..
+            },
+        ) in nvme_map
+        {
+            // Sort drives by namespace ID and validate they are exactly
+            // 1..N — the emulator assigns NSIDs sequentially by VHD
+            // argument order.
+            let mut sorted_drives: Vec<_> = drives.into_iter().collect();
+            sorted_drives.sort_by_key(|(nsid, _)| *nsid);
+            let expected: Vec<u32> = (1..=sorted_drives.len() as u32).collect();
+            let actual: Vec<u32> = sorted_drives.iter().map(|(nsid, _)| *nsid).collect();
+            anyhow::ensure!(
+                actual == expected,
+                "NVMe namespace IDs must be 1..{}, got {:?}",
+                expected.len(),
+                actual
+            );
+            nvme_entries.push((
+                format!("\"{vsid}\""),
+                ps::Value::new(ps::HashTable::new([
+                    ("Vtl", ps::Value::new(target_vtl as u32)),
+                    (
+                        "Drives",
+                        ps::Value::new(ps::Array::new(sorted_drives.into_iter().map(
+                            |(_, HyperVDrive { disk, .. })| {
+                                disk.expect("NVMe drives must have disk paths")
+                            },
+                        ))),
+                    ),
+                ])),
+            ));
+        }
+        Some(ps::HashTable::new(nvme_entries))
+    };
+
+    let physical_nvme_controllers = if args.physical_nvme_devices.is_empty() {
+        None
+    } else {
+        Some(ps::HashTable::new(args.physical_nvme_devices.iter().map(
+            |(vsid, dev)| {
+                (
+                    format!("\"{}\"", vsid),
+                    ps::Value::new(ps::HashTable::new([
+                        ("Vtl", ps::Value::new(dev.target_vtl as u32)),
+                        ("Nsid", ps::Value::new(dev.nsid)),
+                    ])),
+                )
+            },
+        )))
+    };
+
+    let builder = PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next();
+
     let vmid = run_host_cmd(
-        PowerShellBuilder::new()
-            .cmdlet("Import-Module")
-            .positional(ps_mod)
-            .next()
+        builder
             .cmdlet("New-CustomVM")
             .arg("VMName", args.name)
             .arg_opt("Generation", args.generation)
@@ -689,9 +823,10 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             )
             .arg_opt("ScsiControllers", scsi_controllers)
             .arg_opt("IdeControllers", ide_controllers)
+            .arg_opt("NvmeControllers", nvme_controllers)
+            .arg_opt("PhysicalNvmeControllers", physical_nvme_controllers)
             .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
             .arg("Com1", args.com_1)
-            .arg("Com2", args.com_2)
             .arg("Com3", args.com_3)
             .arg("TpmEnabled", args.tpm_enabled)
             .arg_opt(
@@ -722,6 +857,40 @@ pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
     .await
     .map(|_| ())
     .context("remove_vm")
+}
+
+/// Request a physical NVMe device via closed-source script
+pub async fn request_physical_nvme(
+    namespace_size_mib: u64,
+    target_vtl: crate::Vtl,
+) -> anyhow::Result<(Guid, crate::PhysicalNvmeDevice)> {
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional("PhysicalNvme")
+            .next()
+            .cmdlet("Get-PhysicalNvmeDevices")
+            .arg("Count", 1u64)
+            .arg("NamespaceSizeMiB", namespace_size_mib)
+            .finish()
+            .build(),
+    )
+    .await
+    .context("physical NVMe device discovery")?;
+
+    let nsid: u32 =
+        serde_json::from_str(&output).context("failed to parse PhysicalNvme discovery output")?;
+
+    let vsid = Guid::new_random();
+
+    Ok((
+        vsid,
+        crate::PhysicalNvmeDevice {
+            target_vtl,
+            nsid,
+            namespace_size_mib,
+        },
+    ))
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet
@@ -1253,13 +1422,6 @@ pub async fn run_restart_openhcl(
     ps_mod: &Path,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
-    // No NVMe storage, so no keepalive. Prevent us from silently thinking that we're testing this feature.
-    // Tracked by #1649.
-    if flags.enable_nvme_keepalive {
-        return Err(anyhow::anyhow!(
-            "enable_nvme_keepalive is not yet supported for HyperV VMs"
-        ));
-    }
     run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -1298,6 +1460,46 @@ pub struct WinEvent {
     pub id: u32,
     /// Message content
     pub message: String,
+    /// Raw event data property values, stringified in template order. Empty
+    /// when the event carries no data.
+    #[serde(default, deserialize_with = "deserialize_event_properties")]
+    pub properties: Vec<String>,
+}
+
+/// Deserialize the `Properties` projection of a Windows event into a flat list
+/// of stringified values.
+fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    use serde_json::Value;
+
+    fn flatten(value: Value, out: &mut Vec<String>) {
+        match value {
+            Value::Null => out.push("<null>".to_string()),
+            Value::String(s) => out.push(s),
+            Value::Bool(b) => out.push(b.to_string()),
+            Value::Number(n) => out.push(n.to_string()),
+            Value::Array(items) => {
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            // PowerShell wraps the array as
+            // `{ "value": [...], "Count": N }` (and an empty array as `{}`).
+            // Pull the values out and ignore the bookkeeping `Count` field.
+            Value::Object(mut map) => {
+                if let Some(inner) = map.remove("value") {
+                    flatten(inner, out);
+                }
+            }
+        }
+    }
+
+    let mut properties = Vec::new();
+    flatten(Value::deserialize(deserializer)?, &mut properties);
+    Ok(properties)
 }
 
 /// Get event logs
@@ -1347,6 +1549,15 @@ pub async fn run_get_winevent(
         ps::Value::new("Level"),
         ps::Value::new("Id"),
         ps::Value::new("Message"),
+        ps::Value::new(ps::HashTable::new([
+            ("label", ps::Value::new("Properties")),
+            (
+                "expression",
+                ps::Value::new(ps::Script::new(
+                    "@($_.Properties | ForEach-Object { [string]$_.Value })",
+                )),
+            ),
+        ])),
     ]);
 
     let output = run_host_cmd(
@@ -1379,6 +1590,92 @@ pub async fn run_get_winevent(
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
+macro_rules! define_winevents {
+    (
+        $($collection_name:ident(
+            $(
+                $(#[doc = $doc:literal])*
+                $vis:vis const $name:ident: u32 = $id:literal;
+            )*
+        )),*
+    ) => {
+        $($(
+            $(#[doc = $doc])*
+            $vis const $name: u32 = $id;
+        )*)*
+
+        /// Get the name of a Windows event ID
+        pub fn winevent_name(id: u32) -> Option<&'static str> {
+            match id {
+                $($(
+                    $name => Some(stringify!($name)),
+                )*)*
+                _ => None
+            }
+        }
+
+        $(
+            const $collection_name: &[u32] = &[
+                $($name,)*
+            ];
+        )*
+    };
+}
+
+define_winevents!(
+    BOOT_EVENT_IDS(
+        /// The vm successfully booted an operating system.
+        pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
+        /// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
+        pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
+        /// The vm failed to boot an operating system.
+        pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
+        /// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
+        pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
+        /// The vm failed to boot an operating system. No bootable devices are configured.
+        pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
+        /// The vm is attempting to boot an operating system. (PCAT only)
+        pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
+    ),
+    HALT_EVENT_IDS(
+        /// The vm was turned off.
+        pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
+        /// The vm was shut down using the Shutdown Integration Component.
+        pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
+        /// The vm was shut down by the guest operating system.
+        pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
+        /// The vm was shut down using the Shutdown Integration Component.
+        pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
+        /// The vm was shut down by the guest operating system.
+        pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
+        /// The vm was shut down for a reset initiated by the guest operating system.
+        pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
+        /// The vm was turned off as it could not recover from a critical error.
+        pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
+        /// The vm was reset because the guest operating system requested an operation
+        /// that is not supported by Hyper-V or an unrecoverable error occurred.
+        /// This caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
+        /// The vm was reset because the guest operating system requested an operation
+        /// that is not supported by Hyper-V. This request caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
+        /// The vm was reset because an unrecoverable error occurred while accessing a
+        /// virtual processor register which caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
+        /// The vm was reset because an unrecoverable error occurred on a virtual
+        /// processor that caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
+        /// The vm was hibernated successfully.
+        pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+        /// The vm has quit unexpectedly (the worker process terminated).
+        pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
+        /// The vm has encountered a fatal error. The guest operating system reported that it failed.
+        pub const MSVM_GUEST_CRASH_REPORT: u32 = 18590;
+        /// The vm failed in the management VTL before starting guest VTL0.
+        pub const MSVM_START_VTL0_REQUEST_ERROR: u32 = 18620;
+    )
+);
+
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(
     vmid: Option<&Guid>,
@@ -1394,28 +1691,6 @@ pub async fn hyperv_event_logs(
     .await
 }
 
-/// The vm successfully booted an operating system.
-pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
-/// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
-pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
-/// The vm failed to boot an operating system.
-pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
-/// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
-pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
-/// The vm failed to boot an operating system. No bootable devices are configured.
-pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
-/// The vm is attempting to boot an operating system. (PCAT only)
-pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
-
-const BOOT_EVENT_IDS: [u32; 6] = [
-    MSVM_BOOT_RESULTS_SUCCESS,
-    MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES,
-    MSVM_BOOT_RESULTS_FAILURE,
-    MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES,
-    MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES,
-    MSVM_BOOT_RESULTS_ATTEMPT,
-];
-
 /// Get Hyper-V boot event logs for a VM
 pub async fn hyperv_boot_events(
     vmid: &Guid,
@@ -1426,58 +1701,10 @@ pub async fn hyperv_boot_events(
         &[HYPERV_WORKER_TABLE],
         Some(start_time),
         Some(&vmid),
-        &BOOT_EVENT_IDS,
+        BOOT_EVENT_IDS,
     )
     .await
 }
-
-/// The vm was turned off.
-pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
-/// The vm was shut down using the Shutdown Integration Component.
-pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
-/// The vm was shut down by the guest operating system.
-pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
-/// The vm was shut down using the Shutdown Integration Component.
-pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
-/// The vm was shut down by the guest operating system.
-pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
-/// The vm was shut down for a reset initiated by the guest operating system.
-pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
-/// The vm was turned off as it could not recover from a critical error.
-pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
-/// The vm was reset because the guest operating system requested an operation
-/// that is not supported by Hyper-V or an unrecoverable error occurred.
-/// This caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
-/// The vm was reset because the guest operating system requested an operation
-/// that is not supported by Hyper-V. This request caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
-/// The vm was reset because an unrecoverable error occurred while accessing a
-/// virtual processor register which caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
-/// The vm was reset because an unrecoverable error occurred on a virtual
-/// processor that caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
-/// The vm was hibernated successfully.
-pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
-/// The vm has quit unexpectedly (the worker process terminated).
-pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
-
-const HALT_EVENT_IDS: [u32; 13] = [
-    MSVM_HOST_STOP_SUCCESS,
-    MSVM_HOST_SHUTDOWN_SUCCESS,
-    MSVM_GUEST_SHUTDOWN_SUCCESS,
-    MSVM_HOST_RESET_SUCCESS,
-    MSVM_GUEST_RESET_SUCCESS,
-    MSVM_STOP_FOR_GUEST_RESET_SUCCESS,
-    MSVM_STOP_CRITICAL_SUCCESS,
-    MSVM_TRIPLE_FAULT_GENERAL_ERROR,
-    MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR,
-    MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR,
-    MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR,
-    MSVM_GUEST_HIBERNATE_SUCCESS,
-    MSVM_VMMS_VM_TERMINATE_ERROR,
-];
 
 /// Get Hyper-V halt event logs for a VM
 pub async fn hyperv_halt_events(
@@ -1489,7 +1716,7 @@ pub async fn hyperv_halt_events(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
         Some(&vmid),
-        &HALT_EVENT_IDS,
+        HALT_EVENT_IDS,
     )
     .await
 }
@@ -1724,6 +1951,7 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
             .pipeline()
             .cmdlet("ConvertTo-Json")
             .arg("Depth", 3)
+            .arg("WarningAction", "Ignore")
             .flag("Compress")
             .finish()
             .build(),

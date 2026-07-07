@@ -358,7 +358,7 @@ mod tests {
         let mut e = DioNic::new(vm_id, "nic", "my nic", MAC_ADDRESS).unwrap();
         // Connect to the Default Switch by well-known GUID.
         let id = SwitchPortId {
-            switch: "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444".parse().unwrap(),
+            switch: crate::hcn::DEFAULT_SWITCH,
             port: Guid::new_random(),
         };
         let port = SwitchPort::new(&id).unwrap();

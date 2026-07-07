@@ -157,26 +157,27 @@ pub mod vhost_user {
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
 
-    /// Handle for a vhost-user device backed by an external process.
+    /// Handle for a generic vhost-user device backed by an external process.
     ///
     /// The socket must already be connected. The CLI layer connects
     /// to the backend and passes the connected fd here.
     ///
-    /// Config reads/writes are forwarded to the backend via
-    /// `GET_CONFIG`/`SET_CONFIG` if the backend supports it. For
-    /// device types that need frontend-owned config (e.g., virtiofs
-    /// with a tag), use a device-specific handle like
-    /// [`VhostUserFsHandle`] instead.
+    /// For device types with specific handles (FS, BLK), use those
+    /// instead. This handle is for devices identified only by their
+    /// numeric virtio device ID.
     #[derive(MeshPayload)]
-    pub struct VhostUserDeviceHandle {
+    pub struct VhostUserGenericHandle {
         /// Connected Unix socket fd to the vhost-user backend.
         pub socket: OwnedFd,
         /// Virtio device ID (e.g., 2 for block, 1 for net).
         pub device_id: u16,
+        /// Per-queue sizes. Length determines the queue count.
+        /// Required — must be non-empty.
+        pub queue_sizes: Vec<u16>,
     }
 
-    impl ResourceId<VirtioDeviceHandle> for VhostUserDeviceHandle {
-        const ID: &'static str = "vhost-user";
+    impl ResourceId<VirtioDeviceHandle> for VhostUserGenericHandle {
+        const ID: &'static str = "vhost-user-generic";
     }
 
     /// Handle for a vhost-user virtio-fs device.
@@ -191,10 +192,29 @@ pub mod vhost_user {
         pub socket: OwnedFd,
         /// The mount tag exposed to the guest (max 36 bytes).
         pub tag: String,
+        /// Number of request queues (default 1 in resolver).
+        pub num_queues: Option<u16>,
+        /// Queue size for all queues (default 1024 in resolver).
+        pub queue_size: Option<u16>,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VhostUserFsHandle {
         const ID: &'static str = "vhost-user-fs";
+    }
+
+    /// Handle for a vhost-user virtio-blk device.
+    #[derive(MeshPayload)]
+    pub struct VhostUserBlkHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// Number of queues (default 1 in resolver).
+        pub num_queues: Option<u16>,
+        /// Queue size for all queues (default 128 in resolver).
+        pub queue_size: Option<u16>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserBlkHandle {
+        const ID: &'static str = "vhost-user-blk";
     }
 }
 

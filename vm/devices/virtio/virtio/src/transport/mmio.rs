@@ -230,7 +230,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::DEVICE_FEATURES_SEL => self.core.device_feature_select = val,
             VirtioMmioRegister::DRIVER_FEATURES => {
                 let bank = self.core.driver_feature_select as usize;
-                if !features_locked && bank < self.core.device_feature.len() {
+                if !features_locked && bank < 2 {
                     self.core
                         .driver_feature
                         .set_bank(bank, val & self.core.device_feature.bank(bank));

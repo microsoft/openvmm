@@ -11,7 +11,7 @@ hypervisor_resources.workspace = true
 openvmm_pcat_locator.workspace = true
 
 # vmcore
-memory_range.workspace = true
+memory_range = { workspace = true, features = ["mesh"] }
 vm_resource.workspace = true
 vmgs_resources.workspace = true
 

@@ -10,11 +10,15 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::MsiTarget;
+use pcie::GenericPciePortDefinition;
+use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
-use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use pcie::switch::GenericPcieSwitchDefinition;
 use pcie::test_helpers::TestPcieMmioRegistration;
@@ -37,15 +41,19 @@ struct FuzzEndpoint {
 }
 
 impl GenericPciBusDevice for FuzzEndpoint {
-    fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> Option<IoResult> {
+    fn pci_cfg_read(
+        &mut self,
+        _offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
         if self.offline {
             return None;
         }
-        *value = self.read_value;
+        value.set(self.read_value);
         Some(IoResult::Ok)
     }
 
-    fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
         if self.offline {
             return None;
         }
@@ -58,11 +66,11 @@ impl GenericPciBusDevice for FuzzEndpoint {
 struct SwitchAdapter(GenericPcieSwitch);
 
 impl GenericPciBusDevice for SwitchAdapter {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         Some(self.0.pci_cfg_read(offset, value))
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         Some(self.0.pci_cfg_write(offset, value))
     }
 
@@ -72,7 +80,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: &mut u32,
+        value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
         Some(
             self.0
@@ -86,7 +94,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         target_bus: u8,
         function: u8,
         offset: u16,
-        value: u32,
+        value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
         Some(
             self.0
@@ -118,21 +126,20 @@ impl FuzzRootComplex {
         let hotplug = matches!(topology, Topology::Hotplug { .. });
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let port_defs: Vec<GenericPcieRootPortDefinition> = (0..NUM_PORTS)
-            .map(|i| GenericPcieRootPortDefinition {
+        let port_defs: Vec<GenericPciePortDefinition> = (0..NUM_PORTS)
+            .map(|i| GenericPciePortDefinition {
                 name: format!("rp{}", i).into(),
+                devfn: None,
                 hotplug,
+                settings: PciePortSettings::default(),
             })
             .collect();
         let msi_conn = pci_core::msi::MsiConnection::new();
-        let rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            START_BUS,
-            END_BUS,
-            ecam_range,
-            port_defs,
-            msi_conn.target(),
-        );
+        let rc =
+            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
+                .root_ports(port_defs, &msi_conn.target())
+                .build()
+                .unwrap();
         Self { rc }
     }
 
@@ -278,9 +285,17 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
         Topology::WithSwitch => {
             let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
                 name: "sw0".into(),
-                downstream_port_count: 2,
-                hotplug: false,
-            });
+                downstream_ports: (0..NUM_PORTS)
+                    .map(|i| GenericPciePortDefinition {
+                        name: format!("dsp{i}").into(),
+                        devfn: None,
+                        hotplug: false,
+                        settings: PciePortSettings::default(),
+                    })
+                    .collect(),
+                msi_target: MsiTarget::disconnected(),
+            })
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
             rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         }

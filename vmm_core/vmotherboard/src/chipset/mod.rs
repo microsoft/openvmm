@@ -324,6 +324,7 @@ pub enum PcieConflictReason {
     ExistingDev(Arc<str>),
     MissingDownstreamPort,
     MissingEnumerator,
+    RciepNotSupported,
 }
 
 #[derive(Debug)]
@@ -353,6 +354,13 @@ impl std::fmt::Display for PcieConflict {
                 write!(
                     fmt,
                     "cannot attach {}, no valid pcie enumerator",
+                    self.conflict_dev
+                )
+            }
+            PcieConflictReason::RciepNotSupported => {
+                write!(
+                    fmt,
+                    "cannot attach {} as RCiEP, enumerator does not support RCiEPs",
                     self.conflict_dev
                 )
             }

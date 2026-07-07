@@ -10,13 +10,15 @@ rust-version.workspace = true
 flowey.workspace = true
 flowey_lib_common.workspace = true
 
-vmm_test_images = { workspace = true, features = ["serde"] }
+powershell_builder.workspace = true
 opentmk_disk.workspace = true
 igvmfilegen_config.workspace = true
+vmm_test_images = { workspace = true, features = ["serde"] }
 
 anyhow.workspace = true
 crossterm = { workspace = true, features = ["events"] }
 log.workspace = true
+paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
@@ -24,7 +26,10 @@ which.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }
-powershell_builder.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# Pulled in via prelude
+ignored = ["serde"]

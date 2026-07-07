@@ -62,7 +62,7 @@ for the full trait signatures and type definitions.
 1. The guest posts a TX descriptor (e.g. a virtio descriptor chain
    or a VMBus RNDIS message).
 2. The frontend reads the descriptor from guest memory, extracts any
-   offload metadata (checksum, TSO), and builds a `TxSegment` array.
+   offload metadata (checksum, TSO, USO), and builds a `TxSegment` array.
    Each segment carries a guest physical address and a length — **no
    data is copied** at this point.
 3. The frontend calls `queue.tx_avail(&mut pool, &segments)`. The

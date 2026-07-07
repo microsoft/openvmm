@@ -8,6 +8,8 @@ use crate::capabilities::msix::MsiInterrupt;
 use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msi::MsiCapabilityHeader;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
 
 /// MSI capability implementation for PCI configuration space.
-#[derive(Debug, Inspect)]
+#[derive(Debug, Clone, Inspect)]
 pub struct MsiCapability {
     #[inspect(with = "|x| inspect::adhoc(|req| x.lock().inspect_mut(req))")]
     state: Arc<Mutex<MsiCapabilityState>>,
@@ -54,10 +56,10 @@ impl MsiCapabilityState {
         }
     }
 
-    fn control_register(&self, addr_64bit: bool, per_vector_masking: bool) -> u32 {
-        let mut control = 0u32;
-        control |= (self.multiple_message_capable as u32) << 1; // MMC field (bits 1-3)
-        control |= (self.multiple_message_enable as u32) << 4; // MME field (bits 4-6)
+    fn control_register(&self, addr_64bit: bool, per_vector_masking: bool) -> u16 {
+        let mut control = 0u16;
+        control |= (self.multiple_message_capable as u16) << 1; // MMC field (bits 1-3)
+        control |= (self.multiple_message_enable as u16) << 4; // MME field (bits 4-6)
         if addr_64bit {
             control |= 1 << 7; // 64-bit Address Capable (bit 7)
         }
@@ -68,6 +70,39 @@ impl MsiCapabilityState {
             control |= 1 << 0; // MSI Enable (bit 0)
         }
         control
+    }
+
+    fn read(
+        &self,
+        offset: u16,
+        addr_64bit: bool,
+        per_vector_masking: bool,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) {
+        match MsiCapabilityHeader(offset) {
+            MsiCapabilityHeader::CONTROL_CAPS => {
+                value.set_low_high(
+                    CapabilityId::MSI.0.into(),
+                    self.control_register(addr_64bit, per_vector_masking),
+                );
+            }
+            MsiCapabilityHeader::MSG_ADDR_LO => value.set(self.address as u32),
+            MsiCapabilityHeader::MSG_ADDR_HI if addr_64bit => {
+                value.set((self.address >> 32) as u32)
+            }
+            MsiCapabilityHeader::MSG_DATA_32 if !addr_64bit => value.set_low_high(self.data, 0),
+            MsiCapabilityHeader::MSG_DATA_64 if addr_64bit => value.set_low_high(self.data, 0),
+            MsiCapabilityHeader::MASK_BITS if addr_64bit && per_vector_masking => {
+                value.set(self.mask_bits)
+            }
+            MsiCapabilityHeader::PENDING_BITS if addr_64bit && per_vector_masking => {
+                value.set(self.pending_bits);
+            }
+            _ => {
+                tracelimit::warn_ratelimited!("Unexpected MSI read offset {:#x}", offset);
+                value.set(0);
+            }
+        }
     }
 }
 
@@ -132,37 +167,18 @@ impl PciCapability for MsiCapability {
         self.len_bytes()
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
-        let state = self.state.lock();
-
-        match MsiCapabilityHeader(offset) {
-            MsiCapabilityHeader::CONTROL_CAPS => {
-                let control_reg = state.control_register(self.addr_64bit, self.per_vector_masking);
-                CapabilityId::MSI.0 as u32 | (control_reg << 16)
-            }
-            MsiCapabilityHeader::MSG_ADDR_LO => state.address as u32,
-            MsiCapabilityHeader::MSG_ADDR_HI if self.addr_64bit => (state.address >> 32) as u32,
-            MsiCapabilityHeader::MSG_DATA_32 if !self.addr_64bit => state.data as u32,
-            MsiCapabilityHeader::MSG_DATA_64 if self.addr_64bit => state.data as u32,
-            MsiCapabilityHeader::MASK_BITS if self.addr_64bit && self.per_vector_masking => {
-                state.mask_bits
-            }
-            MsiCapabilityHeader::PENDING_BITS if self.addr_64bit && self.per_vector_masking => {
-                state.pending_bits
-            }
-            _ => {
-                tracelimit::warn_ratelimited!("Unexpected MSI read offset {:#x}", offset);
-                0
-            }
-        }
+    fn read(&self, offset: u16, value: ByteEnabledDwordRead<'_>) {
+        self.state
+            .lock()
+            .read(offset, self.addr_64bit, self.per_vector_masking, value);
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write(&mut self, offset: u16, val: ByteEnabledDwordWrite) {
         let mut state = self.state.lock();
-
         match MsiCapabilityHeader(offset) {
             MsiCapabilityHeader::CONTROL_CAPS => {
-                let control_val = (val >> 16) & 0xFFFF;
+                let control_val = val
+                    .merge_high(state.control_register(self.addr_64bit, self.per_vector_masking));
                 let old_enabled = state.enabled;
                 let new_enabled = control_val & 1 != 0;
                 let mme = ((control_val >> 4) & 0x7) as u8;
@@ -185,7 +201,8 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_ADDR_LO => {
-                state.address = (state.address & 0xFFFFFFFF00000000) | (val as u64);
+                let new_low = val.merge(state.address as u32);
+                state.address = (state.address & 0xFFFFFFFF00000000) | (new_low as u64);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -197,7 +214,8 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_ADDR_HI if self.addr_64bit => {
-                state.address = (state.address & 0xFFFFFFFF) | ((val as u64) << 32);
+                let new_high = val.merge((state.address >> 32) as u32);
+                state.address = (state.address & 0xFFFFFFFF) | ((new_high as u64) << 32);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -209,7 +227,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_DATA_32 if !self.addr_64bit => {
-                state.data = val as u16;
+                state.data = val.merge_low(state.data);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -221,7 +239,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MSG_DATA_64 if self.addr_64bit => {
-                state.data = val as u16;
+                state.data = val.merge_low(state.data);
 
                 // Update interrupt if enabled
                 if state.enabled {
@@ -233,7 +251,7 @@ impl PciCapability for MsiCapability {
                 }
             }
             MsiCapabilityHeader::MASK_BITS if self.addr_64bit && self.per_vector_masking => {
-                state.mask_bits = val;
+                val.merge_into(&mut state.mask_bits);
             }
             MsiCapabilityHeader::PENDING_BITS if self.addr_64bit && self.per_vector_masking => {
                 // Pending bits are typically read-only, but some implementations may allow clearing
@@ -378,62 +396,65 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::msi::MsiConnection;
     use crate::test_helpers::TestPciInterruptController;
+    use crate::test_helpers::read_cap_u32;
+    use crate::test_helpers::write_cap_u32;
 
     #[test]
     fn msi_check() {
         let msi_conn = MsiConnection::new();
-        let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
+        let mut cap = MsiCapability::new(2, true, false, &msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
         // Check initial capabilities register
         // Capability ID (0x05) + MMC=2 (4 messages) + 64-bit capable
-        assert_eq!(cap.read_u32(0), 0x00840005); // 0x05 (ID) | (0x84 << 16) where 0x84 = MMC=2(<<1) + 64bit(<<7)
+        assert_eq!(read_cap_u32(&cap, 0), 0x00840005); // 0x05 (ID) | (0x84 << 16) where 0x84 = MMC=2(<<1) + 64bit(<<7)
 
         // Check initial address registers
-        assert_eq!(cap.read_u32(4), 0); // Address low
-        assert_eq!(cap.read_u32(8), 0); // Address high
-        assert_eq!(cap.read_u32(12), 0); // Data
+        assert_eq!(read_cap_u32(&cap, 4), 0); // Address low
+        assert_eq!(read_cap_u32(&cap, 8), 0); // Address high
+        assert_eq!(read_cap_u32(&cap, 12), 0); // Data
 
         // Write address and data
-        cap.write_u32(4, 0x12345678);
-        cap.write_u32(8, 0x9abcdef0);
-        cap.write_u32(12, 0x1234);
+        write_cap_u32(&mut cap, 4, 0x12345678);
+        write_cap_u32(&mut cap, 8, 0x9abcdef0);
+        write_cap_u32(&mut cap, 12, 0x1234);
 
-        assert_eq!(cap.read_u32(4), 0x12345678);
-        assert_eq!(cap.read_u32(8), 0x9abcdef0);
-        assert_eq!(cap.read_u32(12), 0x1234);
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9abcdef0);
+        assert_eq!(read_cap_u32(&cap, 12), 0x1234);
 
         // Enable MSI with 2 messages (MME=1)
-        cap.write_u32(0, 0x00110005); // Enable + MME=1 (bits 0 and 4-6)
-        assert_eq!(cap.read_u32(0), 0x00950005); // Should show enabled with all capability bits
+        write_cap_u32(&mut cap, 0, 0x00110005); // Enable + MME=1 (bits 0 and 4-6)
+        assert_eq!(read_cap_u32(&cap, 0), 0x00950005); // Should show enabled with all capability bits
 
         // Test reset
         cap.reset();
-        assert_eq!(cap.read_u32(0), 0x00840005); // Back to disabled
-        assert_eq!(cap.read_u32(4), 0);
-        assert_eq!(cap.read_u32(8), 0);
-        assert_eq!(cap.read_u32(12), 0);
+        assert_eq!(read_cap_u32(&cap, 0), 0x00840005); // Back to disabled
+        assert_eq!(read_cap_u32(&cap, 4), 0);
+        assert_eq!(read_cap_u32(&cap, 8), 0);
+        assert_eq!(read_cap_u32(&cap, 12), 0);
     }
 
     #[test]
     fn msi_32bit_check() {
         let msi_conn = MsiConnection::new();
-        let mut cap = MsiCapability::new(1, false, false, msi_conn.target()); // 2 messages max, 32-bit, no masking
+        let mut cap = MsiCapability::new(1, false, false, &msi_conn.target()); // 2 messages max, 32-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
         // Check initial capabilities register (no 64-bit bit set)
-        assert_eq!(cap.read_u32(0), 0x00020005); // MMC=1 (2 messages) + Capability ID
+        assert_eq!(read_cap_u32(&cap, 0), 0x00020005); // MMC=1 (2 messages) + Capability ID
 
         // For 32-bit, data is at offset 8, not 12
-        cap.write_u32(4, 0x12345678); // Address
-        cap.write_u32(8, 0x1234); // Data
+        write_cap_u32(&mut cap, 4, 0x12345678); // Address
+        write_cap_u32(&mut cap, 8, 0x1234); // Data
 
-        assert_eq!(cap.read_u32(4), 0x12345678);
-        assert_eq!(cap.read_u32(8), 0x1234);
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x1234);
     }
 
     #[test]
@@ -441,40 +462,40 @@ mod tests {
         use vmcore::save_restore::SaveRestore;
 
         let msi_conn = MsiConnection::new();
-        let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
+        let mut cap = MsiCapability::new(2, true, false, &msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
         // Configure MSI capability with specific values
-        cap.write_u32(4, 0x12345678); // Address low
-        cap.write_u32(8, 0x9abcdef0); // Address high
-        cap.write_u32(12, 0x5678); // Data
-        cap.write_u32(0, 0x00110001); // Enable MSI with MME=1 (2 messages)
+        write_cap_u32(&mut cap, 4, 0x12345678); // Address low
+        write_cap_u32(&mut cap, 8, 0x9abcdef0); // Address high
+        write_cap_u32(&mut cap, 12, 0x5678); // Data
+        write_cap_u32(&mut cap, 0, 0x00110001); // Enable MSI with MME=1 (2 messages)
 
         // Verify initial state
-        assert_eq!(cap.read_u32(0), 0x00950005); // Enabled with capabilities
-        assert_eq!(cap.read_u32(4), 0x12345678);
-        assert_eq!(cap.read_u32(8), 0x9abcdef0);
-        assert_eq!(cap.read_u32(12), 0x5678);
+        assert_eq!(read_cap_u32(&cap, 0), 0x00950005); // Enabled with capabilities
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9abcdef0);
+        assert_eq!(read_cap_u32(&cap, 12), 0x5678);
 
         // Save the state
         let saved_state = cap.save().expect("save should succeed");
 
         // Reset the capability
         cap.reset();
-        assert_eq!(cap.read_u32(0), 0x00840005); // Back to disabled
-        assert_eq!(cap.read_u32(4), 0);
-        assert_eq!(cap.read_u32(8), 0);
-        assert_eq!(cap.read_u32(12), 0);
+        assert_eq!(read_cap_u32(&cap, 0), 0x00840005); // Back to disabled
+        assert_eq!(read_cap_u32(&cap, 4), 0);
+        assert_eq!(read_cap_u32(&cap, 8), 0);
+        assert_eq!(read_cap_u32(&cap, 12), 0);
 
         // Restore the state
         cap.restore(saved_state).expect("restore should succeed");
 
         // Verify restored state
-        assert_eq!(cap.read_u32(0), 0x00950005); // Should be enabled again
-        assert_eq!(cap.read_u32(4), 0x12345678);
-        assert_eq!(cap.read_u32(8), 0x9abcdef0);
-        assert_eq!(cap.read_u32(12), 0x5678);
+        assert_eq!(read_cap_u32(&cap, 0), 0x00950005); // Should be enabled again
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9abcdef0);
+        assert_eq!(read_cap_u32(&cap, 12), 0x5678);
     }
 
     #[test]
@@ -482,49 +503,50 @@ mod tests {
         use vmcore::save_restore::SaveRestore;
 
         let msi_conn = MsiConnection::new();
-        let mut cap = MsiCapability::new(3, false, true, msi_conn.target()); // 8 messages max, 32-bit, with masking
+        let mut cap = MsiCapability::new(3, false, true, &msi_conn.target()); // 8 messages max, 32-bit, with masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
         // Configure MSI capability with specific values
-        cap.write_u32(4, 0x87654321); // Address (32-bit)
-        cap.write_u32(8, 0x1234); // Data
-        cap.write_u32(12, 0xaaaabbbb); // Mask bits (for per-vector masking)
-        cap.write_u32(0, 0x00210001); // Enable MSI with MME=2 (4 messages)
+        write_cap_u32(&mut cap, 4, 0x87654321); // Address (32-bit)
+        write_cap_u32(&mut cap, 8, 0x1234); // Data
+        write_cap_u32(&mut cap, 12, 0xaaaabbbb); // Mask bits (for per-vector masking)
+        write_cap_u32(&mut cap, 0, 0x00210001); // Enable MSI with MME=2 (4 messages)
 
         // Verify initial state
-        let control_reg = cap.read_u32(0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         assert!(control_val & 1 != 0); // MSI enabled
         assert_eq!((control_val >> 4) & 0x7, 2); // MME = 2
-        assert_eq!(cap.read_u32(4), 0x87654321);
-        assert_eq!(cap.read_u32(8), 0x1234);
+        assert_eq!(read_cap_u32(&cap, 4), 0x87654321);
+        assert_eq!(read_cap_u32(&cap, 8), 0x1234);
 
         // Save the state
         let saved_state = cap.save().expect("save should succeed");
 
         // Modify state
-        cap.write_u32(4, 0x11111111);
-        cap.write_u32(8, 0x9999);
-        cap.write_u32(0, 0x00000005); // Disable MSI
+        write_cap_u32(&mut cap, 4, 0x11111111);
+        write_cap_u32(&mut cap, 8, 0x9999);
+        write_cap_u32(&mut cap, 12, 0x0000);
+        write_cap_u32(&mut cap, 0, 0x00000005); // Disable MSI
 
         // Verify changed state
-        let control_reg = cap.read_u32(0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         assert_eq!(control_val & 1, 0); // MSI disabled
-        assert_eq!(cap.read_u32(4), 0x11111111);
-        assert_eq!(cap.read_u32(8), 0x9999);
+        assert_eq!(read_cap_u32(&cap, 4), 0x11111111);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9999);
 
         // Restore the state
         cap.restore(saved_state).expect("restore should succeed");
 
         // Verify restored state
-        let control_reg = cap.read_u32(0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         assert!(control_val & 1 != 0); // MSI enabled
         assert_eq!((control_val >> 4) & 0x7, 2); // MME = 2
-        assert_eq!(cap.read_u32(4), 0x87654321);
-        assert_eq!(cap.read_u32(8), 0x1234);
+        assert_eq!(read_cap_u32(&cap, 4), 0x87654321);
+        assert_eq!(read_cap_u32(&cap, 8), 0x1234);
     }
 
     #[test]
@@ -532,18 +554,18 @@ mod tests {
         use vmcore::save_restore::SaveRestore;
 
         let msi_conn = MsiConnection::new();
-        let mut cap = MsiCapability::new(1, true, false, msi_conn.target()); // Only 2 messages max (MMC=1)
+        let mut cap = MsiCapability::new(1, true, false, &msi_conn.target()); // Only 2 messages max (MMC=1)
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
 
         // Configure with MME=3 (8 messages), but device only supports MMC=1 (2 messages)
-        cap.write_u32(4, 0x12345678); // Address low
-        cap.write_u32(8, 0x9abcdef0); // Address high
-        cap.write_u32(12, 0x5678); // Data
-        cap.write_u32(0, 0x00310001); // Enable MSI with MME=3
+        write_cap_u32(&mut cap, 4, 0x12345678); // Address low
+        write_cap_u32(&mut cap, 8, 0x9abcdef0); // Address high
+        write_cap_u32(&mut cap, 12, 0x5678); // Data
+        write_cap_u32(&mut cap, 0, 0x00310001); // Enable MSI with MME=3
 
         // Verify MME was clamped to MMC (1)
-        let control_reg = cap.read_u32(0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         let mme = (control_val >> 4) & 0x7;
         assert_eq!(mme, 1); // Should be clamped to MMC=1
@@ -558,14 +580,14 @@ mod tests {
         cap.restore(saved_state).expect("restore should succeed");
 
         // Check that MME is still properly clamped after restore
-        let control_reg = cap.read_u32(0);
+        let control_reg = read_cap_u32(&cap, 0);
         let control_val = (control_reg >> 16) & 0xFFFF;
         let mme = (control_val >> 4) & 0x7;
         let enabled = control_val & 1 != 0;
         assert_eq!(mme, 1); // Should still be clamped to MMC=1
         assert!(enabled); // Should be enabled
-        assert_eq!(cap.read_u32(4), 0x12345678);
-        assert_eq!(cap.read_u32(8), 0x9abcdef0);
-        assert_eq!(cap.read_u32(12), 0x5678);
+        assert_eq!(read_cap_u32(&cap, 4), 0x12345678);
+        assert_eq!(read_cap_u32(&cap, 8), 0x9abcdef0);
+        assert_eq!(read_cap_u32(&cap, 12), 0x5678);
     }
 }

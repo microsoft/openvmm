@@ -95,6 +95,11 @@ impl SparseMapping {
     /// The range will be aligned to the largest system page size that's smaller
     /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
+        Self::new_with_minimum_alignment(len, 1)
+    }
+
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
         trycopy::initialize_try_copy();
 
         // Length of 0 return an OS error, so we need to handle it explicitly.
@@ -104,17 +109,24 @@ impl SparseMapping {
                 "length must be greater than 0",
             ));
         }
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
 
         let size_4k = 4096;
         let size_2m = 0x200000;
         let size_1g = 0x40000000;
-        let alignment = if len < size_2m {
+        let default_alignment = if len < size_2m {
             size_4k
         } else if len < size_1g {
             size_2m
         } else {
             size_1g
         };
+        let alignment = default_alignment.max(minimum_alignment);
 
         let len = len
             .checked_add(alignment - 1)
@@ -265,6 +277,19 @@ impl SparseMapping {
                 file_offset as i64,
             )
         }
+    }
+
+    /// Calls `mbind(MPOL_BIND)` on a range within this mapping, binding
+    /// pages to a specific host NUMA node.
+    ///
+    /// The range at `offset..offset+len` must already be mapped (via
+    /// `alloc`, `map_file`, etc.) before calling this.
+    #[cfg(target_os = "linux")]
+    pub fn mbind_at(&self, offset: usize, len: usize, numa_node: u32) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        // SAFETY: validate_offset_len confirmed offset+len is within the
+        // mapping, so `self.address + offset` is valid for `len` bytes.
+        unsafe { mbind_range(self.address.add(offset), len, numa_node) }
     }
 
     /// Maps memory into the mapping, passing parameters through to the mmap
@@ -455,13 +480,13 @@ impl Drop for SparseMapping {
     }
 }
 #[cfg(target_os = "linux")]
-fn new_memfd(name: &str) -> io::Result<File> {
+fn new_memfd(name: &str, flags: libc::c_uint) -> io::Result<File> {
     let name =
         std::ffi::CString::new(name).map_err(|e| Error::new(io::ErrorKind::InvalidInput, e))?;
     // SAFETY: creating and truncating a new file descriptor according to
     // the documented contract.
     unsafe {
-        let fd = libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC).syscall_result()?;
+        let fd = libc::memfd_create(name.as_ptr(), flags).syscall_result()?;
         Ok(File::from_raw_fd(fd))
     }
 }
@@ -492,7 +517,113 @@ fn new_memfd(_name: &str) -> io::Result<File> {
 /// `name` labels the memfd so it appears as `/memfd:<name>` in
 /// `/proc/{pid}/smaps` on Linux.
 pub fn alloc_shared_memory(size: usize, name: &str) -> io::Result<OwnedFd> {
+    #[cfg(target_os = "linux")]
+    let fd = new_memfd(name, libc::MFD_CLOEXEC)?;
+    #[cfg(not(target_os = "linux"))]
     let fd = new_memfd(name)?;
     fd.set_len(size as u64)?;
     Ok(fd.into())
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+///
+/// If `hugepage_size` is specified, it is encoded in the memfd flags using
+/// the Linux `MFD_HUGE_*` convention.
+#[cfg(target_os = "linux")]
+pub fn alloc_shared_memory_hugetlb(
+    size: usize,
+    name: &str,
+    hugepage_size: Option<usize>,
+) -> io::Result<OwnedFd> {
+    const MFD_HUGE_SHIFT: libc::c_uint = 26;
+
+    let mut flags = libc::MFD_CLOEXEC | libc::MFD_HUGETLB;
+    if let Some(hugepage_size) = hugepage_size {
+        if !hugepage_size.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "hugepage size must be a power of two",
+            ));
+        }
+        flags |= (hugepage_size.trailing_zeros() as libc::c_uint) << MFD_HUGE_SHIFT;
+    }
+
+    let fd = new_memfd(name, flags)?;
+    let size = libc::off_t::try_from(size).map_err(|_| {
+        Error::new(
+            io::ErrorKind::InvalidInput,
+            "hugetlb allocation size is too large",
+        )
+    })?;
+
+    // Unlike ftruncate, fallocate forces hugetlb page reservation now, so
+    // insufficient hugepage pools fail during guest RAM allocation instead of
+    // later when the lazy VA mapper first mmaps the memfd.
+    unsafe { libc::fallocate(fd.as_raw_fd(), 0, 0, size).syscall_result()? };
+    Ok(fd.into())
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+#[cfg(not(target_os = "linux"))]
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedFd> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
+}
+
+/// Calls `mbind(MPOL_BIND)` on an already-mapped virtual address range,
+/// binding it to a specific host NUMA node.
+///
+/// # Safety
+///
+/// `addr` must point to a valid mapped region of at least `len` bytes.
+#[cfg(target_os = "linux")]
+unsafe fn mbind_range(addr: *mut c_void, len: usize, numa_node: u32) -> io::Result<()> {
+    // Cap the node ID to prevent accidental large allocations for the
+    // nodemask bitmask below.
+    if numa_node > 0xffff {
+        return Err(Error::new(
+            io::ErrorKind::InvalidInput,
+            "NUMA node exceeds maximum supported value",
+        ));
+    }
+
+    // Build nodemask bitmask. The kernel expects an array of unsigned long with
+    // bit `numa_node` set.
+    //
+    // maxnode should be the number of bits in the nodemask, but the kernel's
+    // get_nodes() has an off-by-one: it decrements maxnode before use, so we
+    // must pass numa_node + 2 instead of numa_node + 1. This is a known kernel
+    // bug since 2004 that will not be fixed (ABI). See
+    // <https://lore.kernel.org/linux-mm/20240720173543.897972-1-jglisse@google.com/>
+    let maxnode = numa_node as usize + 2;
+    let word_bits = libc::c_ulong::BITS as usize;
+    let num_words = maxnode.div_ceil(word_bits);
+    let mut nodemask = vec![0 as libc::c_ulong; num_words];
+    nodemask[numa_node as usize / word_bits] = 1 << (numa_node as usize % word_bits);
+
+    // Use flags = 0: just set the NUMA policy for future page faults.
+    // The memory was just mapped, so there are no resident pages to move.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mbind,
+            addr,
+            len,
+            libc::MPOL_BIND,
+            nodemask.as_ptr(),
+            maxnode,
+            0,
+        )
+    };
+
+    if result == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(())
 }

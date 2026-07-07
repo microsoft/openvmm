@@ -276,6 +276,12 @@ impl VirtioFsInode {
 
     /// Appends a child name to this inode's path.
     fn child_path(&self, name: &LxStr) -> lx::Result<PathBuf> {
+        // Defense in depth: the FUSE request parser already validates names,
+        // but assert here to catch any bypass.
+        assert!(!name.is_empty(), "empty child name");
+        assert!(!name.as_bytes().contains(&b'/'), "child name contains '/'");
+        assert!(name != "." && name != "..", "child name is '.' or '..'");
+
         let mut path = self.clone_path();
         path.push_lx(name)?;
         Ok(path)

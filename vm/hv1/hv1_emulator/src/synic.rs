@@ -237,8 +237,15 @@ impl GlobalSynic {
         };
         let vp = vp.read();
         let sint_index = sint_index as usize;
+        if sint_index >= NUM_SINTS {
+            return Ok(false);
+        }
         let sint = vp.sint[sint_index];
         let flag = flag as usize;
+        // Each SINT owns this many event flags in the SIEFP page
+        if flag >= (HV_PAGE_SIZE_USIZE / NUM_SINTS) * 8 {
+            return Ok(false);
+        }
         if sint.proxy() {
             return Err(SintProxied);
         }
@@ -347,16 +354,10 @@ impl ProcessorSynic {
         let siefp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?siefp, "setting siefp");
         let mut shared = self.shared.write();
-        if siefp.enabled()
-            && (!self.sints.siefp.enabled() || siefp.base_gpn() != self.sints.siefp.base_gpn())
-        {
-            shared
-                .siefp_page
-                .remap(siefp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !siefp.enabled() {
-            shared.siefp_page.unmap(prot_access);
-        }
+        shared
+            .siefp_page
+            .sync(siefp.enabled(), siefp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.siefp = siefp;
         Ok(())
     }
@@ -369,16 +370,10 @@ impl ProcessorSynic {
     ) -> Result<(), MsrError> {
         let simp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?simp, "setting simp");
-        if simp.enabled()
-            && (!self.sints.simp.enabled() || simp.base_gpn() != self.sints.simp.base_gpn())
-        {
-            self.sints
-                .simp_page
-                .remap(simp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !simp.enabled() {
-            self.sints.simp_page.unmap(prot_access);
-        }
+        self.sints
+            .simp_page
+            .sync(simp.enabled(), simp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.simp = simp;
         Ok(())
     }
@@ -435,6 +430,9 @@ impl ProcessorSynic {
         message: &HvMessage,
         interrupt: &mut dyn RequestInterrupt,
     ) -> Result<(), HvError> {
+        if sint_index as usize >= NUM_SINTS {
+            return Err(HvError::InvalidSynicState);
+        }
         let sint = &self.sints.sint[sint_index as usize];
         if sint.masked() || sint.proxy() {
             return Err(HvError::InvalidSynicState);

@@ -31,11 +31,83 @@ pub mod consomme {
     use vm_resource::ResourceId;
     use vm_resource::kind::NetEndpointHandleKind;
 
+    /// Protocol for host port forwarding.
+    #[derive(Clone, Debug, MeshPayload)]
+    pub enum HostPortProtocol {
+        /// TCP protocol.
+        Tcp,
+        /// UDP protocol.
+        Udp,
+    }
+
+    /// An IP address, suitable for serialization via mesh.
+    #[derive(Clone, Debug, MeshPayload)]
+    pub enum HostIpAddress {
+        /// IPv4 address.
+        Ipv4(std::net::Ipv4Addr),
+        /// IPv6 address.
+        Ipv6(std::net::Ipv6Addr),
+    }
+
+    impl From<std::net::IpAddr> for HostIpAddress {
+        fn from(addr: std::net::IpAddr) -> Self {
+            match addr {
+                std::net::IpAddr::V4(v4) => HostIpAddress::Ipv4(v4),
+                std::net::IpAddr::V6(v6) => HostIpAddress::Ipv6(v6),
+            }
+        }
+    }
+
+    impl From<HostIpAddress> for std::net::IpAddr {
+        fn from(addr: HostIpAddress) -> Self {
+            match addr {
+                HostIpAddress::Ipv4(v4) => std::net::IpAddr::V4(v4),
+                HostIpAddress::Ipv6(v6) => std::net::IpAddr::V6(v6),
+            }
+        }
+    }
+
+    /// The host port to listen on for a port forward.
+    #[derive(Debug, MeshPayload)]
+    pub enum HostPort {
+        /// A fixed host port.
+        Fixed(u16),
+        /// Let the OS assign a port. The assigned port is sent back via the
+        /// oneshot sender.
+        Dynamic(mesh::OneshotSender<u16>),
+    }
+
+    /// Configuration for forwarding a host port into the guest.
+    #[derive(Debug, MeshPayload)]
+    pub struct HostPortConfig {
+        /// The protocol to forward.
+        pub protocol: HostPortProtocol,
+        /// The host IP address to bind to, or `None` to bind to all interfaces.
+        pub host_address: Option<HostIpAddress>,
+        /// The host port to listen on.
+        pub host_port: HostPort,
+        /// The guest port to forward to.
+        pub guest_port: u16,
+    }
+
+    /// A runtime request to bind or unbind a port on a running Consomme endpoint.
+    #[derive(MeshPayload)]
+    pub enum ConsommeRequest {
+        /// Bind a host port to forward traffic to the guest.
+        Bind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+        /// Unbind a previously forwarded port.
+        Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+    }
+
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
     pub struct ConsommeHandle {
         /// The CIDR of the network to use.
         pub cidr: Option<String>,
+        /// Ports to forward from the host into the guest at creation time.
+        pub ports: Vec<HostPortConfig>,
+        /// Optional channel for runtime port bind/unbind after the endpoint starts.
+        pub recv: Option<mesh::Receiver<ConsommeRequest>>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

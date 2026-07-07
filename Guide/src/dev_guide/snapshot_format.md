@@ -42,10 +42,10 @@ file inside the snapshot directory.
 
 ### Same-file detection
 
-If the user passes `--memory-backing-file <snapshot_dir>/memory.bin`, the
-source and target of the hard link are the same file. The code detects this
-by canonicalizing both paths and comparing them. When they match, the
-hard-link step is skipped.
+If the user passes `--memory file=<snapshot_dir>/memory.bin`, the source and
+target of the hard link are the same file. The code detects this by
+canonicalizing both paths and comparing them. When they match, the hard-link
+step is skipped.
 
 ## Code references
 

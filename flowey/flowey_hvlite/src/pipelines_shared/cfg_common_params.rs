@@ -5,7 +5,7 @@
 
 use flowey::node::prelude::*;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
+use flowey_lib_hvlite::common::CommonArch;
 
 #[derive(Clone, Default, clap::Args)]
 #[clap(next_help_heading = "Local Only")]

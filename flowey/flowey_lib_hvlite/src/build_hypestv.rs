@@ -3,8 +3,8 @@
 
 //! Build `hypestv` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
@@ -12,7 +12,8 @@ pub struct HypestvOutput {
     #[serde(rename = "hypestv.exe")]
     pub exe: PathBuf,
     #[serde(rename = "hypestv.pdb")]
-    pub pdb: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdb: Option<PathBuf>,
 }
 
 impl Artifact for HypestvOutput {}

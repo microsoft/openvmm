@@ -99,13 +99,22 @@ GitHub Issue tracker.
 
 ### Help! The build failed due to a missing dependency
 
-If you don't mind having `xflowey` install some dependencies globally on your
-machine (i.e: via `apt install`, or `rustup toolchain add`), you can pass
-`--auto-install-deps` to your invocation of `build-igvm`.
+If you don't mind having `xflowey` install some dependencies globally
+on your machine (i.e: via `apt install`, or `rustup toolchain add`),
+you can pass `--install-missing-deps` to your invocation of
+`build-igvm`:
 
-Alternatively - `build-igvm` _should_ emit useful human-readable error messages
-when it encounters a dependency that isn't installed, with a suggestion on how
-to install it.
+```bash
+cargo xflowey build-igvm x64 --install-missing-deps
+```
+
+This will automatically install all required dependencies, including
+the .NET SDK, Rust toolchains, Node.js, and any necessary system
+packages.
+
+Alternatively - `build-igvm` _should_ emit useful human-readable
+error messages when it encounters a dependency that isn't installed,
+with a suggestion on how to install it.
 
 If it doesn't - please file an Issue!
 

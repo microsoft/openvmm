@@ -8,6 +8,9 @@
 #![expect(unsafe_code)]
 #![expect(missing_docs)]
 
+#[cfg(not(test))]
+crypto::ensure_single_backend!();
+
 use core::slice;
 use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;

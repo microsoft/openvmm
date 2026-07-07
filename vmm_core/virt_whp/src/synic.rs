@@ -441,7 +441,7 @@ mod x86 {
     use virt::irqcon::MsiRequest;
 
     impl SignalMsi for WhpPartitionAndVtl {
-        fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
             if let Err(err) = self
                 .partition
                 .interrupt(self.vtl, MsiRequest { address, data })

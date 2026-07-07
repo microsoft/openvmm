@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::partition_unit::Halt;
+use chipset_resources::ioapic::IoApicRoutingHandleKind;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use power_resources::PowerRequestHandleKind;
@@ -34,5 +35,27 @@ impl ResolveResource<PowerRequestHandleKind, PlatformResource> for HaltResolver 
             }),
         })
         .into())
+    }
+}
+
+/// Platform IO-APIC routing resolver.
+///
+/// Wraps a `virt::irqcon::IoApicRouting` into a `chipset_resources::ioapic::IoApicRouting`.
+pub struct IoApicRoutingResolver<T: ?Sized>(pub Arc<T>);
+
+impl<T: ?Sized + virt::irqcon::IoApicRouting + 'static>
+    ResolveResource<IoApicRoutingHandleKind, PlatformResource> for IoApicRoutingResolver<T>
+{
+    type Output = chipset_resources::ioapic::ResolvedIoApicRouting;
+    type Error = Infallible;
+
+    fn resolve(
+        &self,
+        _resource: PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(chipset_resources::ioapic::ResolvedIoApicRouting(Box::new(
+            crate::emuplat::ioapic::IoApicRouting(self.0.clone()),
+        )))
     }
 }

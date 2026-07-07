@@ -16,6 +16,8 @@ use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -200,27 +202,31 @@ impl PortIoIntercept for ChipsetDeviceProxy {
 }
 
 impl PciConfigSpace for ChipsetDeviceProxy {
-    fn pci_cfg_read(&mut self, offset: u16, _value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         let (read, token) = defer_read();
         let id = self.in_flight_reads.insert(read);
-        self.req_send
-            .send(DeviceRequest::PciConfigRead(ReadRequest {
+        self.req_send.send(DeviceRequest::PciConfigRead(
+            ReadRequest {
                 id,
                 address: offset,
                 size: 4,
-            }));
+            },
+            value.byte_enable(),
+        ));
         IoResult::Defer(token)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         let (write, token) = defer_write();
         let id = self.in_flight_writes.insert(write);
-        self.req_send
-            .send(DeviceRequest::PciConfigWrite(WriteRequest {
+        self.req_send.send(DeviceRequest::PciConfigWrite(
+            WriteRequest {
                 id,
                 address: offset,
-                data: value,
-            }));
+                data: value.extract(),
+            },
+            value.byte_enable(),
+        ));
         IoResult::Defer(token)
     }
 

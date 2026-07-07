@@ -80,6 +80,24 @@ cd ~/src/
 git clone https://github.com/microsoft/openvmm.git
 ```
 
+## Automatic Dependency Installation
+
+When building OpenHCL, you can pass `--install-missing-deps` to have
+the build system automatically install any missing dependencies
+(e.g., .NET SDK, cross-compilation toolchains, system packages):
+
+```bash
+cargo xflowey build-igvm x64 --install-missing-deps
+```
+
+```admonish warning
+This flag may install packages and toolchains globally on your system
+(e.g., via `apt install` or `rustup toolchain add`).
+```
+
+This is the easiest way to get a working build environment without
+manually tracking down each dependency.
+
 ## Next Steps
 
 You are now ready to build [OpenVMM](./build_openvmm.md) or

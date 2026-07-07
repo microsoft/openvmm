@@ -63,6 +63,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
+            AttestationType::Cca => Some(tee_call::TeeType::Cca),
             AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
             AttestationType::Host => None,
         };
@@ -228,6 +229,10 @@ pub mod resources {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
                 AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
                 AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
+                AttestationType::Cca => {
+                    tracing::warn!("CCA: resolve: tee_call is not implemented yet");
+                    None
+                }
                 AttestationType::Host => None,
             };
 

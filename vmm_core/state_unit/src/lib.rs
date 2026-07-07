@@ -234,6 +234,7 @@ struct Unit {
     dependencies: Vec<u64>,
     dependents: Vec<u64>,
     state: State,
+    inspect_sensitivity: inspect::SensitivityLevel,
 }
 
 /// An error returned when a state unit name is already in use.
@@ -313,7 +314,7 @@ impl Inspect for Inner {
     fn inspect(&self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
         for unit in self.units.values() {
-            resp.child(unit.name.as_ref(), |req| {
+            resp.sensitivity_child(unit.name.as_ref(), unit.inspect_sensitivity, |req| {
                 let mut resp = req.respond();
                 if !unit.dependencies.is_empty() {
                     resp.field_with("dependencies", || {
@@ -444,6 +445,7 @@ impl StateUnits {
             name: name.into(),
             dependencies: Vec::new(),
             dependents: Vec::new(),
+            inspect_sensitivity: inspect::SensitivityLevel::Unspecified,
         }
     }
 
@@ -827,6 +829,7 @@ pub struct UnitBuilder<'a> {
     name: Arc<str>,
     dependencies: Vec<u64>,
     dependents: Vec<u64>,
+    inspect_sensitivity: inspect::SensitivityLevel,
 }
 
 impl UnitBuilder<'_> {
@@ -845,6 +848,12 @@ impl UnitBuilder<'_> {
     /// its dependants, and that it will reset or restore before its dependants.
     pub fn dependency_of(mut self, handle: &UnitHandle) -> Self {
         self.dependents.push(self.handle_id(handle));
+        self
+    }
+
+    /// Sets the sensitivity level for this unit's inspect data. Defaults to Unspecified.
+    pub fn inspect_sensitivity(mut self, sensitivity: inspect::SensitivityLevel) -> Self {
+        self.inspect_sensitivity = sensitivity;
         self
     }
 
@@ -891,6 +900,7 @@ impl UnitBuilder<'_> {
                     dependencies: self.dependencies,
                     dependents: self.dependents,
                     state: State::Stopped,
+                    inspect_sensitivity: self.inspect_sensitivity,
                 },
             );
             let unit_id = UnitId {

@@ -72,11 +72,11 @@ impl ResolvedHypervisorBackend {
         Self(Box::new(move |driver_source, cfg, shared_memory| {
             Box::pin(async move {
                 let mut hv = hypervisor;
-                let platform_gsiv = virt::Hypervisor::platform_gsiv(&hv);
+                let platform_info = virt::Hypervisor::platform_info(&hv);
                 InitializedVm::new_with_hypervisor(
                     driver_source,
                     &mut hv,
-                    platform_gsiv,
+                    platform_info,
                     cfg,
                     shared_memory,
                 )
@@ -88,43 +88,4 @@ impl ResolvedHypervisorBackend {
 
 impl CanResolveTo<ResolvedHypervisorBackend> for HypervisorKind {
     type Input<'a> = ();
-}
-
-/// Registers hypervisor backend probes for auto-detection.
-///
-/// Each entry is a unit struct implementing
-/// [`HypervisorProbe`](hypervisor_resources::HypervisorProbe).
-///
-/// Probes are checked in registration order when auto-detecting the
-/// hypervisor, so register them from highest to lowest priority.
-///
-/// Resource resolvers should be registered separately via
-/// [`vm_resource::register_static_resolvers!`].
-///
-/// # Example
-///
-/// ```ignore
-/// openvmm_core::register_hypervisor_probes! {
-///     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-///     openvmm_hypervisors::kvm::KvmProbe,
-/// }
-/// ```
-#[macro_export]
-macro_rules! register_hypervisor_probes {
-    {} => {};
-    { $( $(#[$a:meta])* $probe:path ),+ $(,)? } => {
-        $(
-        $(#[$a])*
-        const _: () = {
-            static PROBE_INSTANCE: $probe = $probe;
-
-            #[hypervisor_resources::private::linkme::distributed_slice(
-                hypervisor_resources::private::HYPERVISOR_PROBES
-            )]
-            #[linkme(crate = hypervisor_resources::private::linkme)]
-            static PROBE: Option<&'static dyn hypervisor_resources::HypervisorProbe> =
-                Some(&PROBE_INSTANCE);
-        };
-        )*
-    };
 }

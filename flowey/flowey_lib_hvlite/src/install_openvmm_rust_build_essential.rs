@@ -22,6 +22,7 @@ impl FlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_cargo_config_deny_warnings::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -29,11 +30,25 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let side_effects = [
+        let mut side_effects = vec![
             ctx.reqv(crate::init_openvmm_cargo_config_deny_warnings::Request::Done),
             ctx.reqv(crate::init_openvmm_magicpath_protoc::Request),
             ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled),
         ];
+
+        // On Ubuntu, we need the `build-essential` package to ensure that
+        // the system has a working linker.
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            side_effects.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["build-essential".into()],
+                    done: v,
+                }
+            }));
+        }
 
         ctx.emit_side_effect_step(side_effects, requests.into_iter().map(|x| x.0));
 

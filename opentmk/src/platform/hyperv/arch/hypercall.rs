@@ -142,7 +142,7 @@ impl HvCall {
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnablePartitionVtl, None);
         match output.result() {
-            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
+            Ok(()) | Err(hvdef::HvError::InvalidVtlState) => Ok(()),
             err => err,
         }
     }

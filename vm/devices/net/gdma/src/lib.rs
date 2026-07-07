@@ -14,6 +14,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
@@ -117,6 +119,8 @@ enum SmcError {
     UnsupportedRequest(SmcMessageType),
 }
 
+pub use bnic::BnicConfig;
+
 pub struct VportConfig {
     pub mac_address: MacAddress,
     pub endpoint: Box<dyn Endpoint>,
@@ -130,11 +134,29 @@ impl GdmaDevice {
         vports: Vec<VportConfig>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
     ) -> Self {
+        Self::new_with_config(
+            driver_source,
+            gm,
+            msi_target,
+            vports,
+            mmio_registration,
+            BnicConfig::default(),
+        )
+    }
+
+    pub fn new_with_config(
+        driver_source: &VmTaskDriverSource,
+        gm: GuestMemory,
+        msi_target: &MsiTarget,
+        vports: Vec<VportConfig>,
+        mmio_registration: &mut dyn RegisterMmioIntercept,
+        bnic_config: BnicConfig,
+    ) -> Self {
         let (msix, msix_capability) = MsixEmulator::new(4, 64, msi_target);
 
         let hardware_ids = HardwareIds {
-            vendor_id: gdma_defs::VENDOR_ID,
-            device_id: gdma_defs::DEVICE_ID,
+            vendor_id: pci_core::microsoft::VENDOR_ID,
+            device_id: pci_core::microsoft::DeviceId::GDMA.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA,
             sub_class: Subclass::NETWORK_CONTROLLER_ETHERNET,
@@ -151,6 +173,7 @@ impl GdmaDevice {
         let config = ConfigSpaceType0Emulator::new(
             hardware_ids,
             capabilities,
+            Vec::new(),
             DeviceBars::new()
                 .bar0(8192, BarMemoryKind::Intercept(bar0_mem))
                 .bar4(msix.bar_len(), BarMemoryKind::Intercept(bar2_mem)),
@@ -181,7 +204,7 @@ impl GdmaDevice {
             queues,
             destroying_hwc: false,
             hwc: TaskControl::new(Devices {
-                bnic: bnic::BasicNic::new(vports),
+                bnic: bnic::BasicNic::new(vports, bnic_config),
             }),
         }
     }
@@ -416,11 +439,11 @@ impl MmioIntercept for GdmaDevice {
 }
 
 impl PciConfigSpace for GdmaDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.config.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.config.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.config.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.config.write_byte_enabled(offset, value)
     }
 }

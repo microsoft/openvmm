@@ -119,7 +119,7 @@ impl SimpleFlowNode for Node {
             consolidated_html
         };
 
-        consolidated_html.write_into(ctx, output, |p| GhPagesOutput { gh_pages: p });
+        consolidated_html.write_into_with(ctx, output, |p| GhPagesOutput { gh_pages: p });
         Ok(())
     }
 }

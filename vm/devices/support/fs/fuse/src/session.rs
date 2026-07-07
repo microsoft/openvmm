@@ -23,7 +23,14 @@ const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_HANDLE_KILLPRIV
     | FUSE_ASYNC_DIO
     | FUSE_ATOMIC_O_TRUNC
-    | FUSE_BIG_WRITES;
+    | FUSE_BIG_WRITES
+    | FUSE_MAX_PAGES
+    | FUSE_INIT_EXT;
+
+// Default flags2 to negotiate when FUSE_INIT_EXT is supported.
+// Individual filesystem implementations can set additional flags2 in their
+// init callback (e.g. FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 for virtiofs).
+const DEFAULT_FLAGS2: u32 = 0;
 
 const DEFAULT_MAX_PAGES: u32 = 256;
 
@@ -478,11 +485,24 @@ impl Session {
         info.max_readahead = init.max_readahead;
         info.capable = init.flags;
         info.want = DEFAULT_FLAGS & init.flags;
+        info.want2 = 0;
+        info.capable2 = 0;
+        // Negotiate flags2 when the kernel supports extended init.
+        if init.flags & FUSE_INIT_EXT != 0 {
+            info.capable2 = init.flags2;
+            info.want2 = DEFAULT_FLAGS2 & init.flags2;
+        }
         info.time_gran = 1;
         info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
         self.fs.init(&mut info);
 
         assert!(info.want & !info.capable == 0);
+        // If the filesystem cleared FUSE_INIT_EXT from want, force want2 to
+        // zero so we never reply with flags2 the kernel won't expect.
+        if info.want & FUSE_INIT_EXT == 0 {
+            info.want2 = 0;
+        }
+        assert!(info.want2 & !info.capable2 == 0);
 
         // Report the negotiated values back to the client.
         // TODO: Set map_alignment for DAX.
@@ -492,7 +512,11 @@ impl Session {
         out.congestion_threshold = info.congestion_threshold;
         out.max_write = info.max_write;
         out.time_gran = info.time_gran;
-        out.max_pages = ((info.max_write - 1) / PAGE_SIZE - 1).try_into().unwrap();
+        out.max_pages = info.max_write.div_ceil(PAGE_SIZE).min(u16::MAX as u32) as u16;
+        // Only report flags2 when extended init was negotiated.
+        if info.want & FUSE_INIT_EXT != 0 {
+            out.flags2 = info.want2;
+        }
 
         sender.send_arg(request.unique(), out)?;
 
@@ -588,7 +612,10 @@ pub struct SessionInfo {
     minor: u32,
     pub max_readahead: u32,
     capable: u32,
+    capable2: u32,
     pub want: u32,
+    /// Extended flags (flags2) to negotiate when FUSE_INIT_EXT is active.
+    pub want2: u32,
     pub max_background: u16,
     pub congestion_threshold: u16,
     pub max_write: u32,
@@ -607,6 +634,10 @@ impl SessionInfo {
     pub fn capable(&self) -> u32 {
         self.capable
     }
+
+    pub fn capable2(&self) -> u32 {
+        self.capable2
+    }
 }
 
 #[derive(Debug, Error)]
@@ -623,6 +654,8 @@ mod tests {
     use crate::request::tests::*;
     use parking_lot::Mutex;
     use std::sync::Arc;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
 
     #[test]
     fn dispatch_error_name_too_long() {
@@ -772,9 +805,9 @@ mod tests {
     const LOOKUP_CALLED: u32 = 0x4;
 
     const INIT_REPLY: &[u8] = &[
-        80, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 31, 0, 0, 0, 0, 0, 2, 0, 41,
-        144, 12, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1, 0, 0, 0, 254, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        80, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 39, 0, 0, 0, 0, 0, 2, 0, 41,
+        144, 12, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
     const GETATTR_REPLY: &[u8] = &[
@@ -812,6 +845,357 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A ReplySender that captures the raw response bytes for inspection.
+    #[derive(Default)]
+    struct CapturingSender {
+        data: Vec<u8>,
+    }
+
+    impl ReplySender for CapturingSender {
+        fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+            self.data = bufs.iter().flat_map(|s| s.iter()).copied().collect();
+            Ok(())
+        }
+    }
+
+    impl CapturingSender {
+        /// Parse the captured reply as a fuse_out_header + fuse_init_out.
+        fn parse_init_reply(&self) -> (fuse_out_header, fuse_init_out) {
+            let hdr = fuse_out_header::read_from_prefix(&self.data).unwrap().0;
+            let body = fuse_init_out::read_from_prefix(&self.data[size_of::<fuse_out_header>()..])
+                .unwrap()
+                .0;
+            (hdr, body)
+        }
+    }
+
+    /// Build a FUSE_INIT request with the given version and flags.
+    fn make_init_request(
+        major: u32,
+        minor: u32,
+        max_readahead: u32,
+        flags: u32,
+        flags2: u32,
+    ) -> Vec<u8> {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_init_in>()) as u32,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let init = fuse_init_in {
+            major,
+            minor,
+            max_readahead,
+            flags,
+            flags2,
+            unused: [0; 11],
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(init.as_bytes());
+        data
+    }
+
+    /// A minimal Fuse implementation that records the SessionInfo seen during init
+    /// and optionally requests FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 or overrides max_write.
+    #[derive(Default)]
+    struct InitCapturingFs {
+        info: Arc<Mutex<Option<(u32, u32, u32)>>>, // (want, want2, capable)
+        request_direct_io_mmap: bool,
+        max_write_override: Option<u32>,
+    }
+
+    impl Fuse for InitCapturingFs {
+        fn init(&self, info: &mut SessionInfo) {
+            if self.request_direct_io_mmap && info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0
+            {
+                info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+            }
+            if let Some(max_write) = self.max_write_override {
+                info.max_write = max_write;
+            }
+            *self.info.lock() = Some((info.want, info.want2, info.capable()));
+        }
+    }
+
+    #[test]
+    fn init_with_ext_negotiates_flags2_and_direct_io_allow_mmap() {
+        // Kernel advertises FUSE_INIT_EXT among its capabilities.
+        let flags = 0x003FFFFB | FUSE_INIT_EXT;
+        let request_data = make_init_request(7, 39, 131072, flags, FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2);
+
+        let fs = InitCapturingFs {
+            request_direct_io_mmap: true,
+            ..Default::default()
+        };
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The filesystem should see FUSE_INIT_EXT in the negotiated flags and
+        // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 in want2.
+        let info = info_ref.lock();
+        let &(want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
+        assert_ne!(
+            want & FUSE_INIT_EXT,
+            0,
+            "FUSE_INIT_EXT should be negotiated"
+        );
+        assert_ne!(
+            want2 & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            0,
+            "FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 should be in want2"
+        );
+
+        // The reply must carry both flags and flags2.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_ne!(
+            init_out.flags & FUSE_INIT_EXT,
+            0,
+            "Reply flags must include FUSE_INIT_EXT"
+        );
+        assert_ne!(
+            init_out.flags2 & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            0,
+            "Reply flags2 must include FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2"
+        );
+    }
+
+    #[test]
+    fn init_without_ext_does_not_negotiate_flags2() {
+        // Kernel does NOT advertise FUSE_INIT_EXT.
+        let flags = 0x003FFFFB; // same as FUSE_INIT_REQUEST, no FUSE_INIT_EXT
+        let request_data = make_init_request(7, 27, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // Without FUSE_INIT_EXT the daemon must not request any flags2.
+        let info = info_ref.lock();
+        let &(_want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
+        assert_eq!(want2, 0, "want2 must be zero without FUSE_INIT_EXT");
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(
+            init_out.flags & FUSE_INIT_EXT,
+            0,
+            "Reply flags must NOT include FUSE_INIT_EXT"
+        );
+        assert_eq!(init_out.flags2, 0, "Reply flags2 must be zero");
+    }
+
+    #[test]
+    fn init_ext_without_direct_io_mmap_results_in_zero_flags2() {
+        // Kernel supports FUSE_INIT_EXT but does NOT advertise
+        // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 in flags2.
+        let flags = 0x003FFFFB | FUSE_INIT_EXT;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let info = info_ref.lock();
+        let &(_want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
+        assert_eq!(
+            want2, 0,
+            "want2 must be zero when kernel flags2 lacks FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2"
+        );
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.flags2, 0, "Reply flags2 must be zero");
+    }
+
+    #[test]
+    fn init_higher_major_version_replies_with_supported_version() {
+        // Kernel reports major version 8, higher than FUSE_KERNEL_VERSION (7).
+        let request_data = make_init_request(8, 0, 131072, 0, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        // Session should NOT be marked initialized — the kernel will resend INIT.
+        assert!(!session.is_initialized());
+
+        // The filesystem's init callback should NOT have been called.
+        assert!(info_ref.lock().is_none());
+
+        // Reply should carry the supported version.
+        let (hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(hdr.error, 0);
+        assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+        assert_eq!(init_out.minor, FUSE_KERNEL_MINOR_VERSION);
+    }
+
+    #[test]
+    fn init_old_unsupported_version_returns_error() {
+        // Kernel reports version 7.26, below the minimum (7.27).
+        let request_data = make_init_request(7, 26, 131072, 0, 0);
+
+        let fs = InitCapturingFs::default();
+        let session = Session::new(fs);
+
+        let mut sender = ErrorCheckingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        // Session should not be initialized after an unsupported version.
+        assert!(!session.is_initialized());
+
+        // An error reply should have been sent.
+        assert!(sender.last_error.is_some());
+    }
+
+    #[test]
+    fn init_negotiates_fuse_max_pages_when_kernel_supports_it() {
+        // Kernel advertises FUSE_MAX_PAGES.
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The filesystem should see FUSE_MAX_PAGES in the negotiated flags.
+        let info = info_ref.lock();
+        let &(want, _want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
+        assert_ne!(
+            want & FUSE_MAX_PAGES,
+            0,
+            "FUSE_MAX_PAGES should be negotiated"
+        );
+
+        // The reply must advertise FUSE_MAX_PAGES, the default max_write of
+        // 256 pages * 4096 bytes, and the matching max_pages.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_ne!(
+            init_out.flags & FUSE_MAX_PAGES,
+            0,
+            "Reply flags must include FUSE_MAX_PAGES"
+        );
+        assert_eq!(init_out.max_write, 256 * 4096);
+        assert_eq!(init_out.max_pages, 256);
+    }
+
+    #[test]
+    fn init_without_max_pages_does_not_advertise_it() {
+        // Kernel does NOT advertise FUSE_MAX_PAGES.
+        let flags = 0x003FFFFB; // matches FUSE_INIT_REQUEST
+        let request_data = make_init_request(7, 27, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(
+            init_out.flags & FUSE_MAX_PAGES,
+            0,
+            "Reply flags must NOT include FUSE_MAX_PAGES when kernel lacks it"
+        );
+    }
+
+    #[test]
+    fn init_max_pages_uses_ceiling_division() {
+        // The fix replaced integer division with div_ceil so that a max_write
+        // that is not a whole number of pages still reports enough max_pages
+        // to cover the largest possible request.
+        //
+        // 4097 bytes spans 2 pages; the old `max_write / PAGE_SIZE` produced 1.
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs {
+            max_write_override: Some(4097),
+            ..Default::default()
+        };
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.max_write, 4097);
+        assert_eq!(
+            init_out.max_pages, 2,
+            "max_pages must round up to cover max_write"
+        );
     }
 
     /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)

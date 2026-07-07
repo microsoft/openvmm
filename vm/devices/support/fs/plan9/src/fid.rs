@@ -175,6 +175,12 @@ impl FileState {
     }
 
     fn child_path(&self, name: &lx::LxStr) -> lx::Result<PathBuf> {
+        // Defense in depth: the protocol parser already validates names,
+        // but assert here to catch any bypass.
+        assert!(!name.is_empty(), "empty child name");
+        assert!(!name.as_bytes().contains(&b'/'), "child name contains '/'");
+        assert!(name != "." && name != "..", "child name is '.' or '..'");
+
         let mut path = self.path.clone();
         path.push_lx(name)?;
         Ok(path)

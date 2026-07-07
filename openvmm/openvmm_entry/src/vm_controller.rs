@@ -5,6 +5,7 @@
 //! DiagInspector, vtl2_settings) and exposes them to the REPL via mesh RPC.
 
 use crate::DiagInspector;
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use anyhow::Context;
 use futures::FutureExt;
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Instant;
+use vmm_core_defs::HaltReason;
 
 /// Inspection target: host-side workers or the paravisor.
 #[derive(Clone, Copy, mesh::MeshPayload)]
@@ -55,6 +57,8 @@ pub enum VmControllerRpc {
     ),
     /// Save a VM snapshot to a directory.
     SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
     ServiceVtl2(Rpc<ServiceVtl2Params, Result<u64, mesh::error::RemoteError>>),
     /// Stop the VM and quit.
@@ -100,6 +104,9 @@ pub enum VmControllerEvent {
     VncWorkerStopped { error: Option<String> },
     /// The guest halted.
     GuestHalt(String),
+    /// The controller requests that the process exit with this code, because the
+    /// guest drove a power event the user opted into exiting on.
+    ExitRequested { code: i32 },
 }
 
 /// Owns exclusive VM resources and services RPCs from the REPL.
@@ -108,42 +115,86 @@ pub struct VmController {
     pub(crate) vm_worker: WorkerHandle,
     pub(crate) vnc_worker: Option<WorkerHandle>,
     pub(crate) gdb_worker: Option<WorkerHandle>,
-    pub(crate) diag_inspector: DiagInspector,
+    pub(crate) diag_inspector: Option<DiagInspector>,
     pub(crate) vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     pub(crate) ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     pub(crate) vm_rpc: mesh::Sender<VmRpc>,
-    pub(crate) paravisor_diag: Arc<diag_client::DiagClient>,
+    pub(crate) paravisor_diag: Option<Arc<diag_client::DiagClient>>,
     pub(crate) igvm_path: Option<PathBuf>,
     pub(crate) memory_backing_file: Option<PathBuf>,
     pub(crate) memory: u64,
     pub(crate) processors: u32,
     pub(crate) log_file: Option<PathBuf>,
+    pub(crate) guest_power_actions: GuestPowerActions,
+}
+
+/// The action to take for each guest power event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GuestPowerActions {
+    /// Guest powered off or hibernated.
+    pub(crate) shutdown: GuestPowerAction,
+    /// Guest requested a reset.
+    pub(crate) reset: GuestPowerAction,
+    /// Guest triple-faulted.
+    pub(crate) crash: GuestPowerAction,
+    /// Guest watchdog timer expired.
+    pub(crate) watchdog: GuestPowerAction,
+}
+
+impl Default for GuestPowerActions {
+    /// The historical behavior: a guest reset and a watchdog timeout reboot in
+    /// place; a power-off or crash keeps the stopped VM.
+    fn default() -> Self {
+        Self {
+            shutdown: GuestPowerAction::Halt,
+            reset: GuestPowerAction::Reset,
+            crash: GuestPowerAction::Halt,
+            watchdog: GuestPowerAction::Reset,
+        }
+    }
+}
+
+/// Decide what to do for a guest halt, given the per-event actions.
+fn action_for(reason: &HaltReason, actions: &GuestPowerActions) -> GuestPowerAction {
+    match reason {
+        HaltReason::PowerOff | HaltReason::Hibernate => actions.shutdown,
+        HaltReason::Reset => actions.reset,
+        HaltReason::TripleFault { .. } => actions.crash,
+        HaltReason::Watchdog => actions.watchdog,
+        // Any other halt reason keeps the stopped VM for inspection.
+        _ => GuestPowerAction::Halt,
+    }
 }
 
 impl VmController {
     /// Run the controller, processing RPCs and worker events until the VM
-    /// stops or the REPL sends Quit.
+    /// stops or the caller (REPL or ttrpc server) sends Quit.
     pub async fn run(
         mut self,
         mut rpc_recv: mesh::Receiver<VmControllerRpc>,
         event_send: mesh::Sender<VmControllerEvent>,
-        mut notify_recv: mesh::Receiver<vmm_core_defs::HaltReason>,
+        mut notify_recv: mesh::Receiver<HaltReason>,
     ) {
         enum Event {
             Rpc(VmControllerRpc),
             RpcClosed,
             Worker(WorkerEvent),
             VncWorker(WorkerEvent),
-            Halt(vmm_core_defs::HaltReason),
+            Halt(HaltReason),
         }
 
         let mut quit = false;
+        let mut rpc_closed = false;
         loop {
             let event = {
                 let rpc = pin!(async {
-                    match rpc_recv.next().await {
-                        Some(msg) => Event::Rpc(msg),
-                        None => Event::RpcClosed,
+                    if rpc_closed {
+                        std::future::pending().await
+                    } else {
+                        match rpc_recv.next().await {
+                            Some(msg) => Event::Rpc(msg),
+                            None => Event::RpcClosed,
+                        }
                     }
                 });
                 let vm = (&mut self.vm_worker).map(Event::Worker);
@@ -164,10 +215,12 @@ impl VmController {
                     self.handle_rpc(rpc, &mut quit).await;
                 }
                 Event::RpcClosed => {
-                    // REPL disconnected. Stop the VM.
-                    tracing::info!("REPL disconnected, stopping VM");
+                    // Controller RPC channel closed (REPL/ttrpc disconnected).
+                    // Stop the VM.
+                    tracing::info!("controller RPC channel closed, stopping VM");
                     self.vm_worker.stop();
                     quit = true;
+                    rpc_closed = true;
                 }
                 Event::Worker(event) => match event {
                     WorkerEvent::Stopped => {
@@ -222,7 +275,37 @@ impl VmController {
                 },
                 Event::Halt(reason) => {
                     tracing::info!(?reason, "guest halted");
-                    event_send.send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                    let action = action_for(&reason, &self.guest_power_actions);
+                    match action {
+                        GuestPowerAction::Exit(code) => {
+                            // The VM worker's teardown deadlocks once the guest vCPUs
+                            // are parked, so don't stop it here; signal the runner to
+                            // exit instead.
+                            tracing::info!(exit_code = code, "requesting exit on guest halt");
+                            event_send.send(VmControllerEvent::ExitRequested {
+                                code: i32::from(code),
+                            });
+                            return;
+                        }
+                        GuestPowerAction::Reset => {
+                            // Reboot the VM in place. A guest reset with the default
+                            // action is handled by `automatic_guest_reset` and never
+                            // reaches here; this path covers a reset chosen for a
+                            // power-off or crash.
+                            tracing::info!("resetting VM on guest power event");
+                            if let Err(err) = self.vm_rpc.call_failable(VmRpc::Reset, ()).await {
+                                tracing::error!(
+                                    error = &err as &dyn std::error::Error,
+                                    "failed to reset VM on guest power event; keeping it stopped"
+                                );
+                                event_send
+                                    .send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                            }
+                        }
+                        GuestPowerAction::Halt => {
+                            event_send.send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                        }
+                    }
                 }
             }
         }
@@ -299,6 +382,11 @@ impl VmController {
                 let result = self.handle_save_snapshot(Path::new(&dir)).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
+            VmControllerRpc::DumpState(req) => {
+                let (path, req) = req.split();
+                let result = self.handle_dump_state(Path::new(&path)).await;
+                req.complete(result.map_err(mesh::error::RemoteError::new));
+            }
             VmControllerRpc::ServiceVtl2(req) => {
                 let (params, req) = req.split();
                 let result = self.handle_service_vtl2(params).await;
@@ -346,7 +434,9 @@ impl VmController {
                     .field("gdb", self.gdb_worker.as_ref());
             }
             InspectTarget::Paravisor => {
-                self.diag_inspector.inspect_mut(req);
+                if let Some(inspector) = &mut self.diag_inspector {
+                    inspector.inspect_mut(req);
+                }
             }
         });
         deferred.inspect(obj);
@@ -403,11 +493,41 @@ impl VmController {
         Ok(())
     }
 
+    async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
+        // Write to a temporary file in the same directory, then rename into
+        // place so readers never see a partially-written dump.
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
+
+        // Dump state to the temp file (worker pauses, collects VP state +
+        // streams memory, then resumes).
+        self.vm_rpc
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
+            .await
+            .context("failed to dump state")?;
+
+        // Persist the temp file to the final path.
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
+
+        Ok(())
+    }
+
     async fn handle_service_vtl2(&self, params: ServiceVtl2Params) -> anyhow::Result<u64> {
         let start;
         if params.user_mode_only {
             start = Instant::now();
-            self.paravisor_diag.restart().await?;
+            self.paravisor_diag
+                .as_ref()
+                .context("no paravisor diagnostics client")?
+                .restart()
+                .await?;
         } else {
             let igvm = params
                 .igvm

@@ -3,7 +3,7 @@
 
 //! Resource resolver for the nvme controller.
 
-use crate::NsidConflict;
+use crate::AddNamespaceError;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ pub enum Error {
         source: ResolveError,
     },
     #[error(transparent)]
-    NsidConflict(NsidConflict),
+    AddNamespace(AddNamespaceError),
 }
 
 #[async_trait]
@@ -66,8 +66,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
 
         let controller = NvmeFaultController::new(
             input.driver_source,
-            input.guest_memory.clone(),
-            input.msi_target,
+            input.dma_target.guest_memory().clone(),
+            input.dma_target.msi_target(),
             input.register_mmio,
             NvmeFaultControllerCaps {
                 msix_count: resource.msix_count,
@@ -97,7 +97,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 .client()
                 .add_namespace(nsid, disk.0)
                 .await
-                .map_err(Error::NsidConflict)?;
+                .map_err(Error::AddNamespace)?;
         }
         Ok(controller.into())
     }

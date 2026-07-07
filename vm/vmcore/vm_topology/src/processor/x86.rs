@@ -207,8 +207,9 @@ impl TopologyBuilder<X86Topology> {
         let socket_offset = self.arch.apic_id_offset / vps_per_socket;
         let vps = (0..proc_count).map(|n| {
             let vp_index = VpIndex::new(n);
-            // FUTURE: support multiple NUMA nodes per socket.
-            let vnode = n / vps_per_socket;
+            // Default vnode assignment by socket. The caller can override this
+            // with `ProcessorTopology::set_vnodes()` for NUMA configurations.
+            let vnode = n / self.vps_per_socket;
             let socket = socket_offset + n / self.vps_per_socket;
             let proc = n % self.vps_per_socket;
             let apic_id = socket * vps_per_socket + proc;
@@ -292,6 +293,12 @@ pub struct X86VpInfo {
 impl AsRef<VpInfo> for X86VpInfo {
     fn as_ref(&self) -> &VpInfo {
         &self.base
+    }
+}
+
+impl AsMut<VpInfo> for X86VpInfo {
+    fn as_mut(&mut self) -> &mut VpInfo {
+        &mut self.base
     }
 }
 

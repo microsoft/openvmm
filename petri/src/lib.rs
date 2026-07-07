@@ -11,7 +11,6 @@
 // requiring probes to be registered in the petri process.
 extern crate openvmm_hypervisors as _;
 
-mod cpio;
 pub mod disk_image;
 mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can
@@ -27,10 +26,13 @@ mod worker;
 
 pub use petri_artifacts_core::ArtifactHandle;
 pub use petri_artifacts_core::ArtifactResolver;
+pub use petri_artifacts_core::ArtifactSource;
 pub use petri_artifacts_core::AsArtifactHandle;
 pub use petri_artifacts_core::ErasedArtifactHandle;
+pub use petri_artifacts_core::RemoteAccess;
 pub use petri_artifacts_core::ResolveTestArtifact;
 pub use petri_artifacts_core::ResolvedArtifact;
+pub use petri_artifacts_core::ResolvedArtifactSource;
 pub use petri_artifacts_core::ResolvedOptionalArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;

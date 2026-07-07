@@ -1032,6 +1032,7 @@ where
             },
         initrd: initrd_info,
         dtb,
+        ..
     } = load_kernel_and_initrd_arm64(
         importer,
         kernel_image,

@@ -19,10 +19,12 @@
 # [merge "flowey-theirs"]
 #     name = flowey-theirs merge driver
 #     driver = cp %B %A
-.github/workflows/flowey-* merge=flowey-theirs
+.github/workflows/openvmm-* merge=flowey-theirs
+ci-flowey/*.yaml merge=flowey-theirs
 
 # Mark flowey-generated pipelines as generated code
 .github/workflows/openvmm-* linguist-generated=true
+ci-flowey/*.yaml linguist-generated=true
 
 # Always display the diff for package lock files
 Cargo.lock linguist-generated=false

@@ -3,16 +3,16 @@
 
 [package]
 name = "vmgstool"
-version = "2.0.0"
+version = "2.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
 [features]
 default = []
 
-encryption = ["vmgs/encryption"]
+encryption = ["vmgs/encryption", "crypto/native", "crypto/vendored"]
 
-test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
+test_helpers = ["vmgs/test_helpers", "getrandom"]
 
 # run encryption unit tests in CI
 ci = ["encryption"]
@@ -32,6 +32,7 @@ vmgs_format.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, optional = true }
 hex.workspace = true
 fs-err.workspace = true
 getrandom = { workspace = true, optional = true}
@@ -41,7 +42,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ucs2.workspace = true
-resource_dll_parser = { workspace = true, optional = true }
+resource_dll_parser.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

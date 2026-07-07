@@ -2,7 +2,13 @@
 
 OpenVMM supports a graphical console exposed via VNC. To enable it, pass `--gfx`
 on the command line--this will start a VNC server on localhost port 5900. The
-port value can be changed with the `--vnc-port <PORT>` option.
+port value can be changed with the `--vnc-port <PORT>` option. The bind address
+can be changed with `--vnc-listen <ADDRESS>` (default: `127.0.0.1`). Use
+`--vnc-listen 0.0.0.0` for all IPv4 interfaces, or `--vnc-listen ::` for
+dual-stack IPv4+IPv6. The maximum number of concurrent clients can be set with
+`--vnc-max-clients <COUNT>` (default: 16). With `--vnc-evict-oldest`, the
+oldest client is disconnected to make room for new connections instead of
+rejecting them.
 
 OpenVMM's VNC server also includes "pseudo" client-clipboard support, whereby the
 "Ctrl-Alt-P" key sequence will be intercepted by the server to type out the
@@ -31,6 +37,7 @@ client. The following clients have been tested working with OpenVMM:
 * [TigerVNC](https://github.com/TigerVNC/tigervnc)
 * [RealVNC](https://www.realvnc.com/en/?lai_sr=0-4&lai_sl=l)
 * [noVNC](https://novnc.com/) (browser-based)
+* [MobaXterm](https://mobaxterm.mobatek.net/) (Windows terminal with built-in VNC)
 
 Once you have downloaded and installed it you can connect to `localhost` with
 the appropriate port to see your VM.

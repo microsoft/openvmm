@@ -50,14 +50,16 @@ When running the `openvmm` binary directly, these environment variables are
 To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
 
 ```shell
-openvmm --uefi --uefi-firmware path/to/MSVM.fd --disk memdiff:path/to/disk.vhdx
+openvmm --uefi --uefi-firmware path/to/MSVM.fd \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```
 
 If you ran `cargo xflowey restore-packages`, the firmware is at:
 
 ```text
 .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
-.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd # aarch64
+.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd # aarch64
 ```
 
 If you used `cargo xflowey vmm-tests-run --build-only --dir <out>`, the firmware
@@ -124,7 +126,10 @@ A copy of the `mu_msvm` UEFI firmware is automatically downloaded via `cargo
 xflowey restore-packages`.
 
 ```shell
-cargo run -- --uefi --disk memdiff:path/to/windows.vhdx --gfx
+cargo run -- --uefi \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:path/to/windows.vhdx,on=scsi0 \
+  --gfx
 ```
 
 For more info on `--gfx`, and how to actually interact with the VM using a

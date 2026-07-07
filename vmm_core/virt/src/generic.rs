@@ -42,6 +42,41 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
+/// Platform capabilities detected from the hypervisor before partition
+/// creation. On x86 there are currently no pre-partition queries.
+#[cfg(guest_arch = "x86_64")]
+#[derive(Debug, Clone, Default)]
+pub struct PlatformInfo {}
+
+/// Platform capabilities detected from the hypervisor before partition
+/// creation.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Debug, Clone)]
+pub struct PlatformInfo {
+    /// The platform PMU GSIV (GIC INTID), if available.
+    pub platform_gsiv: Option<u32>,
+    /// Whether the hypervisor supports GICv3. When `false`, only
+    /// GICv2 is available (e.g., Raspberry Pi 5 with GIC-400).
+    pub supports_gic_v3: bool,
+    /// Whether the hypervisor supports an in-kernel GICv3 ITS for
+    /// MSI delivery via LPIs. When `true`, the topology can include
+    /// a `GicItsInfo` and the backend will create/manage the ITS device.
+    pub supports_its: bool,
+}
+
+/// A hypervisor backend capable of creating partitions.
+///
+/// # Recognized features
+///
+/// The `recognizes_*` methods report whether the backend acts on an optional
+/// partition request rather than silently ignoring it: it either honors the
+/// request or fails partition creation with a specific error. They let the code
+/// assembling a [`ProtoPartitionConfig`] reject a request up front when the
+/// backend has no concept of it, instead of the request being quietly dropped.
+/// Recognition is *not* a promise that the request succeeds — the backend may
+/// still reject it in combination with another feature, or fail later during
+/// partition creation. Each method defaults to `false`, so a new optional
+/// feature is unrecognized everywhere until a backend overrides its method.
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
     type ProtoPartition<'a>: ProtoPartition<Partition = Self::Partition>;
@@ -50,12 +85,18 @@ pub trait Hypervisor: 'static {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Returns the platform PMU GSIV for this hypervisor, if any.
+    /// Returns platform capabilities detected from the hypervisor.
     ///
-    /// On aarch64, this is used to configure the GIC topology with the
-    /// correct PMU interrupt ID before creating the partition.
-    fn platform_gsiv(&self) -> Option<u32> {
-        None
+    /// This is called before partition creation to query platform-specific
+    /// information needed for topology construction and firmware table
+    /// generation.
+    fn platform_info(&self) -> PlatformInfo;
+
+    /// Whether the backend recognizes a request to expose hardware
+    /// virtualization (VMX/SVM) to the guest so it can run its own hypervisor.
+    /// See the [`Hypervisor`] trait docs on recognized features.
+    fn recognizes_nested_virt(&self) -> bool {
+        false
     }
 
     /// Returns a new prototype partition from the given configuration.
@@ -76,6 +117,8 @@ pub enum IsolationType {
     Snp,
     /// Trust domain extensions (Intel TDX) - hardware based isolation.
     Tdx,
+    /// Confidential Compute Architecture (ARM CCA) - hardware based isolation.
+    Cca,
 }
 
 impl IsolationType {
@@ -86,7 +129,7 @@ impl IsolationType {
 
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
-        matches!(self, Self::Snp | Self::Tdx)
+        matches!(self, Self::Snp | Self::Tdx | Self::Cca)
     }
 }
 
@@ -103,6 +146,7 @@ impl IsolationType {
             hvdef::HvPartitionIsolationType::VBS => Ok(IsolationType::Vbs),
             hvdef::HvPartitionIsolationType::SNP => Ok(IsolationType::Snp),
             hvdef::HvPartitionIsolationType::TDX => Ok(IsolationType::Tdx),
+            hvdef::HvPartitionIsolationType::CCA => Ok(IsolationType::Cca),
             _ => Err(UnexpectedIsolationType),
         }
     }
@@ -113,6 +157,7 @@ impl IsolationType {
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
             IsolationType::Snp => hvdef::HvPartitionIsolationType::SNP,
             IsolationType::Tdx => hvdef::HvPartitionIsolationType::TDX,
+            IsolationType::Cca => hvdef::HvPartitionIsolationType::CCA,
         }
     }
 }
@@ -134,10 +179,15 @@ pub struct ProtoPartitionConfig<'a> {
     pub hv_config: Option<HvConfig>,
     /// VM time access.
     pub vmtime: &'a VmTimeSource,
-    /// Use the user-mode APIC emulator, if supported.
-    pub user_mode_apic: bool,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor.
+    ///
+    /// The code assembling this config must only set this when the chosen
+    /// backend recognizes it via [`Hypervisor::recognizes_nested_virt`]; a
+    /// backend that receives an unrecognized request may silently ignore it.
+    pub nested_virt: bool,
 }
 
 /// Partition creation configuration.
@@ -240,8 +290,6 @@ pub struct Vtl2Config {
 /// Hypervisor configuration.
 #[derive(Debug)]
 pub struct HvConfig {
-    /// Use the hypervisor's in-built enlightenment support if available.
-    pub offload_enlightenments: bool,
     /// Allow device assignment on the partition.
     pub allow_device_assignment: bool,
     /// Enable VTL2 support if set. Additional options are described by
@@ -639,11 +687,9 @@ pub trait Hv1 {
         &self,
     ) -> Option<&dyn DeviceBuilder<Device = Self::Device, Error = Self::Error>>;
 
-    /// Returns the partition's synic port access implementation.
-    ///
-    /// This is used by VMBus and other synic consumers to register message
-    /// and event ports for communication with the guest.
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    /// Returns the partition's synic port access, or an error if the
+    /// backend cannot support synic in its current configuration.
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 }
 
 pub trait DeviceBuilder: Hv1 {
@@ -667,7 +713,7 @@ impl MapVpciInterrupt for UnimplementedDevice {
 }
 
 impl SignalMsi for UnimplementedDevice {
-    fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
         match *self {}
     }
 }

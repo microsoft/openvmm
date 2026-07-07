@@ -743,6 +743,285 @@ fn test_save_restore_with_no_connection() {
 }
 
 #[test]
+fn test_restore_max_version_rejects_higher_version() {
+    // Save a state that was negotiated at the Copper protocol version, then
+    // try to restore it on a server that has been limited to Win10. The
+    // restore should fail because the saved version exceeds the server's
+    // configured max_version.
+    let mut env = TestEnv::new();
+    env.connect(Version::Copper, FeatureFlags::new());
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
+
+    let err = env2.c().restore(state).unwrap_err();
+    assert!(
+        matches!(err, RestoreError::UnsupportedVersion(v) if v == Version::Copper as u32),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_restore_max_version_rejects_disallowed_feature_flags() {
+    // Save a state that was negotiated at Copper with a feature flag set,
+    // then restore it on a server whose max_version permits Copper but
+    // masks out that feature flag. The restore should fail because the
+    // saved feature flags exceed what is allowed.
+    let mut env = TestEnv::new();
+    env.connect(Version::Copper, FeatureFlags::new().with_client_id(true));
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
+            version: Version::Copper as u32,
+            feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
+        });
+
+    let err = env2.c().restore(state).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            RestoreError::UnsupportedFeatureFlags(f)
+                if f == u32::from(FeatureFlags::new().with_client_id(true))
+        ),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_restore_max_version_pre_copper() {
+    // Save a state that was negotiated at a pre-Copper protocol version,
+    // then restore it on a server whose max_version permits that version.
+    // The restore should succeed.
+    let mut env = TestEnv::new();
+    let _offer_id = env.offer(1);
+    env.connect(Version::Win10Rs5, FeatureFlags::new());
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    let offer_id2 = env2.offer(1);
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10Rs5 as u32));
+
+    env2.c().restore(state).unwrap();
+    env2.c().restore_channel(offer_id2, false).unwrap();
+}
+
+#[test]
+fn test_restore_max_version_copper_with_feature_flags() {
+    // Save a state that was negotiated at Copper with a feature flag set,
+    // then restore it on a server whose max_version permits Copper with
+    // that same feature flag. The restore should succeed.
+    let feature_flags = FeatureFlags::new().with_client_id(true);
+    let mut env = TestEnv::new();
+    let _offer_id = env.offer(1);
+    env.connect(Version::Copper, feature_flags);
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    let offer_id2 = env2.offer(1);
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
+            version: Version::Copper as u32,
+            feature_flags,
+        });
+
+    env2.c().restore(state).unwrap();
+    env2.c().restore_channel(offer_id2, false).unwrap();
+}
+
+#[test]
+fn test_restore_pre_copper_with_feature_flags_rejected() {
+    // Save a state at a pre-Copper protocol version, then manipulate the
+    // saved state to inject a feature flag (which is impossible to produce
+    // via real negotiation, since feature flags were introduced in Copper).
+    // Restore on a server with no max_version configured should still fail
+    // because feature flags are not supported below Copper.
+    let mut env = TestEnv::new();
+    let _offer_id = env.offer(1);
+    env.connect(Version::Win10Rs5, FeatureFlags::new());
+    let state = env.server.save();
+
+    // Tamper with the saved state to set a feature flag on a pre-Copper
+    // version.
+    let mut data = SavedStateData::from(state);
+    let injected_flags =
+        u32::from(FeatureFlags::new().with_guest_specified_signal_parameters(true));
+    match &mut data.state {
+        saved_state::SavedConnectionState::Connected(connected) => {
+            match &mut connected.connection {
+                saved_state::Connection::Connected { version, .. } => {
+                    assert_eq!(version.version, Version::Win10Rs5 as u32);
+                    assert_eq!(version.feature_flags, 0);
+                    version.feature_flags = injected_flags;
+                }
+                _ => panic!("unexpected connection state"),
+            }
+        }
+        saved_state::SavedConnectionState::Disconnected(_) => panic!("expected connected state"),
+    }
+    let tampered = SavedState::from(data);
+
+    let mut env2 = TestEnv::new();
+    let _offer_id2 = env2.offer(1);
+    let err = env2.c().restore(tampered).unwrap_err();
+    assert!(
+        matches!(err, RestoreError::UnsupportedFeatureFlags(f) if f == injected_flags),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_restore_max_version_reserved_channel_success() {
+    // Save a disconnected state that retains a reserved channel reserved
+    // while the connection was at Copper with a feature flag set, then
+    // restore on a server whose max_version permits Copper with that
+    // feature flag. The restore should succeed.
+    let feature_flags = FeatureFlags::new().with_client_id(true);
+    let mut env = TestEnv::new();
+    let offer_id1 = env.offer(1);
+    env.connect(Version::Copper, feature_flags);
+    env.c().handle_request_offers().unwrap();
+    env.open_reserved(1, 0, VMBUS_SINT.into());
+    env.c().open_complete(offer_id1, protocol::STATUS_SUCCESS);
+    env.c().handle_unload();
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    let offer_id1 = env2.offer(1);
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
+            version: Version::Copper as u32,
+            feature_flags,
+        });
+
+    env2.c().restore(state).unwrap();
+    env2.c().restore_channel(offer_id1, true).unwrap();
+}
+
+#[test]
+fn test_restore_max_version_reserved_channel_rejects_higher_version() {
+    // Save a disconnected state that retains a reserved channel reserved
+    // while the connection was at Copper, then restore on a server whose
+    // max_version permits only Win10. The restore should fail because the
+    // reserved channel's saved version exceeds the server's max_version.
+    let mut env = TestEnv::new();
+    let offer_id1 = env.offer(1);
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.open_reserved(1, 0, VMBUS_SINT.into());
+    env.c().open_complete(offer_id1, protocol::STATUS_SUCCESS);
+    env.c().handle_unload();
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    let _offer_id1 = env2.offer(1);
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
+
+    let err = env2.c().restore(state).unwrap_err();
+    assert!(
+        matches!(err, RestoreError::UnsupportedReserveVersion(v) if v == Version::Copper as u32),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_restore_max_version_reserved_channel_rejects_disallowed_feature_flags() {
+    // Save a disconnected state that retains a reserved channel reserved
+    // while the connection was at Copper with a feature flag set, then
+    // restore on a server whose max_version permits Copper but masks out
+    // that feature flag. The restore should fail because the reserved
+    // channel's saved feature flags exceed what is allowed.
+    let mut env = TestEnv::new();
+    let offer_id1 = env.offer(1);
+    env.connect(Version::Copper, FeatureFlags::new().with_client_id(true));
+    env.c().handle_request_offers().unwrap();
+    env.open_reserved(1, 0, VMBUS_SINT.into());
+    env.c().open_complete(offer_id1, protocol::STATUS_SUCCESS);
+    env.c().handle_unload();
+    let state = env.server.save();
+
+    let mut env2 = TestEnv::new();
+    let _offer_id1 = env2.offer(1);
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
+            version: Version::Copper as u32,
+            feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
+        });
+
+    let err = env2.c().restore(state).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            RestoreError::UnsupportedReserveFeatureFlags(f)
+                if f == u32::from(FeatureFlags::new().with_client_id(true))
+        ),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_restore_pre_copper_reserved_channel_with_feature_flags_rejected() {
+    // Save a state with a reserved channel that was reserved while the
+    // connection was at a pre-Copper protocol version, then tamper with
+    // the saved state to inject a feature flag on the reserved channel's
+    // version (which is impossible to produce via real negotiation).
+    // Restore on a server with no max_version configured should still fail
+    // because feature flags are not supported below Copper.
+    let mut env = TestEnv::new();
+    let offer_id1 = env.offer(1);
+    env.connect(Version::Win10Rs5, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.open_reserved(1, 0, VMBUS_SINT.into());
+    env.c().open_complete(offer_id1, protocol::STATUS_SUCCESS);
+    let state = env.server.save();
+
+    // Tamper with the saved state to set a feature flag on the reserved
+    // channel's pre-Copper version.
+    let mut data = SavedStateData::from(state);
+    let injected_flags =
+        u32::from(FeatureFlags::new().with_guest_specified_signal_parameters(true));
+    let channels = match &mut data.state {
+        saved_state::SavedConnectionState::Connected(connected) => &mut connected.channels,
+        saved_state::SavedConnectionState::Disconnected(_) => panic!("expected connected state"),
+    };
+    let channel = channels
+        .iter_mut()
+        .find(|c| {
+            matches!(
+                &c.state,
+                saved_state::ChannelState::Open {
+                    reserved_state: Some(_),
+                    ..
+                }
+            )
+        })
+        .expect("reserved channel preserved");
+    let reserved_state = match &mut channel.state {
+        saved_state::ChannelState::Open { reserved_state, .. } => reserved_state
+            .as_mut()
+            .expect("reserved channel has reserved state"),
+        _ => unreachable!(),
+    };
+    assert_eq!(reserved_state.version.version, Version::Win10Rs5 as u32);
+    assert_eq!(reserved_state.version.feature_flags, 0);
+    reserved_state.version.feature_flags = injected_flags;
+    let tampered = SavedState::from(data);
+
+    let mut env2 = TestEnv::new();
+    let _offer_id1 = env2.offer(1);
+    let err = env2.c().restore(tampered).unwrap_err();
+    assert!(
+        matches!(err, RestoreError::UnsupportedReserveFeatureFlags(f) if f == injected_flags),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
 fn test_save_restore_with_connection() {
     let mut env = TestEnv::new();
 
@@ -1134,6 +1413,53 @@ fn test_save_restore_hot_add_during_restore() {
 }
 
 #[test]
+fn test_save_restore_closed_channel_without_per_device_restore() {
+    // A channel that is in the Closed state at save time (offered to the
+    // guest but never opened) and is not re-restored per-device must not
+    // be rescinded by revoke_unclaimed_channels. The existing offer has
+    // no per-device state to lose, and rescinding races with any
+    // in-flight probe in the guest that is attempting to open the
+    // channel.
+    let mut env = TestEnv::new();
+
+    let _offer_id1 = env.offer(1);
+    let _offer_id2 = env.offer(2);
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    let state = env.server.save();
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+    let offer_id2 = env.offer(2);
+
+    env.c().restore(state).unwrap();
+    // Only offer_id1 is restored per-device; offer_id2 simulates a
+    // device that doesn't support save/restore (e.g. the IC devices),
+    // which re-offers itself but leaves the per-device restore to
+    // revoke_unclaimed_channels.
+    env.c().restore_channel(offer_id1, false).unwrap();
+
+    env.c().revoke_unclaimed_channels();
+
+    // No messages should be sent: in particular, no rescind for
+    // offer_id2.
+    assert!(env.notifier.messages.is_empty());
+
+    // Both channels should remain in the Closed state, ready to be
+    // opened by the guest.
+    assert!(matches!(
+        env.server.channels[offer_id1].state,
+        ChannelState::Closed
+    ));
+    assert!(matches!(
+        env.server.channels[offer_id2].state,
+        ChannelState::Closed
+    ));
+}
+
+#[test]
 fn test_pending_messages() {
     let mut env = TestEnv::new();
 
@@ -1372,6 +1698,51 @@ fn test_reserved_channels() {
     assert!(env.notifier.is_reset());
 }
 
+// Reserved channels are supposed to remain usable across unload. A close that
+// completes while the connection is disconnected must still deliver a
+// CloseReservedChannelResponse to the originally requested target.
+#[test]
+fn test_reserved_channel_close_response_after_unload() {
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    env.gpadl(1, 10);
+    env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
+
+    const RESERVED_SINT: u32 = 5;
+    env.open_reserved(1, 1, RESERVED_SINT);
+    env.c().open_complete(offer_id1, 0);
+
+    // Unload while the reserved channel is still open.
+    env.c().handle_unload();
+    env.complete_reset();
+
+    env.notifier.messages.clear();
+
+    // Close the reserved channel while disconnected and complete the close.
+    env.close_reserved(1, 4, RESERVED_SINT);
+    env.c().close_complete(offer_id1);
+
+    // A CloseReservedChannelResponse should still be sent to the reserved
+    // channel's requested target, even though the connection is disconnected.
+    env.notifier.check_message_with_target(
+        OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
+            channel_id: ChannelId(1),
+        }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 4,
+                sint: RESERVED_SINT as u8,
+            },
+        ),
+    );
+}
+
 #[test]
 fn test_disconnected_reset() {
     let mut env = TestEnv::new();
@@ -1500,6 +1871,41 @@ fn test_mnf_channel() {
 
     env.notifier
         .check_messages(make_messages(&expected_channels));
+}
+
+#[test]
+fn test_mnf_channel_open_with_interrupts_disabled() {
+    // A channel with MNF enabled, opened by the guest with interrupts disabled (via
+    // VP_INDEX_DISABLE_INTERRUPT as the target VP), should not have monitor info in its
+    // OpenParams.
+    let mut env = TestEnv::new();
+    let offer_id = env.offer_with_mnf(1);
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+
+    env.c()
+        .handle_open_channel(&protocol::OpenChannel2 {
+            open_channel: protocol::OpenChannel {
+                channel_id: ChannelId(1),
+                open_id: 1,
+                ring_buffer_gpadl_id: GpadlId(1),
+                target_vp: protocol::VP_INDEX_DISABLE_INTERRUPT,
+                downstream_ring_buffer_page_offset: 0,
+                user_data: UserDefinedData::new_zeroed(),
+            },
+            ..FromZeros::new_zeroed()
+        })
+        .unwrap();
+
+    let (id, action) = env.recv.recv().unwrap();
+    assert_eq!(id, offer_id);
+    let Action::Open(op, ..) = action else {
+        panic!("unexpected action: {:?}", action);
+    };
+    assert_eq!(op.open_data.target_vp, None);
+    assert_eq!(op.monitor_info, None);
 }
 
 #[test]

@@ -36,9 +36,9 @@ the VM to other hosts.
    The script uses Python to find and decompress the gzip-embedded ELF.
 5. **Creates a cloud-init data disk** (`cidata.img`), a small FAT image
    labeled `cidata` containing `user-data` and `meta-data` files. Alpine's
-   `tiny-cloud` service reads these on first boot. The `user-data` uses a
-   `runcmd` to set the root password (tiny-cloud does not support the
-   `passwd` field directly).
+   `tiny-cloud` service reads these on first boot. The `user-data` uses
+   `runcmd` to set the root password and add a getty on `hvc0` (Alpine does
+   not spawn one by default).
 
 ### Required host tools
 
@@ -51,16 +51,23 @@ the VM to other hosts.
 - **`--pcie-root-complex` and `--pcie-root-port`**: Required for PCI device
   visibility. The default direct boot DSDT does not include a PCI bus, so
   without these flags, virtio devices will not be detected by the kernel.
-- **`--virtio-blk ...,pcie_port=rp0`**: Attaches the raw disk image as a
+- **`--virtio-blk ...,pcie_port=disk`**: Attaches the raw disk image as a
   virtio-blk device on a PCIe root port.
-- **`--virtio-blk ...,ro,pcie_port=rp1`**: Attaches the cloud-init data
+- **`--virtio-blk ...,ro,pcie_port=cidata`**: Attaches the cloud-init data
   image read-only on a second PCIe root port.
-- **`--virtio-net pcie_port=rp2:consomme`**: Adds a virtio-net NIC using
+- **`--virtio-net pcie_port=net:consomme`**: Adds a virtio-net NIC using
   the consomme user-mode NAT backend, on a third PCIe root port.
+- **`--com1 none`**: Disables the default COM1 serial port (which would
+  otherwise claim the console).
+- **`--virtio-console console --virtio-console-pcie-port console`**: Adds a
+  virtio-console device (`/dev/hvc0` in the guest) on a fourth PCIe root
+  port. This replaces COM1 as the interactive console.
 - **`root=/dev/vda2`**: The root filesystem is on partition 2 of the virtio
   disk.
 - **`modules=virtio_pci,virtio_blk,ext4`**: Tells the Alpine initramfs to
   load these modules early, before attempting to mount the root filesystem.
+- **`console=hvc0`**: Directs the kernel to use the virtio-console
+  (`/dev/hvc0`) for console output instead of the legacy serial port.
 
 ```admonish tip
 Use `ctrl-q` then `q` to quit OpenVMM (not `ctrl-c`).

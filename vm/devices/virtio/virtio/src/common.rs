@@ -254,7 +254,7 @@ impl<'a> PeekedWork<'a> {
 pub struct VirtioQueue {
     #[inspect(flatten)]
     core: QueueCoreGetWork,
-    #[inspect(skip)]
+    #[inspect(flatten)]
     complete: QueueCoreCompleteWork,
     #[inspect(skip)]
     notify_guest: Interrupt,

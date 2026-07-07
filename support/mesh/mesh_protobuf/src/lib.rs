@@ -1,21 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Low-level functionality to serializing and deserializing mesh messages.
+//! Low-level serialization and deserialization engine for mesh messages.
 //!
-//! Most code won't use this directly but will instead use the
-//! [`Protobuf`](derive@Protobuf) derive macro.
+//! Most code won't use this directly but will instead use one of the derive
+//! macros:
 //!
-//! The encoding used is a superset of
-//! [protobuf](https://developers.google.com/protocol-buffers/docs/encoding),
+//! - [`derive@Protobuf`] — generates tagged protobuf encoding with explicit
+//!   field numbers (`#[mesh(N)]`). Use for durable saved state that must be
+//!   forward- and backward-compatible.
+//! - `MeshPayload` (in `mesh_derive`) — generates positional encoding without
+//!   field numbers. Use for internal runtime messages where compatibility
+//!   across versions is not required.
+//!
+//! # Wire format
+//!
+//! The encoding is a superset of
+//! [Protocol Buffers](https://developers.google.com/protocol-buffers/docs/encoding),
 //! allowing protobuf clients and mesh to interoperate for a subset of types.
-//! This includes an optional extension to allow external resources such as file
-//! descriptors to be referenced by messages.
+//! The extension adds a sideband resource channel for transferring OS resources
+//! (file descriptors, handles, ports) that cannot be serialized to bytes.
 //!
-//! This is used instead of serde in order to serialize objects by value. The
-//! serde API takes values by reference, which makes it difficult to support
-//! values, such as ports, handles, and file descriptors, whose ownership is to
-//! be transferred to the target node.
+//! # Why not serde?
+//!
+//! serde takes values by reference (`&self`), which makes it impossible to
+//! transfer ownership of resources like ports, handles, and file descriptors.
+//! mesh's encoding takes values by value, consuming the source and producing
+//! the value at the destination. This is the fundamental design difference
+//! that enables mesh's resource-transfer model.
+//!
+//! # `no_std` support
+//!
+//! This crate is `no_std` by default (with `alloc`). Enable the `std` feature
+//! for additional functionality.
 
 // UNSAFETY: Serialization and deserialization of structs directly.
 #![expect(unsafe_code)]

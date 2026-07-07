@@ -5,27 +5,27 @@
 
 #![forbid(unsafe_code)]
 
-/// ISA DMA transfer direction
-#[derive(PartialEq, Debug)]
+/// ISA DMA transfer direction.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum IsaDmaDirection {
-    /// Device is writing data to the buffer
+    /// Device is writing data into guest memory.
     Write,
-    /// Device is reading data from the buffer
+    /// Device is reading data from guest memory.
     Read,
 }
 
-/// Location of DMA buffer in guest memory
-#[derive(Debug)]
+/// Location of a DMA transfer buffer in guest memory.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct IsaDmaBuffer {
-    /// GPA of the DMA buffer
+    /// Guest physical address of the DMA buffer.
     pub address: u64,
-    /// Size of the DMA buffer
+    /// Transfer size in bytes.
     pub size: usize,
 }
 
 /// A handle to an ISA DMA channel.
 ///
-/// This trait does not "leak" which partiuclar ISA DMA channel a device is
+/// This trait does not "leak" which particular ISA DMA channel a device is
 /// connected to.
 ///
 /// Devices that use ISA DMA should simply accept an instance of `Box<dyn

@@ -92,7 +92,9 @@ guest in VTL0. Expose it by adding the following:
 You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 
 ```bash
---disk file:ubuntu.img,uh --vmbus-redirect
+--vmbus-scsi id=scsi0,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk file:ubuntu.img,on=scsi0,relay=relay0 --vmbus-redirect
 ```
 
 ### Assigning NVME devices to VTL2
@@ -101,5 +103,7 @@ You can assign an NVME disk to VTL2 and have OpenHCL relay it to VTL0 as a
 VMBus scsi device (see [Storage Translation](../../../reference/architecture/openhcl/storage_translation.md)):
 
 ```bash
---disk mem:1G,uh-nvme --vmbus-redirect
+--nvme-pci id=nvme0,vpci,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk mem:1G,on=nvme0,relay=relay0 --vmbus-redirect
 ```

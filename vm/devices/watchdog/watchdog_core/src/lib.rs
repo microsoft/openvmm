@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod platform;
+pub mod resources;
 use inspect::Inspect;
 use std::task::Context;
 use std::task::Poll;

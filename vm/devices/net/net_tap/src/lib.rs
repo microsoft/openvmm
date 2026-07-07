@@ -79,6 +79,7 @@ mod vnet_hdr {
             TCPV4 = 1,
             UDP = 3,
             TCPV6 = 4,
+            UDP_L4 = 5,
         }
     }
 
@@ -186,6 +187,7 @@ impl Endpoint for TapEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         }
     }
 }
@@ -324,8 +326,15 @@ impl Queue for TapQueue {
                 // driver zeroes ip_check (NDIS convention); the kernel's
                 // TAP GSO engine requires a valid checksum to segment
                 // the packet correctly.
+                // Same NDIS/LSO convention for IPv6: the guest zeroes the IPv6
+                // payload-length field on segmentation-offload frames. IPv6 has
+                // no header checksum (so the IPv4 fixup above never runs for it);
+                // fix the length here so the kernel TAP GSO engine can segment.
                 if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
                     fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
+                }
+                if meta.flags.offload_tcp_segmentation() && meta.flags.is_ipv6() {
+                    fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
                 }
 
                 let bufs = [
@@ -399,6 +408,9 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     if packet.len() < l2_len + ihl_bytes {
         return;
     }
+    // fix IP bad-len 0
+    let ip_total_len = u16::try_from(packet.len() - l2_len).unwrap_or(0);
+    packet[l2_len + 2..l2_len + 4].copy_from_slice(&ip_total_len.to_be_bytes());
     let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
     // Zero the checksum field (bytes 10-11) before computing.
     ip_hdr[10] = 0;
@@ -422,6 +434,28 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     packet[l2_len + 11] = lo;
 }
 
+/// Set the IPv6 payload-length field for segmentation-offload frames.
+///
+/// NDIS/netvsp LSO guests zero the IPv6 payload-length field, expecting the
+/// offload engine to fill it (the same convention under which IPv4 guests zero
+/// the total-length and header checksum -- see [`fixup_ipv4_header_checksum`]).
+/// IPv6 has no header checksum, so there is nothing to piggyback on; set the
+/// field directly. Without it the kernel TAP GSO engine sees a zero-length IPv6
+/// datagram and drops the super-frame instead of segmenting it, collapsing TX.
+fn fixup_ipv6_payload_length(packet: &mut [u8], l2_len: usize) {
+    // IPv6 fixed header is 40 bytes; the payload-length field (bytes 4-5)
+    // covers everything after it.
+    const IPV6_HEADER_LEN: usize = 40;
+    if packet.len() < l2_len + IPV6_HEADER_LEN {
+        return;
+    }
+    if packet[l2_len] >> 4 != 6 {
+        return;
+    }
+    let payload_len = u16::try_from(packet.len() - l2_len - IPV6_HEADER_LEN).unwrap_or(0);
+    packet[l2_len + 4..l2_len + 6].copy_from_slice(&payload_len.to_be_bytes());
+}
+
 /// Build a `VirtioNetHdr` from transmit metadata for the TAP device.
 ///
 /// The virtio net header uses fully general `csum_start` / `csum_offset` fields
@@ -433,7 +467,8 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
 ///
 /// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
 /// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
-/// partially computed when performing segmentation.
+/// partially computed when performing segmentation. For USO,
+/// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
 ///
 /// If no offload flags are set, an all-zero header is returned, which tells the
 /// TAP device that the packet requires no special handling.
@@ -448,9 +483,19 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
             hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
-            gso_size: meta.max_tcp_segment_size,
+            gso_size: meta.max_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
             csum_offset: 16, // TCP checksum field offset
+            num_buffers: 0,
+        }
+    } else if meta.flags.offload_udp_segmentation() {
+        VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
+            hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
+            gso_size: meta.max_segment_size,
+            csum_start: meta.l2_len as u16 + meta.l3_len,
+            csum_offset: 6, // UDP checksum field offset
             num_buffers: 0,
         }
     } else if meta.flags.offload_tcp_checksum() {
@@ -497,7 +542,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
 
     let l4_protocol = match hdr.gso_type.protocol() {
         VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
-        VirtioNetHdrGsoProtocol::UDP => L4Protocol::Udp,
+        VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
         _ => L4Protocol::Unknown,
     };
 
@@ -507,6 +552,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         ip_checksum,
         l4_checksum,
         l4_protocol,
+        vlan: None,
     }
 }
 
@@ -544,7 +590,7 @@ mod tests {
             l2_len: 14,
             l3_len: 20,
             l4_len: 32,
-            max_tcp_segment_size: 1460,
+            max_segment_size: 1460,
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
@@ -636,6 +682,27 @@ mod tests {
     }
 
     #[test]
+    fn vnet_hdr_from_tx_metadata_uso() {
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_udp_segmentation(true)
+                .with_offload_udp_checksum(true)
+                .with_is_ipv4(true),
+            l2_len: 14,
+            l3_len: 20,
+            max_segment_size: 1472,
+            ..Default::default()
+        };
+        let hdr = build_vnet_hdr(&meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::UDP_L4);
+        assert_eq!(hdr.gso_size, 1472);
+        assert_eq!(hdr.hdr_len, 14 + 20 + 8);
+        assert!(hdr.flags.needs_csum());
+        assert_eq!(hdr.csum_start, 14 + 20);
+        assert_eq!(hdr.csum_offset, 6);
+    }
+
+    #[test]
     fn ipv4_header_checksum_fixup() {
         // Ethernet (14) + IPv4 header (20) with zero checksum field.
         let mut packet = vec![
@@ -661,5 +728,88 @@ mod tests {
         }
         assert_eq!(sum as u16, 0xffff);
         assert_ne!(csum, 0, "checksum should be non-zero");
+    }
+
+    #[test]
+    fn ipv4_lso_total_length_fixup() {
+        // NDIS/netvsp LSO guests zero the IPv4 total-length field, expecting
+        // the offload engine to fill it. The fixup must set it to the full
+        // datagram length so the kernel TAP GSO engine can segment the frame.
+        let mut packet = vec![
+            // Ethernet header (14 bytes)
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00,
+            // IPv4 header (20 bytes) with total-length field zeroed (LSO convention)
+            0x45, 0x00, 0x00, 0x00, // version/IHL, DSCP, total length = 0
+            0x00, 0x01, 0x00, 0x00, // id, flags, fragment offset
+            0x40, 0x06, 0x00, 0x00, // TTL=64, proto=TCP, checksum=0
+            0x0a, 0x00, 0x00, 0x01, // src: 10.0.0.1
+            0x0a, 0x00, 0x00, 0x02, // dst: 10.0.0.2
+        ];
+        // Append a TCP header + payload so the datagram exceeds the IP header.
+        packet.extend(std::iter::repeat_n(0u8, 40));
+        let expected_total = (packet.len() - 14) as u16; // 20 (IP) + 40 = 60
+        fixup_ipv4_header_checksum(&mut packet, 14);
+        let total = u16::from_be_bytes([packet[16], packet[17]]);
+        assert_eq!(
+            total, expected_total,
+            "IP total-length must be set to the datagram length"
+        );
+    }
+
+    #[test]
+    fn ipv6_lso_payload_length_fixup() {
+        // NDIS/netvsp LSO guests zero the IPv6 payload-length field; the fixup
+        // must set it to the length of everything after the 40-byte IPv6 header.
+        let mut packet = vec![
+            // Ethernet header (14 bytes), ethertype 0x86dd = IPv6
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x86, 0xdd,
+            // IPv6 header (40 bytes) with payload-length field zeroed
+            0x60, 0x00, 0x00, 0x00, // version=6 / traffic class / flow label
+            0x00, 0x00, 0x06, 0x40, // payload length = 0, next-header = TCP, hop limit = 64
+            0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, // src
+            0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, // dst
+        ];
+        // Append a TCP header + payload after the IPv6 header.
+        packet.extend(std::iter::repeat_n(0u8, 40));
+        let expected_payload = (packet.len() - 14 - 40) as u16; // 40 here
+        fixup_ipv6_payload_length(&mut packet, 14);
+        let payload = u16::from_be_bytes([packet[14 + 4], packet[14 + 5]]);
+        assert_eq!(
+            payload, expected_payload,
+            "IPv6 payload-length must be set to the datagram payload length"
+        );
+    }
+
+    #[test]
+    fn ipv4_oversize_total_length_is_zero_and_checksum_consistent() {
+        // A super-frame whose datagram length exceeds the 16-bit IPv4
+        // total-length field gets a zero total-length, and the recomputed
+        // header checksum is consistent with that defined value.
+        let mut packet = vec![0u8; 14 + 20 + 70_000];
+        packet[14] = 0x45; // IPv4, IHL = 5 (20-byte header)
+        fixup_ipv4_header_checksum(&mut packet, 14);
+        let total = u16::from_be_bytes([packet[16], packet[17]]);
+        assert_eq!(total, 0, "oversize total-length must be zero");
+        // The header (including the checksum field) must fold to 0xffff,
+        // i.e. the checksum is consistent with the zeroed total-length.
+        let mut sum: u32 = 0;
+        for chunk in packet[14..34].chunks(2) {
+            sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        assert_eq!(sum as u16, 0xffff, "checksum inconsistent with header");
+    }
+
+    #[test]
+    fn ipv6_oversize_payload_length_is_zero() {
+        // A super-frame whose payload exceeds the 16-bit IPv6 payload-length
+        // field gets a zero payload-length (jumbogram convention).
+        let mut packet = vec![0u8; 14 + 40 + 70_000];
+        packet[14] = 0x60; // IPv6, version = 6
+        fixup_ipv6_payload_length(&mut packet, 14);
+        let payload = u16::from_be_bytes([packet[18], packet[19]]);
+        assert_eq!(payload, 0, "oversize payload-length must be zero");
     }
 }

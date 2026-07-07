@@ -10,7 +10,7 @@ flowey_request! {
         pub artifact_dir: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
 
-        pub arch: crate::run_cargo_build::common::CommonArch,
+        pub arch: crate::common::CommonArch,
         pub release: bool,
         /// Custom name for the output binary and VHD. Defaults to "opentmk".
         pub name: Option<String>,
@@ -39,9 +39,9 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let profile = if release {
-            crate::run_cargo_build::common::CommonProfile::Release
+            crate::common::CommonProfile::Release
         } else {
-            crate::run_cargo_build::common::CommonProfile::Debug
+            crate::common::CommonProfile::Debug
         };
 
         let name = name.unwrap_or_else(|| "opentmk".to_string());
@@ -66,12 +66,8 @@ impl SimpleFlowNode for Node {
 
                 // Build the bootable VHD, patching in the test config if one was given.
                 let disk_arch = match arch {
-                    crate::run_cargo_build::common::CommonArch::X86_64 => {
-                        opentmk_disk::Arch::X86_64
-                    }
-                    crate::run_cargo_build::common::CommonArch::Aarch64 => {
-                        opentmk_disk::Arch::Aarch64
-                    }
+                    crate::common::CommonArch::X86_64 => opentmk_disk::Arch::X86_64,
+                    crate::common::CommonArch::Aarch64 => opentmk_disk::Arch::Aarch64,
                 };
                 let efi_bytes = fs_err::read(&efi)?;
                 let vhd_path = output_dir.join(format!("{name}.vhd"));

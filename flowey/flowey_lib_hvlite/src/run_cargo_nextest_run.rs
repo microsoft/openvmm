@@ -12,7 +12,7 @@ use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use std::collections::BTreeMap;
 
 /// Nextest profiles defined in HvLite's `.config/nextest.toml`
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum NextestProfile {
     Default,
     Ci,
@@ -94,7 +94,9 @@ impl FlowNode for Node {
             let extra_env = if let Some(with_env) = extra_env {
                 let base_env = base_env.clone();
                 with_env.map(ctx, move |mut m| {
-                    m.extend(base_env);
+                    for (key, value) in base_env {
+                        m.entry(key).or_insert(value);
+                    }
                     m
                 })
             } else {

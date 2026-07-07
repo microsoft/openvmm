@@ -145,7 +145,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     .get_vp_registers_hypercall(vtl, hv_names, &mut values)
                     .map_err(GetRegError::Hypercall)?;
 
-                for (dest, value) in hv_values.iter_mut().zip(values.into_iter()) {
+                for (dest, value) in hv_values.iter_mut().zip(values) {
                     **dest = value;
                 }
                 hv_names.clear();
@@ -297,7 +297,14 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
         #[cfg(guest_arch = "x86_64")]
-        let per_arch = |name| matches!(name, HvArchRegisterName::CrInterceptControl);
+        let per_arch = |name| {
+            matches!(
+                name,
+                HvArchRegisterName::CrInterceptControl
+                    | HvArchRegisterName::SevAvicGpa
+                    | HvArchRegisterName::GuestVsmPartitionConfig
+            )
+        };
 
         #[cfg(guest_arch = "aarch64")]
         let per_arch = |_: HvArchRegisterName| false;
@@ -336,21 +343,36 @@ impl Hcl {
 
     /// Read the vsm capabilities register for VTL2.
     pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, GetRegError> {
-        let caps = hvdef::HvRegisterVsmCapabilities::from(
-            self.get_partition_vtl2_register(HvArchRegisterName::VsmCapabilities)?
-                .as_u64(),
-        );
-
         let caps = match self.isolation {
-            IsolationType::None | IsolationType::Vbs => caps,
-            IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
-                .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available()),
-            IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
-                .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(true)
-                .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
+            // TODO: CCA: figure out what capabilities to enable here
+            IsolationType::Cca => {
+                tracing::info!(
+                    "cca: get_vsm_capabilities is not implemented and returning empty set now"
+                );
+                hvdef::HvRegisterVsmCapabilities::new()
+            }
+            // Vbs and other hardware isolation reuse information from VsmCapabilities
+            IsolationType::None | IsolationType::Vbs | IsolationType::Snp | IsolationType::Tdx => {
+                let caps = hvdef::HvRegisterVsmCapabilities::from(
+                    self.get_partition_vtl2_register(HvArchRegisterName::VsmCapabilities)?
+                        .as_u64(),
+                );
+
+                match self.isolation {
+                    IsolationType::None | IsolationType::Vbs => caps,
+                    IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
+                        .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
+                        .with_intercept_page_available(caps.intercept_page_available()),
+                    IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
+                        .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
+                        .with_intercept_page_available(caps.intercept_page_available())
+                        .with_dr6_shared(true)
+                        .with_proxy_interrupt_redirect_available(
+                            caps.proxy_interrupt_redirect_available(),
+                        ),
+                    IsolationType::Cca => unreachable!(),
+                }
+            }
         };
 
         assert_eq!(caps.dr6_shared(), self.dr6_shared());
@@ -392,6 +414,10 @@ impl Hcl {
 
         #[cfg(guest_arch = "aarch64")]
         {
+            if self.isolation.is_hardware_isolated() {
+                return Ok(hvdef::HvPartitionPrivilege::default());
+            }
+
             Ok(hvdef::HvPartitionPrivilege::from(
                 self.get_partition_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
                     .as_u64(),

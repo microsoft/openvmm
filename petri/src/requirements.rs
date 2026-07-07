@@ -3,6 +3,9 @@
 
 //! Test requirements framework for runtime test filtering.
 
+use petri_artifacts_common::capabilities;
+use std::collections::BTreeSet;
+
 /// Execution environments where tests can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEnvironment {
@@ -63,6 +66,8 @@ pub struct HostContext {
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
+    /// Whether the host hypervisor supports software VPCI device emulation
+    pub vpci_supported: bool,
 }
 
 impl HostContext {
@@ -140,6 +145,9 @@ impl HostContext {
             }
         };
 
+        // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
+        let vpci_supported = cfg!(windows);
+
         Self {
             vm_host_info,
             vendor,
@@ -148,6 +156,7 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
+            vpci_supported,
         }
     }
 }
@@ -160,17 +169,54 @@ pub enum TestRequirement {
     Vendor(Vendor),
     /// Isolation requirement.
     Isolation(IsolationType),
+    /// Requires a named capability advertised by the execution environment or
+    /// detected by petri.
+    ///
+    /// Capabilities are how a test says "I need a specific resource to be
+    /// provisioned for me" without naming who provides it or how. The
+    /// execution environment can advertise capabilities via the
+    /// comma-separated `PETRI_CAPABILITIES` environment variable, and petri can
+    /// add capabilities that it detects itself. A test requiring a capability
+    /// that is not available is skipped, so such tests automatically
+    /// self-exclude on any host that cannot satisfy them.
+    RequiresCapability(&'static str),
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
     Or(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical NOT of a requirement.
     Not(Box<TestRequirement>),
+    /// Requirement satisfied by any host context.
+    Any,
 }
 
 impl TestRequirement {
+    /// Combine this requirement with another requirement using logical AND.
+    pub fn and(self, other: TestRequirement) -> TestRequirement {
+        TestRequirement::And(Box::new(self), Box::new(other))
+    }
+
+    /// Combine this requirement with another requirement using logical OR.
+    pub fn or(self, other: TestRequirement) -> TestRequirement {
+        TestRequirement::Or(Box::new(self), Box::new(other))
+    }
+
+    /// Negate this requirement.
+    #[expect(clippy::should_implement_trait)]
+    pub fn not(self) -> TestRequirement {
+        TestRequirement::Not(Box::new(self))
+    }
+
     /// Evaluate if this requirement is satisfied with the given host context
     pub fn is_satisfied(&self, context: &HostContext) -> bool {
+        self.is_satisfied_with_capabilities(context, &available_capabilities(context))
+    }
+
+    fn is_satisfied_with_capabilities(
+        &self,
+        context: &HostContext,
+        capabilities: &BTreeSet<&'static str>,
+    ) -> bool {
         match self {
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
@@ -185,15 +231,56 @@ impl TestRequirement {
                     false
                 }
             }
+            TestRequirement::RequiresCapability(name) => capabilities.contains(name),
             TestRequirement::And(req1, req2) => {
-                req1.is_satisfied(context) && req2.is_satisfied(context)
+                req1.is_satisfied_with_capabilities(context, capabilities)
+                    && req2.is_satisfied_with_capabilities(context, capabilities)
             }
             TestRequirement::Or(req1, req2) => {
-                req1.is_satisfied(context) || req2.is_satisfied(context)
+                req1.is_satisfied_with_capabilities(context, capabilities)
+                    || req2.is_satisfied_with_capabilities(context, capabilities)
             }
-            TestRequirement::Not(req) => !req.is_satisfied(context),
+            TestRequirement::Not(req) => !req.is_satisfied_with_capabilities(context, capabilities),
+            TestRequirement::Any => true,
         }
     }
+}
+
+/// Returns the canonical runtime name for a known capability.
+pub fn known_capability(name: &str) -> Option<&'static str> {
+    capabilities::known(name)
+}
+
+/// Returns whether `name` is a known capability.
+pub fn is_known_capability(name: &str) -> bool {
+    known_capability(name).is_some()
+}
+
+fn available_capabilities(context: &HostContext) -> BTreeSet<&'static str> {
+    let mut capabilities = BTreeSet::new();
+
+    if context.vpci_supported {
+        capabilities.insert(capabilities::VPCI);
+    }
+
+    match std::env::var("PETRI_CAPABILITIES") {
+        Ok(env_capabilities) => {
+            for capability in env_capabilities.split(',').map(str::trim) {
+                if capability.is_empty() {
+                    continue;
+                }
+                let capability = known_capability(capability)
+                    .unwrap_or_else(|| panic!("unknown PETRI_CAPABILITIES entry: {capability}"));
+                capabilities.insert(capability);
+            }
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("PETRI_CAPABILITIES is not valid UTF-8")
+        }
+    }
+
+    capabilities
 }
 
 /// Result of evaluating all requirements for a test

@@ -18,7 +18,6 @@ use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
-use memory_range::MemoryRange;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
@@ -26,8 +25,10 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieIommuConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -87,8 +88,12 @@ impl PetriVmConfigOpenVmm {
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.
     pub fn with_nic(mut self) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
         if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
@@ -100,6 +105,7 @@ impl PetriVmConfigOpenVmm {
                     }],
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
@@ -128,8 +134,12 @@ impl PetriVmConfigOpenVmm {
 
     /// Add a PCIe NIC to the VM using the MANA emulator.
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
             resource: GdmaDeviceHandle {
@@ -174,8 +184,12 @@ impl PetriVmConfigOpenVmm {
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
     pub fn with_virtio_nic(mut self, port_name: &str) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
 
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
@@ -189,6 +203,117 @@ impl PetriVmConfigOpenVmm {
             )
             .into_resource(),
         });
+
+        self
+    }
+
+    /// Add a virtio-net NIC with consomme and TCP port forwarding for
+    /// pipette. Used for Windows no-vmbus guests where virtio-vsock is
+    /// unavailable.
+    ///
+    /// This configures consomme to forward the pipette TCP port from the
+    /// host into the guest, so the petri framework can connect to the
+    /// pipette agent over TCP.
+    pub fn with_tcp_pipette_nic(mut self, port_name: &str) -> Self {
+        let (port_send, port_recv) = mesh::oneshot();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: vec![net_backend_resources::consomme::HostPortConfig {
+                protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
+                host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
+                    std::net::Ipv4Addr::LOCALHOST,
+                )),
+                host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
+                guest_port: pipette_client::PIPETTE_PORT as u16,
+            }],
+            recv: None,
+        }
+        .into_resource();
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::net::VirtioNetHandle {
+                    max_queues: None,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                }
+                .into_resource(),
+            )
+            .into_resource(),
+        });
+        self.resources.tcp_pipette_port = Some(port_recv);
+        self
+    }
+
+    /// Enable a synthnic for the VM backed by the Windows vmswitch
+    /// DirectIO (`-net dio`) backend.
+    ///
+    /// `switch_id`, when `None`, defaults to the Hyper-V Default Switch.
+    /// This requires the host to have Hyper-V installed and the chosen
+    /// switch available; tests that call this method should pre-resolve
+    /// a switch via [`super::find_switch`] (or an equivalent runtime
+    /// probe) and bail out with a clear error when the host does not
+    /// meet those requirements. The method itself panics if the switch
+    /// cannot be opened or a port cannot be created.
+    ///
+    /// The created vmswitch port handle is held in the petri (parent)
+    /// process for the lifetime of the VM. The kernel switch port object
+    /// is reference counted, so keeping the handle alive in this process
+    /// keeps the port usable from the child VMM process.
+    #[cfg(windows)]
+    pub fn with_dio_nic(mut self, switch_id: Option<Guid>) -> Self {
+        let switch_port_id = vmswitch::kernel::SwitchPortId {
+            switch: switch_id.unwrap_or(vmswitch::hcn::DEFAULT_SWITCH),
+            port: Guid::new_random(),
+        };
+        let _ = vmswitch::hcn::Network::open(&switch_port_id.switch)
+            .unwrap_or_else(|e| panic!("could not find switch {}: {e}", switch_port_id.switch));
+        let switch_port = vmswitch::kernel::SwitchPort::new(&switch_port_id)
+            .expect("failed to create vmswitch DIO port");
+        self.resources._switch_ports.push(switch_port);
+
+        let endpoint = net_backend_resources::dio::WindowsDirectIoHandle {
+            switch_port_id: net_backend_resources::dio::SwitchPortId {
+                switch: switch_port_id.switch,
+                port: switch_port_id.port,
+            },
+        }
+        .into_resource();
+
+        if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
+            self.config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl2,
+                instance_id: MANA_INSTANCE,
+                resource: GdmaDeviceHandle {
+                    vports: vec![VportDefinition {
+                        mac_address: NIC_MAC_ADDRESS,
+                        endpoint,
+                    }],
+                }
+                .into_resource(),
+                vnode: None,
+            });
+
+            vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
+                vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: None,
+                    max_sub_channels: None,
+                },
+            );
+        } else {
+            const NETVSP_DIO_INSTANCE: Guid = guid::guid!("d1ff4c5a-1b3c-4f0d-8e10-1b9d8b1d1cee");
+            self.config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                netvsp_resources::NetvspHandle {
+                    instance_id: NETVSP_DIO_INSTANCE,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                    max_queues: None,
+                }
+                .into_resource(),
+            ));
+        }
 
         self
     }
@@ -215,6 +340,17 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Use explicit hugetlb-backed guest memory.
+    pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
+        for node in &mut self.config.numa.nodes {
+            if let Some(mem) = &mut node.mem {
+                mem.hugepages = true;
+                mem.hugepage_size = hugepage_size;
+            }
+        }
+        self
+    }
+
     /// Add a symmetric PCIe topology to the VM based on some basic scale factors
     ///
     /// All root ports are named according to their index within their parent
@@ -226,26 +362,8 @@ impl PetriVmConfigOpenVmm {
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
     ) -> Self {
-        const SINGLE_BUS_NUMBER_ECAM_SIZE: u64 = 1024 * 1024; // 1 MB
-        const FULL_SEGMENT_ECAM_SIZE: u64 = 256 * SINGLE_BUS_NUMBER_ECAM_SIZE; // 256 MB
         const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
         const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
-
-        // Allocate and configure the address space gaps
-        let ecam_size = segment_count * FULL_SEGMENT_ECAM_SIZE;
-        let low_mmio_size = segment_count * root_complex_per_segment * LOW_MMIO_SIZE;
-        let high_mmio_size = segment_count * root_complex_per_segment * HIGH_MMIO_SIZE;
-
-        let low_mmio_start = self.config.memory.mmio_gaps[0].start();
-        let high_mmio_end = self.config.memory.mmio_gaps[1].end();
-
-        let ecam_gap = MemoryRange::new(low_mmio_start - ecam_size..low_mmio_start);
-        let low_gap = MemoryRange::new(ecam_gap.start() - low_mmio_size..ecam_gap.start());
-        let high_gap = MemoryRange::new(high_mmio_end..high_mmio_end + high_mmio_size);
-
-        self.config.memory.pci_ecam_gaps.push(ecam_gap);
-        self.config.memory.pci_mmio_gaps.push(low_gap);
-        self.config.memory.pci_mmio_gaps.push(high_gap);
 
         // Add the root complexes to the VM
         for segment in 0..segment_count {
@@ -257,21 +375,13 @@ impl PetriVmConfigOpenVmm {
                 let start_bus = rc_index_in_segment * bus_count_per_rc;
                 let end_bus = start_bus + bus_count_per_rc - 1;
 
-                let ecam_range_start = ecam_gap.start()
-                    + segment * FULL_SEGMENT_ECAM_SIZE
-                    + start_bus * SINGLE_BUS_NUMBER_ECAM_SIZE;
-                let ecam_range_end =
-                    ecam_range_start + bus_count_per_rc * SINGLE_BUS_NUMBER_ECAM_SIZE;
-
-                let low_mmio_start = low_gap.start() + index * LOW_MMIO_SIZE;
-                let low_mmio_end = low_gap.start() + (index + 1) * LOW_MMIO_SIZE;
-                let high_mmio_start = high_gap.start() + index * HIGH_MMIO_SIZE;
-                let high_mmio_end = high_gap.start() + (index + 1) * HIGH_MMIO_SIZE;
-
                 let ports = (0..root_ports_per_root_complex)
-                    .map(|i| PcieRootPortConfig {
+                    .map(|i| PciePortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
+                        devfn: None,
                         hotplug: true,
+                        acs_capabilities_supported: Some(0),
+                        cxl: false,
                     })
                     .collect();
 
@@ -281,10 +391,17 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
-                    ecam_range: MemoryRange::new(ecam_range_start..ecam_range_end),
-                    low_mmio: MemoryRange::new(low_mmio_start..low_mmio_end),
-                    high_mmio: MemoryRange::new(high_mmio_start..high_mmio_end),
+                    low_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: LOW_MMIO_SIZE,
+                    },
+                    high_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: HIGH_MMIO_SIZE,
+                    },
+                    cxl: None,
                     ports,
+                    iommu: None,
+                    vnode: None,
+                    preserve_bars: false,
                 });
             }
         }
@@ -302,10 +419,63 @@ impl PetriVmConfigOpenVmm {
     ) -> Self {
         self.config.pcie_switches.push(PcieSwitchConfig {
             name: switch_name.to_string(),
-            num_downstream_ports: port_count,
             parent_port: port_name.to_string(),
-            hotplug,
+            ports: (0..port_count)
+                .map(|i| PciePortConfig {
+                    name: format!("{switch_name}-downstream-{i}"),
+                    devfn: None,
+                    hotplug,
+                    acs_capabilities_supported: Some(0),
+                    cxl: false,
+                })
+                .collect(),
         });
+        self
+    }
+
+    /// Enable SMMUv3 IOMMU on the specified root complexes (aarch64 only).
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The SMMU
+    /// provides stage 1 IOVA translation for devices behind those root
+    /// complexes.
+    pub fn with_smmu(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::Smmu));
+        }
+        self
+    }
+
+    /// Enable AMD IOMMU (AMD-Vi) on the specified root complexes.
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The IOMMU
+    /// appears at device 0 function 0 on each listed root complex; PCIe
+    /// devices behind those root complexes have DMA translated through
+    /// guest-programmed page tables and MSIs remapped through the interrupt
+    /// remapping table.
+    pub fn with_amd_iommu(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::AmdVi));
+        }
+        self
+    }
+
+    /// Enable Intel VT-d IOMMU on the specified root complexes.
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The IOMMU
+    /// is a platform device discovered via the ACPI DMAR table; PCIe devices
+    /// behind those root complexes have DMA translated through
+    /// guest-programmed page tables and MSIs remapped through the interrupt
+    /// remapping table.
+    pub fn with_intel_vtd(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::IntelVtd));
+        }
         self
     }
 

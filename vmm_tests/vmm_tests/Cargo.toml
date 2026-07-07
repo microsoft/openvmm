@@ -18,6 +18,10 @@ harness = false
 name = "opentmk"
 harness = false
 
+[[test]]
+name = "cca"
+harness = false
+
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
@@ -27,6 +31,7 @@ tmk_tests.workspace = true
 
 petri_artifacts_common.workspace = true
 petri.workspace = true
+inspect.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
@@ -40,6 +45,7 @@ nvme_spec.workspace = true
 nvme_test.workspace = true
 scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
+vfio_assigned_device_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
 disk_vhd1.workspace = true
@@ -53,6 +59,7 @@ unix_socket.workspace = true
 vmgs_resources.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true

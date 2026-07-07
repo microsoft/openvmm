@@ -17,6 +17,7 @@ use net_backend::RxMetadata;
 use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
+use thiserror::Error;
 use vmbus_channel::gpadl::GpadlView;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -25,6 +26,18 @@ use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE32: u32 = 4096;
+
+#[derive(Debug, Error)]
+pub enum GuestBuffersError {
+    #[error("invalid mtu {mtu}")]
+    InvalidMtu { mtu: u32 },
+    #[error("sub_allocation_size {sub_allocation_size} is too small for mtu {mtu}")]
+    SubAllocationTooSmall { sub_allocation_size: u32, mtu: u32 },
+    #[error("GPADL has no ranges")]
+    EmptyGpadl,
+    #[error("failed to lock guest page numbers")]
+    GpnLock(#[source] GuestMemoryError),
+}
 
 /// A type providing access to the netvsp receive buffer.
 pub struct GuestBuffers {
@@ -41,29 +54,63 @@ pub struct GuestBuffers {
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
+    rx_vlan_count: u64,
 }
 
 impl BufferPool {
     pub fn new(buffers: Arc<GuestBuffers>) -> Self {
-        Self { buffers }
+        Self {
+            buffers,
+            rx_vlan_count: 0,
+        }
     }
 
     fn offset(&self, id: RxId) -> u32 {
         id.0 * self.buffers.sub_allocation_size
     }
+
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take_rx_vlan_count(&mut self) -> u64 {
+        std::mem::take(&mut self.rx_vlan_count)
+    }
 }
 
 impl GuestBuffers {
+    /// Validates that the GPADL and sub_allocation_size are compatible with the MTU
+    /// without performing any allocations.
+    pub fn validate_config(
+        gpadl: &GpadlView,
+        sub_allocation_size: u32,
+        mtu: u32,
+    ) -> Result<(), GuestBuffersError> {
+        if gpadl.first().is_none() {
+            return Err(GuestBuffersError::EmptyGpadl);
+        }
+        mtu.checked_add(RX_HEADER_LEN)
+            .and_then(|v| v.checked_add(BROKEN_CO_NETVSC_FOOTER_LEN))
+            .ok_or(GuestBuffersError::InvalidMtu { mtu })?;
+        if sub_allocation_size < sub_allocation_size_for_mtu(mtu) {
+            return Err(GuestBuffersError::SubAllocationTooSmall {
+                sub_allocation_size,
+                mtu,
+            });
+        }
+        Ok(())
+    }
+
     pub fn new(
         mem: GuestMemory,
         gpadl: GpadlView,
         sub_allocation_size: u32,
         mtu: u32,
-    ) -> Result<Self, GuestMemoryError> {
-        assert!(sub_allocation_size >= sub_allocation_size_for_mtu(mtu));
+    ) -> Result<Self, GuestBuffersError> {
+        Self::validate_config(&gpadl, sub_allocation_size, mtu)?;
 
         let gpns = gpadl.first().unwrap().gpns().to_vec();
-        let locked_pages = mem.lock_gpns(false, &gpns)?;
+        let locked_pages = mem
+            .lock_gpns(false, &gpns)
+            .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
             _gpadl: gpadl,
@@ -150,16 +197,16 @@ impl BufferAccess for BufferPool {
         struct Header {
             header: rndisprot::MessageHeader,
             packet: rndisprot::Packet,
-            per_packet_info: PerPacketInfo,
         }
 
         #[repr(C)]
         #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct PerPacketInfo {
             header: rndisprot::PerPacketInfo,
-            checksum: rndisprot::RxTcpIpChecksumInfo,
+            payload: u32,
         }
 
+        let mut ppi_count = 1;
         let checksum = rndisprot::RxTcpIpChecksumInfo::new_zeroed()
             .set_ip_checksum_failed(metadata.ip_checksum == RxChecksumState::Bad)
             .set_ip_checksum_succeeded(metadata.ip_checksum.is_valid())
@@ -184,6 +231,30 @@ impl BufferAccess for BufferPool {
             .set_udp_checksum_succeeded(
                 metadata.l4_protocol == L4Protocol::Udp && metadata.l4_checksum.is_valid(),
             );
+        let checksum_ppi = PerPacketInfo {
+            header: rndisprot::PerPacketInfo {
+                size: size_of::<PerPacketInfo>() as u32,
+                typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+            },
+            payload: checksum.0,
+        };
+
+        let vlan = if let Some(vlan_info) = metadata.vlan {
+            self.rx_vlan_count += 1;
+            ppi_count += 1;
+
+            Some(PerPacketInfo {
+                header: rndisprot::PerPacketInfo {
+                    size: size_of::<PerPacketInfo>() as u32,
+                    typ: rndisprot::PPI_VLAN,
+                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                },
+                payload: Into::<rndisprot::EthVlanInfo>::into(vlan_info).into(),
+            })
+        } else {
+            None
+        };
 
         let header = Header {
             header: rndisprot::MessageHeader {
@@ -202,28 +273,123 @@ impl BufferAccess for BufferPool {
                 oob_data_length: 0,
                 num_oob_data_elements: 0,
                 per_packet_info_offset: size_of::<rndisprot::Packet>() as u32,
-                per_packet_info_length: size_of::<PerPacketInfo>() as u32,
+                per_packet_info_length: ppi_count * size_of::<PerPacketInfo>() as u32,
                 vc_handle: 0,
                 reserved: 0,
             },
-            per_packet_info: PerPacketInfo {
-                header: rndisprot::PerPacketInfo {
-                    size: size_of::<PerPacketInfo>() as u32,
-                    typ: rndisprot::PPI_TCP_IP_CHECKSUM,
-                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
-                },
-                checksum,
-            },
         };
 
-        self.buffers.write_at(self.offset(id), header.as_bytes());
+        let mut offset = self.offset(id);
+        self.buffers.write_at(offset, header.as_bytes());
+        offset += size_of::<Header>() as u32;
+        self.buffers.write_at(offset, checksum_ppi.as_bytes());
+        offset += size_of::<PerPacketInfo>() as u32;
+        if let Some(vlan_ppi) = vlan {
+            self.buffers.write_at(offset, vlan_ppi.as_bytes());
+        }
+        static_assertions::const_assert!(
+            (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::GuestBuffers;
+    use crate::buffers::GuestBuffersError;
     use crate::buffers::compute_buffer_segments;
+    use crate::buffers::sub_allocation_size_for_mtu;
+    use guestmem::GuestMemory;
     use net_backend::RxBufferSegment;
+    use vmbus_channel::gpadl::GpadlMap;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_ring::gparange::GpaRange;
+    use vmbus_ring::gparange::MultiPagedRangeBuf;
+    use zerocopy::IntoBytes;
+
+    /// Verify that inconsistent sub_allocation_size and MTU from saved state
+    /// returns an error instead of panicking.
+    #[test]
+    fn sub_allocation_too_small_for_mtu() {
+        let default_mtu = 1514;
+        let max_mtu = 9216;
+        let sub_alloc_for_default = sub_allocation_size_for_mtu(default_mtu);
+
+        // The sub_allocation for default MTU must be smaller than for max MTU.
+        assert!(sub_alloc_for_default < sub_allocation_size_for_mtu(max_mtu));
+
+        // Build a multipaged ranged buffer.
+        let num_pages = 16;
+        let hdr = GpaRange {
+            len: (num_pages * 4096) as u32,
+            offset: 0,
+        };
+        let mut buf = vec![u64::from_le_bytes(hdr.as_bytes().try_into().unwrap())];
+        // Append one GPN per page.
+        buf.extend((0..num_pages).map(|i| i as u64));
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap();
+
+        // Build a minimal GpadlView (won't be accessed — the check fires first).
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(1);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        let mem = GuestMemory::empty();
+        let result = GuestBuffers::new(mem, gpadl_view, sub_alloc_for_default, max_mtu);
+        match result {
+            Err(GuestBuffersError::SubAllocationTooSmall { .. }) => {}
+            Err(e) => panic!("expected SubAllocationTooSmall, got {e}"),
+            Ok(_) => panic!("expected SubAllocationTooSmall, got Ok"),
+        }
+    }
+
+    /// Verify that an MTU near u32::MAX returns InvalidMtu instead of
+    /// wrapping the sub_allocation_size calculation.
+    #[test]
+    fn overflowing_mtu_returns_error() {
+        let num_pages = 16;
+        let hdr = GpaRange {
+            len: (num_pages * 4096) as u32,
+            offset: 0,
+        };
+        let mut buf = vec![u64::from_le_bytes(hdr.as_bytes().try_into().unwrap())];
+        buf.extend((0..num_pages).map(|i| i as u64));
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap();
+
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(3);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        // An MTU of u32::MAX would overflow the sub_allocation_size addition.
+        let result = GuestBuffers::validate_config(&gpadl_view, 1806, u32::MAX);
+        match result {
+            Err(GuestBuffersError::InvalidMtu { .. }) => {}
+            Err(e) => panic!("expected InvalidMtu, got {e}"),
+            Ok(_) => panic!("expected InvalidMtu, got Ok"),
+        }
+    }
+
+    /// Verify that a GPADL with zero ranges returns EmptyGpadl instead of
+    /// panicking.
+    #[test]
+    fn empty_gpadl_returns_error() {
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(0, vec![]).unwrap();
+
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(2);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        let mem = GuestMemory::empty();
+        let result = GuestBuffers::new(mem, gpadl_view, 1806, 1514);
+        match result {
+            Err(GuestBuffersError::EmptyGpadl) => {}
+            Err(e) => panic!("expected EmptyGpadl, got {e}"),
+            Ok(_) => panic!("expected EmptyGpadl, got Ok"),
+        }
+    }
 
     #[test]
     fn test_buffer_segments() {

@@ -7,7 +7,7 @@ use crate::pipelines::build_igvm::bail_if_running_in_ci;
 use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
+use flowey_lib_hvlite::common::CommonArch;
 use std::path::PathBuf;
 
 /// Build OpenTMK and package it into a bootable VHD.

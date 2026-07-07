@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 framebuffer.workspace = true
 input_core.workspace = true
+video_core.workspace = true
 
 mesh.workspace = true
 mesh_worker.workspace = true

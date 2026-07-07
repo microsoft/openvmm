@@ -8,6 +8,7 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::MAX_NSID;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
@@ -102,6 +103,22 @@ pub struct AdminState {
     )]
     changed_namespaces: Vec<u32>,
     notified_changed_namespaces: bool,
+    /// Asynchronous Event Configuration (Set Features FID 0x0B / CDW11),
+    /// stored verbatim and echoed back via Get Features. The NVMe Base
+    /// specification lists this Feature as mandatory for I/O controllers
+    /// (Base 2.0c section 3.1.2.1.1 / Base 2.3 section 3.1.3.6, "Feature
+    /// Support Requirements"). Each bit in CDW11 enables a class of
+    /// asynchronous event notification (refer to
+    /// [`spec::Cdw11FeatureAsyncEventConfig`]). Initiators that strictly
+    /// follow the spec may refuse to allocate any Asynchronous Event
+    /// Request resources when the Set Features command for this Feature
+    /// is rejected, which breaks AEN delivery (including the
+    /// changed-namespace AEN that drives namespace hot-add notification).
+    ///
+    /// Defaults to all bits set so that any AEN class the controller
+    /// chooses to fire is enabled until the host explicitly narrows the
+    /// mask via Set Features.
+    async_event_config: u32,
     #[inspect(skip)]
     recv_changed_namespace: futures::channel::mpsc::Receiver<u32>,
     #[inspect(skip)]
@@ -168,6 +185,7 @@ impl AdminState {
             asynchronous_event_requests: Vec::new(),
             changed_namespaces: Vec::new(),
             notified_changed_namespaces: false,
+            async_event_config: u32::MAX,
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
@@ -327,10 +345,17 @@ enum Event {
     NamespaceChange(u32),
 }
 
-/// Error returned when adding a namespace with a conflicting ID.
+/// Error returned when a namespace cannot be added.
 #[derive(Debug, Error)]
-#[error("namespace id conflict for {0}")]
-pub struct NsidConflict(u32);
+pub enum AddNamespaceError {
+    /// A namespace with this ID already exists.
+    #[error("namespace id conflict for {0}")]
+    Conflict(u32),
+    /// The namespace ID is outside the valid range supported by the
+    /// subsystem (see the `NN` field of Identify Controller).
+    #[error("namespace id {0} is out of range (must be 1..={MAX_NSID})")]
+    OutOfRange(u32),
+}
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
@@ -346,14 +371,17 @@ impl AdminHandler {
         state: Option<&mut AdminState>,
         nsid: u32,
         disk: Disk,
-    ) -> Result<(), NsidConflict> {
+    ) -> Result<(), AddNamespaceError> {
+        if nsid == 0 || nsid > MAX_NSID {
+            return Err(AddNamespaceError::OutOfRange(nsid));
+        }
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
                 nsid,
                 disk,
             ))),
-            btree_map::Entry::Occupied(_) => return Err(NsidConflict(nsid)),
+            btree_map::Entry::Occupied(_) => return Err(AddNamespaceError::Conflict(nsid)),
         };
 
         if let Some(state) = state {
@@ -381,7 +409,22 @@ impl AdminHandler {
             // command or the completed sq deletion.
             poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
-            if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
+            // Fire the changed-namespace AEN only when the host has
+            // enabled the Attached Namespace Attribute Notices class via
+            // Set Features 0Bh (NVMe Base 2.0c section 5.21.1.11 /
+            // Base 2.3 section 5.2.26.1.5, CDW11 bit 8). Per spec,
+            // "If this bit is cleared to '0', then the controller shall
+            // not send the Attached Namespace Attribute Changed
+            // asynchronous event to the host." The mask defaults to all
+            // bits set, so this only suppresses delivery when the host
+            // has explicitly opted out via Set Features.
+            let ns_aen_enabled = spec::Cdw11FeatureAsyncEventConfig::from(state.async_event_config)
+                .namespace_attribute_notices();
+
+            if !state.changed_namespaces.is_empty()
+                && !state.notified_changed_namespaces
+                && ns_aen_enabled
+            {
                 if let Some(cid) = state.asynchronous_event_requests.pop() {
                     state.admin_cq.write(
                         spec::Completion {
@@ -559,17 +602,27 @@ impl AdminHandler {
                 }
             }
             spec::Cns::NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             cns => {
@@ -596,7 +649,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.namespaces.keys().copied().max().unwrap_or(0),
+            nn: MAX_NSID,
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
@@ -654,6 +707,17 @@ impl AdminHandler {
                     );
                 }
             }
+            spec::Feature::ASYNC_EVENT_CONFIG => {
+                // The Asynchronous Event Configuration feature is mandatory
+                // for I/O controllers per the NVMe Base specification's
+                // Feature Support Requirements table (Base 2.0c section
+                // 3.1.2.1.1 / Base 2.3 section 3.1.3.6). The host sets bits
+                // in CDW11 to enable each class of asynchronous event
+                // notification. We store the value verbatim; Get Features
+                // echoes it back, and the AEN dispatch loop consults the
+                // relevant bits before firing each notification class.
+                state.async_event_config = command.cdw11;
+            }
             feature => {
                 tracelimit::warn_ratelimited!(?feature, "unsupported feature");
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
@@ -685,6 +749,15 @@ impl AdminHandler {
                 dw[0] = spec::Cdw11FeatureVolatileWriteCache::new()
                     .with_wce(true)
                     .into();
+            }
+            spec::Feature::ASYNC_EVENT_CONFIG => {
+                // Echo back the most recently configured mask. The cache
+                // is initialized to all bits set (refer to
+                // [`AdminState::new`]) so that a host which never issues
+                // Set Features 0Bh still sees every notification class
+                // reported as enabled, preserving the pre-existing
+                // behavior of unconditional AEN delivery.
+                dw[0] = state.async_event_config;
             }
             spec::Feature::NVM_RESERVATION_PERSISTENCE => {
                 let namespace = self

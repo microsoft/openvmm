@@ -10,6 +10,7 @@ rust-version.workspace = true
 consomme.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
+socket2.workspace = true
 
 vm_resource.workspace = true
 

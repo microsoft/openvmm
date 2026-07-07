@@ -42,6 +42,7 @@ use get_protocol::VmgsIoStatus;
 use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
+use get_protocol::dps_json::HardwareSealingPolicy;
 use get_protocol::dps_json::HclSecureBootTemplateId;
 use get_protocol::dps_json::ManagementVtlFeatures;
 use get_protocol::dps_json::PcatBootDevice;
@@ -158,11 +159,14 @@ pub struct GuestConfig {
     /// Management VTL feature flags
     #[inspect(debug)]
     pub management_vtl_features: ManagementVtlFeatures,
+    /// Hardware sealing policy
+    #[inspect(debug)]
+    pub hardware_sealing_policy: HardwareSealingPolicy,
     /// EFI diagnostics log level
     #[inspect(debug)]
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-    /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
-    pub hv_sint_enabled: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub force_dma_bounce_enabled: bool,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -271,7 +275,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             igvm_agent_setting,
-            igvm_agent: TestIgvmAgent::new(),
+            igvm_agent: TestIgvmAgent::new("openvmm"),
             test_gsp_by_id,
         }
     }
@@ -1354,8 +1358,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_lifetime: state.config.guest_state_lifetime,
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
+                    hardware_sealing_policy_id: state.config.hardware_sealing_policy,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
-                    hv_sint_enabled: state.config.hv_sint_enabled,
+                    force_dma_bounce_enabled: state.config.force_dma_bounce_enabled,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

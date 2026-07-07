@@ -12,11 +12,15 @@ flowey_lib_common.workspace = true
 flowey_lib_hvlite.workspace = true
 flowey.workspace = true
 
+petri_artifacts_common.workspace = true
+petri_artifacts_core.workspace = true
+petri_artifacts_vmm_test.workspace = true
 vmm_test_images = { workspace = true, features = ["serde", "clap"] }
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 log.workspace = true
+paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
@@ -26,4 +30,4 @@ workspace = true
 
 [package.metadata.xtask.unused-deps]
 # Pulled in via prelude
-ignored = ["serde"]
+ignored = ["serde", "paste"]

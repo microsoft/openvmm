@@ -15,6 +15,7 @@ virt.workspace = true
 x86defs.workspace = true
 x86emu.workspace = true
 
+cvm_tracing.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

@@ -388,7 +388,7 @@ impl ParseSchema<crate::IdeController> for StorageController {
                 .flat_map(|lun| lun.parse(errors).collect_error(errors))
                 .collect::<Vec<crate::IdeDisk>>();
 
-            disks.sort_by(|a, b| (a.location).cmp(&b.location));
+            disks.sort_by_key(|a| a.location);
 
             for (a, b) in disks.iter().zip(disks.iter().skip(1)) {
                 if a.channel == b.channel && a.location == b.location {

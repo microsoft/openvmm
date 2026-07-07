@@ -206,7 +206,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
             if !valid_memory.check_valid(gpn) {
                 match valid_memory.memory_type() {
                     GuestValidMemoryType::Shared => {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             ?address,
                             ?len,
                             ?write,
@@ -218,7 +218,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                         ))
                     }
                     GuestValidMemoryType::Encrypted => {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             ?address,
                             ?len,
                             ?write,

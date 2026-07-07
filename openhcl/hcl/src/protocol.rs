@@ -69,7 +69,9 @@ pub struct hcl_pfn_range_t {
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct hcl_cpu_context_x64 {
-    pub gps: [u64; 16],
+    // These are in the canonical order, _except_ it doesn't contain
+    // RSP--CR2 is stored where RSP would normally be.
+    pub gps_no_rsp: [u64; 16],
     pub fx_state: x86defs::xsave::Fxsave,
     pub reserved: [u8; 384],
 }

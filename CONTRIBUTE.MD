@@ -9,7 +9,7 @@ for more information on forks. Please follow these steps to merge your changes t
 [from your fork](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork).
 4. Go through the PR review process. 
 
-Following our [coding conventions](.\guide\src\dev_guide\contrib\code.md) and 
+Following our [coding conventions](./Guide/src/dev_guide/contrib/code.md) and 
 writing a descriptive commit message will increase the chance that a PR is accepted.
 
 We strongly suggest asking for feedback before starting to work on a new feature, 

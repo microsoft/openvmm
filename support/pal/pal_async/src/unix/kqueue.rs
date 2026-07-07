@@ -12,6 +12,8 @@ use crate::interest::PollInterestSet;
 use crate::io_pool::IoBackend;
 use crate::io_pool::IoDriver;
 use crate::io_pool::IoPool;
+use crate::process::macos::PollProcessWait;
+use crate::process::macos::ProcessWaitDriver;
 use crate::timer::Instant;
 use crate::timer::PollTimer;
 use crate::timer::TimerDriver;
@@ -58,6 +60,7 @@ impl Default for KqueueBackend {
                 state: PoolState::Running,
                 timers: TimerQueue::default(),
                 fd_ready_to_delete: Vec::new(),
+                process_ops_to_delete: Vec::new(),
             }),
         }
     }
@@ -68,6 +71,7 @@ struct KqueueState {
     state: PoolState,
     timers: TimerQueue,
     fd_ready_to_delete: Vec<Arc<FdReadyOp>>,
+    process_ops_to_delete: Vec<Arc<ProcessWaitOp>>,
 }
 
 #[derive(Debug)]
@@ -163,7 +167,8 @@ impl IoBackend for KqueueBackend {
         let waker = waker_ref(self);
         let mut cx = Context::from_waker(&waker);
 
-        let mut to_delete: Vec<_> = Vec::new();
+        let mut to_delete: Vec<Arc<FdReadyOp>> = Vec::new();
+        let mut proc_to_delete: Vec<Arc<ProcessWaitOp>> = Vec::new();
         let mut wakers = WakerList::default();
 
         let mut state = self.state.lock();
@@ -176,6 +181,7 @@ impl IoBackend for KqueueBackend {
 
             wakers.wake();
             to_delete.clear();
+            proc_to_delete.clear();
 
             match fut.poll_unpin(&mut cx) {
                 Poll::Ready(r) => break r,
@@ -183,8 +189,9 @@ impl IoBackend for KqueueBackend {
             }
 
             state = self.state.lock();
-            // This list is only populated while in the Sleeping state.
+            // These lists are only populated while in the Sleeping state.
             assert!(state.fd_ready_to_delete.is_empty());
+            assert!(state.process_ops_to_delete.is_empty());
 
             if state.state.can_sleep() {
                 let deadline = state.timers.next_deadline();
@@ -244,14 +251,23 @@ impl IoBackend for KqueueBackend {
                             };
                             op.wake_ready(revents, &mut wakers);
                         }
+                        libc::EVFILT_PROC => {
+                            // SAFETY: the operation context is still alive.
+                            // If the ProcessWait was dropped, the op will be
+                            // in process_ops_to_delete. The event is one-shot
+                            // so no further events will arrive for this pid.
+                            let op = unsafe { &*(event.udata as usize as *const ProcessWaitOp) };
+                            op.wake_signaled(&mut wakers);
+                        }
                         _ => unreachable!(),
                     }
                 }
 
                 state = self.state.lock();
 
-                // Free any FdReadyOp objects that were deleted while in the kevent64 call.
+                // Free any op objects that were deleted while in the kevent64 call.
                 to_delete.append(&mut state.fd_ready_to_delete);
+                proc_to_delete.append(&mut state.process_ops_to_delete);
             }
         }
     }
@@ -469,6 +485,116 @@ impl WaitDriver for KqueueDriver {
     }
 }
 
+// --- Process wait support via EVFILT_PROC ---
+
+#[derive(Debug)]
+struct ProcessWaitOp {
+    inner: Mutex<ProcessWaitInner>,
+}
+
+#[derive(Debug)]
+struct ProcessWaitInner {
+    signaled: bool,
+    waker: Option<std::task::Waker>,
+}
+
+impl ProcessWaitOp {
+    fn wake_signaled(&self, wakers: &mut WakerList) {
+        let mut inner = self.inner.lock();
+        inner.signaled = true;
+        if let Some(waker) = inner.waker.take() {
+            wakers.push(waker);
+        }
+    }
+}
+
+/// A process wait implementation backed by kqueue `EVFILT_PROC`.
+#[derive(Debug)]
+pub struct ProcessWait {
+    op: Arc<ProcessWaitOp>,
+    kqueue: Arc<KqueueBackend>,
+    pid: i32,
+}
+
+impl PollProcessWait for ProcessWait {
+    fn poll_process_exit(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let mut inner = self.op.inner.lock();
+        if inner.signaled {
+            return Poll::Ready(Ok(()));
+        }
+        inner.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for ProcessWait {
+    fn drop(&mut self) {
+        // Try to remove the one-shot event. If the process already
+        // exited, the event was already delivered and auto-removed, so
+        // ENOENT is expected. ESRCH can also occur if the process has
+        // been reaped.
+        match self.kqueue.kqfd.run(
+            &[libc::kevent64_s {
+                ident: self.pid as u64,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_DELETE,
+                ..empty_event()
+            }],
+            &mut [],
+            Some(&zero_timespec()),
+        ) {
+            Ok(_) | Err(Errno(libc::ENOENT)) | Err(Errno(libc::ESRCH)) => {}
+            Err(err) => panic!("kevent64 unexpectedly failed: {err:?}"),
+        }
+
+        // SAFETY: Reclaiming the reference added in new_process_wait_pid.
+        let op = unsafe { Arc::from_raw(Arc::as_ptr(&self.op)) };
+        let mut state = self.kqueue.state.lock();
+        if state.state.is_referencing_ops() {
+            state.process_ops_to_delete.push(op);
+            if state.state.wake() {
+                drop(state);
+                self.kqueue.post_user_event();
+            }
+        }
+    }
+}
+
+impl ProcessWaitDriver for KqueueDriver {
+    type ProcessWait = ProcessWait;
+
+    fn new_process_wait_pid(&self, pid: i32) -> io::Result<Self::ProcessWait> {
+        let op = Arc::new(ProcessWaitOp {
+            inner: Mutex::new(ProcessWaitInner {
+                signaled: false,
+                waker: None,
+            }),
+        });
+        let udata = Arc::as_ptr(&op) as usize as u64;
+        self.inner.kqfd.run(
+            &[libc::kevent64_s {
+                ident: pid as u64,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags: libc::NOTE_EXIT,
+                udata,
+                ..empty_event()
+            }],
+            &mut [],
+            Some(&zero_timespec()),
+        )?;
+
+        // Add reference owned by the kqueue event, reclaimed in drop.
+        let _ = Arc::into_raw(op.clone());
+
+        Ok(ProcessWait {
+            op,
+            kqueue: self.inner.clone(),
+            pid,
+        })
+    }
+}
+
 impl TimerDriver for KqueueDriver {
     type Timer = Timer;
 
@@ -551,5 +677,10 @@ mod tests {
     #[test]
     fn socket_works() {
         KqueuePool::run_with(executor_tests::socket_tests)
+    }
+
+    #[test]
+    fn process_works() {
+        KqueuePool::run_with(executor_tests::process_tests)
     }
 }

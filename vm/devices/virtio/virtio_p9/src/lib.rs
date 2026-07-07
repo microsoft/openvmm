@@ -74,13 +74,10 @@ impl VirtioDevice for VirtioPlan9Device {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::P9,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(
-                    virtio::spec::VirtioDeviceFeaturesBank0::new()
-                        .with_device_specific(VIRTIO_9P_F_MOUNT_TAG)
-                        .with_ring_event_idx(true)
-                        .with_ring_indirect_desc(true),
-                )
-                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
+                .with_device_specific_low(VIRTIO_9P_F_MOUNT_TAG)
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 1,
             device_register_length: self.tag.len() as u32,
             ..Default::default()
@@ -119,7 +116,7 @@ impl VirtioDevice for VirtioPlan9Device {
         let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory.clone(),
             resources.notify,

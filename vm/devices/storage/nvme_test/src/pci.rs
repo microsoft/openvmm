@@ -4,6 +4,7 @@
 //! The NVMe (Fault Injection) PCI device implementation.
 
 use crate::BAR0_LEN;
+use crate::DEVICE_ID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
@@ -21,6 +22,8 @@ use chipset_device::io::IoError::InvalidRegister;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
@@ -137,10 +140,21 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // Apply any hardware-config fault overrides for the IDs reported in
+        // PCI configuration space, falling back to the real values when no
+        // override is configured.
+        let hardware_config_fault = fault_configuration.hardware_config_fault.take();
+        let vendor_id = hardware_config_fault
+            .and_then(|f| f.vendor_id)
+            .unwrap_or(VENDOR_ID);
+        let device_id = hardware_config_fault
+            .and_then(|f| f.device_id)
+            .unwrap_or(DEVICE_ID);
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
-                vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                vendor_id,
+                device_id,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
@@ -149,6 +163,7 @@ impl NvmeFaultController {
                 type0_sub_system_id: 0,
             },
             vec![Box::new(msix_cap)],
+            Vec::new(),
             bars,
         );
 
@@ -539,12 +554,12 @@ impl MmioIntercept for NvmeFaultController {
 }
 
 impl PciConfigSpace for NvmeFaultController {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.cfg_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.cfg_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.cfg_space.write_byte_enabled(offset, value)
     }
 }
 

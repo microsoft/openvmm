@@ -48,13 +48,12 @@ fn is_dns_raw_apis_supported() -> bool {
 
 /// Context passed to the DNS query callback.
 struct RawCallbackContext {
-    request_id: usize,
+    slab_key: usize,
     request: DnsRequestInternal,
     pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
 }
 
 pub struct WindowsDnsResolverBackend {
-    /// Map of pending DNS requests (for cancellation support).
     pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
 }
 
@@ -71,7 +70,7 @@ impl WindowsDnsResolverBackend {
 }
 
 impl DnsBackend for WindowsDnsResolverBackend {
-    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>) {
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>, query_id: u64) {
         // Clone the sender for error handling
         let response_sender_clone = response_sender.clone();
 
@@ -92,6 +91,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
         // Create internal request with raw DNS bytes (no TCP prefix) so that
         // SERVFAIL generation works correctly.
         let internal_request = DnsRequestInternal {
+            query_id,
             flow: request.flow.clone(),
             query: request.dns_query.to_vec(),
             response_sender,
@@ -102,14 +102,25 @@ impl DnsBackend for WindowsDnsResolverBackend {
 
         // Pre-insert placeholder before calling DnsQueryRaw to avoid race condition
         // where callback fires before we can insert the cancel handle.
-        let request_id = self
+        let slab_key = self
             .pending_requests
             .lock()
             .insert(DNS_QUERY_RAW_CANCEL::default());
 
+        let pending_count = self.pending_requests.lock().len();
+        tracing::trace!(
+            query_id,
+            pending_count,
+            query_len = dns_query_size,
+            src = %request.flow.src,
+            dst = %request.flow.dst,
+            transport = ?request.flow.transport,
+            "dns_windows: submitting query to DnsQueryRaw",
+        );
+
         // Create callback context
         let context = Box::new(RawCallbackContext {
-            request_id,
+            slab_key,
             request: internal_request,
             pending_requests: self.pending_requests.clone(),
         });
@@ -150,14 +161,21 @@ impl DnsBackend for WindowsDnsResolverBackend {
             // If the callback already fired and removed the entry, this is a no-op.
             {
                 let mut pending = self.pending_requests.lock();
-                if let Some(v) = pending.get_mut(request_id) {
+                if let Some(v) = pending.get_mut(slab_key) {
                     *v = cancel_handle;
                 }
             }
         } else {
             // Remove placeholder since callback won't fire on error
-            self.pending_requests.lock().remove(request_id);
-            tracelimit::warn_ratelimited!("DnsQueryRaw failed with error code: {}", result);
+            self.pending_requests.lock().remove(slab_key);
+            tracelimit::warn_ratelimited!(
+                query_id,
+                src = %request.flow.src,
+                dst = %request.flow.dst,
+                transport = ?request.flow.transport,
+                result,
+                "dns_windows: DnsQueryRaw failed",
+            );
             // SAFETY: We're reclaiming ownership of the context we just created
             unsafe {
                 let _ = Box::from_raw(context_ptr);
@@ -243,8 +261,16 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     {
         let mut pending = context.pending_requests.lock();
-        pending.remove(context.request_id);
+        let _ = pending.try_remove(context.slab_key);
     }
+
+    tracing::trace!(
+        query_id = context.request.query_id,
+        src = %context.request.flow.src,
+        dst = %context.request.flow.dst,
+        transport = ?context.request.flow.transport,
+        "dns_windows: callback fired",
+    );
 
     // SAFETY: query_results is provided by Windows and will be freed after processing
     let response = match unsafe { process_dns_results(query_results) } {

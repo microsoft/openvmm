@@ -6,12 +6,10 @@
 #![forbid(unsafe_code)]
 
 pub mod resolver;
-mod spec;
 
 #[cfg(test)]
 mod integration_tests;
 
-use crate::spec::*;
 use anyhow::Context as _;
 use disk_backend::Disk;
 use futures::StreamExt;
@@ -28,7 +26,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
-use task_control::InspectTask;
+use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use unicycle::FuturesUnordered;
@@ -43,18 +41,27 @@ use virtio::regions::DataRegion;
 use virtio::regions::data_regions;
 use virtio::regions::try_build_gpn_list;
 use virtio::spec::VirtioDeviceFeatures;
-use virtio::spec::VirtioDeviceFeaturesBank0;
+use virtio::spec::blk::*;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// Maximum number of segments per request advertised via `seg_max` (spec §5.2.4).
+///
+/// This is the maximum number of data descriptors (excluding header and
+/// status) in a single request. The virtio spec requires that a
+/// descriptor chain is no longer than the queue size, and each block
+/// request uses one descriptor for the header and one for the status
+/// byte, so the data segment limit is `DEFAULT_QUEUE_SIZE - 2`.
+const DEFAULT_SEG_MAX: u32 = virtio::DEFAULT_QUEUE_SIZE as u32 - 2;
 
 const MAX_IO_DEPTH: usize = 64;
 
 /// The virtio-blk device.
 #[derive(InspectMut)]
 pub struct VirtioBlkDevice {
-    #[inspect(flatten)]
+    #[inspect(flatten, mut)]
     worker: TaskControl<BlkWorker, BlkQueueState>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -70,17 +77,17 @@ pub struct VirtioBlkDevice {
 /// live here (not in `BlkQueueState`) so they survive when the
 /// task is stopped — they're drained in `poll_disable()` before
 /// the queue state is removed.
-#[derive(Inspect)]
+#[derive(InspectMut)]
 struct BlkWorker {
     disk: Disk,
     read_only: bool,
-    #[inspect(flatten)]
     stats: WorkerStats,
-    #[inspect(skip)]
+    #[inspect(with = "FuturesUnordered::len")]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
 }
 
 /// Transient queue state, created in `enable()` and removed in `poll_disable()`.
+#[derive(InspectMut)]
 struct BlkQueueState {
     queue: VirtioQueue,
     memory: GuestMemory,
@@ -96,9 +103,9 @@ struct WorkerStats {
     errors: Counter,
 }
 
-impl InspectTask<BlkQueueState> for BlkWorker {
-    fn inspect(&self, req: inspect::Request<'_>, _state: Option<&BlkQueueState>) {
-        Inspect::inspect(self, req);
+impl InspectTaskMut<BlkQueueState> for BlkWorker {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>, state: Option<&mut BlkQueueState>) {
+        req.respond().merge(self).merge(state);
     }
 }
 
@@ -312,13 +319,10 @@ impl VirtioDevice for VirtioBlkDevice {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::BLK,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(
-                    VirtioDeviceFeaturesBank0::new()
-                        .with_device_specific(features)
-                        .with_ring_event_idx(true)
-                        .with_ring_indirect_desc(true),
-                )
-                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
+                .with_device_specific_low(features)
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 1,
             // Config space is 60 bytes (size_of minus 4 bytes of struct padding).
             device_register_length: (size_of::<VirtioBlkConfig>() - 4) as u32,
@@ -365,7 +369,7 @@ impl VirtioDevice for VirtioBlkDevice {
             .context("failed to create queue event")?;
 
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory.clone(),
             resources.notify,

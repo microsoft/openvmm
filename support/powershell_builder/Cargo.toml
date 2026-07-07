@@ -6,7 +6,7 @@ name = "powershell_builder"
 edition.workspace = true
 rust-version.workspace = true
 
-[target.'cfg(windows)'.dependencies]
+[dependencies]
 guid.workspace = true
 jiff.workspace = true
 

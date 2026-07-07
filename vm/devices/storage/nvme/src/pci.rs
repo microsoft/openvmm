@@ -4,6 +4,7 @@
 //! The NVMe PCI device implementation.
 
 use crate::BAR0_LEN;
+use crate::DEVICE_ID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
@@ -21,11 +22,12 @@ use chipset_device::io::IoError::InvalidRegister;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -35,7 +37,7 @@ use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::MsiTarget;
+use pci_core::dma::DmaTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -110,11 +112,12 @@ impl NvmeController {
     /// Creates a new NVMe controller.
     pub fn new(
         driver_source: &VmTaskDriverSource,
-        guest_memory: GuestMemory,
-        msi_target: &MsiTarget,
+        dma_target: &DmaTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
     ) -> Self {
+        let msi_target = dma_target.msi_target();
+        let guest_memory = dma_target.guest_memory().clone();
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
             .bar0(
@@ -129,7 +132,7 @@ impl NvmeController {
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                device_id: DEVICE_ID,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
@@ -144,6 +147,7 @@ impl NvmeController {
                     None,
                 )),
             ],
+            Vec::new(),
             bars,
         );
 
@@ -487,12 +491,12 @@ impl MmioIntercept for NvmeController {
 }
 
 impl PciConfigSpace for NvmeController {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.cfg_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.cfg_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.cfg_space.write_byte_enabled(offset, value)
     }
 }
 

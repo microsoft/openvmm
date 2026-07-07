@@ -11,8 +11,8 @@
 //! use the Nix-provided artifacts instead of downloading them.
 
 use crate::_jobs::cfg_versions;
+use crate::common::CommonArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 
 /// Resolved dependency paths from the Nix environment.

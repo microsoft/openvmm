@@ -4,12 +4,13 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod resolver;
+
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
-use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -52,14 +53,9 @@ impl GuestWatchdogServices {
     pub async fn new(
         vmtime: VmTimeAccess,
         watchdog_platform: Box<dyn WatchdogPlatform>,
-        register_pio: &mut dyn RegisterPortIoIntercept,
-        pio_wdat_port: u16,
+        pio_static_wdat_port: Box<dyn ControlPortIoIntercept>,
         is_restoring: bool,
     ) -> GuestWatchdogServices {
-        let mut pio_static_wdat_port = register_pio.new_io_region("wdat_port", 8);
-
-        pio_static_wdat_port.map(pio_wdat_port);
-
         GuestWatchdogServices {
             watchdog: WatchdogServices::new(
                 "guest-watchdog",

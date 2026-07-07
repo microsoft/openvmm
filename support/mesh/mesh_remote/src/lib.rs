@@ -1,7 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Mesh RPC node implementations for cross-process.
+//! Cross-process mesh transport implementations.
+//!
+//! This crate provides the platform-specific IPC transports that allow mesh
+//! ports to communicate across process boundaries:
+//!
+//! - **Unix** (`UnixNode`) — uses Unix domain sockets with
+//!   `SCM_RIGHTS` for file descriptor passing. Child processes
+//!   authenticate via a pre-connected socket FD inherited at spawn.
+//!   External processes join via a filesystem socket path, where
+//!   security depends on directory permissions.
+//! - **Windows** (`AlpcNode`) — uses ALPC (Advanced Local Procedure
+//!   Call) with handle duplication. Both child and external processes
+//!   authenticate using a 256-bit random `MeshSecret`, validated with
+//!   constant-time comparison.
+//!
+//! Most code does not interact with this crate directly. Instead, use
+//! `mesh_process::Mesh` to create and manage process groups.
 
 mod alpc_listener;
 mod alpc_node;

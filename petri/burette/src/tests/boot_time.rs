@@ -72,7 +72,11 @@ impl BootProfile {
         if self.uses_private_memory() {
             builder = builder.modify_backend(|c| {
                 c.with_custom_config(|c| {
-                    c.memory.private_memory = true;
+                    for node in &mut c.numa.nodes {
+                        if let Some(mem) = &mut node.mem {
+                            mem.private_memory = true;
+                        }
+                    }
                 })
             });
         }

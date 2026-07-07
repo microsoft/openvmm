@@ -20,7 +20,6 @@ nvme_driver.workspace = true
 nvme_spec.workspace = true
 page_pool_alloc.workspace = true
 pal_async.workspace = true
-parking_lot.workspace = true
 pci_core.workspace = true
 scsi_buffers.workspace = true
 user_driver.workspace = true
@@ -30,10 +29,6 @@ user_driver_emulated_mock.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libfuzzer-sys.workspace = true
-
-[package.metadata.xtask.unused-deps]
-# required for the xtask_fuzz macro, but unused_deps doesn't know that
-ignored = ["libfuzzer-sys"]
 
 [package.metadata]
 cargo-fuzz = true

@@ -19,9 +19,6 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub const VENDOR_ID: u16 = 0x1414;
-pub const DEVICE_ID: u16 = 0x00BA;
-
 pub const PAGE_SIZE32: u32 = 4096;
 pub const PAGE_SIZE64: u64 = 4096;
 
@@ -260,8 +257,7 @@ pub const GDMA_EQE_HWC_INIT_EQ_ID_DB: u8 = 129;
 pub const GDMA_EQE_HWC_INIT_DATA: u8 = 130;
 pub const GDMA_EQE_HWC_INIT_DONE: u8 = 131;
 pub const GDMA_EQE_HWC_RECONFIG_DATA: u8 = 133;
-// Sent on the event of a SoC Crash or certain Firmware updates.
-pub const GDMA_EQE_HWC_RECONFIG_VF: u8 = 135;
+pub const GDMA_EQE_HWC_RESET_REQUEST: u8 = 135;
 
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -289,6 +285,17 @@ pub struct EqeDataReconfig {
     pub reserved1: [u8; 8],
 }
 
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct EqeVfReset {
+    #[bits(1)]
+    pub revoke_vtl0_vf: bool,
+    #[bits(7)]
+    pub reserved1: u8,
+    #[bits(24)]
+    pub reserved2: u32,
+}
+
 pub const HWC_INIT_DATA_CQID: u8 = 1;
 pub const HWC_INIT_DATA_RQID: u8 = 2;
 pub const HWC_INIT_DATA_SQID: u8 = 3;
@@ -308,7 +315,7 @@ open_enum! {
         GDMA_REGISTER_DEVICE = 4,
         GDMA_DEREGISTER_DEVICE = 5,
         GDMA_GENERATE_TEST_EQE = 10,
-        GDMA_GENERATE_RECONFIG_VF_EVENT = 11,
+        GDMA_GENERATE_RESET_REQUEST_EQE = 11,
         GDMA_CREATE_QUEUE = 12,
         GDMA_DISABLE_QUEUE = 13,
         GDMA_CREATE_DMA_REGION = 25,
@@ -456,6 +463,7 @@ pub const DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT: u64 = 0x20;
 pub const DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE: u64 = 0x40;
 pub const DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION: u64 = 0x4000;
 pub const DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE: u64 = 0x10000;
+pub const DRIVER_CAP_FLAG_1_VTL2_SELECTIVE_REVOKE_SUB_ON_RESET_EQE: u64 = 0x8000000;
 
 pub const OS_TYPE_OHCL: u32 = 0x60;
 
@@ -603,4 +611,11 @@ pub struct GdmaChangeMsixVectorIndexForEq {
     pub msix: u32,
     pub reserved1: u32,
     pub reserved2: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct GdmaGenerateResetEventReq {
+    pub queue_index: u32,
+    pub data: EqeVfReset,
 }

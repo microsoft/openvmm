@@ -25,8 +25,6 @@ use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::x86::MsrError;
 use virt::x86::vp;
-use virt::x86::vp::hv_apic_nmi_pending;
-use virt::x86::vp::set_hv_apic_nmi_pending;
 use virt_support_apic::ApicClient;
 use virt_support_apic::ApicWork;
 use virt_support_apic::LocalApic;
@@ -51,9 +49,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(apic) => {
                 apic.lint(vp_index, index, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {
@@ -80,9 +76,7 @@ impl WhpPartitionInner {
         match &self.vtlp(vtl).lapic {
             LocalApicKind::Emulated(lapic) => {
                 lapic.request_interrupt(request.address, request.data, |vp_index| {
-                    self.vp(vp_index)
-                        .expect("apic emulator passes valid vp index")
-                        .wake()
+                    self.vp(vp_index).unwrap().wake_for_apic(vtl);
                 });
             }
             LocalApicKind::Offloaded => {
@@ -124,6 +118,7 @@ impl WhpPartitionInner {
 
 pub struct WhpApicClient<'a, T> {
     partition: &'a WhpPartitionInner,
+    vtl: Vtl,
     whp: whp::Processor<'a>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
@@ -138,6 +133,7 @@ impl<'a> WhpVpRef<'a> {
     ) -> WhpApicClient<'a, T> {
         WhpApicClient {
             partition: self.partition,
+            vtl,
             whp: self.whp(vtl),
             dev,
             vmtime,
@@ -163,16 +159,7 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
-        let vp = self
-            .partition
-            .vp(vp_index)
-            .expect("apic emulator passes valid vp index")
-            .vp();
-
-        vp.scan_irr.store(true, Ordering::Relaxed);
-        if let Some(waker) = &*vp.waker.read() {
-            waker.wake_by_ref();
-        }
+        self.partition.vp(vp_index).unwrap().wake_for_apic(self.vtl);
     }
 
     fn eoi(&mut self, vector: u8) {
@@ -212,8 +199,10 @@ impl WhpProcessor<'_> {
             LocalApicKind::Offloaded => {
                 // Get the NMI pending bit from the APIC.
                 let mut activity: vp::Activity = self.vp.get_register_state(vtl)?;
-                let apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                activity.nmi_pending = hv_apic_nmi_pending(&apic);
+                let apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
+                activity.nmi_pending = apic.hv_apic_nmi_pending();
                 activity
             }
         };
@@ -260,9 +249,16 @@ impl WhpProcessor<'_> {
             LocalApicKind::Offloaded => {
                 self.vp.set_register_state(vtl, value)?;
                 // Set the NMI pending bit via the APIC.
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                set_hv_apic_nmi_pending(&mut apic, value.nmi_pending);
-                self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
+                let mut apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
+                if value.nmi_pending != apic.hv_apic_nmi_pending() {
+                    apic.set_hv_apic_nmi_pending(value.nmi_pending);
+                    self.vp
+                        .whp(vtl)
+                        .set_apic(&apic.as_page())
+                        .for_op("set apic state")?;
+                }
             }
         }
         Ok(())
@@ -281,10 +277,12 @@ impl WhpProcessor<'_> {
                 lapic.apic.save()
             }
             LocalApicKind::Offloaded => {
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
+                let mut apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
                 // Clear the non-architectural NMI pending bit.
-                set_hv_apic_nmi_pending(&mut apic, false);
-                vp::Apic::from_page(apic_base, &apic[..1024].try_into().unwrap())
+                apic.set_hv_apic_nmi_pending(false);
+                vp::Apic::new(apic_base.into(), apic, [0; 8])
             }
         };
 
@@ -306,11 +304,16 @@ impl WhpProcessor<'_> {
             }
             LocalApicKind::Offloaded => {
                 // Preserve NMI pending.
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                let nmi_pending = hv_apic_nmi_pending(&apic);
-                apic[..1024].copy_from_slice(&value.as_page());
-                set_hv_apic_nmi_pending(&mut apic, nmi_pending);
-                self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
+                let nmi_pending = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                )
+                .hv_apic_nmi_pending();
+                let mut apic = *value.registers();
+                apic.set_hv_apic_nmi_pending(nmi_pending);
+                self.vp
+                    .whp(vtl)
+                    .set_apic(&apic.as_page())
+                    .for_op("set apic state")?;
             }
         }
 
@@ -413,12 +416,10 @@ impl WhpProcessor<'_> {
                 break;
             }
 
+            let scan_irr = self.vplc(vtl).scan_irr.swap(false, Ordering::Relaxed);
             let vtl_state = &mut self.state.vtls[vtl];
             if let Some(lapic) = &mut vtl_state.lapic {
-                let work = lapic.apic.scan(
-                    &mut self.state.vmtime,
-                    self.inner.scan_irr.swap(false, Ordering::Relaxed),
-                );
+                let work = lapic.apic.scan(&mut self.state.vmtime, scan_irr);
                 lapic.nmi_pending |= work.nmi;
                 if lapic.nmi_pending {
                     self.inject_nmi(vtl);
@@ -679,6 +680,7 @@ impl WhpProcessor<'_> {
             || cr8 >= priority as u64
             || pending_event.event_pending()
         {
+            // Not ready. Register a notification.
             let notifications = self.state.vtls[vtl].deliverability_notifications;
             if !notifications.interrupt_notification()
                 || (notifications.interrupt_priority() != 0
@@ -692,6 +694,7 @@ impl WhpProcessor<'_> {
                 );
             }
 
+            self.state.halted = false;
             return;
         }
 

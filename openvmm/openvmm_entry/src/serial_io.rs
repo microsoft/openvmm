@@ -67,6 +67,27 @@ pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     Ok(OpenSocketSerialConfig::from(UnixListener::bind(path)?).into_resource())
 }
 
+/// Connect to an existing named pipe or Unix domain socket as a client.
+///
+/// Unlike [`bind_serial`], which creates a new server, this function connects
+/// to a pipe or socket that already exists.
+pub fn connect_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
+    #[cfg(windows)]
+    {
+        use serial_socket::windows::OpenWindowsPipeSerialConfig;
+
+        if path.starts_with("//./pipe") {
+            let pipe = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?;
+            return Ok(OpenWindowsPipeSerialConfig::from(pipe).into_resource());
+        }
+    }
+
+    Ok(OpenSocketSerialConfig::from(unix_socket::UnixStream::connect(path)?).into_resource())
+}
+
 pub fn bind_tcp_serial(addr: &SocketAddr) -> anyhow::Result<Resource<SerialBackendHandle>> {
     let listener = std::net::TcpListener::bind(addr)
         .with_context(|| format!("failed to bind tcp address {addr}"))?;

@@ -210,21 +210,23 @@ impl<T: X64RegisterState> X64RegisterState for &'_ mut T {
 }
 
 /// An x64 GP register. This just contains the subset used in the hypercall ABI.
+/// These are defined with discriminants that match the x86-64 architecture's
+/// register ordering.
 pub enum X64HypercallRegister {
     /// RAX
-    Rax,
+    Rax = 0,
     /// RCX
-    Rcx,
+    Rcx = 1,
     /// RDX
-    Rdx,
+    Rdx = 2,
     /// RBX
-    Rbx,
+    Rbx = 3,
     /// RSI
-    Rsi,
+    Rsi = 6,
     /// RDI
-    Rdi,
+    Rdi = 7,
     /// R8
-    R8,
+    R8 = 8,
 }
 
 #[cfg(test)]

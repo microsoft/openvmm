@@ -44,6 +44,16 @@ open_enum::open_enum! {
         MEMORY = 1,
         X2APIC = 2,
         GICC = 3,
+        GENERIC_INITIATOR = 5,
+    }
+}
+
+open_enum::open_enum! {
+    /// Device Handle Type for a [`SratGenericInitiator`] structure.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+    pub enum SratDeviceHandleType: u8 {
+        ACPI = 0,
+        PCI = 1,
     }
 }
 
@@ -136,6 +146,62 @@ impl SratGicc {
             flags: SRAT_APIC_ENABLED.into(),
             clock_domain: 0.into(),
             proximity_domain: vnode.into(),
+        }
+    }
+}
+
+/// SRAT Generic Initiator Affinity Structure (ACPI 6.3+, type 5).
+///
+/// Associates a non-CPU initiator (such as a PCI device) with a proximity
+/// domain. This is how a passthrough device's coherent/device memory is
+/// attached to a CPU-less NUMA node: the guest OS matches the device handle
+/// (PCI segment/bus/device/function) against the device and onlines the
+/// corresponding proximity domain.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct SratGenericInitiator {
+    pub typ: SratType,
+    pub length: u8,
+    pub reserved1: u8,
+    pub device_handle_type: SratDeviceHandleType,
+    pub proximity_domain: u32_ne,
+    pub device_handle: [u8; 16],
+    pub flags: u32_ne,
+    pub reserved2: u32_ne,
+}
+
+const_assert_eq!(size_of::<SratGenericInitiator>(), 32);
+
+open_enum::open_enum! {
+    pub enum SratGenericInitiatorFlags: u32 {
+        ENABLED                   = 1 << 0,
+        ARCHITECTURAL_TRANSACTIONS = 1 << 1,
+    }
+}
+
+impl SratGenericInitiator {
+    /// Creates a Generic Initiator Affinity structure for a PCI device,
+    /// associating the device at `segment:bus:device.function` with the
+    /// proximity domain `vnode`.
+    pub fn new_pci(segment: u16, bus: u8, device: u8, function: u8, vnode: u32) -> Self {
+        // PCI Device Handle layout (ACPI 6.3, Table "Device Handle - PCI"):
+        //   bytes [0..2] : PCI Segment (little endian)
+        //   byte   [2]   : PCI Bus
+        //   byte   [3]   : PCI Device (bits 7:3) | Function (bits 2:0)
+        //   bytes [4..16]: reserved (zero)
+        let mut device_handle = [0u8; 16];
+        device_handle[0..2].copy_from_slice(&segment.to_le_bytes());
+        device_handle[2] = bus;
+        device_handle[3] = ((device & 0x1f) << 3) | (function & 0x7);
+        Self {
+            typ: SratType::GENERIC_INITIATOR,
+            length: size_of::<Self>() as u8,
+            reserved1: 0,
+            device_handle_type: SratDeviceHandleType::PCI,
+            proximity_domain: vnode.into(),
+            device_handle,
+            flags: SratGenericInitiatorFlags::ENABLED.0.into(),
+            reserved2: 0.into(),
         }
     }
 }

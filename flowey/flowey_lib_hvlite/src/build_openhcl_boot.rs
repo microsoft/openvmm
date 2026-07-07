@@ -3,14 +3,17 @@
 
 //! Build `openhcl_boot` binaries
 
+use crate::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
-use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenhclBootOutput {
+    #[serde(rename = "openhcl_boot")]
     pub bin: PathBuf,
+    #[serde(rename = "openhcl_boot.dbg")]
     pub dbg: PathBuf,
 }
 
@@ -40,7 +43,6 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
-        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -73,35 +75,31 @@ impl FlowNode for Node {
                 OpenhclBootBuildProfile::Release => BuildProfile::BootRelease,
             };
 
-            let mut pre_build_deps = Vec::new();
-
-            // TODO: install build tools for other platforms
-            if matches!(
-                ctx.platform(),
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
-            ) {
-                pre_build_deps.push(ctx.reqv(|v| {
-                    flowey_lib_common::install_dist_pkg::Request::Install {
-                        package_names: vec!["build-essential".into()],
-                        done: v,
-                    }
-                }));
-            }
+            // Enable cvm_boot_log in debug builds to include TDX/SNP
+            // serial logging support.
+            let features = if matches!(profile, BuildProfile::BootDev) {
+                CargoFeatureSet::Specific(vec!["cvm_boot_log".into()])
+            } else {
+                CargoFeatureSet::None
+            };
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openhcl_boot".into(),
                 out_name: "openhcl_boot".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile,
-                features: Default::default(),
+                features,
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
-                pre_build_deps,
+                pre_build_deps: Vec::new(),
                 output: v,
             });
 

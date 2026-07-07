@@ -208,3 +208,21 @@ impl WaitDriver for LocalDriver {
         Ok(FdWait::new(fd, self.new_fd_ready(fd)?, read_size))
     }
 }
+
+#[cfg(target_os = "macos")]
+impl crate::process::macos::ProcessWaitDriver for LocalDriver {
+    type ProcessWait = crate::process::macos::NoProcessWait;
+
+    fn new_process_wait_pid(&self, _pid: i32) -> io::Result<Self::ProcessWait> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::io_uring::IoUringDriver for LocalDriver {
+    type Submitter = crate::io_uring::NoIoUring;
+
+    fn io_uring_submitter(&self) -> Option<&Self::Submitter> {
+        None
+    }
+}

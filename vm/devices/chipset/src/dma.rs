@@ -21,14 +21,26 @@
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::isa_dma::IsaDmaController;
+use chipset_device::isa_dma::IsaDmaTransferBuffer;
+use chipset_device::isa_dma::IsaDmaTransferDirection;
 use chipset_device::pio::PortIoIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
 use std::ops::RangeInclusive;
+use vm_resource::CanResolveTo;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::isa_dma_channel::IsaDmaBuffer;
-use vmcore::isa_dma_channel::IsaDmaDirection;
+
+pub mod resolver;
+
+/// A resolved ISA DMA controller resource.
+pub struct ResolvedIsaDmaController(pub DmaController);
+
+impl CanResolveTo<ResolvedIsaDmaController> for IsaDmaControllerHandleKind {
+    type Input<'a> = ();
+}
 
 // Skip registering page port 0x80 so that the PCAT BIOS can handle
 // it for debugging purposes.
@@ -92,12 +104,26 @@ impl DmaController {
             None
         }
     }
+}
 
-    /// Checks the value of the DMA channel's configured transfer size.
-    ///
-    /// Corresponds to the `check_transfer_size` function in the `IsaDmaChannel`
-    /// trait.
-    pub fn check_transfer_size(&mut self, channel_number: usize) -> u16 {
+impl ChangeDeviceState for DmaController {
+    fn start(&mut self) {}
+
+    async fn stop(&mut self) {}
+
+    async fn reset(&mut self) {
+        self.state = Default::default();
+    }
+}
+
+impl ChipsetDevice for DmaController {
+    fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+        Some(self)
+    }
+}
+
+impl IsaDmaController for DmaController {
+    fn check_transfer_size(&mut self, channel_number: usize) -> u16 {
         let Some(controller) = self.get_controller(channel_number) else {
             tracelimit::error_ratelimited!(?channel_number, "invalid channel number");
             return 0;
@@ -106,14 +132,11 @@ impl DmaController {
         controller.channels[channel_number % CHANNELS_PER_CONTROLLER].count
     }
 
-    /// Requests an access to ISA DMA channel buffer.
-    ///
-    /// Corresponds to the `request` function in the `IsaDmaChannel` trait.
-    pub fn request(
+    fn request(
         &mut self,
         channel_number: usize,
-        direction: IsaDmaDirection,
-    ) -> Option<IsaDmaBuffer> {
+        direction: IsaDmaTransferDirection,
+    ) -> Option<IsaDmaTransferBuffer> {
         if channel_number >= CHANNELS_PER_CONTROLLER * 2 {
             tracelimit::error_ratelimited!(?channel_number, "invalid channel number");
             return None;
@@ -144,8 +167,8 @@ impl DmaController {
                 tracing::error!(?channel_number, "invalid request: mode is self-test");
                 return None;
             }
-            1 => IsaDmaDirection::Write,
-            2 => IsaDmaDirection::Read,
+            1 => IsaDmaTransferDirection::Write,
+            2 => IsaDmaTransferDirection::Read,
             _ => {
                 tracing::error!(?channel_number, "invalid request: mode is invalid");
                 return None;
@@ -166,18 +189,13 @@ impl DmaController {
         // Report the channel as being active.
         controller.status &= !(1 << channel_index);
 
-        let buffer = IsaDmaBuffer {
+        Some(IsaDmaTransferBuffer {
             address,
             size: channel.count as usize,
-        };
-
-        Some(buffer)
+        })
     }
 
-    /// Signals to the DMA controller that the transfer is concluded.
-    ///
-    /// Corresponds to the `complete` function in the `IsaDmaChannel` trait.
-    pub fn complete(&mut self, channel_number: usize) {
+    fn complete(&mut self, channel_number: usize) {
         let Some(controller) = self.get_controller(channel_number) else {
             tracing::error!(?channel_number, "invalid channel number");
             return;
@@ -191,22 +209,6 @@ impl DmaController {
 
         // Report the channel as being inactive.
         controller.status |= 1 << channel_index;
-    }
-}
-
-impl ChangeDeviceState for DmaController {
-    fn start(&mut self) {}
-
-    async fn stop(&mut self) {}
-
-    async fn reset(&mut self) {
-        self.state = Default::default();
-    }
-}
-
-impl ChipsetDevice for DmaController {
-    fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
-        Some(self)
     }
 }
 

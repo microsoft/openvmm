@@ -4,6 +4,7 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
+
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
@@ -15,7 +16,7 @@ use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
-use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -48,6 +49,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+pub use powershell::request_physical_nvme;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -139,7 +141,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             let mut vhd = Err(anyhow::Error::msg("haven't tried to open the vhd yet"));
             // The VM may not be fully shut down immediately, do some retries
             for _ in 0..5 {
-                vhd = VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                vhd = VhdmpDisk::options()
+                    .read_only(true)
+                    .open(hook_crash_disk.as_ref())
                     .context("failed opening vhd");
                 if vhd.is_ok() {
                     break;
@@ -188,6 +192,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             enable_vpci_boot,
             secure_boot_enabled,
             default_boot_always_attempt,
+            efi_diagnostics_log_level,
+            efi_diagnostics_rate_limit,
             ..
         }) = config.firmware.uefi_config()
         {
@@ -215,13 +221,58 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 );
             }
 
+            // Plumb the EFI diagnostics log level via the OpenHCL command
+            // line. The corresponding `EfiDiagnosticsLogLevel` WMI property
+            // is not available on all hosts (e.g. rs_prerelease), so we
+            // rely on the underhill env var fallback instead. This means
+            // we currently only support setting the level on OpenHCL-backed
+            // VMs; for plain Hyper-V UEFI VMs we fail loudly rather than
+            // silently dropping the setting.
+            //
+            // TODO: switch to the WMI property (which would also cover the
+            // non-OpenHCL path) once host changes are saturated.
+            let efi_diag_cli = match efi_diagnostics_log_level {
+                crate::EfiDiagnosticsLogLevel::Default => None,
+                crate::EfiDiagnosticsLogLevel::Info => Some("INFO"),
+                crate::EfiDiagnosticsLogLevel::Full => Some("FULL"),
+            };
+            if let Some(cli) = efi_diag_cli {
+                if !properties.is_openhcl {
+                    anyhow::bail!(
+                        "with_efi_diagnostics_log_level({:?}) is only supported for \
+                         OpenHCL-backed Hyper-V UEFI VMs in this code path",
+                        efi_diagnostics_log_level
+                    );
+                }
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
+                );
+            }
+
+            // Plumb the EFI diagnostics rate-limit override via the OpenHCL
+            // command line.
+            if let Some(limit) = efi_diagnostics_rate_limit {
+                if !properties.is_openhcl {
+                    anyhow::bail!(
+                        "with_efi_diagnostics_rate_limit({}) is only supported for \
+                         OpenHCL-backed Hyper-V UEFI VMs in this code path",
+                        limit
+                    );
+                }
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    format!("HCL_EFI_DIAGNOSTICS_RATE_LIMIT={limit}"),
+                );
+            }
+
             if *enable_vpci_boot {
                 todo!("hyperv nvme boot");
             }
         }
 
-        // Map SCSI
-        let mut scsi_controllers = HashMap::new();
+        // Map VMBus storage controllers (SCSI and NVMe).
+        let mut storage_controllers = HashMap::new();
         for (
             vsid,
             VmbusStorageController {
@@ -231,10 +282,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             },
         ) in config.vmbus_storage_controllers.iter()
         {
-            if !matches!(controller_type, crate::VmbusStorageType::Scsi) {
-                todo!("other storage types for hyper-v")
-            }
-
             let mut hyperv_drives = HashMap::new();
             for (lun, Drive { disk, is_dvd }) in drives {
                 hyperv_drives.insert(
@@ -245,9 +292,32 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     },
                 );
             }
-            scsi_controllers.insert(
+
+            let vmbus_controller_type = match controller_type {
+                crate::VmbusStorageType::Scsi => powershell::HyperVVmbusStorageType::Scsi,
+                crate::VmbusStorageType::Nvme => {
+                    for (nsid, drive) in &hyperv_drives {
+                        if drive.is_dvd {
+                            anyhow::bail!("NVMe emulator does not support DVD drives");
+                        }
+                        if drive.disk.is_none() {
+                            anyhow::bail!("NVMe drive cannot be empty (NSID {})", nsid);
+                        }
+                    }
+                    powershell::HyperVVmbusStorageType::Nvme
+                }
+                _ => {
+                    todo!(
+                        "storage type {:?} not yet supported for hyper-v",
+                        controller_type
+                    )
+                }
+            };
+
+            storage_controllers.insert(
                 *vsid,
-                powershell::HyperVScsiController {
+                powershell::HyperVVmbusStorageController {
+                    controller_type: vmbus_controller_type,
                     target_vtl: *target_vtl,
                     drives: hyperv_drives,
                 },
@@ -275,6 +345,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 }
             }
         }
+
+        let nvme_disk_paths: Vec<PathBuf> = storage_controllers
+            .values()
+            .filter(|c| matches!(c.controller_type, powershell::HyperVVmbusStorageType::Nvme))
+            .flat_map(|c| c.drives.values())
+            .filter_map(|drive| drive.disk.clone())
+            .collect();
 
         // Attempt to enable COM3 and use that to get KMSG logs, otherwise
         // fall back to use diag_client.
@@ -337,12 +414,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
             firmware_file: igvm_file.clone(),
             firmware_parameters: openhcl_command_line,
             guest_state_path,
-            scsi_controllers,
-            ide_controllers,
-            com_2: config.firmware.is_opentmk(),
+            storage_controllers,
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
+
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
@@ -354,7 +430,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             let local_path = igvm_file.as_ref().unwrap();
             fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
                 .context("failed to copy igvm file")?;
-            acl_read_for_vm(local_path, Some(*vm.vmid()))
+            acl_for_vm(local_path, Some(*vm.vmid()), false)
                 .context("failed to set ACL for igvm file")?;
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
@@ -383,23 +459,28 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        let serial_pipe_path = vm.get_vm_com_port_path(1);
-        let serial_log_file = log_source.log_file("guest")?;
-        log_tasks.push(driver.spawn(
-            "guest-log",
-            hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
-        ));
+        // Grant the VM access to NVMe VHDs
+        for path in &nvme_disk_paths {
+            acl_for_vm(path, Some(*vm.vmid()), true).context("failed to set ACL for nvme VHD")?;
+        }
 
-        // Start scanning COM2 before boot so no early output is missed; the
-        // result is collected later via `wait_for_opentmk`.
+        let serial_pipe_path = vm.get_vm_com_port_path(1);
+
+        // OpenTMK streams its newline-JSON results over COM1. Scan it (the scan
+        // task also mirrors every line to a log file); the result is collected
+        // later via `wait_for_opentmk`. Other guests use the normal serial log.
         let opentmk_scan = if config.firmware.is_opentmk() {
-            let opentmk_pipe_path = vm.get_vm_com_port_path(2);
             let opentmk_log_file = log_source.log_file("opentmk")?;
             Some(driver.spawn(
                 "opentmk-scan",
-                hyperv_opentmk_scan_task(driver.clone(), opentmk_pipe_path, opentmk_log_file),
+                hyperv_opentmk_scan_task(driver.clone(), serial_pipe_path, opentmk_log_file),
             ))
         } else {
+            let serial_log_file = log_source.log_file("guest")?;
+            log_tasks.push(driver.spawn(
+                "guest-log",
+                hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
+            ));
             None
         };
 
@@ -435,7 +516,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.remove().await
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         self.vm.wait_for_halt(allow_reset).await
     }
 
@@ -460,9 +541,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to create polled client socket")?
                 .convert();
             socket
-                .connect(
-                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
-                )
+                .connect(&VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_PORT).into())
                 .await
                 .context("failed to connect")
                 .map(|()| socket)
@@ -478,9 +557,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                         tracing::info!(set_high_vtl, "handshaking with pipette");
                         let c = PipetteClient::new(&driver, socket, &output_dir)
                             .await
-                            .context("failed to handshake with pipette");
+                            .context("failed to connect to pipette")?;
                         tracing::info!(set_high_vtl, "completed pipette handshake");
-                        Ok(Some(c?))
+                        Ok(Some(c))
                     }
                     Err(err) => {
                         tracing::debug!(
@@ -608,14 +687,15 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 }
 
-fn acl_read_for_vm(path: &Path, id: Option<Guid>) -> anyhow::Result<()> {
+fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> {
     let sid_arg = format!(
-        "NT VIRTUAL MACHINE\\{name}:R",
+        "NT VIRTUAL MACHINE\\{name}:{perm}",
         name = if let Some(id) = id {
             format!("{id:X}")
         } else {
             "Virtual Machines".to_string()
-        }
+        },
+        perm = if write { 'M' } else { 'R' }
     );
     let output = std::process::Command::new("icacls.exe")
         .arg(path)
@@ -630,7 +710,7 @@ fn acl_read_for_vm(path: &Path, id: Option<Guid>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Connects to the guest's COM2 pipe and scans it for OpenTMK results. Returns
+/// Connects to the guest's COM1 pipe and scans it for OpenTMK results. Returns
 /// once the run completes or the internal safety timeout elapses; the caller
 /// applies its own deadline in [`HyperVPetriRuntime::wait_for_opentmk`].
 async fn hyperv_opentmk_scan_task(
@@ -728,6 +808,14 @@ async fn petri_disk_to_hyperv(
         None => None,
         Some(Disk::Memory(_)) => None, // TODO: Hyper-V memory disk
         Some(Disk::Differencing(parent_path)) => {
+            let parent_path = match parent_path {
+                crate::DiskPath::Local(path) => path,
+                crate::DiskPath::Remote { .. } => {
+                    anyhow::bail!(
+                        "Hyper-V backend requires local disk files; remote disk artifacts are not supported"
+                    )
+                }
+            };
             let diff_disk_path = temp_dir
                 .path()
                 .join(parent_path.file_name().context("path has no filename")?);

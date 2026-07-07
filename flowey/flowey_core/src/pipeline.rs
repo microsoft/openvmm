@@ -6,6 +6,7 @@
 mod artifact;
 
 pub use artifact::Artifact;
+pub use artifact::ArtifactType;
 
 use self::internal::*;
 use crate::node::FlowArch;
@@ -712,6 +713,34 @@ impl Pipeline {
         )
     }
 
+    /// Returns a pair of sets of opaque handles to a new artifact for use
+    /// across jobs in the pipeline. The artifact names are derived by the impl
+    /// of [`ArtifactType::name`] using common prefixes and suffixes if
+    /// specified (although the implementor can choose to use those values
+    /// differently).
+    #[track_caller]
+    pub fn new_typed_artifact_collection<T: Artifact, U: ArtifactType>(
+        &mut self,
+        artifact_types: impl IntoIterator<Item = U>,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) -> (
+        BTreeMap<U, PublishTypedArtifact<T>>,
+        BTreeMap<U, UseTypedArtifact<T>>,
+    ) {
+        artifact_types
+            .into_iter()
+            .map(|artifact_type| {
+                let (pub_artifact, use_artifact) =
+                    self.new_typed_artifact(artifact_type.name(prefix, suffix));
+                (
+                    (artifact_type.clone(), pub_artifact),
+                    (artifact_type, use_artifact),
+                )
+            })
+            .unzip()
+    }
+
     /// (ADO only) Set the pipeline-level name.
     ///
     /// <https://learn.microsoft.com/en-us/azure/devops/pipelines/process/run-number?view=azure-devops&tabs=yaml>
@@ -1298,6 +1327,31 @@ impl PipelineJob<'_> {
             .push(serde_json::to_vec(&req.into_request()).unwrap().into());
 
         self
+    }
+
+    /// Add a flow node whose request publishes a typed artifact.
+    ///
+    /// This is a shortcut for the common pattern of calling
+    /// [`PipelineJobCtx::publish_typed_artifact`] inside a [`Self::dep_on`]
+    /// closure and passing the resulting [`WriteVar`] into a request.
+    pub fn publish<T: Artifact, R: IntoRequest + 'static>(
+        self,
+        artifact: PublishTypedArtifact<T>,
+        f: impl FnOnce(WriteVar<T>) -> R,
+    ) -> Self {
+        self.dep_on(|ctx| f(ctx.publish_typed_artifact(artifact)))
+    }
+
+    /// Add a flow node whose request is run purely for its side effect.
+    ///
+    /// This is a shortcut for the common pattern of calling
+    /// [`PipelineJobCtx::new_done_handle`] inside a [`Self::dep_on`]
+    /// closure and passing the resulting [`WriteVar`] into a request.
+    pub fn side_effect<R: IntoRequest + 'static>(
+        self,
+        f: impl FnOnce(WriteVar<crate::node::SideEffect>) -> R,
+    ) -> Self {
+        self.dep_on(|ctx| f(ctx.new_done_handle()))
     }
 
     /// Set config on a node for this job.

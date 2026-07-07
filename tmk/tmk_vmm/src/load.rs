@@ -9,6 +9,7 @@ use guestmem::GuestMemory;
 use hvdef::Vtl;
 use loader::importer::GuestArch;
 use loader::importer::ImageLoad;
+#[cfg(guest_arch = "x86_64")]
 use loader::importer::X86Register;
 use object::Endianness;
 use object::Object;
@@ -19,14 +20,17 @@ use std::sync::Arc;
 use virt::VpIndex;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
+#[cfg(guest_arch = "aarch64")]
 use vm_topology::processor::aarch64::Aarch64Topology;
+#[cfg(guest_arch = "x86_64")]
 use vm_topology::processor::x86::X86Topology;
 use zerocopy::FromBytes as _;
+#[cfg(guest_arch = "x86_64")]
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// Loads a TMK, returning the initial registers for the BSP.
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+#[cfg(guest_arch = "x86_64")]
 pub fn load_x86(
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
@@ -36,7 +40,7 @@ pub fn load_x86(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::x86::X86InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(&mut loader, tmk, test)?;
+    let load_info = load_common(None, &mut loader, tmk, test)?;
 
     let page_table_base = load_info.next_available_address;
     let mut page_table_work_buffer: Vec<page_table::x64::PageTable> =
@@ -88,7 +92,7 @@ pub fn load_x86(
     Ok(regs)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
+#[cfg(guest_arch = "aarch64")]
 pub fn load_aarch64(
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
@@ -98,7 +102,12 @@ pub fn load_aarch64(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::aarch64::Aarch64InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(&mut loader, tmk, test)?;
+    let load_info = load_common(
+        Some(memory_layout.ram()[0].range.start()),
+        &mut loader,
+        tmk,
+        test,
+    )?;
 
     let mut import_reg = |reg| {
         loader
@@ -118,6 +127,7 @@ pub fn load_aarch64(
 }
 
 fn load_common<R: Debug + GuestArch>(
+    offset_addr: Option<u64>,
     loader: &mut vm_loader::Loader<'_, R>,
     tmk: &File,
     test: &TestInfo,
@@ -126,7 +136,7 @@ fn load_common<R: Debug + GuestArch>(
         loader,
         &mut &*tmk,
         0,
-        0x200000,
+        offset_addr.unwrap_or(0x200000),
         false,
         loader::importer::BootPageAcceptance::Exclusive,
         "tmk",
@@ -158,6 +168,7 @@ fn load_common<R: Debug + GuestArch>(
 struct LoadInfo {
     entrypoint: u64,
     param: u64,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     next_available_address: u64,
 }
 

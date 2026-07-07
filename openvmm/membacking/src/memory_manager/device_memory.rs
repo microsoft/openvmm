@@ -6,6 +6,7 @@
 
 use super::DEVICE_PRIORITY;
 use crate::mapping_manager::Mappable;
+use crate::mapping_manager::MappingBacking;
 use crate::region_manager::MapParams;
 use crate::region_manager::RegionHandle;
 use crate::region_manager::RegionManagerClient;
@@ -111,12 +112,17 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         }
 
         if let Some(handle) = &state.handle {
-            block_on(handle.add_mapping(
+            if let Err(e) = block_on(handle.add_mapping(
                 new_mapping.range,
-                new_mapping.mappable.clone(),
-                new_mapping.file_offset,
+                MappingBacking::File {
+                    mappable: new_mapping.mappable.clone(),
+                    file_offset: new_mapping.file_offset,
+                },
                 new_mapping.writable,
-            ));
+                None,
+            )) {
+                return Err(io::Error::other(e));
+            }
         }
         state.mappings.push(new_mapping);
         Ok(())
@@ -158,7 +164,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     MemoryRange::try_from(gpa..gpa.wrapping_add(self.0.len as u64))
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?,
                     DEVICE_PRIORITY,
-                    false, // device memory cannot currently be a DMA target
+                    crate::region_manager::MappingType::Device,
                 )
                 .await
                 .map_err(io::Error::other)?;
@@ -167,11 +173,15 @@ impl MappableGuestMemory for DeviceMemoryControl {
                 handle
                     .add_mapping(
                         mapping.range,
-                        mapping.mappable.clone(),
-                        mapping.file_offset,
+                        MappingBacking::File {
+                            mappable: mapping.mappable.clone(),
+                            file_offset: mapping.file_offset,
+                        },
                         mapping.writable,
+                        None,
                     )
-                    .await;
+                    .await
+                    .map_err(io::Error::other)?;
             }
 
             handle
@@ -180,7 +190,8 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     executable: true,
                     prefetch: false,
                 })
-                .await;
+                .await
+                .map_err(io::Error::other)?;
 
             state.handle = Some(handle);
             Ok(())

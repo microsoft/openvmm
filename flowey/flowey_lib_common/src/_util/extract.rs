@@ -114,6 +114,63 @@ pub fn extract_zip_if_new(
     Ok(extract_dir)
 }
 
+/// Extracts the given `.tar.gz` `file` into `persistent_dir` (or into
+/// [`std::env::current_dir()`], if no persistent dir is available).
+///
+/// Unlike `.tar.bz2`, `.tar.gz` is handled natively by every platform's `tar`,
+/// so this helper has no install-package dependency to track. The caller
+/// resolves the persistent dir itself and passes it (already read) as
+/// `persistent_dir` — no `Deps` struct needed.
+///
+/// To avoid redundant extracts between pipeline runs, callers must provide a
+/// `file_version` string that identifies the current file. If the previous
+/// run already extracted an archive with the given `file_version`, this
+/// function will return nearly instantaneously.
+pub fn extract_tar_gz_if_new(
+    rt: &mut RustRuntimeServices<'_>,
+    persistent_dir: Option<&Path>,
+    file: &Path,
+    file_version: &str,
+) -> anyhow::Result<PathBuf> {
+    let root_dir = match persistent_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => rt.sh.current_dir(),
+    };
+
+    let filename = file.file_name().expect("tar.gz file was not a file");
+    let extract_dir = root_dir.join(FLOWEY_EXTRACT_DIR).join(filename);
+    fs_err::create_dir_all(&extract_dir)?;
+
+    let pkg_info_dir = root_dir.join(FLOWEY_INFO_DIR);
+    fs_err::create_dir_all(&pkg_info_dir)?;
+    let pkg_info_file = pkg_info_dir.join(filename);
+
+    let mut already_extracted = false;
+    if let Ok(info) = fs_err::read_to_string(&pkg_info_file) {
+        if info == file_version {
+            already_extracted = true;
+        }
+    }
+
+    if !already_extracted {
+        // clear out any old version that was present
+        fs_err::remove_dir_all(&extract_dir)?;
+        fs_err::create_dir(&extract_dir)?;
+
+        rt.sh.change_dir(&extract_dir);
+
+        // windows builds past Windows 10 build 17063 come with tar installed,
+        // and `tar -xf` auto-detects gzip compression on all platforms
+        flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
+
+        fs_err::write(pkg_info_file, file_version)?;
+    } else {
+        log::info!("already extracted!");
+    }
+
+    Ok(extract_dir)
+}
+
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ExtractTarBz2Deps<C = VarNotClaimed> {

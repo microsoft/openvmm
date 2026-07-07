@@ -9,6 +9,7 @@
 
 #![expect(missing_docs)]
 
+pub mod blk;
 pub mod fs;
 
 use bitfield_struct::bitfield;
@@ -27,87 +28,62 @@ mod packed_nums {
     pub type u64_le = zerocopy::U64<zerocopy::LittleEndian>;
 }
 
-#[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct VirtioDeviceFeaturesBank0 {
+#[derive(Inspect)]
+#[bitfield(u64)]
+pub struct VirtioDeviceFeatures {
+    // Bank 0 (bits 0-31)
     #[bits(24)]
-    pub device_specific: u32,
+    pub device_specific_low: u32,
     #[bits(4)]
     _reserved1: u8,
-    pub ring_indirect_desc: bool, // VIRTIO_F_INDIRECT_DESC
-    pub ring_event_idx: bool,     // VIRTIO_F_EVENT_IDX
-    #[bits(2)]
-    _reserved2: u8,
-}
-
-#[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct VirtioDeviceFeaturesBank1 {
-    pub version_1: bool,         // VIRTIO_F_VERSION_1
-    pub access_platform: bool,   // VIRTIO_F_ACCESS_PLATFORM
-    pub ring_packed: bool,       // VIRTIO_F_RING_PACKED
-    pub in_order: bool,          // VIRTIO_F_IN_ORDER
-    pub order_platform: bool,    // VIRTIO_F_ORDER_PLATFORM
-    pub sriov: bool,             // VIRTIO_F_SR_IOV
-    pub notification_data: bool, // VIRTIO_F_NOTIFICATION_DATA
-    pub notif_config_data: bool, // VIRTIO_F_NOTIF_CONFIG_DATA
-    pub ring_reset: bool,        // VIRTIO_F_RING_RESET
-    pub admin_vq: bool,          // VIRTIO_F_ADMIN_VQ
+    pub ring_indirect_desc: bool, // VIRTIO_F_INDIRECT_DESC (bit 28)
+    pub ring_event_idx: bool,     // VIRTIO_F_EVENT_IDX (bit 29)
+    pub vhost_user_protocol_features: bool, // VHOST_USER_F_PROTOCOL_FEATURES (bit 30)
+    _reserved2: bool,
+    // Bank 1 (bits 32-63)
+    pub version_1: bool,         // VIRTIO_F_VERSION_1 (bit 32)
+    pub access_platform: bool,   // VIRTIO_F_ACCESS_PLATFORM (bit 33)
+    pub ring_packed: bool,       // VIRTIO_F_RING_PACKED (bit 34)
+    pub in_order: bool,          // VIRTIO_F_IN_ORDER (bit 35)
+    pub order_platform: bool,    // VIRTIO_F_ORDER_PLATFORM (bit 36)
+    pub sriov: bool,             // VIRTIO_F_SR_IOV (bit 37)
+    pub notification_data: bool, // VIRTIO_F_NOTIFICATION_DATA (bit 38)
+    pub notif_config_data: bool, // VIRTIO_F_NOTIF_CONFIG_DATA (bit 39)
+    pub ring_reset: bool,        // VIRTIO_F_RING_RESET (bit 40)
+    pub admin_vq: bool,          // VIRTIO_F_ADMIN_VQ (bit 41)
     pub device_specific_bit_42: bool,
-    pub suspend: bool, // VIRTIO_F_SUSPEND
+    pub suspend: bool, // VIRTIO_F_SUSPEND (bit 43)
     #[bits(7)]
-    _reserved: u8,
+    _reserved3: u8,
     #[bits(13)]
-    pub device_specific: u16,
+    pub device_specific_high: u16,
 }
 
-#[derive(Debug, Clone)]
-pub struct VirtioDeviceFeatures(Vec<u32>);
 impl VirtioDeviceFeatures {
-    pub fn new() -> Self {
-        Self(Vec::with_capacity(2))
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn set_bank(&mut self, index: usize, val: u32) {
-        if self.0.len() <= index {
-            self.0.resize(index + 1, 0);
+    /// Get a 32-bit bank by index (0 = low, 1 = high) for transport register
+    /// reads. Returns 0 for out-of-range indices.
+    pub fn bank(&self, index: usize) -> u32 {
+        match index {
+            0 => self.into_bits() as u32,
+            1 => (self.into_bits() >> 32) as u32,
+            _ => 0,
         }
-        self.0[index] = val;
     }
 
+    /// Set a 32-bit bank by index for transport register writes.
+    pub fn set_bank(&mut self, index: usize, val: u32) {
+        let bits = self.into_bits();
+        *self = Self::from_bits(match index {
+            0 => (bits & !0xFFFF_FFFF) | val as u64,
+            1 => (bits & 0xFFFF_FFFF) | (val as u64) << 32,
+            _ => return,
+        });
+    }
+
+    /// Builder method to set a 32-bit bank by index.
     pub fn with_bank(mut self, index: usize, val: u32) -> Self {
         self.set_bank(index, val);
         self
-    }
-
-    pub fn with_bank0(self, bank0: VirtioDeviceFeaturesBank0) -> Self {
-        self.with_bank(0, bank0.into_bits())
-    }
-
-    pub fn with_bank1(self, bank1: VirtioDeviceFeaturesBank1) -> Self {
-        self.with_bank(1, bank1.into_bits())
-    }
-
-    pub fn bank(&self, index: usize) -> u32 {
-        self.0.get(index).map_or(0, |x| *x)
-    }
-
-    pub fn bank0(&self) -> VirtioDeviceFeaturesBank0 {
-        VirtioDeviceFeaturesBank0::from_bits(self.bank(0))
-    }
-
-    pub fn bank1(&self) -> VirtioDeviceFeaturesBank1 {
-        VirtioDeviceFeaturesBank1::from_bits(self.bank(1))
-    }
-}
-
-impl Default for VirtioDeviceFeatures {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -235,6 +211,7 @@ pub mod queue {
     use super::u32_le;
     use super::u64_le;
     use bitfield_struct::bitfield;
+    use inspect::Inspect;
 
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
@@ -283,6 +260,7 @@ pub mod queue {
     pub const AVAIL_OFFSET_RING: u64 = 4;
     pub const AVAIL_ELEMENT_SIZE: u64 = size_of::<u16>() as u64;
 
+    #[derive(Inspect)]
     #[bitfield(u16)]
     pub struct AvailableFlags {
         pub no_interrupt: bool,
@@ -360,7 +338,7 @@ pub mod queue {
     /// virtqueues.
     ///
     /// Reference: virtio spec §2.8.10, "Event Suppression Structure Layout".
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Inspect)]
     #[repr(u8)]
     pub enum EventSuppressionFlags {
         /// `RING_EVENT_FLAGS_ENABLE` (0x0) — events are enabled; the device/driver

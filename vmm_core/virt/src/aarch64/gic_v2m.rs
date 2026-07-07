@@ -39,7 +39,7 @@ impl GicV2mSignalMsi {
 }
 
 impl SignalMsi for GicV2mSignalMsi {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         if address != self.setspi_addr {
             tracelimit::warn_ratelimited!(
                 address,

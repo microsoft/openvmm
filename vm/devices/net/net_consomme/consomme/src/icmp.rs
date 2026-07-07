@@ -102,7 +102,10 @@ impl IcmpConnection {
                 }) {
                 Poll::Ready(Ok((n, _))) => {
                     if n < IPV4_HEADER_LEN + ICMPV4_HEADER_LEN {
-                        tracelimit::warn_ratelimited!("dropping malformed ICMP incoming packet");
+                        tracelimit::warn_ratelimited!(
+                            guest_ip = %dst_addr.ip(),
+                            "dropping malformed ICMP incoming packet",
+                        );
                         continue;
                     }
 
@@ -121,7 +124,8 @@ impl IcmpConnection {
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
-                        "recv error"
+                        guest_ip = %dst_addr.ip(),
+                        "icmp recv error"
                     );
                     break;
                 }
@@ -254,7 +258,12 @@ impl<T: Client> Access<'_, T> {
                 let mut socket =
                     match Socket::new(Domain::IPV4, socket_type, Some(Protocol::ICMPV4)) {
                         Err(e) => {
-                            tracelimit::error_ratelimited!("socket creation failed, {}", e);
+                            tracelimit::error_ratelimited!(
+                                error = &e as &dyn std::error::Error,
+                                guest_ip = %addresses.src_addr,
+                                dst_ip = %addresses.dst_addr,
+                                "icmp socket creation failed",
+                            );
                             return Err(DropReason::Io(e));
                         }
                         Ok(s) => s,

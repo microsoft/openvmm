@@ -35,7 +35,7 @@ impl DelayDisk {
         Self {
             delay,
             inner,
-            driver: driver_source.simple(),
+            driver: driver_source.current(),
         }
     }
 }

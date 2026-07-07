@@ -74,6 +74,53 @@ impl Ring {
         self.tail += n;
     }
 
+    /// Grow the ring to `new_capacity`. Preserves the bytes in `[head, tail)`.
+    ///
+    /// This is a grow-only operation: `new_capacity` must be a power of two no
+    /// smaller than the current capacity. A resize to the current capacity is a
+    /// no-op, so no reallocation occurs.
+    ///
+    /// Any bytes written via [`Ring::write_at`] past `tail` (out-of-order data
+    /// staged for a future `extend_by`) are NOT preserved. Callers using
+    /// `write_at` must ensure no such staged data exists.
+    pub fn resize(&mut self, new_capacity: usize) {
+        // Copy `src` into `buf` (a power-of-two-sized buffer) starting at logical
+        // offset `at`, wrapping around the end of `buf` as needed.
+        fn place(buf: &mut [u8], at: usize, src: &[u8]) {
+            if src.is_empty() {
+                return;
+            }
+            let mask = buf.len() - 1;
+            let start = at & mask;
+            if start + src.len() <= buf.len() {
+                buf[start..start + src.len()].copy_from_slice(src);
+            } else {
+                let mid = buf.len() - start;
+                buf[start..].copy_from_slice(&src[..mid]);
+                buf[..src.len() - mid].copy_from_slice(&src[mid..]);
+            }
+        }
+
+        assert!(new_capacity.is_power_of_two());
+        assert!(new_capacity >= self.capacity());
+        if new_capacity == self.capacity() {
+            return;
+        }
+        let len = self.len();
+        let mut new_buf = vec![0u8; new_capacity];
+        {
+            // Copy the live `[head, tail)` bytes directly from the existing ring
+            // into their new positions, without staging through a temporary
+            // buffer. `head` keeps its logical value, so its physical offset in
+            // the new buffer is `head & (new_capacity - 1)`.
+            let (a, b) = self.view(0..len).as_slices();
+            let start = self.head.0 & (new_capacity - 1);
+            place(&mut new_buf, start, a);
+            place(&mut new_buf, start + a.len(), b);
+        }
+        self.buf = new_buf;
+    }
+
     /// Write `data` into the ring at `offset` bytes past `head`, without
     /// advancing `tail`. Used for both in-order and out-of-order writes.
     pub fn write_at(&mut self, offset: usize, data: &[u8]) {
@@ -271,5 +318,121 @@ mod tests {
         // Writing empty data should be a no-op.
         ring.write_at(0, &[]);
         assert_eq!(ring.len(), 0);
+    }
+
+    #[test]
+    fn test_resize_empty() {
+        let mut ring = Ring::new(8);
+        ring.resize(64);
+        assert_eq!(ring.capacity(), 64);
+        assert_eq!(ring.len(), 0);
+    }
+
+    #[test]
+    fn test_resize_no_wrap_before_no_wrap_after() {
+        let mut ring = Ring::new(16);
+        ring.write_at(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        ring.extend_by(8);
+        ring.resize(64);
+        assert_eq!(ring.capacity(), 64);
+        assert_eq!(ring.len(), 8);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_resize_wrap_before_no_wrap_after() {
+        // head=6, tail=14 (logically). 8-cap ring: physical layout wraps.
+        let mut ring = Ring::new(8);
+        ring.extend_by(6);
+        ring.consume(6);
+        ring.write_at(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        ring.extend_by(8);
+        // In the old 8-byte buffer the data wraps at offset 6.
+        let (a, b) = ring.written_slices();
+        assert_eq!(a.len(), 2);
+        assert_eq!(b.len(), 6);
+        ring.resize(32);
+        assert_eq!(ring.capacity(), 32);
+        assert_eq!(ring.len(), 8);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_resize_same_capacity_noop_then_grow() {
+        // A same-capacity resize must be a no-op that preserves data, even when
+        // the live bytes physically wrap in the buffer. Then a real grow must
+        // also preserve them.
+        let mut ring = Ring::new(16);
+        // Advance head so head.0 == 12 (within the old buffer).
+        ring.extend_by(12);
+        ring.consume(12);
+        ring.write_at(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        ring.extend_by(8);
+        // head & (16-1) == 12, so the data wraps: 4 bytes at 12..16, 4 at 0..4.
+        let (a, b) = ring.written_slices();
+        assert_eq!(a.len(), 4);
+        assert_eq!(b.len(), 4);
+        // Resize to the current capacity: no-op, data left in place.
+        ring.resize(16);
+        assert_eq!(ring.capacity(), 16);
+        assert_eq!(ring.len(), 8);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        // Grow to 32: head.0 == 12, mask == 31, start == 12, 12 + 8 == 20, so
+        // the data no longer wraps. It must still be preserved.
+        ring.resize(32);
+        assert_eq!(ring.capacity(), 32);
+        assert_eq!(ring.len(), 8);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_resize_then_extend_uses_new_space() {
+        let mut ring = Ring::new(8);
+        ring.write_at(0, &[1, 2, 3, 4]);
+        ring.extend_by(4);
+        ring.resize(16);
+        assert_eq!(ring.capacity(), 16);
+        // Should have 12 bytes of free space now.
+        let (a, b) = ring.unwritten_slices_mut();
+        assert_eq!(a.len() + b.len(), 12);
+        ring.write_at(4, &[5, 6, 7, 8, 9, 10, 11, 12]);
+        ring.extend_by(8);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn test_resize_after_many_wraps() {
+        // Drive head/tail counters well past any single capacity to make sure
+        // resize relies on counter values modulo the new capacity, not the old.
+        let mut ring = Ring::new(8);
+        for _ in 0..100 {
+            ring.write_at(0, &[42, 42, 42, 42]);
+            ring.extend_by(4);
+            ring.consume(4);
+        }
+        assert_eq!(ring.len(), 0);
+        ring.write_at(0, &[1, 2, 3, 4, 5]);
+        ring.extend_by(5);
+        ring.resize(32);
+        assert_eq!(ring.len(), 5);
+        let (a, b) = ring.written_slices();
+        let mut data = a.to_vec();
+        data.extend_from_slice(b);
+        assert_eq!(data, vec![1, 2, 3, 4, 5]);
     }
 }
