@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(test))]
+crypto::ensure_single_backend!();
+
 mod file_loader;
 mod identity_mapping;
 mod signed_measurement;

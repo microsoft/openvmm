@@ -242,7 +242,8 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
                     req.respond()
                         .field("writable", mapping.params.writable)
                         .field("mapping_type", mapping.params.mapping_type)
-                        .hex("file_offset", mapping.params.file_offset);
+                        .field("backed_by_fd", mapping.params.backing.mappable().is_some())
+                        .hex("file_offset", mapping.params.backing.file_offset());
                 }),
             );
         }
@@ -254,15 +255,66 @@ struct Mapping {
     active_mappers: Vec<MapperId>,
 }
 
+/// How a guest memory mapping is backed by host memory.
+#[derive(Debug, MeshPayload, Clone)]
+pub enum MappingBacking {
+    /// Backed by a mappable OS object (shared memory or file). The mapping
+    /// manager mmaps `mappable` at `file_offset` into each VA mapper, so the
+    /// same physical pages are shared across all mappers (and shareable with
+    /// other processes via `GuestMemorySharing`).
+    File {
+        /// The OS object to map.
+        mappable: Mappable,
+        /// The file offset into `mappable`.
+        file_offset: u64,
+    },
+    /// Backed by private anonymous memory committed directly by the mapping
+    /// manager. There is no backing fd, so the memory cannot be shared with
+    /// other processes or programmed into DMA targets that require an fd; it is
+    /// exposed to DMA targets purely by host VA.
+    ///
+    /// Private memory is only valid with a single local eager mapper: lazy
+    /// mappers and remote mappers are rejected when any range is private (see
+    /// [`MappingManagerClient::new_mapper`] and
+    /// [`MappingManagerClient::new_remote_mapper`]). Committing anonymous pages
+    /// into multiple independent mappers would not share storage.
+    ///
+    /// Unlike file-backed memory, the storage *is* the VA mapping: there is no
+    /// fd holding the pages. Tearing the mapping down (via the region manager's
+    /// `remove_mappings`) decommits and zeroes the pages, so a private region
+    /// must not be transiently disabled and re-enabled — doing so would lose
+    /// guest memory. The region manager asserts against this.
+    Private {
+        /// Whether the range is eligible for Transparent Huge Pages (Linux).
+        transparent_hugepages: bool,
+    },
+}
+
+impl MappingBacking {
+    /// Returns the backing object, if this mapping is file-backed.
+    pub fn mappable(&self) -> Option<&Mappable> {
+        match self {
+            MappingBacking::File { mappable, .. } => Some(mappable),
+            MappingBacking::Private { .. } => None,
+        }
+    }
+
+    /// Returns the offset within the backing object, or 0 if there is none.
+    pub fn file_offset(&self) -> u64 {
+        match self {
+            MappingBacking::File { file_offset, .. } => *file_offset,
+            MappingBacking::Private { .. } => 0,
+        }
+    }
+}
+
 /// The mapping parameters.
 #[derive(Debug, MeshPayload, Clone)]
 pub struct MappingParams {
     /// The memory range for the mapping.
     pub range: MemoryRange,
-    /// The OS object to map.
-    pub mappable: Mappable,
-    /// The file offset into `mappable`.
-    pub file_offset: u64,
+    /// How the mapping is backed by host memory.
+    pub backing: MappingBacking,
     /// Whether to map the memory as writable.
     pub writable: bool,
     /// The type of memory being mapped.
@@ -593,7 +645,11 @@ impl MappingManagerTask {
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
         self.mappings
             .iter()
-            .filter(|m| m.params.mapping_type == MappingType::Ram)
+            // Only file-backed RAM can be shared with other processes;
+            // private/anonymous RAM has no fd to hand out.
+            .filter(|m| {
+                m.params.mapping_type == MappingType::Ram && m.params.backing.mappable().is_some()
+            })
             .map(|m| m.params.clone())
             .collect()
     }
@@ -653,11 +709,14 @@ impl ProvideShareableRegions for DmaRegionProvider {
 
         Ok(mappings
             .into_iter()
-            .map(|m| ShareableRegion {
-                guest_address: m.range.start(),
-                size: m.range.len(),
-                file: m.mappable.inner_arc(),
-                file_offset: m.file_offset,
+            .filter_map(|m| {
+                let mappable = m.backing.mappable()?;
+                Some(ShareableRegion {
+                    guest_address: m.range.start(),
+                    size: m.range.len(),
+                    file: mappable.inner_arc(),
+                    file_offset: m.backing.file_offset(),
+                })
             })
             .collect())
     }
@@ -686,8 +745,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x100000),
-                mappable: ram,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable: ram,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
                 numa_node: None,
@@ -698,8 +759,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0x100000..0x101000),
-                mappable: device,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable: device,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
                 numa_node: None,
@@ -731,8 +794,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x1000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
                 numa_node: None,
@@ -755,8 +820,10 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x10000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Ram,
             numa_node: None,
@@ -829,8 +896,10 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
             numa_node: None,
@@ -942,8 +1011,10 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
             numa_node: None,
@@ -1060,8 +1131,10 @@ mod tests {
                 .into();
             task.add_mapping(MappingParams {
                 range: MemoryRange::new(start..end),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
                 numa_node: None,
@@ -1148,8 +1221,10 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
             numa_node: None,
@@ -1255,8 +1330,10 @@ mod tests {
             .into();
         task.add_mapping(MappingParams {
             range: MemoryRange::new(0x20000..0x21000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
             numa_node: None,
@@ -1362,8 +1439,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
                 numa_node: None,
@@ -1410,8 +1489,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
                 numa_node: None,
@@ -1446,8 +1527,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
                 numa_node: None,
@@ -1475,8 +1558,10 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0x10000..0x11000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
                 numa_node: None,

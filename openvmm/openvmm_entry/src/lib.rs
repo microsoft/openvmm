@@ -1961,6 +1961,7 @@ async fn vm_config_from_command_line(
                 },
             }),
             with_isolation,
+            nested_virt: opt.nested_virt,
         },
         #[cfg(windows)]
         kernel_vmnics,

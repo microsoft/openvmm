@@ -64,6 +64,19 @@ pub struct PlatformInfo {
     pub supports_its: bool,
 }
 
+/// A hypervisor backend capable of creating partitions.
+///
+/// # Recognized features
+///
+/// The `recognizes_*` methods report whether the backend acts on an optional
+/// partition request rather than silently ignoring it: it either honors the
+/// request or fails partition creation with a specific error. They let the code
+/// assembling a [`ProtoPartitionConfig`] reject a request up front when the
+/// backend has no concept of it, instead of the request being quietly dropped.
+/// Recognition is *not* a promise that the request succeeds — the backend may
+/// still reject it in combination with another feature, or fail later during
+/// partition creation. Each method defaults to `false`, so a new optional
+/// feature is unrecognized everywhere until a backend overrides its method.
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
     type ProtoPartition<'a>: ProtoPartition<Partition = Self::Partition>;
@@ -78,6 +91,13 @@ pub trait Hypervisor: 'static {
     /// information needed for topology construction and firmware table
     /// generation.
     fn platform_info(&self) -> PlatformInfo;
+
+    /// Whether the backend recognizes a request to expose hardware
+    /// virtualization (VMX/SVM) to the guest so it can run its own hypervisor.
+    /// See the [`Hypervisor`] trait docs on recognized features.
+    fn recognizes_nested_virt(&self) -> bool {
+        false
+    }
 
     /// Returns a new prototype partition from the given configuration.
     fn new_partition<'a>(
@@ -161,6 +181,13 @@ pub struct ProtoPartitionConfig<'a> {
     pub vmtime: &'a VmTimeSource,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor.
+    ///
+    /// The code assembling this config must only set this when the chosen
+    /// backend recognizes it via [`Hypervisor::recognizes_nested_virt`]; a
+    /// backend that receives an unrecognized request may silently ignore it.
+    pub nested_virt: bool,
 }
 
 /// Partition creation configuration.

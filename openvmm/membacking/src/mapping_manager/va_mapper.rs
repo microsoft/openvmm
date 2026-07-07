@@ -28,6 +28,7 @@
 use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
+use super::manager::MappingBacking;
 use super::manager::MappingError;
 use super::manager::MappingParams;
 use super::manager::MappingRequest;
@@ -157,13 +158,13 @@ impl MapperTask {
                 MapperRequest::MapEager(rpc) => {
                     rpc.handle_failable_sync(|params| {
                         tracing::debug!(range = %params.range, "eager mapping received");
-                        self.map_file(params)
+                        self.map(params)
                     });
                 }
                 MapperRequest::MapLazy(params) => {
                     tracing::debug!(range = %params.range, "lazy mapping received");
                     let (range, writable) = (params.range, params.writable);
-                    match self.map_file(params) {
+                    match self.map(params) {
                         Ok(()) => self.wake_waiters(range, Some(writable)),
                         Err(e) => {
                             tracing::error!(
@@ -193,24 +194,42 @@ impl MapperTask {
         let _ = self.inner.mapping.unmap(0, self.inner.mapping.len());
     }
 
-    /// Maps a file-backed region into the VA space, applying NUMA policy where
-    /// supported.
-    fn map_file(&self, params: MappingParams) -> Result<(), MappingError> {
+    /// Establishes a mapping in the VA space, dispatching on how it is backed.
+    fn map(&self, params: MappingParams) -> Result<(), MappingError> {
         let MappingParams {
             range,
-            mappable,
+            backing,
             writable,
-            file_offset,
             numa_node,
             ..
         } = params;
+        match backing {
+            MappingBacking::File {
+                mappable,
+                file_offset,
+            } => self.map_file(range, &mappable, file_offset, writable, numa_node),
+            MappingBacking::Private {
+                transparent_hugepages,
+            } => self.map_private(range, transparent_hugepages, numa_node),
+        }
+    }
 
+    /// Maps a file-backed region into the VA space, applying NUMA policy where
+    /// supported.
+    fn map_file(
+        &self,
+        range: MemoryRange,
+        mappable: &super::mappable::Mappable,
+        file_offset: u64,
+        writable: bool,
+        numa_node: Option<u32>,
+    ) -> Result<(), MappingError> {
         let map_result = cfg_select! {
             windows => {
                 self.inner.mapping.map_file_numa(
                     range.start() as usize,
                     range.len() as usize,
-                    &mappable,
+                    mappable,
                     file_offset,
                     writable,
                     numa_node,
@@ -220,7 +239,7 @@ impl MapperTask {
                 self.inner.mapping.map_file(
                     range.start() as usize,
                     range.len() as usize,
-                    &mappable,
+                    mappable,
                     file_offset,
                     writable,
                 )
@@ -256,6 +275,45 @@ impl MapperTask {
                 assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
             }
         }
+
+        Ok(())
+    }
+
+    /// Commits private anonymous memory for a range into the VA space.
+    ///
+    /// This replaces the reserved placeholder at `range` with committed
+    /// anonymous pages, optionally bound to a host NUMA node and marked
+    /// eligible for Transparent Huge Pages.
+    fn map_private(
+        &self,
+        range: MemoryRange,
+        transparent_hugepages: bool,
+        numa_node: Option<u32>,
+    ) -> Result<(), MappingError> {
+        let offset = range.start() as usize;
+        let len = range.len() as usize;
+
+        if let Err(e) = self.inner.alloc(offset, len, numa_node) {
+            return Err(MappingError::new(range, e));
+        }
+
+        // Name the range so it's identifiable in /proc/{pid}/smaps.
+        self.inner
+            .mapping
+            .set_name(offset, len, "guest-ram-private");
+
+        #[cfg(target_os = "linux")]
+        if transparent_hugepages {
+            if let Err(e) = self.inner.mapping.madvise_hugepage(offset, len) {
+                tracing::warn!(
+                    error = &e as &dyn std::error::Error,
+                    %range,
+                    "failed to mark private RAM as THP eligible"
+                );
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = transparent_hugepages;
 
         Ok(())
     }
@@ -320,6 +378,39 @@ impl MapperInner {
         match recv.await {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(NoMapping(range)),
+        }
+    }
+
+    /// Commits private anonymous memory for a range, optionally bound to a
+    /// specific host NUMA node.
+    ///
+    /// This replaces the placeholder at the given offset with committed
+    /// anonymous memory.
+    ///
+    /// Caution: on Linux, if NUMA binding fails, the allocation itself has
+    /// still succeeded — the returned error does not imply the memory is
+    /// unmapped.
+    fn alloc(
+        &self,
+        offset: usize,
+        len: usize,
+        numa_node: Option<u32>,
+    ) -> Result<(), std::io::Error> {
+        cfg_select! {
+            windows => {
+                self.mapping.alloc_numa(offset, len, numa_node)
+            }
+            target_os = "linux" => {
+                self.mapping.alloc(offset, len)?;
+                if let Some(node) = numa_node {
+                    self.mapping.mbind_at(offset, len, node)?;
+                }
+                Ok(())
+            }
+            _ => {
+                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
+                self.mapping.alloc(offset, len)
+            }
         }
     }
 }
@@ -440,55 +531,11 @@ impl VaMapper {
         self.process.as_ref()
     }
 
-    /// Allocates private anonymous memory for a range within the mapping,
-    /// optionally bound to a specific host NUMA node.
-    ///
-    /// This replaces the placeholder at the given offset with committed
-    /// anonymous memory.
-    ///
-    /// Caution: on Linux, if NUMA binding fails, the allocation itself has
-    /// still succeeded — the returned error does not imply the memory is
-    /// unmapped.
-    pub(crate) fn alloc_range(
-        &self,
-        offset: usize,
-        len: usize,
-        numa_node: Option<u32>,
-    ) -> Result<(), std::io::Error> {
-        cfg_select! {
-            windows => {
-                self.inner.mapping.alloc_numa(offset, len, numa_node)
-            }
-            target_os = "linux" => {
-                self.inner.mapping.alloc(offset, len)?;
-                if let Some(node) = numa_node {
-                    self.inner.mapping.mbind_at(offset, len, node)?;
-                }
-                Ok(())
-            }
-            _ => {
-                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
-                self.inner.mapping.alloc(offset, len)
-            }
-        }
-    }
-
-    /// Names a range within the mapping for debugging (visible in smaps).
-    pub fn set_range_name(&self, offset: usize, len: usize, name: &str) {
-        self.inner.mapping.set_name(offset, len, name);
-    }
-
-    /// Marks a range as eligible for Transparent Huge Pages.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        self.inner.mapping.madvise_hugepage(offset, len)
-    }
-
     /// Decommits a range of private RAM, releasing physical pages back to the
     /// host.
     ///
     /// The caller must ensure this is only called on ranges backed by
-    /// private anonymous memory (allocated via [`alloc_range`](Self::alloc_range)).
+    /// private anonymous memory.
     #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
     pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(

@@ -91,7 +91,7 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
     *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None, ComInfo::Ns16550 { .. }) => {
+        (IsolationType::None | IsolationType::Vbs, ComInfo::Ns16550 { .. }) => {
             Logger::Serial(Serial::init(InstrIoAccess))
         }
         // TODO: fix the PL011 minimal_rt driver. Currently hangs even if

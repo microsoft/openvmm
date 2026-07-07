@@ -112,6 +112,11 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     reserved_vps_per_socket: u32,
 
+    /// Whether the host allows advertising `MCG_CMCI_P` in the guest's
+    /// `IA32_MCG_CAP` (required for KVM to expose the CMCI LVT register).
+    #[cfg(guest_arch = "x86_64")]
+    mce_cmci_supported: bool,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]

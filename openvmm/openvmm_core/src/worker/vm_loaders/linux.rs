@@ -54,6 +54,33 @@ pub struct KernelConfig<'a> {
     pub mem_layout: &'a MemoryLayout,
 }
 
+/// The default SMBIOS identity for firmware-less Linux direct boot.
+///
+/// There is no configuration surface yet, so every direct-boot VM gets this
+/// fixed OpenVMM identity. The UUID is left nil.
+fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
+    use loader::smbios;
+
+    smbios::SmbiosTables {
+        bios: smbios::SmbiosBiosInfo {
+            vendor: "OpenVMM",
+            version: "OpenVMM Direct",
+            release_date: "06/19/2026",
+            major: 0,
+            minor: 0,
+        },
+        system: smbios::SmbiosSystemInfo {
+            manufacturer: "OpenVMM",
+            product_name: "OpenVMM Virtual Machine",
+            version: "",
+            serial_number: "",
+            sku_number: "",
+            family: "",
+            uuid: [0; 16],
+        },
+    }
+}
+
 pub struct AcpiTables {
     /// The RDSP. Assumed to be given a whole page.
     pub rdsp: Vec<u8>,
@@ -634,6 +661,7 @@ fn write_efi_and_acpi_tables(
     use uefi_specs::uefi::boot::EfiMemoryType;
     use uefi_specs::uefi::boot::EfiRtPropertiesTable;
     use uefi_specs::uefi::boot::EfiSystemTable;
+    use uefi_specs::uefi::boot::SMBIOS3_TABLE_GUID;
 
     // Helper to align a value up to the given power-of-two alignment.
     fn align_up(val: u64, align: u64) -> u64 {
@@ -657,7 +685,7 @@ fn write_efi_and_acpi_tables(
 
     // Configuration table entries (24 bytes each: 16-byte GUID + 8-byte pointer)
     const CONFIG_ENTRY_SIZE: u64 = 24;
-    let num_config_entries: u64 = 2;
+    let num_config_entries: u64 = 3;
     let config_table_addr = cursor;
     cursor += num_config_entries * CONFIG_ENTRY_SIZE;
 
@@ -675,6 +703,19 @@ fn write_efi_and_acpi_tables(
     let rt_props = EfiRtPropertiesTable::NONE_SUPPORTED;
     cursor += size_of::<EfiRtPropertiesTable>() as u64;
 
+    // SMBIOS — unlike x86 (which brute-force scans the F-segment for the
+    // `_SM3_` anchor), the aarch64 kernel discovers DMI only via the SMBIOS3
+    // EFI configuration-table entry. Reserve the entry point and structure
+    // table from the metadata page (16-byte aligned) and build them with the
+    // shared arch-neutral table builder.
+    cursor = align_up(cursor, 16);
+    let smbios_ep_addr = cursor;
+    cursor += loader::smbios::ENTRY_POINT_SIZE as u64;
+    cursor = align_up(cursor, 16);
+    let smbios_table_addr = cursor;
+    let smbios = loader::smbios::build(&default_smbios_tables(), smbios_table_addr);
+    cursor += smbios.structure_table.len() as u64;
+
     // Compute how many pages the metadata region spans.
     let metadata_end = align_up(cursor, 0x1000);
     let metadata_pages = (metadata_end - efi_base) / 0x1000;
@@ -687,11 +728,18 @@ fn write_efi_and_acpi_tables(
     gm.write_at(rt_props_addr, rt_props.as_bytes())
         .map_err(Error::Efi)?;
 
-    let mut config_entries = [0u8; 48];
+    gm.write_at(smbios_ep_addr, &smbios.entry_point)
+        .map_err(Error::Efi)?;
+    gm.write_at(smbios_table_addr, &smbios.structure_table)
+        .map_err(Error::Efi)?;
+
+    let mut config_entries = [0u8; 72];
     config_entries[0..16].copy_from_slice(ACPI_20_TABLE_GUID.as_bytes());
     config_entries[16..24].copy_from_slice(&rsdp_addr.to_le_bytes());
     config_entries[24..40].copy_from_slice(EFI_RT_PROPERTIES_TABLE_GUID.as_bytes());
     config_entries[40..48].copy_from_slice(&rt_props_addr.to_le_bytes());
+    config_entries[48..64].copy_from_slice(SMBIOS3_TABLE_GUID.as_bytes());
+    config_entries[64..72].copy_from_slice(&smbios_ep_addr.to_le_bytes());
     gm.write_at(config_table_addr, &config_entries)
         .map_err(Error::Efi)?;
 

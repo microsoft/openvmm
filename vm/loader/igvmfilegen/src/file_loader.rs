@@ -176,7 +176,7 @@ pub trait IgvmLoaderRegister: VbsRegister {
     fn generate_measurement(
         isolation: LoaderIsolationType,
         initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &[IgvmDirectiveHeader],
+        directive_headers: &mut Vec<IgvmDirectiveHeader>,
         svn: u32,
         debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>>;
@@ -265,7 +265,7 @@ impl IgvmLoaderRegister for X86Register {
     fn generate_measurement(
         isolation: LoaderIsolationType,
         initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &[IgvmDirectiveHeader],
+        directive_headers: &mut Vec<IgvmDirectiveHeader>,
         svn: u32,
         debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>> {
@@ -326,7 +326,7 @@ impl IgvmLoaderRegister for Aarch64Register {
     fn generate_measurement(
         _isolation: LoaderIsolationType,
         _initialization_headers: &[IgvmInitializationHeader],
-        _directive_headers: &[IgvmDirectiveHeader],
+        _directive_headers: &mut Vec<IgvmDirectiveHeader>,
         _svn: u32,
         _debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>> {
@@ -665,12 +665,13 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         // Generate the launch measurement for the isolation type being used.
         // The measurement is output for external signing.
+        let debug_enabled = self.confidential_debug();
         let doc = R::generate_measurement(
             self.isolation_type,
             &self.initialization_headers,
-            &self.directives,
+            &mut self.directives,
             guest_svn,
-            self.confidential_debug(),
+            debug_enabled,
         )?;
 
         // Display a report about the build igvm file's layout.

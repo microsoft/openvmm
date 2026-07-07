@@ -131,6 +131,38 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
+/// Verify that the aarch64 Linux direct loader synthesizes SMBIOS (DMI) tables
+/// so the guest can read `/sys/class/dmi/id/*`. The aarch64 ACPI-mode kernel
+/// discovers DMI only via the SMBIOS3 EFI configuration-table entry, so this
+/// exercises that delivery path. There is no configuration surface yet, so the
+/// guest reads the fixed default OpenVMM identity.
+#[vmm_test(openvmm_linux_direct_aarch64)]
+async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config.run().await?;
+
+    let sh = agent.unix_shell();
+
+    let sys_vendor = sh
+        .read_file("/sys/class/dmi/id/sys_vendor")
+        .await
+        .context("reading sys_vendor")?;
+    assert_eq!(sys_vendor.trim(), "OpenVMM");
+
+    let product_name = sh
+        .read_file("/sys/class/dmi/id/product_name")
+        .await
+        .context("reading product_name")?;
+    assert_eq!(product_name.trim(), "OpenVMM Virtual Machine");
+
+    // NOTE: the default identity uses a nil UUID, which the Linux kernel treats
+    // as "not present" (see `dmi_save_uuid`), so `/sys/class/dmi/id/product_uuid`
+    // is not created and is intentionally not checked here.
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot with private anonymous memory instead of shared memory sections.
 #[openvmm_test(
     linux_direct_x64,

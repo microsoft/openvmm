@@ -62,6 +62,12 @@ flowey_request! {
     pub struct Params {
         pub target: CommonTriple,
 
+        /// Toolchain platform to use when cross-compiling Windows *guest*
+        /// payloads (e.g. pipette). On a non-WSL Linux build host this is
+        /// [`CommonPlatform::WindowsGnu`], since the MSVC toolchain is
+        /// unavailable there; otherwise it is [`CommonPlatform::WindowsMsvc`].
+        pub windows_guest_platform: CommonPlatform,
+
         pub test_content_dir: PathBuf,
 
         pub selections: VmmTestSelections,
@@ -136,6 +142,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             target,
+            windows_guest_platform,
             test_content_dir,
             selections,
             release,
@@ -321,11 +328,9 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            crate::build_openvmm::OpenvmmOutput::WindowsBin { exe: _, pdb } => pdb,
-                            crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: _, dbg } => dbg,
-                        })
+                    output.map(ctx, |x| match x {
+                        crate::build_openvmm::OpenvmmOutput::WindowsBin { exe: _, pdb } => pdb,
+                        crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: _, dbg } => Some(dbg),
                     }),
                 ));
             }
@@ -346,7 +351,7 @@ impl SimpleFlowNode for Node {
             let output = ctx.reqv(|v| crate::build_pipette::Request {
                 target: CommonTriple::Common {
                     arch,
-                    platform: CommonPlatform::WindowsMsvc,
+                    platform: windows_guest_platform,
                 },
                 profile: CommonProfile::from_release(release),
                 pipette: v,
@@ -354,11 +359,9 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            crate::build_pipette::PipetteOutput::WindowsBin { exe: _, pdb } => pdb,
-                            _ => unreachable!(),
-                        })
+                    output.map(ctx, |x| match x {
+                        crate::build_pipette::PipetteOutput::WindowsBin { exe: _, pdb } => pdb,
+                        _ => unreachable!(),
                     }),
                 ));
             }
@@ -417,7 +420,7 @@ impl SimpleFlowNode for Node {
             let output = ctx.reqv(|v| crate::build_tpm_guest_tests::Request {
                 target: CommonTriple::Common {
                     arch,
-                    platform: CommonPlatform::WindowsMsvc,
+                    platform: windows_guest_platform,
                 },
                 profile: CommonProfile::from_release(release),
                 tpm_guest_tests: v,
@@ -426,11 +429,9 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            TpmGuestTestsOutput::WindowsBin { pdb, .. } => pdb.clone(),
-                            TpmGuestTestsOutput::LinuxBin { .. } => unreachable!(),
-                        })
+                    output.map(ctx, |x| match x {
+                        TpmGuestTestsOutput::WindowsBin { pdb, .. } => pdb.clone(),
+                        TpmGuestTestsOutput::LinuxBin { .. } => unreachable!(),
                     }),
                 ));
             }
@@ -472,10 +473,7 @@ impl SimpleFlowNode for Node {
             });
 
             if copy_extras {
-                copy_to_dir.push((
-                    extras_dir.to_owned(),
-                    output.map(ctx, |x| Some(x.pdb.clone())),
-                ));
+                copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| x.pdb.clone())));
             }
             output
         });
@@ -492,11 +490,9 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            crate::build_tmk_vmm::TmkVmmOutput::WindowsBin { exe: _, pdb } => pdb,
-                            _ => unreachable!(),
-                        })
+                    output.map(ctx, |x| match x {
+                        crate::build_tmk_vmm::TmkVmmOutput::WindowsBin { exe: _, pdb } => pdb,
+                        _ => unreachable!(),
                     }),
                 ));
             }
@@ -564,16 +560,11 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            crate::build_prep_steps::PrepStepsOutput::WindowsBin {
-                                exe: _,
-                                pdb,
-                            } => pdb,
-                            crate::build_prep_steps::PrepStepsOutput::LinuxBin { bin: _, dbg } => {
-                                dbg
-                            }
-                        })
+                    output.map(ctx, |x| match x {
+                        crate::build_prep_steps::PrepStepsOutput::WindowsBin { exe: _, pdb } => pdb,
+                        crate::build_prep_steps::PrepStepsOutput::LinuxBin { bin: _, dbg } => {
+                            Some(dbg)
+                        }
                     }),
                 ));
             }
@@ -618,13 +609,11 @@ impl SimpleFlowNode for Node {
             if copy_extras {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe: _, pdb } => {
-                                pdb
-                            }
-                            crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin: _, dbg } => dbg,
-                        })
+                    output.map(ctx, |x| match x {
+                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe: _, pdb } => pdb,
+                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin: _, dbg } => {
+                            Some(dbg)
+                        }
                     }),
                 ));
             }

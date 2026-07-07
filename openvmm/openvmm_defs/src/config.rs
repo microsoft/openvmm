@@ -486,6 +486,11 @@ pub struct HypervisorConfig {
     pub with_hv: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor. A backend that does not recognize this request
+    /// rejects it rather than silently ignoring it (see
+    /// `virt::Hypervisor::recognizes_nested_virt`).
+    pub nested_virt: bool,
 }
 
 #[derive(Debug, MeshPayload)]

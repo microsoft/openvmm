@@ -610,6 +610,7 @@ dependencies = [
  "mesh",
  "tdisp",
  "vmcore",
+ "zerocopy",
 ]
 
 [[package]]
@@ -623,7 +624,6 @@ dependencies = [
  "parking_lot",
  "range_map_vec",
  "tracing",
- "zerocopy",
 ]
 
 [[package]]
@@ -3738,7 +3738,9 @@ name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
+ "crypto",
  "fs-err",
  "hex",
  "hvdef",
@@ -4213,6 +4215,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "static_assertions",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -6163,6 +6166,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "mesh",
+ "pci_core",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -8753,7 +8757,6 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
- "gdma_defs",
  "get_helpers",
  "get_protocol",
  "getrandom 0.4.2",
@@ -8802,6 +8805,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",
