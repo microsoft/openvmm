@@ -183,6 +183,7 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_opentmk: None,
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,

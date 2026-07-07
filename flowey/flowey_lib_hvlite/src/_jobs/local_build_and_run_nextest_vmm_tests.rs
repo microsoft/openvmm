@@ -44,6 +44,7 @@ pub struct BuildSelections {
     pub pipette_linux: bool,
     pub prep_steps: bool,
     pub guest_test_uefi: bool,
+    pub opentmk: bool,
     pub tmks: bool,
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
@@ -64,6 +65,7 @@ impl Default for BuildSelections {
             pipette_windows: true,
             pipette_linux: true,
             guest_test_uefi: true,
+            opentmk: true,
             tmks: true,
             tmk_vmm_windows: true,
             tmk_vmm_linux: true,
@@ -86,6 +88,7 @@ impl BuildSelections {
             pipette_windows: false,
             pipette_linux: false,
             guest_test_uefi: false,
+            opentmk: false,
             tmks: false,
             tmk_vmm_windows: false,
             tmk_vmm_linux: false,
@@ -140,6 +143,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_opentmk::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
@@ -428,6 +432,19 @@ impl SimpleFlowNode for Node {
             output
         });
 
+        let register_opentmk = build.opentmk.then(|| {
+            let output = ctx.reqv(|v| crate::build_opentmk::Request {
+                arch,
+                profile: CommonProfile::from_release(release),
+                out_name: None,
+                opentmk: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| Some(x.pdb))));
+            }
+            output
+        });
+
         let register_tpm_guest_tests_windows = build.tpm_guest_tests_windows.then(|| {
             let output = ctx.reqv(|v| crate::build_tpm_guest_tests::Request {
                 target: CommonTriple::Common {
@@ -712,6 +729,7 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_opentmk,
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,

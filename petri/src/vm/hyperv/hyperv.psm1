@@ -241,6 +241,8 @@ function New-CustomVM
 
         [bool] $Com3 = $false,
 
+        [bool] $Com2 = $false,
+
         [bool] $TpmEnabled = $false,
 
         [string] $ManagementVtlSettings = $null
@@ -396,13 +398,17 @@ function New-CustomVM
         } | Trace-CimMethodExecution -MethodName "AddResourceSettings" -CimInstance $vmms | Out-Null
     }
 
-    if ($Com1 -or $Com3) {
+    if ($Com1 -or $Com2 -or $Com3) {
         $serialPorts = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_SerialPortSettingData"
         $resourceSettings = @()
 
         if ($Com1) {
             $serialPorts[0].Connection = @("\\.\pipe\$vmid-1")
             $resourceSettings += $serialPorts[0] | ConvertTo-CimEmbeddedString
+        }
+        if ($Com2) {
+            $serialPorts[1].Connection = @("\\.\pipe\$vmid-2")
+            $resourceSettings += $serialPorts[1] | ConvertTo-CimEmbeddedString
         }
         if ($Com3) {
             $serialPorts[2].Connection = @("\\.\pipe\$vmid-3")

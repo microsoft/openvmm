@@ -11,6 +11,7 @@ flowey.workspace = true
 flowey_lib_common.workspace = true
 
 vmm_test_images = { workspace = true, features = ["serde"] }
+opentmk_disk.workspace = true
 igvmfilegen_config.workspace = true
 
 anyhow.workspace = true

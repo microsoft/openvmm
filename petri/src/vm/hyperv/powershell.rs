@@ -298,6 +298,8 @@ pub struct HyperVNewCustomVMArgs {
     pub imc_hiv: Option<NamedTempFile>,
     /// Enable COM1 at \\.\pipe\<VMID>-1
     pub com_1: bool,
+    /// Enable COM2 at \\.\pipe\<VMID>-2
+    pub com_2: bool,
     /// Enable COM3 at \\.\pipe\<VMID>-3
     pub com_3: bool,
     /// Enable the TPM
@@ -567,6 +569,7 @@ impl HyperVNewCustomVMArgs {
             guest_state_path: None,
             scsi_controllers: HashMap::new(),
             ide_controllers: HashMap::new(),
+            com_2: false,
             com_3: false,
             imc_hiv: None,
             management_vtl_settings: None,
@@ -688,6 +691,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("IdeControllers", ide_controllers)
             .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
             .arg("Com1", args.com_1)
+            .arg("Com2", args.com_2)
             .arg("Com3", args.com_3)
             .arg("TpmEnabled", args.tpm_enabled)
             .arg_opt(

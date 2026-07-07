@@ -1132,7 +1132,10 @@ impl IntoPipeline for CheckinGatesCli {
             //
             // Our standard runners need to be updated to support Hyper-V OpenHCL
             // PCAT, so run those tests on the CVM runners for now.
-            let mut filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(hyperv_openhcl_pcat)".to_string();
+            //
+            // `opentmk` tests aren't wired into the CI artifact graph yet, so
+            // exclude them here. Run locally via `cargo xflowey vmm-tests-run`.
+            let mut filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(hyperv_openhcl_pcat) & !test(opentmk)".to_string();
             // Currently, we don't have a good way for ADO runners to authenticate in GitHub
             // (that don't involve PATs) which is a requirement to download GH Workflow Artifacts
             // required by the upgrade and downgrade servicing tests. For now,

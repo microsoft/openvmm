@@ -63,6 +63,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
+use pal_async::socket::ReadHalf;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
@@ -176,20 +177,22 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
+        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent, opentmk_serial) =
             if !properties.enable_serial {
                 // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
-                ([None, None, None, None], Vec::new(), None)
+                ([None, None, None, None], Vec::new(), None, None)
             } else {
                 let SerialData {
                     emulated_serial_config,
                     serial_tasks,
                     linux_direct_serial_agent,
+                    opentmk_serial,
                 } = setup.configure_serial(log_source)?;
                 (
                     emulated_serial_config,
                     serial_tasks,
                     linux_direct_serial_agent,
+                    opentmk_serial,
                 )
             };
         let mut emulated_serial_config = emulated_serial_config;
@@ -541,6 +544,7 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
+                opentmk_serial,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
@@ -576,6 +580,7 @@ struct SerialData {
     emulated_serial_config: [Option<Resource<SerialBackendHandle>>; 4],
     serial_tasks: Vec<Task<anyhow::Result<()>>>,
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
+    opentmk_serial: Option<(ReadHalf<UnixStream>, crate::PetriLogFile)>,
 }
 
 enum VideoDevice {
@@ -628,12 +633,27 @@ impl PetriVmConfigSetupCore<'_> {
                 emulated_serial_config: [serial0, serial1, serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: Some(linux_direct_serial_agent),
+                opentmk_serial: None,
+            })
+        } else if self.firmware.is_opentmk() {
+            // Capture COM2's read half so `wait_for_opentmk` can scan OpenTMK's
+            // JSON results. For OpenHCL the stream is rerouted via VMBus serial,
+            // but the underlying host stream is the same.
+            let (serial1_host, serial1) = self.create_serial_stream()?;
+            let (serial1_read, _serial1_write) = serial1_host.split();
+            let opentmk_log_file = logger.log_file("opentmk")?;
+            Ok(SerialData {
+                emulated_serial_config: [serial0, serial1, serial2, None],
+                serial_tasks,
+                linux_direct_serial_agent: None,
+                opentmk_serial: Some((serial1_read, opentmk_log_file)),
             })
         } else {
             Ok(SerialData {
                 emulated_serial_config: [serial0, None, serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: None,
+                opentmk_serial: None,
             })
         }
     }

@@ -113,6 +113,19 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::wait_for_boot_event(self).await
     }
 
+    async fn wait_for_opentmk(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::opentmk::TmkRun> {
+        let (reader, log_file) = self
+            .inner
+            .resources
+            .opentmk_serial
+            .take()
+            .context("OpenTMK serial capture was not configured for this VM")?;
+        Ok(crate::opentmk::scan_opentmk_serial(reader, &log_file, timeout).await)
+    }
+
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
         Self::wait_for_enlightened_shutdown_ready(self)
             .await

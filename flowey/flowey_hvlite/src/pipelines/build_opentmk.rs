@@ -14,20 +14,18 @@ use std::path::PathBuf;
 /// DO NOT USE IN CI.
 #[derive(clap::Args)]
 pub struct BuildOpentmkCli {
-    /// Target architecture for the OpenTMK build.
-    ///
-    /// Defaults to x86-64.
+    /// Target architecture for the OpenTMK build. Defaults to x86-64.
     #[clap(default_value = "x86-64")]
     pub arch: CommonArchCli,
 
-    /// Custom name for the output binary and VHD.
-    ///
-    /// The built EFI binary will use this as its output name (via cargo's
-    /// `--bin` renaming), and the VHD and PDB files will also use this name.
-    /// For example, `--name my_tmk` produces `my_tmk.efi`, `my_tmk.vhd`,
-    /// and `my_tmk.pdb`.
+    /// Custom name for the output `.efi`, `.vhd`, and `.pdb` (default `opentmk`).
     #[clap(long)]
     pub name: Option<String>,
+
+    /// Path to a JSON test-selection config to embed in the built VHD. If
+    /// omitted, the VHD boots the unconfigured `opentmk.efi`.
+    #[clap(long)]
+    pub config: Option<PathBuf>,
 
     /// Build using release profile.
     #[clap(long)]
@@ -65,6 +63,7 @@ impl IntoPipeline for BuildOpentmkCli {
         let Self {
             arch,
             name,
+            config,
             release,
             dir,
             verbose,
@@ -108,6 +107,7 @@ impl IntoPipeline for BuildOpentmkCli {
                     arch,
                     release,
                     name,
+                    config,
                 },
             )
             .finish();

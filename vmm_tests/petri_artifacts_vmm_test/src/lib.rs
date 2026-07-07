@@ -640,6 +640,18 @@ pub mod artifacts {
         }
     }
 
+    /// OpenTMK UEFI test application artifacts (the raw `.efi` binary).
+    pub mod opentmk {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// OpenTMK UEFI application for x86_64.
+            OPENTMK_EFI_X64,
+            /// OpenTMK UEFI application for aarch64.
+            OPENTMK_EFI_AARCH64,
+        }
+    }
+
     macro_rules! vmgstool_native {
         ($id_ty:ty, $os:literal, $arch:literal) => {
             /// vmgstool "native" executable (i.e:

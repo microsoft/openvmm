@@ -175,6 +175,10 @@ struct PetriVmResourcesOpenVmm {
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
+    opentmk_serial: Option<(
+        pal_async::socket::ReadHalf<unix_socket::UnixStream>,
+        PetriLogFile,
+    )>,
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
