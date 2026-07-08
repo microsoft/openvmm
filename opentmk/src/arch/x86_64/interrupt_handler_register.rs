@@ -8,10 +8,11 @@
 //! is not required. Stub addresses are installed into the IDT via the stable
 //! [`x86_64::structures::idt::Entry::set_handler_addr`].
 //!
-//! Like `tmk_core`'s equivalent stubs, `isr_common` saves and restores only the
-//! integer general-purpose registers, not SIMD/FPU state (XMM/YMM, x87, MXCSR).
-//! Registered handlers must stay minimal and must not rely on vector-register
-//! state being preserved across an interrupt.
+//! `isr_common` preserves the full architectural register state across the
+//! handler: the integer GPRs plus x87/SSE state (x87, MXCSR, XMM0-15) via
+//! `fxsave64`/`fxrstor64`. The `x86_64-unknown-uefi` target is built for the
+//! SSE2 baseline (no AVX), so `fxsave64` captures the complete vector state; if
+//! AVX is ever enabled here, switch to `xsave`.
 
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptDescriptorTable;
@@ -35,10 +36,13 @@ core::arch::global_asm! {
     "push rax",
     "mov rbp, rsp",
     "mov rdi, rbp",                 // arg0 = pointer to saved Frame
-    "and rsp, 0xfffffffffffffff0",  // align the stack to 16 bytes for the call
+    "sub rsp, 512",                 // reserve a 512-byte FXSAVE area below the frame
+    "and rsp, 0xfffffffffffffff0",  // 16-byte align it (fxsave requires it; also aligns the call)
+    "fxsave64 [rsp]",               // preserve the interrupted x87/MXCSR/XMM state
     "call {isr_handler}",
+    "fxrstor64 [rsp]",              // restore x87/MXCSR/XMM (leaves al and flags intact)
     "test al, al",                  // al = whether the vector pushed an error code
-    "mov rsp, rbp",
+    "mov rsp, rbp",                 // discard the FXSAVE area, back to the saved frame
     "pop rax",
     "pop rcx",
     "pop rdx",
