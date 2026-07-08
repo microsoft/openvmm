@@ -92,10 +92,14 @@ fn has_error_code(vector: u8) -> bool {
 /// Returns whether the vector pushed an error code so the assembly epilogue can
 /// pop it before `iretq`.
 ///
+/// Uses the SysV ABI (argument in `rdi`, no shadow space) to match the
+/// hand-written `isr_common` trampoline; the target's `extern "C"` would be the
+/// Win64 ABI on `x86_64-unknown-uefi`.
+///
 /// # Safety
 /// Must only be called from `isr_common` with a valid pointer to the saved
 /// [`Frame`] on the interrupt stack.
-unsafe extern "C" fn isr_handler(frame: *mut Frame) -> bool {
+unsafe extern "sysv64" fn isr_handler(frame: *mut Frame) -> bool {
     // SAFETY: `isr_common` passes a valid pointer to the saved frame.
     let vector = unsafe { (*frame).vector as u8 };
     super::interrupt::dispatch(vector);

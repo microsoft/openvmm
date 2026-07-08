@@ -92,48 +92,75 @@ mod hyperv {
     use petri::IsolationType;
     use petri::hyperv::HyperVPetriBackend;
 
-    petri::test!(opentmk_hyperv_openhcl_uefi_x64, |resolver| {
-        resolve_opentmk_openhcl::<HyperVPetriBackend>(resolver, "hv_processor", None)
-    });
+    /// Defines a Hyper-V + OpenHCL OpenTMK test that runs the guest-internal
+    /// scenario `$test` under the given `$isolation`.
+    macro_rules! opentmk_test {
+        ($name:ident, $test:literal, $isolation:expr) => {
+            petri::test!($name, |resolver| {
+                resolve_opentmk_openhcl::<HyperVPetriBackend>(resolver, $test, $isolation)
+            });
 
-    fn opentmk_hyperv_openhcl_uefi_x64(
-        params: petri::PetriTestParams<'_>,
-        artifacts: OpentmkArtifacts<HyperVPetriBackend>,
-    ) -> anyhow::Result<()> {
-        run_opentmk_uefi(params, artifacts)
+            fn $name(
+                params: petri::PetriTestParams<'_>,
+                artifacts: OpentmkArtifacts<HyperVPetriBackend>,
+            ) -> anyhow::Result<()> {
+                run_opentmk_uefi(params, artifacts)
+            }
+        };
     }
 
-    petri::test!(opentmk_hyperv_openhcl_uefi_x64_snp, |resolver| {
-        resolve_opentmk_openhcl::<HyperVPetriBackend>(
-            resolver,
-            "hv_processor",
-            Some(IsolationType::Snp),
-        )
-    });
+    // Baseline VP-count scenario on a non-isolated VM and on SNP/TDX CVMs.
+    opentmk_test!(opentmk_hyperv_openhcl_uefi_x64, "hv_processor", None);
+    opentmk_test!(
+        opentmk_hyperv_openhcl_uefi_x64_snp,
+        "hv_processor",
+        Some(IsolationType::Snp)
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_uefi_x64_tdx,
+        "hv_processor",
+        Some(IsolationType::Tdx)
+    );
 
-    fn opentmk_hyperv_openhcl_uefi_x64_snp(
-        params: petri::PetriTestParams<'_>,
-        artifacts: OpentmkArtifacts<HyperVPetriBackend>,
-    ) -> anyhow::Result<()> {
-        run_opentmk_uefi(params, artifacts)
-    }
+    // Interrupt scenarios that run on a non-isolated OpenHCL VTL guest.
+    opentmk_test!(
+        opentmk_hyperv_openhcl_memory_protect_read,
+        "hv_memory_protect_read",
+        None
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_memory_protect_write,
+        "hv_memory_protect_write",
+        None
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_register_intercept,
+        "hv_register_intercept",
+        None
+    );
 
-    petri::test!(opentmk_hyperv_openhcl_uefi_x64_tdx, |resolver| {
-        resolve_opentmk_openhcl::<HyperVPetriBackend>(
-            resolver,
-            "hv_processor",
-            Some(IsolationType::Tdx),
-        )
-    });
-
-    fn opentmk_hyperv_openhcl_uefi_x64_tdx(
-        params: petri::PetriTestParams<'_>,
-        artifacts: OpentmkArtifacts<HyperVPetriBackend>,
-    ) -> anyhow::Result<()> {
-        run_opentmk_uefi(params, artifacts)
-    }
+    // Interrupt scenarios that require a confidential VM (TPM), on SNP and TDX.
+    opentmk_test!(
+        opentmk_hyperv_openhcl_tpm_read_cvm_snp,
+        "hv_tpm_read_cvm",
+        Some(IsolationType::Snp)
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_tpm_write_cvm_snp,
+        "hv_tpm_write_cvm",
+        Some(IsolationType::Snp)
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_tpm_read_cvm_tdx,
+        "hv_tpm_read_cvm",
+        Some(IsolationType::Tdx)
+    );
+    opentmk_test!(
+        opentmk_hyperv_openhcl_tpm_write_cvm_tdx,
+        "hv_tpm_write_cvm",
+        Some(IsolationType::Tdx)
+    );
 }
-
 #[cfg(windows)]
 fn main() {
     petri::test_main(|name, requirements| {
