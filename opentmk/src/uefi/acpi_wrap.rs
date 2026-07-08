@@ -63,7 +63,7 @@ impl RsdpParser {
 
     // Retrieves the XSDT pointer from the RSDP structure.
     fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
-        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or(AcpiWrapError::InvalidXsdt.into())
+        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or_else(|| AcpiWrapError::InvalidXsdt.into())
     }
 
     // Finds the RSDP pointer from the UEFI system table.
