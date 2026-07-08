@@ -200,11 +200,18 @@ impl BufferAccess for VirtioWorkPool {
                 L3Protocol::Ipv6 => self.guest_tso6,
                 L3Protocol::Unknown => false,
             };
+        let gso_header_offsets = (metadata.l2_len as u16)
+            .checked_add(metadata.l3_len)
+            .and_then(|csum_start| {
+                let total_hdr = csum_start.checked_add(metadata.l4_len as u16)?;
+                Some((csum_start, total_hdr))
+            });
         let (gso_type, gso_size, hdr_len, csum_start, csum_offset) = if metadata.gso_size > 0
             && metadata.l2_len > 0
             && metadata.l3_len > 0
             && metadata.l4_len > 0
             && gso_allowed
+            && let Some((csum_start, total_hdr)) = gso_header_offsets
         {
             let gso_protocol = match metadata.l3_protocol {
                 L3Protocol::Ipv4 => VirtioNetHeaderGsoProtocol::TCPV4,
@@ -212,8 +219,6 @@ impl BufferAccess for VirtioWorkPool {
                 L3Protocol::Unknown => VirtioNetHeaderGsoProtocol::NONE,
             };
             let gso_type_byte: u8 = VirtioNetHeaderGso::new().with_protocol(gso_protocol).into();
-            let total_hdr = metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
-            let csum_start = metadata.l2_len as u16 + metadata.l3_len;
             // TCP checksum offset within TCP header is 16.
             let csum_offset: u16 = 16;
             (
