@@ -590,17 +590,20 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         &mut self,
         timeout: Duration,
     ) -> anyhow::Result<crate::opentmk::TmkRun> {
-        let task = self
+        let mut task = self
             .opentmk_scan
             .take()
             .context("OpenTMK serial capture was not configured for this VM")?;
-        match mesh::CancelContext::new()
+        let result = mesh::CancelContext::new()
             .with_timeout(timeout)
-            .until_cancelled(task)
-            .await
-        {
+            .until_cancelled(&mut task)
+            .await;
+        match result {
             Ok(run) => Ok(run),
             Err(_) => {
+                // Deterministically stop the scan task, closing the COM1 pipe
+                // and log file, instead of relying on drop-cancellation timing.
+                task.cancel().await;
                 anyhow::bail!("timed out after {timeout:?} waiting for OpenTMK results on COM1")
             }
         }

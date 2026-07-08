@@ -150,7 +150,10 @@ pub fn register_interrupt_handler(idt: &mut InterruptDescriptorTable) {
         idt.vmm_communication_exception
             .set_handler_addr(isr_addr(29));
         idt.security_exception.set_handler_addr(isr_addr(30));
-        // Vectors 15, 22-27, and 31 are reserved and left unset.
+        // Vectors 15, 22-27, and 31 are Intel-reserved: the x86_64 crate's IDT
+        // API cannot set them and hardware never delivers them. A spurious
+        // delivery would fault through the #GP (vector 13) stub rather than
+        // silently, so leave them unset.
         for vector in 32..=255usize {
             idt[vector as u8].set_handler_addr(isr_addr(vector));
         }
