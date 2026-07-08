@@ -86,6 +86,7 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
+    X64CvmAzureLocal,
     Aarch64,
     Aarch64Devkern,
 }
@@ -202,6 +203,25 @@ impl OpenhclIgvmRecipe {
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                vtl0_kernel_type: None,
+                with_uefi: true,
+                with_interactive,
+                with_sidecar: false,
+                max_trace_level,
+            },
+            Self::X64CvmAzureLocal => OpenhclIgvmRecipeDetails {
+                local_only: None,
+                igvm_manifest: in_repo_template(
+                    "openhcl-x64-cvm-dev.json",
+                    "openhcl-x64-cvm-release.json",
+                ),
+                openhcl_kernel_package: OpenhclKernelPackage::Cvm,
+                openvmm_hcl_features: {
+                    let mut f = base_openvmm_hcl_features();
+                    f.insert(OpenvmmHclFeature::AzureLocal);
+                    f
+                },
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,

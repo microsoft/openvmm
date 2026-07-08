@@ -25,6 +25,9 @@ disable_secure_avic = ["underhill_core/disable_secure_avic"]
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 
+# Enable Azure Local support
+azurelocal = ["underhill_core/azurelocal"]
+
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["underhill_core/dev_snp_ohcl_tio_support"]
 

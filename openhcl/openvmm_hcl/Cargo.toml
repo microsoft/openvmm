@@ -27,6 +27,9 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 nvme = ["openvmm_hcl_resources/nvme", "vpci"]
 vpci = ["underhill_entry/vpci"]
 
+# Enable Azure Local support
+azurelocal = ["underhill_entry/azurelocal"]
+
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
 

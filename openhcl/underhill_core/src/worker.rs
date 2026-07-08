@@ -3329,32 +3329,35 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
-                // enumerate as a 3D controller (class 0x0302), not VGA.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
-                    device_id: None,
-                    revision_id: None,
-                    prog_if: None,
-                    sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
-                    base_class: Some(ClassCode::DISPLAY_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
+                #[cfg(feature = "azurelocal")]
+                {
+                    // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
+                    // enumerate as a 3D controller (class 0x0302), not VGA.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+                        base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
 
-                // HGX clusters additionally expose NVSwitch NVLink-fabric
-                // devices, which enumerate as an "other" PCI bridge (class
-                // 0x0680) rather than a display controller.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
-                    device_id: None,
-                    revision_id: None,
-                    prog_if: None,
-                    sub_class: Some(Subclass::BRIDGE_OTHER),
-                    base_class: Some(ClassCode::BRIDGE),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
+                    // HGX clusters additionally expose NVSwitch NVLink-fabric
+                    // devices, which enumerate as an "other" PCI bridge (class
+                    // 0x0680) rather than a display controller.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::BRIDGE_OTHER),
+                        base_class: Some(ClassCode::BRIDGE),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
+                }
 
                 vpci_relay = Some(relay);
             }
