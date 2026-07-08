@@ -1112,11 +1112,10 @@ impl LxFile {
     }
 
     pub fn set_attr(&self, mut attr: SetAttributes) -> lx::Result<()> {
-        // A size change (truncate) requires the descriptor to have been opened for writing, to
-        // match Linux where ftruncate on an O_RDONLY descriptor fails with EINVAL. This must be
-        // enforced explicitly: the truncate below may run on a handle reopened with FILE_WRITE_DATA
-        // (needed to truncate an O_APPEND descriptor, which lacks that access), which would
-        // otherwise let a read-only descriptor be truncated whenever a reopen occurs.
+        // ftruncate requires the descriptor to be writable, matching Linux where truncating an
+        // O_RDONLY descriptor fails with EINVAL. This is enforced here because the truncate below
+        // may run on a handle reopened with FILE_WRITE_DATA, which would otherwise allow truncating
+        // a read-only descriptor.
         if attr.size.is_some()
             && (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 == 0
         {
@@ -1127,10 +1126,9 @@ impl LxFile {
 
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);
 
-        // Only reopen if there's an operation that requires it, and we don't already have the
-        // required permissions. A size change (truncate) is included because a file opened with
-        // O_APPEND lacks FILE_WRITE_DATA (stripped to enforce append-only writes), so it must be
-        // reopened to obtain the access `permissions_for_set_attr` requires for the truncate.
+        // Only reopen if there's an operation that requires it and we don't already have the
+        // required permissions. A size change is included so a file opened O_APPEND (which lacks
+        // FILE_WRITE_DATA) is reopened with the write access needed to truncate.
         let mut _file = None;
         let handle = if self.access & desired_access != desired_access
             && (attr.mode.is_some()
