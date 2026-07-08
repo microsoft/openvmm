@@ -31,7 +31,10 @@ struct OpentmkArtifacts<T: PetriVmmBackend> {
 /// Build the embedded config selecting the `hyperv` backend and the given
 /// `test`. Must match `opentmk_protocol::TestConfig`.
 fn opentmk_config_json(test: &str) -> Vec<u8> {
-    format!(r#"{{"backend":"hyperv","test":"{test}"}}"#).into_bytes()
+    // Build via serde_json so the test name is escaped and the payload stays
+    // well-formed if fields are added.
+    serde_json::to_vec(&serde_json::json!({ "backend": "hyperv", "test": test }))
+        .expect("opentmk config serialization cannot fail")
 }
 
 /// Resolve the artifacts to boot OpenTMK (selecting `test`) on Hyper-V with

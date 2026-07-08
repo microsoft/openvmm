@@ -4,9 +4,14 @@
 //! x86_64 interrupt entry stubs and IDT registration.
 //!
 //! Uses assembly interrupt entry stubs (one per vector) that funnel into a
-//! single `extern "C"` handler, so the nightly `abi_x86_interrupt` feature is
-//! not required. Stub addresses are installed into the IDT via the stable
+//! single `extern "sysv64"` handler, so the nightly `abi_x86_interrupt` feature
+//! is not required. Stub addresses are installed into the IDT via the stable
 //! [`x86_64::structures::idt::Entry::set_handler_addr`].
+//!
+//! Like `tmk_core`'s equivalent stubs, `isr_common` saves and restores only the
+//! integer general-purpose registers, not SIMD/FPU state (XMM/YMM, x87, MXCSR).
+//! Registered handlers must stay minimal and must not rely on vector-register
+//! state being preserved across an interrupt.
 
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptDescriptorTable;

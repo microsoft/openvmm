@@ -193,8 +193,16 @@ pub async fn scan_opentmk_serial(
             // newline must not grow `buf` without limit. Over-long lines are
             // truncated to `MAX_LINE_BYTES`.
             match read_capped_line(&mut reader, &mut buf, MAX_LINE_BYTES).await {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(_) => {}
+                Err(e) => {
+                    log_file.write_entry_fmt(
+                        None,
+                        Level::ERROR,
+                        format_args!("serial read error, ending scan: {e}"),
+                    );
+                    break;
+                }
             }
             let line = String::from_utf8_lossy(&buf);
             let line = line.trim_end();
