@@ -96,6 +96,11 @@ impl EcdsaKeyPairInner {
     }
 
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
+        // A signature must be exactly `r || s`, each `curve.key_size()` bytes.
+        if signature.len() != self.curve.key_size() * 2 {
+            return Ok(false);
+        }
+
         // SAFETY: FFI call with a valid key handle and valid input slices.
         let status =
             unsafe { BCryptVerifySignature(self.handle, None, hash, signature, BCRYPT_FLAGS(0)) };
