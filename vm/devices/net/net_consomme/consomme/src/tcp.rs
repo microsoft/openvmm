@@ -1391,6 +1391,10 @@ impl TcpConnectionInner {
             self.stats.tx_blocked_window_full.increment();
         }
 
+        let lro_supported = sender
+            .client
+            .lro_supported(matches!(sender.ft.dst, SocketAddr::V6(_)));
+
         while self.needs_ack || self.tx_send < tx_done {
             let rx_mtu = sender.client.rx_mtu();
             if rx_mtu == 0 {
@@ -1444,7 +1448,7 @@ impl TcpConnectionInner {
                 // payload, skip the MSS cap and fill the whole buffer —
                 // the packet will be delivered as an LRO/TSO frame.
                 // Otherwise, apply the MSS limit for normal segmentation.
-                let mss_limit = if max_payload > self.tx_mss {
+                let mss_limit = if lro_supported && max_payload > self.tx_mss {
                     tx_next + max_payload
                 } else {
                     tx_next + self.tx_mss
@@ -1506,7 +1510,7 @@ impl TcpConnectionInner {
 
             // When the payload exceeds a single MSS, deliver the frame as a
             // TSO/LRO packet so the guest can re-segment it.
-            let tso_mss = if payload_len > self.tx_mss {
+            let tso_mss = if lro_supported && payload_len > self.tx_mss {
                 Some(self.tx_mss.min(u16::MAX as usize) as u16)
             } else {
                 None

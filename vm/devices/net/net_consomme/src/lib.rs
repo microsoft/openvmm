@@ -906,6 +906,14 @@ impl consomme::Client for Client<'_> {
             0
         }
     }
+
+    fn lro_supported(&self, ipv6: bool) -> bool {
+        if ipv6 {
+            self.rx_offload_support.lro6
+        } else {
+            self.rx_offload_support.lro4
+        }
+    }
 }
 
 /// Parse an Ethernet frame to extract L3 protocol, l2_len, l3_len, and l4_len.

@@ -517,21 +517,27 @@ pub trait Client {
     /// packet contains an IPv4 header, TCP header, and/or UDP header with a
     /// valid checksum.
     ///
-    /// TODO:
-    ///
-    /// 1. support >MTU sized packets (RSC/LRO/GRO)
-    /// 2. allow discontiguous data to eliminate the extra copy from the TCP
-    ///    window.
+    /// TODO: allow discontiguous data to eliminate the extra copy from the TCP
+    /// window.
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState);
 
     /// Specifies the maximum size for the next call to `recv`.
     ///
     /// This is the MTU including the Ethernet frame header. This must be at
-    /// least [`MIN_MTU`].
+    /// least [`MIN_MTU`]; a larger value lets consomme coalesce TCP data into a
+    /// single LRO frame of up to this size (see [`Client::lro_supported`]).
     ///
     /// Return 0 to indicate that there are no buffers available for receiving
     /// data.
     fn rx_mtu(&mut self) -> usize;
+
+    /// Returns whether the client can receive coalesced segments larger than
+    /// the MTU (LRO/GRO/RSC) for the given IP version. When `false`, consomme
+    /// will not emit TSO frames, whose pseudo-header partial checksums the
+    /// guest can only complete when GSO is advertised to it.
+    fn lro_supported(&self, _ipv6: bool) -> bool {
+        false
+    }
 }
 
 /// Specifies the checksum state for a packet being transmitted.
