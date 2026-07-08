@@ -1116,24 +1116,17 @@ impl LxFile {
 
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);
 
-        // Truncating a file opened with O_APPEND is allowed on Linux, but O_APPEND strips
-        // FILE_WRITE_DATA from the access mask on Windows to enforce append-only writes. The
-        // presence of FILE_APPEND_DATA (without FILE_WRITE_DATA) means the file was opened for
-        // writing and so ftruncate should be permitted; a file that isn't writable at all (e.g.
-        // opened read-only) has neither bit, and must not be reopened so that its truncate fails.
-        let truncate_needs_reopen = attr.size.is_some()
-            && (self.access & W32Fs::FILE_WRITE_DATA).0 == 0
-            && (self.access & W32Fs::FILE_APPEND_DATA).0 != 0;
-
         // Only reopen if there's an operation that requires it, and we don't already have the
-        // required permissions. `desired_access` already includes FILE_WRITE_DATA when a size is
-        // being set, so the reopened handle can be used for the truncate as well.
+        // required permissions. `permissions_for_set_attr` includes FILE_WRITE_DATA when a size is
+        // being set, which is needed to truncate a file opened with O_APPEND: such a file has
+        // FILE_WRITE_DATA stripped to enforce append-only writes, even though Linux permits
+        // ftruncate on the descriptor.
         let mut _file = None;
         let handle = if self.access & desired_access != desired_access
-            && (truncate_needs_reopen
-                || attr.mode.is_some()
+            && (attr.mode.is_some()
                 || attr.uid.is_some()
                 || attr.gid.is_some()
+                || attr.size.is_some()
                 || !attr.atime.is_omit()
                 || !attr.mtime.is_omit()
                 || !attr.ctime.is_omit())
@@ -1145,15 +1138,7 @@ impl LxFile {
             &self.handle
         };
 
-        // Do the truncate with the reopened handle when the file was opened append-only, otherwise
-        // with the original handle so the write requirement is enforced.
-        let truncate_handle = if truncate_needs_reopen {
-            handle
-        } else {
-            &self.handle
-        };
-
-        util::set_attr_core(handle, truncate_handle, &self.state, &attr)?;
+        util::set_attr_core(handle, &self.state, &attr)?;
 
         if self.state.options.metadata {
             if let Some(mode) = attr.mode {
