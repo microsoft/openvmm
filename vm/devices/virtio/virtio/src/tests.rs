@@ -2020,6 +2020,60 @@ async fn verify_pci_cfg_access_window(driver: DefaultDriver) {
     ));
 }
 
+/// A `pci_cfg_data` access whose `cap.offset`/`cap.length` falls outside the
+/// selected BAR must be rejected as `InvalidRegister`, rather than truncating
+/// the offset to `u16` or routing past the end of the BAR.
+#[async_test]
+async fn verify_pci_cfg_access_window_bounds(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // A BAR0 offset far past the end of the transport + device-config region.
+    // This value fits in a u16, so it exercises the BAR-size check rather than
+    // the u16 bound.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0xf000),
+    )
+    .unwrap(); // offset = 0xf000
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+
+    // A BAR that the window cannot reach is rejected as well.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(1))
+        .unwrap(); // bar = 1
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+}
+
 /// Regression test for sub-dword (`cap.length` < 4) accesses through the
 /// `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
 ///
