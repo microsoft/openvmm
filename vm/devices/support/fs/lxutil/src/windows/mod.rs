@@ -1112,6 +1112,17 @@ impl LxFile {
     }
 
     pub fn set_attr(&self, mut attr: SetAttributes) -> lx::Result<()> {
+        // A size change (truncate) requires the descriptor to have been opened for writing, to
+        // match Linux where ftruncate on an O_RDONLY descriptor fails with EINVAL. This must be
+        // enforced explicitly: the truncate below may run on a handle reopened with FILE_WRITE_DATA
+        // (needed to truncate an O_APPEND descriptor, which lacks that access), which would
+        // otherwise let a read-only descriptor be truncated whenever a reopen occurs.
+        if attr.size.is_some()
+            && (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 == 0
+        {
+            return Err(lx::Error::EINVAL);
+        }
+
         util::set_attr_check_kill_priv(&self.handle, &self.state, &mut attr)?;
 
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);

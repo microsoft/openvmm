@@ -1274,6 +1274,20 @@ mod tests {
     }
 
     #[test]
+    fn readonly_truncate() {
+        // ftruncate on a descriptor that was not opened for writing must fail, matching Linux.
+        // This guards against the Windows truncate path reopening the file with write access and
+        // succeeding on a read-only descriptor.
+        let env = TestEnv::new();
+        env.create_file("testfile", "hello");
+
+        let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
+        assert_eq!(file.truncate(1, 0).unwrap_err().value(), lx::EINVAL);
+        // The file must be unchanged.
+        assert_eq!(file.fstat().unwrap().file_size, 5);
+    }
+
+    #[test]
     fn read_dir() {
         let env = TestEnv::new();
         let mut map = HashMap::new();
