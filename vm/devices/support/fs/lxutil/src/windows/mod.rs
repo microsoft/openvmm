@@ -1117,8 +1117,9 @@ impl LxFile {
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);
 
         // Only reopen if there's an operation that requires it, and we don't already have the
-        // required permissions. Note that a size change needs a reopen for files opened with
-        // O_APPEND, which strips FILE_WRITE_DATA to enforce append-only writes.
+        // required permissions. A size change (truncate) is included because a file opened with
+        // O_APPEND lacks FILE_WRITE_DATA (stripped to enforce append-only writes), so it must be
+        // reopened to obtain the access `permissions_for_set_attr` requires for the truncate.
         let mut _file = None;
         let handle = if self.access & desired_access != desired_access
             && (attr.mode.is_some()
