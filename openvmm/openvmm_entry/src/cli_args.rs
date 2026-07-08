@@ -955,7 +955,7 @@ flags:
     pub guest_watchdog: bool,
 
     /// Enable OpenHCL's crash dump device, writing ELF core dumps of
-    /// VTL2 usermode components of openhcl in the given directory.
+    /// VTL2 user-mode components of OpenHCL in the given directory.
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
@@ -982,8 +982,8 @@ flags:
     /// applying the crash action
     ///
     /// This is a host-side, whole-VM dump triggered by a triple fault, distinct
-    /// from `--openhcl-dump-path` (which captures a ELF core dump of usermode
-    /// components in openhcl).
+    /// from `--openhcl-dump-path` (which captures an ELF core dump of user-mode
+    /// components in OpenHCL).
     #[clap(long, value_name = "PATH")]
     pub crash_dump_path: Option<PathBuf>,
 
