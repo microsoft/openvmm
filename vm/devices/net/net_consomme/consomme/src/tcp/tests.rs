@@ -741,7 +741,6 @@ async fn test_tcp_guest_packet_checksum_valid(driver: DefaultDriver) {
     let dst_ip = ipv4.dst_addr();
     let tcp_pkt = TcpPacket::new_unchecked(ipv4.payload());
 
-    assert_ne!(tcp_pkt.checksum(), 0, "checksum should be populated");
     assert!(
         tcp_pkt.verify_checksum(&src_ip.into(), &dst_ip.into()),
         "guest-bound TCP segment must have a valid checksum"

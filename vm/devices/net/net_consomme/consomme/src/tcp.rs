@@ -726,7 +726,7 @@ impl<T: Client> Sender<'_, T> {
         if let Some(payload) = &payload {
             payload.copy_to_slice(tcp_packet.payload_mut());
         }
-        tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+        tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
         let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {
             SocketAddr::V4(_) => ChecksumState::TCP4,
