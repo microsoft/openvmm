@@ -21,6 +21,7 @@ use crate::spec::*;
 use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
 use chipset_device::io::IoError;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -1302,8 +1303,16 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
-        0
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        // Return a recognizable, offset-encoded value: the byte at
+        // device-config offset `N` reads back as `N`. This lets tests verify
+        // the positioning of device-config accesses routed through this task.
+        u32::from_le_bytes([
+            offset as u8,
+            offset.wrapping_add(1) as u8,
+            offset.wrapping_add(2) as u8,
+            offset.wrapping_add(3) as u8,
+        ])
     }
 
     async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
@@ -2009,6 +2018,136 @@ async fn verify_pci_cfg_access_window(driver: DefaultDriver) {
         .now_or_never(),
         Err(IoError::UnalignedAccess)
     ));
+}
+
+/// Regression test for sub-dword (`cap.length` < 4) accesses through the
+/// `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
+///
+/// Per the virtio spec (4.1.4.9.1) the device stores/uses the *first*
+/// `cap.length` bytes of `pci_cfg_data`, regardless of how `cap.offset` is
+/// aligned within its containing DWORD. So a 2-byte access at a BAR offset
+/// whose low bits are `2` must still land in the low two bytes of
+/// `pci_cfg_data` — not bytes 2..4.
+#[async_test]
+async fn verify_pci_cfg_access_window_subdword(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Seed device_feature_select (a 4-byte BAR0 register at offset 0) so its
+    // upper 16 bits hold a recognizable value.
+    dev.write_u32(0, 0xbbbb_aaaa);
+
+    // Program the window for a 2-byte access at BAR0 offset 2 (the upper half
+    // of device_feature_select); `offset & 3 == 2`.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    // A read through the window must return the accessed bytes in the low two
+    // bytes of pci_cfg_data.
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(
+        val & 0xffff,
+        0xbbbb,
+        "read data must occupy the first cap.length bytes of pci_cfg_data (got {val:#010x})",
+    );
+
+    // A write through the window must take its value from the low two bytes of
+    // pci_cfg_data and store it at BAR0 offset 2.
+    dev.pci_cfg_write(
+        data_off,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0x0000_cccc),
+    )
+    .unwrap();
+    assert_eq!(
+        dev.read_u32(0) >> 16,
+        0xcccc,
+        "written data must be taken from the first cap.length bytes of pci_cfg_data",
+    );
+}
+
+/// Exercise the *deferred* device-config path of the `pci_cfg_data` window.
+///
+/// Device-specific config registers are owned by the async device task, so an
+/// access through the window at `cap.offset >= BAR0_DEVICE_CFG_OFFSET` is
+/// deferred. The PCI config bus polls the deferred read with a 4-byte dword
+/// buffer, so the completion must be a full dword with the accessed
+/// `cap.length` bytes left-aligned into the low bytes of `pci_cfg_data`.
+///
+/// The test device reports byte `N` at device-config offset `N`.
+#[async_test]
+async fn verify_pci_cfg_access_window_deferred(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Device config starts after the common (56), notify (4), and ISR (4)
+    // regions in BAR0.
+    const DEVICE_CFG_BAR0_OFFSET: u32 = 56 + 4 + 4;
+
+    // Point the window at BAR0 (bar = 0, id = 0).
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+
+    // Aligned 4-byte read at device-config offset 0 => bytes [0, 1, 2, 3].
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET),
+    )
+    .unwrap(); // offset = device cfg + 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(buf, [0, 1, 2, 3]);
+
+    // Sub-dword 2-byte read at device-config offset 2 (`offset & 3 == 2`). The
+    // accessed bytes [2, 3] must land in the low two bytes of pci_cfg_data.
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET + 2),
+    )
+    .unwrap(); // offset = device cfg + 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(
+        u32::from_le_bytes(buf) & 0xffff,
+        0x0302,
+        "deferred device-config bytes must be left-aligned in pci_cfg_data",
+    );
 }
 
 #[async_test]

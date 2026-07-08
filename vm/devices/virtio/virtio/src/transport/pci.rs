@@ -7,6 +7,7 @@ use self::capabilities::*;
 use super::StalledIo;
 use super::core::TransportOps;
 use super::core::VirtioTransportCore;
+use super::task::ConfigReadCompletion;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use crate::DynVirtioDevice;
@@ -550,9 +551,9 @@ impl VirtioPciDevice {
 
     /// Service a read of the `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
     ///
-    /// The accessed bytes are placed at their natural position within the
-    /// returned dword (`offset & 3`), matching how the PCI configuration
-    /// mechanism extracts sub-dword accesses. The device-config region is
+    /// Per the virtio spec (4.1.4.9.1) the accessed bytes are stored in the
+    /// *first* `cap.length` bytes of `pci_cfg_data`, regardless of how
+    /// `cap.offset` is aligned within its dword. The device-config region is
     /// owned by the async device task and is therefore deferred; that path
     /// reads the dword containing the access, so the completed size always
     /// matches the 4-byte buffer the PCI config bus polls deferred reads with.
@@ -578,15 +579,23 @@ impl VirtioPciDevice {
         };
         let len = length as usize;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
-            // The device-config region is polled as a full dword, so always
-            // defer a dword-aligned 4-byte read. The requested bytes land at
-            // `offset & 3` within the returned dword, matching the spec.
+            // The device-config region is owned by the async device task, so
+            // the access is deferred. The PCI config bus polls the deferred
+            // read with a 4-byte dword buffer, so the completion must be a full
+            // dword with the accessed `cap.length` bytes left-aligned into the
+            // low bytes of `pci_cfg_data`, as required by the spec.
             let dev_offset = offset - BAR0_DEVICE_CFG_OFFSET;
-            return defer_config_read(&self.core.device_sender, dev_offset & !3, 4);
+            return defer_config_read(
+                &self.core.device_sender,
+                dev_offset,
+                len as u8,
+                ConfigReadCompletion::LeftAlignedDword,
+            );
         }
-        let byte = (offset & 3) as usize;
+        // Store the accessed bytes in the first `cap.length` bytes of
+        // `pci_cfg_data`, as required by the spec.
         let mut buf = [0u8; 4];
-        let result = self.read_pci_cfg_bar(bar, offset, &mut buf[byte..byte + len]);
+        let result = self.read_pci_cfg_bar(bar, offset, &mut buf[..len]);
         if let IoResult::Ok = result {
             *value = u32::from_le_bytes(buf);
         }
@@ -611,9 +620,10 @@ impl VirtioPciDevice {
             return IoResult::Err(IoError::InvalidRegister);
         };
         let len = length as usize;
-        let byte = (offset & 3) as usize;
+        // Take the value from the first `cap.length` bytes of `pci_cfg_data`,
+        // as required by the spec.
         let bytes = value.to_le_bytes();
-        let data = &bytes[byte..byte + len];
+        let data = &bytes[..len];
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
             return defer_config_write(
                 &self.core.device_sender,
@@ -894,6 +904,7 @@ impl MmioIntercept for VirtioPciDevice {
                 &self.core.device_sender,
                 offset - BAR0_DEVICE_CFG_OFFSET,
                 data.len() as u8,
+                ConfigReadCompletion::Exact,
             );
         }
         if bar == 0 && self.core.state.is_busy() {
