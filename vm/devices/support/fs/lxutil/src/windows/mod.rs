@@ -1117,10 +1117,8 @@ impl LxFile {
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);
 
         // Only reopen if there's an operation that requires it, and we don't already have the
-        // required permissions. `permissions_for_set_attr` includes FILE_WRITE_DATA when a size is
-        // being set, which is needed to truncate a file opened with O_APPEND: such a file has
-        // FILE_WRITE_DATA stripped to enforce append-only writes, even though Linux permits
-        // ftruncate on the descriptor.
+        // required permissions. Note that a size change needs a reopen for files opened with
+        // O_APPEND, which strips FILE_WRITE_DATA to enforce append-only writes.
         let mut _file = None;
         let handle = if self.access & desired_access != desired_access
             && (attr.mode.is_some()
