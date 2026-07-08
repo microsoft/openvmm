@@ -26,20 +26,20 @@ Additional build tools must be installed as well. If your distro has LLVM 14
 available (Ubuntu 22.04 or newer):
 
 ```bash
-sudo apt install clang-tools-14 lld-14 llvm-dev
+sudo apt install clang-tools lld llvm-dev
 ```
 
 Otherwise, follow the steps at <https://apt.llvm.org/> to install a specific
 version, by adding the correct apt repos. Note that you must install
-`clang-tools-14` as default `clang-14` uses gcc style arguments, where
-`clang-cl-14` uses msvc style arguments. You can use their helper script as
+`clang-tools` as default `clang` uses gcc style arguments, where
+`clang-cl` uses msvc style arguments. You can use their helper script as
 well:
 
 ```bash
 wget https://apt.llvm.org/llvm.sh
 chmod +x llvm.sh
-sudo ./llvm.sh 14
-sudo apt install clang-tools-14
+sudo ./llvm.sh
+sudo apt install clang-tools
 ```
 
 ## Setting up the terminal environment

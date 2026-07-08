@@ -598,8 +598,8 @@ impl PetriVmInner {
                     // that fail during the mesh handshake. Drain them and
                     // retry until we get a live connection.
                     tracing::warn!(
-                        error = &e as &dyn std::error::Error,
-                        "pipette handshake failed, retrying"
+                        error = e.as_ref() as &dyn std::error::Error,
+                        "pipette connection not live, retrying"
                     );
                 }
             }
@@ -654,26 +654,19 @@ impl PetriVmInner {
                         .set_nodelay(true)
                         .context("failed to set TCP_NODELAY")?;
                     tracing::info!("TCP connected, handshaking with pipette");
-                    // Time out the handshake — consomme's port forwarding may
-                    // drop the initial SYN to the guest if no RX buffers are
-                    // available yet, leaving the connection open but dead.
-                    // Reconnecting forces a new SYN attempt.
-                    let handshake = PipetteClient::new(
+                    match PipetteClient::new(
                         &self.resources.driver,
                         socket,
                         &self.resources.output_dir,
-                    );
-                    let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
-                    match c.until_cancelled(handshake).await {
-                        Ok(Ok(client)) => break client,
-                        Ok(Err(e)) => {
+                    )
+                    .await
+                    {
+                        Ok(client) => break client,
+                        Err(e) => {
                             tracing::warn!(
-                                error = &e as &dyn std::error::Error,
-                                "pipette TCP handshake failed, retrying"
+                                error = e.as_ref() as &dyn std::error::Error,
+                                "pipette TCP connection failed, retrying"
                             );
-                        }
-                        Err(_) => {
-                            tracing::warn!("pipette TCP handshake timed out, reconnecting");
                         }
                     }
                 }

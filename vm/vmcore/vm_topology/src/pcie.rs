@@ -37,6 +37,13 @@ pub struct PcieHostBridge {
     /// NUMA node affinity for this host bridge.
     pub vnode: Option<u32>,
     /// When true, treat non-zero BAR values found during probing as pinned
-    /// addresses. Used for P2P DMA with GPA = HPA.
+    /// addresses (input to the PCI resource assignment algorithm). Used for
+    /// P2P DMA with GPA = HPA.
     pub preserve_bars: bool,
+    /// When true, instruct the guest OS — via the host-bridge `_DSM` (and the
+    /// device-tree equivalent on ARM64) — to preserve the firmware-assigned
+    /// PCI boot configuration (bus numbers and BARs) rather than
+    /// re-enumerating. Required when something references a device by a fixed
+    /// BDF, e.g. an SRAT generic-initiator entry.
+    pub preserve_boot_config: bool,
 }

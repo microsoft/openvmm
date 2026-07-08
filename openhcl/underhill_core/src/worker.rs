@@ -48,6 +48,7 @@ use crate::nvme_manager::manager::NvmeManager;
 use crate::options::EfiDiagnosticsLogLevelCli;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
+use crate::options::HardwareSealingPolicyCli;
 use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
@@ -105,6 +106,7 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
@@ -196,11 +198,6 @@ use zerocopy::FromZeros;
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
-
-// TODO: Move to hsm crate in future.
-// AZIHSM VPCI IDs
-const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
-const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
@@ -326,6 +323,8 @@ pub struct UnderhillEnvCfg {
     pub config_timeout_in_seconds: u64,
     /// The timeout in milliseconds for dump collection during a panic in servicing.
     pub servicing_timeout_dump_collection_in_ms: u64,
+    /// Hardware sealing policy (overrides DPS value when set)
+    pub hardware_sealing_policy: Option<HardwareSealingPolicyCli>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1569,6 +1568,19 @@ async fn new_underhill_vm(
                 GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
                 GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
                 GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+                GuestStateEncryptionPolicyCli::HardwareSealing => {
+                    GuestStateEncryptionPolicy::HardwareSealing
+                }
+            };
+        }
+
+        if let Some(policy) = env_cfg.hardware_sealing_policy {
+            tracing::info!("using HCL_HARDWARE_SEALING_POLICY={policy:?} from cmdline");
+            use get_protocol::dps_json::HardwareSealingPolicy as DpsHardwareSealingPolicy;
+            dps.general.hardware_sealing_policy = match policy {
+                HardwareSealingPolicyCli::None => DpsHardwareSealingPolicy::None,
+                HardwareSealingPolicyCli::Hash => DpsHardwareSealingPolicy::Hash,
+                HardwareSealingPolicyCli::Signer => DpsHardwareSealingPolicy::Signer,
             };
         }
 
@@ -2057,6 +2069,37 @@ async fn new_underhill_vm(
         None
     };
 
+    // `stateful` is true when attestation is not suppressed. It feeds the legacy
+    // `AttestationVmConfig::tpm_persisted` claim, whose name predates stateless +
+    // hardware sealing. That claim really means "stateful mode", not whether TPM
+    // state is persisted at runtime; the value and field name are kept unchanged
+    // to preserve the attestation runtime-claims contract and the hardware-derived
+    // key KDF input. The actual runtime persistence decision is made separately by
+    // `no_persistent_secrets` below.
+    let stateful = !dps.general.suppress_attestation.unwrap_or(false);
+    let hardware_sealing_policy = if stateful {
+        // In stateful mode, use the hash policy to match the existing implementation.
+        // TODO: Support sealing policy for persisted TPM mode.
+        HardwareSealingPolicy::Hash
+    } else if matches!(
+        dps.general.guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::HardwareSealing
+    ) {
+        // The host-provided hardware sealing policy is only honored when the host
+        // also requests hardware sealing as the guest state encryption policy.
+        // Otherwise the VMGS is not encrypted via hardware sealing, and treating
+        // the policy as anything other than `None` would incorrectly mark TPM
+        // secrets as safe to persist to an unencrypted VMGS (see the
+        // `no_persistent_secrets` computation below).
+        match dps.general.hardware_sealing_policy {
+            get_protocol::dps_json::HardwareSealingPolicy::None => HardwareSealingPolicy::None,
+            get_protocol::dps_json::HardwareSealingPolicy::Hash => HardwareSealingPolicy::Hash,
+            get_protocol::dps_json::HardwareSealingPolicy::Signer => HardwareSealingPolicy::Signer,
+        }
+    } else {
+        HardwareSealingPolicy::None
+    };
+
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
@@ -2074,7 +2117,10 @@ async fn new_underhill_vm(
         interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
-        tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
+        // Legacy claim; `stateful` reflects its true meaning (attestation not
+        // suppressed). See the comment where `stateful` is computed.
+        tpm_persisted: stateful,
+        hardware_sealing_policy,
         filtered_vpci_devices_allowed: with_vmbus_relay
             && dps.general.vpci_boot_enabled
             && isolation.is_isolated(),
@@ -2639,6 +2685,7 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 slit_info: None,
+                generic_initiators: &[],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
@@ -2646,7 +2693,7 @@ async fn new_underhill_vm(
                     with_psp: dps.general.psp_enabled,
                     pm_base: DEFAULT_PM_PIO_BASE,
                     acpi_irq: DEFAULT_ACPI_IRQ,
-                    amd_iommu: None,
+                    iommu: None,
                 },
             };
 
@@ -2940,14 +2987,39 @@ async fn new_underhill_vm(
         });
 
     if dps.general.tpm_enabled {
-        let no_persistent_secrets =
-            vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
+        // The actual runtime decision of whether TPM secrets are persisted to the
+        // VMGS. This is broader than the legacy `tpm_persisted`/`stateful`
+        // attestation claim: stateful mode persists across all operations
+        // (servicing, reboots, ...), while stateless + hardware sealing only
+        // guarantees persistence across reboots. TPM stores are ephemeral only
+        // when there is no VMGS, or when attestation is suppressed AND hardware
+        // sealing is not in use.
+        let no_persistent_secrets = vmgs_client.is_none()
+            || (dps.general.suppress_attestation.unwrap_or(false)
+                && matches!(
+                    attestation_vm_config.hardware_sealing_policy,
+                    HardwareSealingPolicy::None
+                ));
         let (ppi_store, nvram_store) = if no_persistent_secrets {
+            tracing::info!(
+                CVM_ALLOWED,
+                suppress_attestation=?dps.general.suppress_attestation,
+                hardware_sealing_policy=?attestation_vm_config.hardware_sealing_policy,
+                "TPM configured without persistent secrets, using ephemeral stores"
+            );
+
             (
                 EphemeralNonVolatileStoreHandle.into_resource(),
                 EphemeralNonVolatileStoreHandle.into_resource(),
             )
         } else {
+            tracing::info!(
+                CVM_ALLOWED,
+                suppress_attestation=?dps.general.suppress_attestation,
+                hardware_sealing_policy=?attestation_vm_config.hardware_sealing_policy,
+                "TPM configured with persistent secrets, using VMGS stores"
+            );
+
             (
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
@@ -3306,8 +3378,8 @@ async fn new_underhill_vm(
 
                 // Allow MANA devices.
                 relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(gdma_defs::VENDOR_ID),
-                    device_id: Some(gdma_defs::DEVICE_ID),
+                    vendor_id: Some(pci_core::microsoft::VENDOR_ID),
+                    device_id: Some(pci_core::microsoft::DeviceId::GDMA.0),
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
                     sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
@@ -3318,8 +3390,8 @@ async fn new_underhill_vm(
 
                 // Allow Azi HSM devices.
                 relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(AZIHSM_VPCI_VENDOR_ID), // Microsoft vendor ID
-                    device_id: Some(AZIHSM_VPCI_DEVICE_ID), // Azi HSM device ID
+                    vendor_id: Some(pci_core::microsoft::VENDOR_ID), // Microsoft vendor ID
+                    device_id: Some(pci_core::microsoft::DeviceId::AZIHSM.0), // Azi HSM device ID
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NONE),
                     sub_class: Some(Subclass::NONE),
@@ -3415,11 +3487,9 @@ async fn new_underhill_vm(
                 vmm_core::device_builder::PciDeviceResolveContext {
                     driver_source: &driver_source,
                     resolver: &resolver,
-                    guest_memory: device_memory,
                     resource,
                     doorbell_registration: None,
                     shared_mem_mapper: None,
-                    software_iommu: false,
                 },
                 vmbus.control(),
                 &chipset_builder,
@@ -3428,6 +3498,7 @@ async fn new_underhill_vm(
                     vtom,
                     vnode: None,
                 },
+                device_memory.clone(),
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
@@ -3734,6 +3805,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
+        hardware_sealing_policy: _,
 
         // Validated below
         processor_idle_enabled,
@@ -3780,7 +3852,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
-        hv_sint_enabled: _,
+        force_dma_bounce_enabled: _,
         battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 

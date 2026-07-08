@@ -28,6 +28,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+guid.workspace = true
 pal.workspace = true
 socket2.workspace = true
 

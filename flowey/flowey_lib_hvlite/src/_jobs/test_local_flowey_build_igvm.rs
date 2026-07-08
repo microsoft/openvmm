@@ -4,7 +4,6 @@
 //! Encapsulates the logic of invoking `cargo xflowey build-igvm x64 --install-missing-deps`
 use flowey::node::prelude::*;
 
-use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 
 flowey_request! {
@@ -44,7 +43,7 @@ impl SimpleFlowNode for Node {
                     let hvlite_repo = rt.read(hvlite_repo);
                     let gh_token = rt.read(gh_token);
                     let rust_toolchain = rt.read(rust_toolchain);
-                    let base_recipe = non_production_build_igvm_tool_out_name(&base_recipe);
+                    let base_recipe = base_recipe.non_production_tag();
                     rt.sh.change_dir(hvlite_repo);
                     let mut cmd = flowey::shell_cmd!(
                         rt,

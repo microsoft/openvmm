@@ -94,7 +94,12 @@ impl CargoCrateType {
 pub enum CargoBuildOutput {
     WindowsBin {
         exe: PathBuf,
-        pdb: PathBuf,
+        /// Path to the separate debug file (`.pdb`), if one was produced.
+        ///
+        /// The MSVC toolchain emits a `.pdb`; the GNU (mingw-w64) toolchain
+        /// embeds DWARF debug info in the `.exe` and produces no separate
+        /// file, so this is `None` for GNU builds.
+        pdb: Option<PathBuf>,
     },
     ElfBin {
         bin: PathBuf,
@@ -394,7 +399,13 @@ fn rename_output(
         CargoCrateType::Bin => {
             if find_source(&format!("{out_name}.exe")).is_some() {
                 let exe = do_rename("exe", false)?;
-                let pdb = do_rename("pdb", true)?;
+                // No `.pdb` is produced for GNU (mingw-w64) builds.
+                let pdb_name = format!("{}.pdb", out_name.replace('-', "_"));
+                let pdb = if find_source(&pdb_name).is_some() {
+                    Some(do_rename("pdb", true)?)
+                } else {
+                    None
+                };
                 CargoBuildOutput::WindowsBin { exe, pdb }
             } else if find_source(&format!("{out_name}.efi")).is_some() {
                 let efi = do_rename("efi", false)?;

@@ -20,6 +20,10 @@ pub struct CcaTestsCli {
     #[clap(long)]
     pub update_emu: bool,
 
+    /// Build CCA test artifacts without running the Petri test.
+    #[clap(long)]
+    pub build_only: bool,
+
     /// Verbose pipeline output
     #[clap(long)]
     pub verbose: bool,
@@ -58,6 +62,7 @@ impl IntoPipeline for CcaTestsCli {
             test_root,
             install_emu,
             update_emu,
+            build_only,
             verbose,
             update_emu_subcmds:
                 CcaTestsUpdateEmuSubCmds {
@@ -183,6 +188,7 @@ impl IntoPipeline for CcaTestsCli {
             })
             .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_run_cca_test::Params {
                 test_root: test_root.clone(),
+                build_only,
                 done: ctx.new_done_handle(),
             })
             .finish();

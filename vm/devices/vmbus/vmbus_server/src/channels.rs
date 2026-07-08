@@ -131,8 +131,15 @@ pub struct Server {
     gpadls: GpadlMap,
     incomplete_gpadls: IncompleteGpadlMap,
     child_connection_id: u32,
+    /// Limits the protocol version and feature flags that will be accepted for the next connection.
     max_version: Option<MaxVersionInfo>,
+    /// Version limit that will be applied after the next connection is established. This is used
+    /// for testing scenarios where the first client to connect (usually UEFI) may not be able to
+    /// support the older protocol version being tested.
     delayed_max_version: Option<MaxVersionInfo>,
+    /// Limits the protocol version and feature flags that will be accepted when restoring from
+    /// saved state.
+    max_restore_version: Option<MaxVersionInfo>,
     // This must be separate from the connection state because e.g. the UnloadComplete message,
     // or messages for reserved channels, can be pending even when disconnected.
     pending_messages: PendingMessages,
@@ -1374,6 +1381,7 @@ impl Server {
             child_connection_id,
             max_version: None,
             delayed_max_version: None,
+            max_restore_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
             use_absolute_channel_order,
@@ -1408,7 +1416,10 @@ impl Server {
         }
     }
 
-    /// Indicates the maximum supported version by the real host in an Underhill relay scenario.
+    /// Sets a limit on the version and featuref flags that will be offered to the guest.
+    ///
+    /// If `delay` is true, the limit will not apply to the first connection, but to all subsequent
+    /// connections.
     pub fn set_compatibility_version(&mut self, version: MaxVersionInfo, delay: bool) {
         if delay {
             self.delayed_max_version = Some(version)
@@ -1416,6 +1427,18 @@ impl Server {
             tracing::info!(?version, "Limiting VmBus connections to version");
             self.max_version = Some(version);
         }
+    }
+
+    /// Indicates the maximum supported version when restoring from saved
+    /// state. This is configured separately from [`Self::set_compatibility_version`]
+    /// so that the restore-time limit can be configured independently of the
+    /// limit used for live negotiation.
+    ///
+    /// This allows features to be enabled for rollback scenarios while not yet enabling them for
+    /// new connections.
+    pub fn set_restore_compatibility_version(&mut self, version: MaxVersionInfo) {
+        tracing::info!(?version, "Limiting VmBus restore to version");
+        self.max_restore_version = Some(version);
     }
 
     pub fn channel_gpadls(&self, offer_id: OfferId) -> Vec<RestoredGpadl> {
@@ -1694,16 +1717,24 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // restore_channel was never called for this, but it was in
                     // the saved state. This indicates the offer is meant to be
                     // fresh, so revoke and reoffer it.
-                    let retain = revoke(
-                        self.inner
-                            .pending_messages
-                            .sender(self.notifier, self.inner.state.is_paused()),
-                        offer_id,
-                        channel,
-                        &mut self.inner.gpadls,
-                    );
-                    assert!(retain, "channel has not been released");
-                    channel.state = ChannelState::Reoffered;
+                    //
+                    // Exception: if the channel is Closed there is no
+                    // per-device state to lose, and revoking would race with
+                    // any guest probe currently attempting to open it.
+                    if matches!(channel.state, ChannelState::Closed) {
+                        channel.restore_state = RestoreState::Restored;
+                    } else {
+                        let retain = revoke(
+                            self.inner
+                                .pending_messages
+                                .sender(self.notifier, self.inner.state.is_paused()),
+                            offer_id,
+                            channel,
+                            &mut self.inner.gpadls,
+                        );
+                        assert!(retain, "channel has not been released");
+                        channel.state = ChannelState::Reoffered;
+                    }
                 }
                 RestoreState::Unmatched => {
                     // offer_channel was never called for this, but it was in
@@ -2039,14 +2070,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ..
             } => {
                 channel.state = ChannelState::Closed;
-                if matches!(self.inner.state, ConnectionState::Connected { .. }) {
-                    let channel_id = channel.info.expect("assigned").channel_id;
-                    self.send_close_reserved_channel_response(
-                        channel_id,
-                        offer_id,
-                        reserved_state.target,
-                    );
-                } else {
+                let channel_id = channel.info.expect("assigned").channel_id;
+                // Always send the close response to the reserved channel's
+                // requested target, even while disconnected/ing. Reserved
+                // channels are independent of the connection state.
+                self.send_close_reserved_channel_response(
+                    channel_id,
+                    offer_id,
+                    reserved_state.target,
+                );
+
+                if !matches!(self.inner.state, ConnectionState::Connected { .. }) {
+                    // Re-borrow the channel after the &mut self call above.
+                    let channel = &mut self.inner.channels[offer_id];
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
                     if Self::client_release_channel(

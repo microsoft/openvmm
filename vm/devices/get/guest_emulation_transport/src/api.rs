@@ -31,6 +31,7 @@ pub mod platform_settings {
     use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
     use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
+    use get_protocol::dps_json::HardwareSealingPolicy;
     use get_protocol::dps_json::ManagementVtlFeatures;
     use guid::Guid;
     use inspect::Inspect;
@@ -135,7 +136,9 @@ pub mod platform_settings {
         pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
         #[inspect(debug)]
         pub management_vtl_features: ManagementVtlFeatures,
-        pub hv_sint_enabled: bool,
+        pub force_dma_bounce_enabled: bool,
+        #[inspect(debug)]
+        pub hardware_sealing_policy: HardwareSealingPolicy,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]
@@ -180,6 +183,18 @@ pub struct GuestStateProtection {
     /// Randomized new_gsp sent in the GuestStateProtectionRequest message to
     /// the host
     pub new_gsp: GspCleartextContent,
+}
+
+impl GuestStateProtection {
+    /// Construct a blank instance of `GuestStateProtection`
+    pub fn new_zeroed() -> GuestStateProtection {
+        GuestStateProtection {
+            encrypted_gsp: GspCiphertextContent::new_zeroed(),
+            decrypted_gsp: [GspCleartextContent::new_zeroed(); NUMBER_GSP as usize],
+            extended_status_flags: GspExtendedStatusFlags::new_zeroed(),
+            new_gsp: GspCleartextContent::new_zeroed(),
+        }
+    }
 }
 
 /// Response fields for Guest State Protection by ID from the host

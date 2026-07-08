@@ -15,7 +15,8 @@ pub enum TmkVmmOutput {
         #[serde(rename = "tmk_vmm.exe")]
         exe: PathBuf,
         #[serde(rename = "tmk_vmm.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
     LinuxBin {
         #[serde(rename = "tmk_vmm")]

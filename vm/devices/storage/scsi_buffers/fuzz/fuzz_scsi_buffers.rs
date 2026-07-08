@@ -94,4 +94,7 @@ fn do_fuzz(fuzz_case: ScsiBufferFuzzCase) {
     }
 }
 
-fuzz_target!(|fuzz_case: ScsiBufferFuzzCase| do_fuzz(fuzz_case));
+fuzz_target!(|fuzz_case: ScsiBufferFuzzCase| {
+    xtask_fuzz::init_tracing_if_repro();
+    do_fuzz(fuzz_case)
+});

@@ -8,6 +8,7 @@
 #![expect(unsafe_code)]
 
 use crate::mapping_manager::Mappable;
+use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::MappingParams;
 use crate::mapping_manager::VaMapper;
@@ -44,13 +45,15 @@ pub enum MappingType {
 pub struct DmaMapRequest<'a> {
     /// The guest physical address range to map.
     pub range: MemoryRange,
-    /// Host virtual address of the mapping, provided when the target was
-    /// registered with `needs_va = true`. When `None`, the implementation
-    /// should use `mappable` and `file_offset` directly.
-    pub host_va: Option<*const u8>,
-    /// The backing object (fd or handle) for the mapping.
-    pub mappable: &'a Mappable,
-    /// Offset within `mappable` where the mapping starts.
+    /// Host virtual address of the mapping.
+    pub host_va: *const u8,
+    /// The backing object (fd or handle) for the mapping, when one exists.
+    /// `None` for anonymous/private RAM, which has no backing fd and is
+    /// mapped purely by host VA.
+    pub mappable: Option<&'a Mappable>,
+    /// Offset within `mappable` where the mapping starts. Ignored (and always
+    /// zero) when `mappable` is `None`, since private/anonymous RAM has no
+    /// backing object to offset into.
     pub file_offset: u64,
     /// Whether the mapping should allow writes. When `false`, the IOMMU
     /// entry should be read-only.
@@ -79,12 +82,12 @@ pub trait DmaTarget: Send + Sync {
     /// Program an IOMMU mapping.
     ///
     /// # Safety
-    /// When `request.host_va` is `Some`, the pointed-to memory must be
-    /// backed and must not be unmapped for the duration of the resulting
-    /// IOMMU mapping. The caller (the crate-internal `DmaMapper`) guarantees
-    /// this by holding an [`Arc<VaMapper>`] whose mappings are established
-    /// eagerly by the mapping manager. The IOMMU mapping will be torn down
-    /// (via `unmap_dma`) before the `VaMapper` releases the VA range.
+    /// `request.host_va` always points to backed memory that must not be
+    /// unmapped for the duration of the resulting IOMMU mapping. The caller
+    /// (the crate-internal `DmaMapper`) guarantees this by holding an
+    /// [`Arc<VaMapper>`] whose mappings are established eagerly by the mapping
+    /// manager. The IOMMU mapping will be torn down (via `unmap_dma`) before
+    /// the `VaMapper` releases the VA range.
     unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()>;
 
     /// Remove IOMMU mappings within `range`.
@@ -100,36 +103,60 @@ pub trait DmaTarget: Send + Sync {
 
 /// Wraps a [`DmaTarget`] for use by the region manager.
 ///
-/// Holds an optional [`VaMapper`] to provide host VA pointers for IOMMU
+/// Holds the [`VaMapper`] used to provide host VA pointers for IOMMU
 /// programming. Mappings in the VaMapper are established eagerly by the
 /// mapping manager.
 struct DmaMapper {
     id: DmaMapperId,
     target: Arc<dyn DmaTarget>,
-    va_mapper: Option<Arc<VaMapper>>,
+    va_mapper: Arc<VaMapper>,
+    /// When `true`, every mapping presented to this target must have a backing
+    /// fd. Backing-less mappings (private/anonymous RAM, exposed only by host
+    /// VA) are rejected at registration and mapping-creation time, since such
+    /// a target cannot consume a VA-only mapping.
+    needs_fd: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct DmaMapperId(u64);
 
+/// A sub-mapping the region manager hands to a [`DmaMapper`]. The host VA is
+/// deliberately absent: it is filled in by [`DmaMapper::map_dma`] from the
+/// mapper's eager `VaMapper`.
+struct SubMapping<'a> {
+    range: MemoryRange,
+    backing: &'a MappingBacking,
+    writable: bool,
+    mapping_type: MappingType,
+}
+
 impl DmaMapper {
     /// Map a sub-mapping into the IOMMU.
-    fn map_dma(&self, mut request: DmaMapRequest<'_>) -> anyhow::Result<()> {
-        // Compute the host VA for type1/iommufd backends. The VaMapper
-        // is always eager, so the backing is already established.
+    fn map_dma(&self, mapping: SubMapping<'_>) -> anyhow::Result<()> {
+        // The region manager always maintains an eager VaMapper, so a host VA
+        // is always available and free to hand out (the backing is already
+        // established).
         //
-        // SAFETY: range.start() is within the VA reservation, and
-        // the eager mapper has already established the backing.
-        request.host_va = self.va_mapper.as_ref().map(|va_mapper| unsafe {
-            va_mapper
+        // SAFETY: range.start() is within the VA reservation, and the eager
+        // mapper has already established the backing.
+        let host_va = unsafe {
+            self.va_mapper
                 .as_ptr()
-                .add(request.range.start() as usize)
+                .add(mapping.range.start() as usize)
                 .cast_const()
-        });
-        // SAFETY: When host_va is Some, the VaMapper is eager and the mapping
-        // has been established. The VaMapper is held alive by this DmaMapper
-        // (via Arc). The IOMMU mapping will be torn down (via unmap_dma)
-        // before the VaMapper releases the VA range.
+        };
+        let request = DmaMapRequest {
+            range: mapping.range,
+            host_va,
+            mappable: mapping.backing.mappable(),
+            file_offset: mapping.backing.file_offset(),
+            writable: mapping.writable,
+            mapping_type: mapping.mapping_type,
+        };
+        // SAFETY: The VaMapper is eager and the mapping has been established.
+        // The VaMapper is held alive by this DmaMapper (via Arc). The IOMMU
+        // mapping will be torn down (via unmap_dma) before the VaMapper
+        // releases the VA range.
         unsafe { self.target.map_dma(request) }
     }
 
@@ -246,7 +273,8 @@ fn inspect_mappings(req: inspect::Request<'_>, region_start: u64, mappings: &[Re
             inspect::adhoc(|req| {
                 req.respond()
                     .field("writable", mapping.params.writable)
-                    .hex("file_offset", mapping.params.file_offset);
+                    .field("backed_by_fd", mapping.params.backing.mappable().is_some())
+                    .hex("file_offset", mapping.params.backing.file_offset());
             }),
         );
     }
@@ -282,8 +310,11 @@ struct RegionMapping {
 #[derive(MeshPayload)]
 struct RegionMappingParams {
     range_in_region: MemoryRange,
-    mappable: Mappable,
-    file_offset: u64,
+    /// How the mapping is backed by host memory. File-backed RAM carries a
+    /// [`Mappable`]; private/anonymous RAM uses [`MappingBacking::Private`],
+    /// which has no backing fd (the mapping manager commits its anonymous
+    /// pages directly and it is exposed to DMA targets only by host VA).
+    backing: MappingBacking,
     writable: bool,
     numa_node: Option<u32>,
 }
@@ -329,8 +360,8 @@ impl RegionManagerTask {
                         .await
                 }
                 RegionRequest::AddDmaMapper(LocalOnly(rpc)) => {
-                    let ((target, needs_va), rpc) = rpc.split();
-                    let result = self.add_dma_mapper(target, needs_va).await;
+                    let ((target, needs_fd), rpc) = rpc.split();
+                    let result = self.add_dma_mapper(target, needs_fd).await;
                     rpc.complete(result);
                 }
                 RegionRequest::RemoveDmaMapper(LocalOnly(id)) => {
@@ -376,16 +407,32 @@ impl RegionManagerTask {
     async fn add_dma_mapper(
         &mut self,
         target: Arc<dyn DmaTarget>,
-        needs_va: bool,
+        needs_fd: bool,
     ) -> anyhow::Result<DmaMapperId> {
-        // Create a VaMapper if the target needs host VAs for IOMMU programming.
-        let va_mapper = if needs_va {
-            let mapper = self.inner.mapping_manager.new_mapper(true).await?;
-            assert!(mapper.is_eager(), "DMA mapper requires an eager VaMapper");
-            Some(mapper)
-        } else {
-            None
-        };
+        // A host VA is always available and free to hand out, so always
+        // maintain an eager VaMapper for this target.
+        let va_mapper = self.inner.mapping_manager.new_mapper(true).await?;
+        assert!(
+            va_mapper.is_eager(),
+            "DMA mapper requires an eager VaMapper"
+        );
+
+        // A target that requires a backing fd cannot consume backing-less
+        // mappings (private/anonymous RAM, which is exposed only by host VA).
+        // Reject registration if any such mapping already exists.
+        if needs_fd {
+            if let Some(region) = self.regions.iter().find(|r| {
+                r.mappings
+                    .iter()
+                    .any(|m| m.params.backing.mappable().is_none())
+            }) {
+                anyhow::bail!(
+                    "cannot register a DMA mapper that requires a backing fd: \
+                     region {} contains a mapping with no backing fd (private RAM)",
+                    region.params.range
+                );
+            }
+        }
 
         let id = DmaMapperId(self.inner.next_dma_mapper_id);
         self.inner.next_dma_mapper_id += 1;
@@ -394,6 +441,7 @@ impl RegionManagerTask {
             id,
             target,
             va_mapper,
+            needs_fd,
         };
 
         // Replay existing active sub-mappings so the new IOMMU consumer
@@ -403,11 +451,9 @@ impl RegionManagerTask {
                 for mapping in &region.mappings {
                     let range = range_within(region.params.range, mapping.params.range_in_region);
                     let writable = mapping.params.writable && region.map_params.unwrap().writable;
-                    mapper.map_dma(DmaMapRequest {
+                    mapper.map_dma(SubMapping {
                         range,
-                        host_va: None,
-                        mappable: &mapping.params.mappable,
-                        file_offset: mapping.params.file_offset,
+                        backing: &mapping.params.backing,
                         writable,
                         mapping_type: region.params.mapping_type,
                     })?;
@@ -549,7 +595,10 @@ impl RegionManagerTask {
                 enable = false;
             } else {
                 assert!(enable);
-                self.inner.disable_region(other_region).await;
+                // Overlay disable: a higher/equal-priority region is taking
+                // over this range, so the disabled region may be re-enabled
+                // later. This is transient.
+                self.inner.disable_region(other_region, true).await;
             }
         }
 
@@ -572,7 +621,9 @@ impl RegionManagerTask {
 
         let active_range = region.is_active.then_some(region.params.range);
         if active_range.is_some() {
-            self.inner.disable_region(region).await;
+            // A removal is a permanent teardown; keeping the region registered
+            // (remove == false) is transient, since a re-map can re-enable it.
+            self.inner.disable_region(region, !remove).await;
         }
 
         if remove {
@@ -593,6 +644,17 @@ impl RegionManagerTask {
         id: RegionId,
         params: RegionMappingParams,
     ) -> anyhow::Result<()> {
+        // A backing-less mapping (private/anonymous RAM) is exposed to DMA
+        // targets only by host VA. A target registered with `needs_fd` cannot
+        // consume it, so reject the mapping up front rather than silently
+        // skipping that target.
+        if params.backing.mappable().is_none() && self.inner.dma_mappers.iter().any(|m| m.needs_fd)
+        {
+            anyhow::bail!(
+                "cannot add a mapping with no backing fd: a registered DMA mapper requires one"
+            );
+        }
+
         let index = self.region_index(id);
         let region = &mut self.regions[index];
 
@@ -608,12 +670,15 @@ impl RegionManagerTask {
         if let Some(region_range) = region.active_range() {
             let range = range_within(region_range, params.range_in_region);
             let writable = params.writable && region.map_params.unwrap().writable;
+            // Register the mapping with the mapping manager. File-backed RAM is
+            // mmap'd; private/anonymous RAM has its anonymous pages committed
+            // directly. Either way the eager VaMapper ends up with backed pages
+            // that drive the DMA targets below by host VA.
             self.inner
                 .mapping_manager
                 .add_mapping(MappingParams {
                     range,
-                    mappable: params.mappable.clone(),
-                    file_offset: params.file_offset,
+                    backing: params.backing.clone(),
                     writable,
                     mapping_type: region.params.mapping_type,
                     numa_node: params.numa_node,
@@ -621,11 +686,9 @@ impl RegionManagerTask {
                 .await?;
 
             for (dma_idx, dma_mapper) in self.inner.dma_mappers.iter().enumerate() {
-                if let Err(e) = dma_mapper.map_dma(DmaMapRequest {
+                if let Err(e) = dma_mapper.map_dma(SubMapping {
                     range,
-                    host_va: None,
-                    mappable: &params.mappable,
-                    file_offset: params.file_offset,
+                    backing: &params.backing,
                     writable,
                     mapping_type: region.params.mapping_type,
                 }) {
@@ -709,12 +772,15 @@ impl RegionManagerTaskInner {
         // Add the mappings for the region. On failure, roll back any
         // sub-mappings that were successfully added.
         for (mapped_count, mapping) in region.mappings.iter().enumerate() {
+            // Register the mapping with the mapping manager. File-backed RAM is
+            // mmap'd; private/anonymous RAM has its anonymous pages committed
+            // directly. Either way the eager VaMapper ends up with backed pages
+            // that drive the DMA targets below by host VA.
             if let Err(e) = self
                 .mapping_manager
                 .add_mapping(MappingParams {
                     range: range_within(region.params.range, mapping.params.range_in_region),
-                    mappable: mapping.params.mappable.clone(),
-                    file_offset: mapping.params.file_offset,
+                    backing: mapping.params.backing.clone(),
                     writable: mapping.params.writable && map_params.writable,
                     mapping_type: region.params.mapping_type,
                     numa_node: mapping.params.numa_node,
@@ -741,11 +807,9 @@ impl RegionManagerTaskInner {
             let range = range_within(region.params.range, mapping.params.range_in_region);
             let writable = mapping.params.writable && map_params.writable;
             for (dma_idx, dma_mapper) in self.dma_mappers.iter().enumerate() {
-                if let Err(e) = dma_mapper.map_dma(DmaMapRequest {
+                if let Err(e) = dma_mapper.map_dma(SubMapping {
                     range,
-                    host_va: None,
-                    mappable: &mapping.params.mappable,
-                    file_offset: mapping.params.file_offset,
+                    backing: &mapping.params.backing,
                     writable,
                     mapping_type: region.params.mapping_type,
                 }) {
@@ -785,8 +849,28 @@ impl RegionManagerTaskInner {
         Ok(())
     }
 
-    async fn disable_region(&mut self, region: &mut Region) {
+    /// Disables an active region, tearing down its mappings.
+    ///
+    /// `transient` indicates the region may later be re-enabled (an overlay
+    /// disable, or an unmap that keeps the region registered) rather than being
+    /// permanently removed. Private/anonymous RAM is backed solely by the VA
+    /// mapping itself, so tearing it down decommits and zeroes its pages — a
+    /// transient disable of such a region would silently lose guest memory.
+    /// That path is not reachable today (nothing transiently disables a RAM
+    /// region, which is the highest priority), so guard it with an assert to
+    /// turn a future regression into an immediate, located panic rather than
+    /// silent corruption.
+    async fn disable_region(&mut self, region: &mut Region, transient: bool) {
         assert!(region.is_active);
+        assert!(
+            !transient
+                || region
+                    .mappings
+                    .iter()
+                    .all(|m| m.params.backing.mappable().is_some()),
+            "transiently disabling region {} would decommit private RAM and lose its contents",
+            region.params.range,
+        );
 
         tracing::debug!(
             name = region.params.name,
@@ -899,12 +983,18 @@ impl DmaMapperClient {
     ///
     /// This may only be called in the same process as the region manager.
     ///
-    /// If `needs_va` is `true`, the region manager will maintain a `VaMapper`
-    /// and pass a host VA to [`DmaTarget::map_dma`] for each sub-mapping.
-    /// Use this for backends that program the IOMMU via host VAs (VFIO type1).
+    /// A host VA is always provided to [`DmaTarget::map_dma`] (the region
+    /// manager always maintains an eager `VaMapper` — handing out a VA is
+    /// free), so targets that program the IOMMU by VA (VFIO type1, iommufd)
+    /// need no special opt-in.
     ///
-    /// If `needs_va` is `false`, no `VaMapper` is created and `host_va` will
-    /// be `None`. Use this for backends that map from the fd directly (iommufd).
+    /// If `needs_fd` is `true`, the target additionally requires every mapping
+    /// to carry a backing fd. Such a target is incompatible with backing-less
+    /// mappings (private/anonymous RAM, exposed only by host VA): registration
+    /// fails if any such mapping already exists, and subsequent attempts to
+    /// create one fail. Use this for backends that must map from an fd (e.g., a
+    /// virtio-user frontend driven via the DMA mapper rather than the shared
+    /// guest-memory infrastructure).
     ///
     /// The replay loop maps all existing active sub-mappings into the new
     /// consumer. On failure, already-mapped entries are **not** rolled back;
@@ -915,13 +1005,13 @@ impl DmaMapperClient {
     pub async fn add_dma_mapper(
         &self,
         target: Arc<dyn DmaTarget>,
-        needs_va: bool,
+        needs_fd: bool,
     ) -> anyhow::Result<DmaMapperHandle> {
         let id = self
             .req_send
             .call(
                 |x| RegionRequest::AddDmaMapper(LocalOnly(x)),
-                (target, needs_va),
+                (target, needs_fd),
             )
             .await
             .unwrap()?;
@@ -979,12 +1069,19 @@ impl RegionHandle {
 
     /// Adds a mapping to the region.
     ///
+    /// `backing` describes how the mapping is backed by host memory:
+    /// [`MappingBacking::File`] for file/shared-memory-backed RAM (mmap'd by
+    /// the mapping manager) or [`MappingBacking::Private`] for anonymous RAM
+    /// (whose pages the mapping manager commits directly). In both cases the
+    /// mapping manager establishes the backing on the eager `VaMapper`; private
+    /// mappings additionally drive DMA targets only by host VA, since they have
+    /// no backing fd.
+    ///
     /// TODO: allow this to split+overwrite existing mappings.
     pub async fn add_mapping(
         &self,
         range_in_region: MemoryRange,
-        mappable: Mappable,
-        file_offset: u64,
+        backing: MappingBacking,
         writable: bool,
         numa_node: Option<u32>,
     ) -> Result<(), RemoteError> {
@@ -995,8 +1092,7 @@ impl RegionHandle {
                     self.id.unwrap(),
                     RegionMappingParams {
                         range_in_region,
-                        mappable,
-                        file_offset,
+                        backing,
                         writable,
                         numa_node,
                     },
@@ -1039,6 +1135,7 @@ mod tests {
     use super::MapParams;
     use super::RegionManagerTask;
     use crate::mapping_manager::Mappable;
+    use crate::mapping_manager::MappingBacking;
     use crate::mapping_manager::MappingManager;
     use crate::region_manager::AddRegionError;
     use crate::region_manager::DmaMapRequest;
@@ -1058,6 +1155,9 @@ mod tests {
     #[derive(Default)]
     struct RecordingDmaTarget {
         events: Mutex<Vec<DmaEvent>>,
+        /// Ranges for which `map_dma` was called with no backing fd
+        /// (`mappable: None`), i.e., the anonymous/private-RAM VA path.
+        backingless_maps: Mutex<Vec<MemoryRange>>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1068,6 +1168,9 @@ mod tests {
 
     impl DmaTarget for RecordingDmaTarget {
         unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()> {
+            if request.mappable.is_none() {
+                self.backingless_maps.lock().push(request.range);
+            }
             self.events.lock().push(DmaEvent::Map(request.range));
             Ok(())
         }
@@ -1081,6 +1184,10 @@ mod tests {
     impl RecordingDmaTarget {
         fn take_events(&self) -> Vec<DmaEvent> {
             std::mem::take(&mut self.events.lock())
+        }
+
+        fn take_backingless_maps(&self) -> Vec<MemoryRange> {
+            std::mem::take(&mut self.backingless_maps.lock())
         }
     }
 
@@ -1193,8 +1300,28 @@ mod tests {
                     id,
                     RegionMappingParams {
                         range_in_region: MemoryRange::new(range_in_region),
-                        mappable: self.mappable.clone(),
-                        file_offset: 0,
+                        backing: MappingBacking::File {
+                            mappable: self.mappable.clone(),
+                            file_offset: 0,
+                        },
+                        writable: true,
+                        numa_node: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        /// Adds a backing-less (private/anonymous RAM) mapping.
+        async fn add_private_mapping(&mut self, id: RegionId, range_in_region: Range<u64>) {
+            self.task
+                .add_mapping(
+                    id,
+                    RegionMappingParams {
+                        range_in_region: MemoryRange::new(range_in_region),
+                        backing: MappingBacking::Private {
+                            transparent_hugepages: false,
+                        },
                         writable: true,
                         numa_node: None,
                     },
@@ -1250,6 +1377,93 @@ mod tests {
         assert_eq!(
             target.take_events(),
             vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x4000))]
+        );
+    }
+
+    /// Anonymous/private RAM has no backing fd, so its region mappings carry
+    /// `mappable: None`. Such mappings must still drive DMA targets (by host
+    /// VA) — otherwise an assigned device DMAing to private RAM would take
+    /// IOMMU faults. This covers both the replay path (mapper registered after
+    /// the mapping) and the live path (mapping added to an active region).
+    #[async_test]
+    async fn test_dma_private_mapping_maps_by_va(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        // Backing-less mapping present before the mapper registers (replay).
+        t.add_private_mapping(r, 0x0..0x4000).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
+
+        // Replay must emit a map for the private range, with no backing fd.
+        assert_eq!(
+            target.take_events(),
+            vec![DmaEvent::Map(MemoryRange::new(0x0..0x4000))]
+        );
+        assert_eq!(
+            target.take_backingless_maps(),
+            vec![MemoryRange::new(0x0..0x4000)]
+        );
+
+        // A private mapping added to an already-active region (live path)
+        // must also notify the DMA target by VA.
+        t.add_private_mapping(r, 0x8000..0xC000).await;
+        assert_eq!(
+            target.take_events(),
+            vec![DmaEvent::Map(MemoryRange::new(0x8000..0xC000))]
+        );
+        t.task.remove_dma_mapper(id);
+    }
+
+    /// A DMA target registered with `needs_fd = true` cannot coexist with
+    /// backing-less (private/anonymous RAM) mappings: registration must fail
+    /// when such a mapping already exists.
+    #[async_test]
+    async fn test_needs_fd_rejects_existing_private_mapping(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_private_mapping(r, 0x0..0x4000).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let result = t.task.add_dma_mapper(target.clone(), true).await;
+        assert!(
+            result.is_err(),
+            "needs_fd mapper must fail to register when private RAM exists"
+        );
+    }
+
+    /// Once a `needs_fd` target is registered, creating a new backing-less
+    /// mapping must fail (while a backed mapping continues to work).
+    #[async_test]
+    async fn test_needs_fd_rejects_new_private_mapping(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        // A backed mapping is present; needs_fd registration succeeds.
+        t.add_mapping(r, 0x0..0x4000).await;
+        let target = Arc::new(RecordingDmaTarget::default());
+        let _id = t.task.add_dma_mapper(target.clone(), true).await.unwrap();
+
+        // Adding a backed mapping is still fine.
+        t.add_mapping(r, 0x4000..0x8000).await;
+
+        // Adding a backing-less mapping must now fail.
+        let result = t
+            .task
+            .add_mapping(
+                r,
+                RegionMappingParams {
+                    range_in_region: MemoryRange::new(0x8000..0xC000),
+                    backing: MappingBacking::Private {
+                        transparent_hugepages: false,
+                    },
+                    writable: true,
+                    numa_node: None,
+                },
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "creating a private mapping must fail while a needs_fd mapper is registered"
         );
     }
 
@@ -1372,8 +1586,10 @@ mod tests {
                 r,
                 RegionMappingParams {
                     range_in_region: MemoryRange::new(0x0..0x4000),
-                    mappable: t.mappable.clone(),
-                    file_offset: 0,
+                    backing: MappingBacking::File {
+                        mappable: t.mappable.clone(),
+                        file_offset: 0,
+                    },
                     writable: true,
                     numa_node: None,
                 },

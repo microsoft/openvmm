@@ -11,7 +11,6 @@
 // requiring probes to be registered in the petri process.
 extern crate openvmm_hypervisors as _;
 
-mod cpio;
 pub mod disk_image;
 mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can

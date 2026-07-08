@@ -8,7 +8,6 @@ description: "Run, optimize, and debug OpenVMM fuzzers. Covers cargo-fuzz target
 ## Prerequisites
 
 - **Linux only** — libfuzzer-sys doesn't support Windows.
-- **Nightly toolchain**: `rustup toolchain install nightly`
 - **cargo-fuzz**: `cargo install cargo-fuzz`
 - **lldb** (for debugging): `sudo apt-get install -y lldb`
 - **aarch64 RUSTFLAGS**: On aarch64, set `RUSTFLAGS="-Ctarget-feature=+lse,+neon"` or builds fail with atomics errors. Not needed on x86_64.
@@ -27,10 +26,10 @@ cargo xtask fuzz list
 
 ```bash
 # Continuous fuzzing (finds new crashes)
-cargo +nightly xtask fuzz run fuzz_ide
+cargo xtask fuzz run fuzz_ide
 
 # Reproduce a specific crash artifact
-cargo +nightly xtask fuzz run fuzz_ide path/to/crash-artifact
+cargo xtask fuzz run fuzz_ide path/to/crash-artifact
 ```
 
 The xtask wrapper sets `XTASK_FUZZ_REPRO=1` automatically when an artifact
@@ -39,7 +38,7 @@ path is provided, which enables `init_tracing_if_repro()` in the fuzz target.
 ## Build without running
 
 ```bash
-cargo +nightly xtask fuzz build fuzz_ide
+cargo xtask fuzz build fuzz_ide
 ```
 
 The binary lands at `target/<triple>/release/fuzz_ide` (e.g.,
@@ -121,7 +120,7 @@ Release builds have limited `frame variable` output. For full variable
 inspection, build with `--dev`:
 
 ```bash
-cargo +nightly xtask fuzz build fuzz_ide -- --dev
+cargo xtask fuzz build fuzz_ide -- --dev
 ```
 
 The debug binary lands at `target/<triple>/debug/fuzz_ide`. It's slower but
@@ -182,14 +181,14 @@ that byte value. Decode manually: `0x58` = bits 3,4,6 set = `drq`, `dsc`,
 ## Minimizing crash inputs
 
 ```bash
-cargo +nightly xtask fuzz tmin fuzz_ide path/to/crash-artifact
+cargo xtask fuzz tmin fuzz_ide path/to/crash-artifact
 ```
 
 ## Corpus management
 
 ```bash
 # Minimize the corpus (remove redundant inputs)
-cargo +nightly xtask fuzz cmin fuzz_ide
+cargo xtask fuzz cmin fuzz_ide
 ```
 
 Corpus files live in `<crate>/fuzz/corpus/<target>/`.
@@ -227,7 +226,7 @@ Run multiple fuzzers across available CPUs for extended campaigns:
 # 6-hour campaign across 112 cores, 7 fuzzers
 # Each runs with -fork=N, survives crashes/timeouts/OOMs
 nohup bash -c 'RUSTFLAGS="-Ctarget-feature=+lse,+neon" \
-  cargo +nightly xtask fuzz run fuzz_storvsp -- -- \
+  cargo xtask fuzz run fuzz_storvsp -- -- \
   -fork=20 -max_total_time=21600 \
   -ignore_crashes=1 -ignore_timeouts=1 -ignore_ooms=1 \
   -print_final_stats=1' > /tmp/fuzz_storvsp.log 2>&1 &
@@ -248,7 +247,7 @@ After the run, collect coverage on each fuzzer for gap analysis.
 
 Everything from the main prerequisites, plus:
 
-- **llvm-tools**: `rustup +nightly component add llvm-tools`
+- **llvm-tools**: `rustup component add llvm-tools`
 - **lcov** (for HTML reports): `sudo apt-get install -y lcov`
 
 ### Collecting coverage
@@ -258,13 +257,13 @@ a coverage-instrumented build and merges the results:
 
 ```bash
 # Collect coverage data only
-cargo +nightly xtask fuzz coverage fuzz_ide
+cargo xtask fuzz coverage fuzz_ide
 
 # Collect + generate HTML report (requires lcov + genhtml)
-cargo +nightly xtask fuzz coverage fuzz_ide --with-html-report
+cargo xtask fuzz coverage fuzz_ide --with-html-report
 
 # Skip rebuild, just regenerate report from existing profdata
-cargo +nightly xtask fuzz coverage fuzz_ide --with-html-report --only-report
+cargo xtask fuzz coverage fuzz_ide --with-html-report --only-report
 ```
 
 On aarch64, set `RUSTFLAGS="-Ctarget-feature=+lse,+neon"` as usual.
@@ -285,8 +284,8 @@ of the **target crate itself** and its immediate domain dependencies.
 Use `llvm-cov report` with source path filtering:
 
 ```bash
-# Find the llvm-cov binary from nightly toolchain
-LLVM_COV=$(find $(rustc +nightly --print sysroot) -name "llvm-cov" -type f | head -1)
+# Find the llvm-cov binary from the toolchain
+LLVM_COV=$(find $(rustc --print sysroot) -name "llvm-cov" -type f | head -1)
 
 # Full per-file report, excluding third-party code
 $LLVM_COV report \
@@ -362,7 +361,7 @@ improvements should focus on primary scope first.
 
 ```bash
 # Run coverage
-cargo +nightly xtask fuzz coverage <target> --with-html-report
+cargo xtask fuzz coverage <target> --with-html-report
 
 # Open the HTML report for visual inspection
 # target/<triple>/coverage/<triple>/release/lcov_html_<target>/index.html
@@ -417,7 +416,7 @@ impl. Common issues:
 After making changes:
 
 1. Run the fuzzer for a fixed duration (e.g., 1 hour)
-2. Minimize the corpus: `cargo +nightly xtask fuzz cmin <target>`
+2. Minimize the corpus: `cargo xtask fuzz cmin <target>`
 3. Collect coverage again
 4. Compare line counts against prior coverage runs
 

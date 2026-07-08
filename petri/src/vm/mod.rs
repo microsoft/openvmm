@@ -592,7 +592,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         })?;
 
         let merged_gz =
-            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+            initrd_cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
                 .context("failed to inject pipette into initrd")?;
 
         let mut tmp = tempfile::NamedTempFile::new()
@@ -1418,6 +1418,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub fn with_uefi_force_dma_bounce(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("force DMA bounce is only supported for UEFI firmware.")
+            .force_dma_bounce = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -1522,6 +1532,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .as_mut()
             .expect("TPM persistence requires a TPM")
             .no_persistent_secrets = !tpm_state_persistence;
+        self
+    }
+
+    /// Set the hardware sealing policy for the VM's TPM.
+    pub fn with_hardware_sealing_policy(mut self, policy: PetriHardwareSealingPolicy) -> Self {
+        self.config
+            .tpm
+            .as_mut()
+            .expect("hardware sealing policy requires a TPM")
+            .hardware_sealing_policy = policy;
         self
     }
 
@@ -2270,6 +2290,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic
+    pub force_dma_bounce: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
     /// Per-period rate-limit override for EFI diagnostics emission.
@@ -2285,6 +2307,7 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            force_dma_bounce: false,
             efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
             efi_diagnostics_rate_limit: None,
         }
@@ -2408,14 +2431,32 @@ impl Default for OpenHclConfig {
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
+    /// Hardware sealing policy for sealed secrets
+    pub hardware_sealing_policy: PetriHardwareSealingPolicy,
 }
 
 impl Default for TpmConfig {
     fn default() -> Self {
         Self {
             no_persistent_secrets: true,
+            hardware_sealing_policy: PetriHardwareSealingPolicy::Default,
         }
     }
+}
+
+/// Hardware sealing policy used by the test infrastructure.
+///
+/// Maps to Hyper-V `Set-GuestStateEncryptionPolicy` values and
+/// underhill's `HardwareSealingPolicy`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PetriHardwareSealingPolicy {
+    /// No explicit policy — the backend picks its default.
+    #[default]
+    Default,
+    /// Derive the hardware sealing key from measurement hash.
+    HashPolicy,
+    /// Derive the hardware sealing key from signer information.
+    SignerPolicy,
 }
 
 /// Firmware to load into the test VM.

@@ -539,9 +539,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                         tracing::info!(set_high_vtl, "handshaking with pipette");
                         let c = PipetteClient::new(&driver, socket, &output_dir)
                             .await
-                            .context("failed to handshake with pipette");
+                            .context("failed to connect to pipette")?;
                         tracing::info!(set_high_vtl, "completed pipette handshake");
-                        Ok(Some(c?))
+                        Ok(Some(c))
                     }
                     Err(err) => {
                         tracing::debug!(

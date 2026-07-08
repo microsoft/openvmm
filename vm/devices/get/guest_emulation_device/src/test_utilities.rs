@@ -261,8 +261,9 @@ pub fn create_host_channel(
         guest_state_lifetime: Default::default(),
         guest_state_encryption_policy: Default::default(),
         management_vtl_features: Default::default(),
+        hardware_sealing_policy: Default::default(),
         efi_diagnostics_log_level: Default::default(),
-        hv_sint_enabled: false,
+        force_dma_bounce_enabled: false,
     };
 
     let halt_reason = Arc::new(Mutex::new(None));

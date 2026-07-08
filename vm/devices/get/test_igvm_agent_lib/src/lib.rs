@@ -235,6 +235,20 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
+        IgvmAttestTestConfig::StateRefresh => {
+            // The `state_refresh_request` behavior is driven by the GSP
+            // RPC handler (see `test_igvm_agent_rpc_server`), not by the
+            // attest plan. Serve AK cert requests across boots so the
+            // guest has a valid AK to read and compare across reboots.
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
+            );
+        }
     }
 
     plan

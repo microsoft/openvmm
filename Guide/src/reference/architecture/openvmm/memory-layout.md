@@ -96,7 +96,13 @@ The worker resolver in
 [`openvmm_core::worker::memory_layout`](https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_core/src/worker/memory_layout.rs)
 issues requests in this order:
 
-1. **Chipset low MMIO** (`fixed`) — a window pinned to end at 4 GiB,
+1. **Low-RAM reserve** (`reserve`) — when a nonzero `ram_start_address` is
+   requested, the range `0..ram_start_address` is reserved so RAM starts
+   above it. This is used on aarch64 Linux direct boot to skip the low GPA
+   region that conflicts with the host MSI-doorbell IOVA that iommufd
+   reserves. Being a `reserve` (not `fixed`), it blocks allocation without
+   raising the layout top.
+2. **Chipset low MMIO** (`fixed`) — a window pinned to end at 4 GiB,
    advertised to firmware as `\_SB.VMOD._CRS`. The window always covers
    at least the per-architecture reserved zone (LAPIC, IOAPIC, GIC,
    PL011, battery, TPM, etc.) so guests can arbitrate fixed-address
@@ -108,12 +114,21 @@ issues requests in this order:
     | x86_64 | `0xFE00_0000..0x1_0000_0000` |
     | aarch64 | `0xEF00_0000..0x1_0000_0000` |
 
-2. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
+3. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
    alignment.
-3. **PCIe root complex ranges**, one per root complex:
-    - **ECAM** (`Mmio32`). The size is derived from the bus window as
-      `(end_bus - start_bus + 1) * 1 MB` (32 devices × 8 functions ×
-      4 KiB per config space).
+4. **PCIe ECAM** (`Mmio32`), one block per PCI segment. Root complexes
+   that share a segment are grouped so the segment gets a single
+   contiguous ECAM block (keeping the MCFG bus-0 base consistent for every
+   RC in the segment), which is then subdivided into per-RC sub-ranges.
+   The block size is derived from the segment's combined bus window as
+   `(max_bus - min_bus + 1) * 1 MB` (32 devices × 8 functions × 4 KiB per
+   config space). Every ECAM range must start at or above a fixed
+   `256 MiB` minimum: the ACPI MCFG table reports the bus-0 base as
+   `ecam_start - start_bus * 1 MiB`, and since `start_bus` is a `u8` up to
+   255 MiB of headroom may be required. A resolved ECAM below this minimum
+   fails VM construction rather than producing an unrepresentable MCFG
+   entry.
+5. **PCIe per-root-complex ranges**, one set per root complex:
     - **Low MMIO** (`Mmio32`), 2 MB aligned. A caller can pin this to a
       fixed range instead of supplying a size, for assigned-device, IOMMU,
       and physical-topology passthrough.
@@ -121,9 +136,15 @@ issues requests in this order:
       fixed range as well. Per-BAR alignment would guarantee the entire
       window is usable for one large BAR, but burns address space on
       hosts with tight physical-address widths.
-4. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
+    - **CXL HDM and CHBCR** (`Mmio64`) — when a root complex is CXL-enabled,
+      a Host-managed Device Memory window and a Host Bridge Component
+      Registers window are placed, each aligned to its CXL-spec size.
+6. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
    `slot_count * 4 KiB`, when any slots are configured.
-5. **RAM**, in vnode order. The first request becomes vnode 0, the second
+7. **IOMMU MMIO** (`Mmio32`) — a VM has at most one IOMMU type; one region
+   is placed per configured instance, sized by type: SMMUv3 128 KiB,
+   AMD-Vi 16 KiB, Intel VT-d 4 KiB.
+8. **RAM**, in vnode order. The first request becomes vnode 0, the second
    vnode 1, and so on. Each vnode starts at or above the highest address
    used by prior vnodes; vnode N+1 never backfills a fragment that vnode
    N skipped. This keeps vnode ordering equal to address ordering and
@@ -142,16 +163,19 @@ issues requests in this order:
     cost of thousands of smaller page table entries and reducing TLB
     pressure at runtime. Sub-GB nodes use 2 MB so small NUMA nodes
     do not waste a full GB of address space.
-6. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
+9. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
    region, when VTL2 is configured. Placed after VTL0 so enabling VTL2
    does not move any VTL0 address.
-7. **VTL2 private memory** (`PostMmio`) — when the IGVM file requests
-   layout-mode VTL2 memory, the worker takes only its size and alignment
-   from the IGVM relocation header. The IGVM file's relocation min/max
-   bounds are not fed in as constraints here; they are validated later by
-   the IGVM loader against the selected base. Treating them as constraints
-   here would over-constrain layout and could put holes in VTL0 just to
-   accommodate an IGVM file we will reject anyway.
+10. **VTL2 private memory** (`PostMmio`) — when the IGVM file requests
+    layout-mode VTL2 memory, the worker takes only its size and alignment
+    from the IGVM relocation header. The IGVM file's relocation min/max
+    bounds are not fed in as constraints here; they are validated later by
+    the IGVM loader against the selected base. Treating them as constraints
+    here would over-constrain layout and could put holes in VTL0 just to
+    accommodate an IGVM file we will reject anyway.
+11. **VTL2 framebuffer** (`PostMmio`) — a page-aligned region for VTL2
+    graphics, when configured. Its resolved GPA base is returned separately
+    for the framebuffer device.
 
 After `allocate()` succeeds, the worker collects the resolved ranges into
 the `MemoryLayout`'s MMIO, PCI ECAM, and PCI MMIO gap vectors, then checks
@@ -288,8 +312,10 @@ Update this page when any of these change:
 - the allocator's phase order or any phase's placement direction
 - the semantics of `reserve`, `fixed`, `ram`, or `request`
 - the architectural reserved zones or their per-architecture addresses
-- the worker's RAM alignment policy
-- PCIe ECAM sizing or per-BAR alignment policy
-- VTL2 chipset MMIO or VTL2 private-memory placement
+- the worker's RAM alignment policy or the `ram_start_address` reserve
+- PCIe ECAM sizing, segment grouping, the ECAM minimum address, or
+  per-BAR alignment policy
+- CXL HDM/CHBCR or IOMMU MMIO placement
+- VTL2 chipset MMIO, VTL2 private-memory, or VTL2 framebuffer placement
 - the host physical-address validation step
 - `MemoryLayout::end_of_layout()` or `MemoryLayout::vtl2_range()` semantics

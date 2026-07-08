@@ -16,6 +16,11 @@ use mesh::rpc::Rpc;
 /// The port used for the pipette connection (AF_VSOCK or TCP).
 pub const PIPETTE_PORT: u32 = 0x1337;
 
+/// Marker line printed by pipette once its TCP listener is fully configured
+/// and ready to accept a connection. The host scans the guest serial console
+/// for this exact string before attempting to connect.
+pub const PIPETTE_READY_MARKER: &str = "PIPETTE READY";
+
 /// The bootstrap message sent from the agent to the host.
 #[derive(MeshPayload)]
 pub struct PipetteBootstrap {

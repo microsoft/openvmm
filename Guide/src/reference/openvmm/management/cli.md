@@ -58,29 +58,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
-    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
-    virt). The host must expose virtualization extensions to the VM
-    running OpenVMM.
-
-  KVM accepts the following parameters (x86_64 guests only):
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor. Off by default: when enabled, a Windows guest detects
-    nested virtualization support and turns on Virtual Secure Mode (VSM),
-    which hurts performance and breaks boot while VMBus devices are in use.
-    The host must support KVM nested virtualization; the backend validates
-    this and fails early if it does not.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
-  --hypervisor whp:nested_virt
   --hypervisor kvm
-  --hypervisor kvm:nested_virt
   ```
+* `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
+  can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
+  and only by backends that support nested virtualization (currently WHP and
+  KVM); requesting it with a backend that does not support it fails early. The
+  host must expose virtualization extensions to the VM running OpenVMM. When
+  enabled, a guest may detect nested virtualization and turn on features such
+  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
+  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  `--hypervisor whp:user_mode_apic`.
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
@@ -105,7 +99,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `vps=<LIST>` - explicit VP indices for this node. Uses bracket syntax
     with comma-separated indices and dash ranges: `vps=[0,1]`,
     `vps=[0-3]`, `vps=[0,1,4-5]`. When omitted, VPs are assigned by
-    round-robin sockets across nodes.
+    round-robin sockets across nodes. An empty list, `vps=[]`, declares a
+    CPU-less node (e.g. a generic-initiator target); unlike a non-empty
+    list, it may be combined with nodes that omit `vps`.
 
   Examples:
 
@@ -281,6 +277,11 @@ name:
 --pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
 ```
 
+- `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
+  its bus. `dev` is 0-31 and the optional `fn` is 0-7 (both decimal or
+  `0x`-prefixed hex). When omitted, the port is assigned the lowest
+  available devfn. Ports are assigned in order, so an explicit `addr` that
+  collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
@@ -298,6 +299,33 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+
+### Generic initiators
+
+A generic initiator is a device that originates memory accesses but has no
+CPUs of its own — for example a GPU or accelerator with its own coherent
+memory. Declaring one emits an SRAT Generic Initiator Affinity structure that
+tells the guest which NUMA node the device belongs to, so the guest can
+account for access latency and online the device's memory on the right
+proximity domain.
+
+Use `--pcie-generic-initiator` to mark the device directly behind a PCIe port
+as a generic initiator for a NUMA node:
+
+```sh
+# Create a CPU-less, memory-less NUMA node and a root port, then declare the
+# device behind the root port as a generic initiator for that node.
+--numa size=2G --numa size=0,vps=[] \
+  --pcie-root-complex rc0 --pcie-root-port rc0:rp0 \
+  --pcie-generic-initiator port=rp0,node=1
+```
+
+- Syntax: `port=<port_name>,node=<node>`.
+- `port=<port_name>` may be a root port name or a switch downstream port name
+  (e.g. `switch0-downstream-1`); it is resolved against the live topology.
+- `node=<node>` is the NUMA node the device is a generic initiator for, and
+  should typically be a CPU-less and memory-less node created via `--numa`.
+
 
 ### Attaching devices to PCIe
 
@@ -383,3 +411,36 @@ software IOVA→GPA translation for DMA and MSI addresses.
 
 VFIO devices cannot currently be placed behind an SMMU-covered root
 complex because iommufd nested translation is not yet available.
+
+### AMD IOMMU (x86_64 only)
+
+`--amd-iommu <RC_NAME>` enables an emulated AMD-Vi IOMMU for the named
+root complex. The flag is repeatable — use one `--amd-iommu` per root
+complex that should have an IOMMU. Devices behind a covered root complex
+get software IOVA→GPA translation for DMA and interrupt remapping.
+
+```sh
+# Enable AMD IOMMU on root complex rc0
+--amd-iommu rc0
+```
+
+Mutually exclusive with `--intel-vtd` within the same VM (only one x86
+IOMMU type can be active).
+
+### Intel VT-d (x86_64 only)
+
+`--intel-vtd <RC_NAME>` enables an emulated Intel VT-d IOMMU for the
+named root complex. The flag is repeatable — use one `--intel-vtd` per
+root complex that should have an IOMMU. The guest discovers VT-d units
+via the ACPI DMAR table (not PCI config space).
+
+```sh
+# Enable Intel VT-d on root complex rc0
+--intel-vtd rc0
+
+# Multiple root complexes
+--intel-vtd rc0 --intel-vtd rc1
+```
+
+Mutually exclusive with `--amd-iommu` within the same VM (only one x86
+IOMMU type can be active).

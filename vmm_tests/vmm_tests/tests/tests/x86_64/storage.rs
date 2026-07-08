@@ -386,7 +386,7 @@ async fn storvsp_hyperv<T: PetriVmmBackend>(
 /// VTL2, relayed to VTL0 via SCSI. Validates that the guest can discover and
 /// perform IO on the disk.
 #[cfg(windows)]
-#[vmm_test(unstable_hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+#[vmm_test(hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn storvsp_nvme_hyperv<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

@@ -202,8 +202,9 @@ impl BackingPrivate for HypervisorBackedX86 {
             this.backing.deferred_init = match this.set_vtl0_startup_suspend(true) {
                 Ok(()) => false,
                 Err(err) => {
-                    tracing::warn!(
+                    tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,
+                        vp = this.vp_index().index(),
                         "unable to set internal activity register, falling back to deferred init"
                     );
                     true
@@ -227,7 +228,7 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn pre_run_vp(this: &mut UhProcessor<'_, Self>) {
         if std::mem::take(&mut this.backing.deferred_init) {
-            tracelimit::info_ratelimited!(
+            tracing::debug!(
                 vp = this.vp_index().index(),
                 "sending deferred INIT to set startup suspend"
             );

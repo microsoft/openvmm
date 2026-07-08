@@ -670,22 +670,23 @@ impl Device {
         Ok(())
     }
 
-    /// Disable (unmap) a contiguous range of previously mapped MSI-X vectors.
+    /// Disable MSI-X for this device, tearing down all eventfd bindings.
     ///
-    /// This issues VFIO_DEVICE_SET_IRQS with ACTION_TRIGGER + DATA_NONE and a
-    /// non-zero count, which per VFIO semantics removes the eventfd bindings
-    /// for the specified range starting at `start`.
-    pub fn unmap_msix(&self, start: u32, count: u32) -> anyhow::Result<()> {
-        if count == 0 {
-            return Ok(());
-        }
-
+    /// VFIO does not support disabling a subset of MSI-X vectors via DATA_NONE:
+    /// per `vfio_pci_set_msi_trigger` in the kernel, the only teardown form is
+    /// ACTION_TRIGGER | DATA_NONE with `count == 0`, which disables MSI-X
+    /// entirely. (A non-zero count with DATA_NONE is instead interpreted as a
+    /// loopback signal request that fires each vector's eventfd and unmaps
+    /// nothing.) This therefore always disables all vectors, and the caller
+    /// must only invoke it when MSI-X is currently enabled — otherwise the
+    /// kernel returns EINVAL.
+    pub fn unmap_msix(&self) -> anyhow::Result<()> {
         let header = vfio_irq_set {
             argsz: size_of::<vfio_irq_set>() as u32,
             flags: VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_NONE,
             index: VFIO_PCI_MSIX_IRQ_INDEX,
-            start,
-            count,
+            start: 0,
+            count: 0,
             data: Default::default(),
         };
 

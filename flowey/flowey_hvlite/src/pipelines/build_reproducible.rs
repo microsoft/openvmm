@@ -54,9 +54,10 @@ impl IntoPipeline for BuildReproducibleCli {
 
         let mut pipeline = Pipeline::new();
 
-        let (pub_openhcl_igvm, _use_openhcl_igvm) = pipeline.new_artifact("x64-cvm-openhcl-igvm");
+        let (pub_openhcl_igvm, _use_openhcl_igvm) =
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm");
         let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
-            pipeline.new_artifact("x64-cvm-openhcl-igvm-extras");
+            pipeline.new_typed_artifact("x64-openhcl-igvm-cvm-extras");
 
         let local_run_args = {
             let mut args = crate::pipelines_shared::cfg_common_params::LocalRunArgs::default();
@@ -96,7 +97,7 @@ impl IntoPipeline for BuildReproducibleCli {
             }
         };
 
-        let igvm_file = match recipe {
+        let recipe = match recipe {
             ReproducibleOpenHclRecipe::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
         };
 
@@ -118,20 +119,18 @@ impl IntoPipeline for BuildReproducibleCli {
             flowey_lib_hvlite::_jobs::build_openhcl_igvm_from_recipe_nix::Params {
                 arch: recipe_arch,
                 kernel_kind,
-                igvm_files: vec![igvm_file]
-                    .into_iter()
-                    .map(|recipe| OpenhclIgvmBuildParams {
+                igvm_files: vec![(
+                    OpenhclIgvmBuildParams {
                         profile: openvmm_hcl_profile,
                         recipe,
                         custom_target: Some(CommonTriple::Custom(openhcl_musl_target(recipe_arch))),
                         extra_features: BTreeSet::new(),
                         release_cfg: release,
-                    })
-                    .collect(),
-                artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
-                artifact_dir_openhcl_igvm_extras: ctx.publish_artifact(pub_openhcl_igvm_extras),
+                    },
+                    ctx.publish_typed_artifact(pub_openhcl_igvm),
+                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
+                )],
                 artifact_openhcl_verify_size_baseline: None,
-                done: ctx.new_done_handle(),
             }
         });
 
