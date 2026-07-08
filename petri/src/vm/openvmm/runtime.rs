@@ -315,6 +315,7 @@ impl PetriVmOpenVmm {
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Dumps the VM's processor and memory state to a `.vmrs` file at `path`.
         pub async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()>
     );
     petri_vm_fn!(
