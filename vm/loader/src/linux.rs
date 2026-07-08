@@ -1021,9 +1021,11 @@ mod tests {
         .unwrap()
     }
 
-    /// Asserts that `map[..entries]` covers `[0, first_ram_end)` with no gaps or
-    /// overlaps and strictly ascending addresses, and that no entry is empty.
-    fn assert_contiguous(p: &defs::boot_params) {
+    /// Asserts that `map[..entries]` exactly covers `[0, first_ram_end)` with no
+    /// gaps or overlaps and strictly ascending addresses, and that no entry is
+    /// empty. The first entry must start at 0 and the last must end precisely at
+    /// `first_ram_end`.
+    fn assert_contiguous(p: &defs::boot_params, first_ram_end: u64) {
         let entries = p.e820_entries as usize;
         assert!(entries > 0);
         let mut expected_addr = 0u64;
@@ -1033,6 +1035,10 @@ mod tests {
             assert_eq!(u64::from(e.addr), expected_addr, "gap/overlap at entry {i}");
             expected_addr = u64::from(e.addr) + u64::from(e.size);
         }
+        assert_eq!(
+            expected_addr, first_ram_end,
+            "map ends at {expected_addr:#x}, expected {first_ram_end:#x}"
+        );
     }
 
     #[test]
@@ -1067,7 +1073,7 @@ mod tests {
             assert_eq!(u64::from(e.size), *size, "entry {i} size");
             assert_eq!(u32::from(e.typ), *typ, "entry {i} type");
         }
-        assert_contiguous(&p);
+        assert_contiguous(&p, 256 * MB);
     }
 
     #[test]
@@ -1100,7 +1106,7 @@ mod tests {
             assert_eq!(u64::from(e.size), *size, "entry {i} size");
             assert_eq!(u32::from(e.typ), *typ, "entry {i} type");
         }
-        assert_contiguous(&p);
+        assert_contiguous(&p, 256 * MB);
     }
 
     #[test]
