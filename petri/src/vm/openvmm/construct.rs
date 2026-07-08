@@ -400,6 +400,7 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
+                custom_uefi_vars.clone(),
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
@@ -623,6 +624,7 @@ impl PetriVmConfigOpenVmm {
             vga_firmware,
 
             secure_boot_enabled,
+            base_secure_boot_template_vars: custom_uefi_vars.clone(),
             custom_uefi_vars,
             vmgs,
 

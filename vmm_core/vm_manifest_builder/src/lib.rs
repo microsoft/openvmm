@@ -112,6 +112,7 @@ impl UefiManifest {
     /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
     pub fn new(
         arch: MachineArch,
+        base_secure_boot_template_vars: CustomVars,
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
@@ -123,6 +124,7 @@ impl UefiManifest {
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
         Self {
             config: UefiConfig {
+                base_secure_boot_template_vars,
                 custom_uefi_vars,
                 secure_boot,
                 initial_generation_id,

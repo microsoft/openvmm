@@ -61,9 +61,8 @@ pub enum ResolveUefiDeviceError {
     Init(#[from] crate::UefiInitError),
 }
 
-/// Build the load-time compliance baseline from the configured initial UEFI
-/// variables.
-fn secure_boot_template_variables(
+/// Build the load-time compliance baseline from the base Secure Boot template.
+fn base_secure_boot_template_variables(
     custom_vars: &firmware_uefi_custom_vars::CustomVars,
 ) -> Option<SecureBootTemplateVariables> {
     let signatures = custom_vars.signatures.as_ref()?;
@@ -204,12 +203,15 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             storage_quirks,
         );
 
-        // Extract the expected Secure Boot variable contents from the configured
+        // Extract the expected Secure Boot variable contents from the stock
         // template so NVRAM storage can compare against them when it loads.
-        let nvram_storage = match secure_boot_template_variables(&config.custom_uefi_vars) {
-            Some(template) => nvram_storage.with_secure_boot_template_compliance_check(template),
-            None => nvram_storage,
-        };
+        let nvram_storage =
+            match base_secure_boot_template_variables(&config.base_secure_boot_template_vars) {
+                Some(template) => {
+                    nvram_storage.with_secure_boot_template_compliance_check(template)
+                }
+                None => nvram_storage,
+            };
         let nvram_storage = Box::new(nvram_storage);
 
         let gm = input.encrypted_guest_memory.clone();

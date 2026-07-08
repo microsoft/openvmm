@@ -641,10 +641,6 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         self.in_memory.next_variable(name_vendor).await
     }
-
-    fn log_post_load_observations(&self) {
-        self.check_secure_boot_template_compliance();
-    }
 }
 
 /// Parse a serialized signature-list variable into a comparable set of
