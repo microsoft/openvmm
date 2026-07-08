@@ -84,7 +84,7 @@ async fn crash_dump_on_triple_fault(
 
     vm.teardown().await?;
 
-    // Validate the dump is a well-formed HyperV saved-state file by reading a
+    // Validate the dump is a well-formed Hyper-V saved-state file by reading a
     // required key back out of it.
     let file = std::fs::File::open(&dump_path)
         .with_context(|| format!("crash dump not found at {}", dump_path.display()))?;
