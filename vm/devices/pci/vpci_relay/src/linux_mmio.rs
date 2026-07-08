@@ -61,15 +61,7 @@ impl MemoryAccess for DirectMmioInstance {
                 .1
                 .read_volatile::<[u8; 4]>(offset)
                 .map(|v| data.copy_from_slice(&v)),
-            _ => {
-                tracelimit::error_ratelimited!(
-                    addr,
-                    len = data.len(),
-                    "vpci mmio read failure: unsupported length"
-                );
-                data.fill(!0);
-                return;
-            }
+            _ => panic!("size must be 1-, 2-, or 4-bytes"),
         };
         if let Err(err) = res {
             tracelimit::error_ratelimited!(
@@ -96,14 +88,7 @@ impl MemoryAccess for DirectMmioInstance {
             4 => self
                 .1
                 .write_volatile(offset, &<[u8; 4]>::try_from(value).unwrap()),
-            _ => {
-                tracelimit::error_ratelimited!(
-                    addr,
-                    len = value.len(),
-                    "vpci mmio write failure: unsupported length"
-                );
-                return;
-            }
+            _ => panic!("size must be 1-, 2-, or 4-bytes"),
         };
         if let Err(err) = res {
             tracelimit::error_ratelimited!(
