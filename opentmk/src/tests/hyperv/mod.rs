@@ -8,7 +8,9 @@ crate::tmk_tests! {
     tests: {
         hv_error_vp_start,
         hv_processor,
+        #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
         hv_memory_protect_read,
+        #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
         hv_memory_protect_write,
         #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
         hv_register_intercept,
