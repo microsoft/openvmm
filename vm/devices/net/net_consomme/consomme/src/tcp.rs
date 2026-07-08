@@ -673,11 +673,11 @@ struct Sender<'a, T> {
 impl<T: Client> Sender<'_, T> {
     /// Assemble and deliver a TCP packet to the client.
     ///
-    /// When `tso_mss` is `Some(mss)`, the payload is larger than a single
-    /// segment and the packet is delivered with [`ChecksumState::tso`] set so
-    /// that the frontend device can present it to the guest as an
-    /// LRO/GSO packet. In this mode the TCP checksum field is left incomplete
-    /// (checksum computation is disabled), and the guest computes per-segment checksums.
+    /// When `tso_mss` is `Some(mss)`, the packet is delivered with
+    /// [`ChecksumState::tso`] set so the frontend can present it to the guest as
+    /// an LRO/GSO packet. In that mode the TCP checksum field holds only the
+    /// pseudo-header partial checksum (`VIRTIO_NET_HDR_F_NEEDS_CSUM`); the guest
+    /// completes each segment's checksum.
     fn send_packet(
         &mut self,
         tcp: &TcpRepr<'_>,
@@ -736,10 +736,15 @@ impl<T: Client> Sender<'_, T> {
         if tso_mss.is_none() {
             // Normal single-segment packet: compute the full checksum.
             tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+        } else {
+            // TSO packet (NEEDS_CSUM): seed the field with the pseudo-header
+            // partial checksum so the guest can complete each segment. smoltcp
+            // leaves it zero when checksum emission is disabled, which would
+            // yield invalid per-segment checksums.
+            let tcp_len = tcp.header_len() + payload.as_ref().map_or(0, |p| p.len());
+            let pseudo = tcp_pseudo_header_checksum(&src_ip_addr, &dst_ip_addr, tcp_len as u16);
+            tcp_packet.set_checksum(pseudo);
         }
-        // For TSO packets the checksum field is left as emitted by
-        // smoltcp (zero / pseudo-header partial). The guest driver
-        // will compute per-segment checksums via NEEDS_CSUM.
 
         let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match (self.ft.dst, tso_mss) {
@@ -1899,6 +1904,41 @@ fn is_connect_incomplete_error(err: &io::Error) -> bool {
         return true;
     }
     false
+}
+
+/// Computes the TCP pseudo-header checksum used to seed a TSO segment's
+/// checksum field for `VIRTIO_NET_HDR_F_NEEDS_CSUM`.
+fn tcp_pseudo_header_checksum(src: &IpAddress, dst: &IpAddress, length: u16) -> u16 {
+    fn sum_bytes(mut data: &[u8], mut accum: u32) -> u32 {
+        while data.len() >= 2 {
+            accum += u16::from_be_bytes([data[0], data[1]]) as u32;
+            data = &data[2..];
+        }
+        if let Some(&b) = data.first() {
+            accum += (b as u32) << 8;
+        }
+        accum
+    }
+
+    let mut accum = 0u32;
+    match (src, dst) {
+        (IpAddress::Ipv4(src), IpAddress::Ipv4(dst)) => {
+            accum = sum_bytes(&src.octets(), accum);
+            accum = sum_bytes(&dst.octets(), accum);
+        }
+        (IpAddress::Ipv6(src), IpAddress::Ipv6(dst)) => {
+            accum = sum_bytes(&src.octets(), accum);
+            accum = sum_bytes(&dst.octets(), accum);
+        }
+        _ => unreachable!("mismatched IP address families"),
+    }
+    accum += u8::from(IpProtocol::Tcp) as u32;
+    accum += length as u32;
+    // Fold carries per RFC 1071; no final one's-complement.
+    while accum >> 16 != 0 {
+        accum = (accum & 0xffff) + (accum >> 16);
+    }
+    accum as u16
 }
 
 /// Finds the smallest sequence number in a set. To get a coherent result, all

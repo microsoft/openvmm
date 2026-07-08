@@ -12,6 +12,9 @@ pub mod tap;
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use inspect::InspectMut;
+use linux_net_bindings::gen_if_tun::TUN_F_CSUM;
+use linux_net_bindings::gen_if_tun::TUN_F_TSO4;
+use linux_net_bindings::gen_if_tun::TUN_F_TSO6;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::L3Protocol;
@@ -110,6 +113,20 @@ mod vnet_hdr {
 }
 pub use vnet_hdr::*;
 
+/// Computes the kernel TAP offload bitmask for the guest's negotiated receive
+/// offload support. TSO is only enabled when the guest can consume LRO, so
+/// guests without `GUEST_TSO4/6` never receive oversized coalesced frames.
+fn tap_offload_flags(support: net_backend::RxOffloadSupport) -> u32 {
+    let mut flags = 0;
+    if support.lro4 {
+        flags |= TUN_F_CSUM | TUN_F_TSO4;
+    }
+    if support.lro6 {
+        flags |= TUN_F_CSUM | TUN_F_TSO6;
+    }
+    flags
+}
+
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
@@ -118,26 +135,9 @@ pub struct TapEndpoint {
 
 impl TapEndpoint {
     pub fn new(tap: tap::Tap) -> Result<Self, tap::Error> {
-        // Enable RX offloads so the kernel can deliver large coalesced
-        // (GRO/LRO) TCP packets instead of segmenting them. This reduces
-        // per-packet overhead and improves throughput when the guest has
-        // negotiated VIRTIO_NET_F_GUEST_TSO4/6.
-        //
-        // TUN_F_CSUM (1) — we can handle NEEDS_CSUM (partial checksum)
-        // TUN_F_TSO4 (2) — we can handle TSOv4 (large IPv4/TCP packets)
-        // TUN_F_TSO6 (4) — we can handle TSOv6 (large IPv6/TCP packets)
-        //
-        // TUN_F_CSUM is required for TUN_F_TSO4/6.
-        const TUN_F_CSUM: u32 = 1;
-        const TUN_F_TSO4: u32 = 2;
-        const TUN_F_TSO6: u32 = 4;
-        if let Err(err) = tap.set_offloads(TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6) {
-            tracing::warn!(
-                error = &err as &dyn std::error::Error,
-                "failed to enable TAP RX offloads, falling back to no offloads"
-            );
-            tap.set_offloads(0)?;
-        }
+        // Start with RX offloads disabled; `set_rx_offload_support` enables
+        // them once the guest negotiates LRO, before any traffic flows.
+        tap.set_offloads(0)?;
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
@@ -163,6 +163,19 @@ impl Endpoint for TapEndpoint {
 
     fn set_rx_offload_support(&mut self, support: net_backend::RxOffloadSupport) {
         self.rx_offload_support = support;
+        // Match the kernel offloads to what the guest negotiated so it can't
+        // deliver coalesced frames larger than the guest RX buffers.
+        let flags = tap_offload_flags(support);
+        if let Some(tap) = self.tap.lock().as_ref() {
+            if let Err(err) = tap.set_offloads(flags) {
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    flags,
+                    "failed to reconfigure TAP RX offloads; disabling offloads"
+                );
+                let _ = tap.set_offloads(0);
+            }
+        }
     }
 
     async fn get_queues(
