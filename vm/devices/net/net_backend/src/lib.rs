@@ -299,6 +299,10 @@ pub trait BufferAccess {
     /// Backends that write directly into guest memory should override this to
     /// write each segment at its running offset and avoid the copy.
     fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        if let [segment] = segments {
+            self.write_packet(id, metadata, segment);
+            return;
+        }
         let total = segments.iter().map(|s| s.len()).sum();
         let mut data = Vec::with_capacity(total);
         for segment in segments {

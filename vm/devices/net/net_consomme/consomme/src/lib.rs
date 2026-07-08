@@ -532,6 +532,10 @@ pub trait Client {
     /// and forwards to [`Client::recv`]. Clients that can write discontiguous
     /// data directly to the guest should override this to eliminate the copy.
     fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
+        if let [segment] = segments {
+            self.recv(segment, checksum);
+            return;
+        }
         let total = segments.iter().map(|s| s.len()).sum();
         let mut data = Vec::with_capacity(total);
         for segment in segments {

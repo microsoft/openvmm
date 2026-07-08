@@ -1898,22 +1898,22 @@ mod checksum {
     }
 
     pub fn data(mut data: &[u8]) -> u16 {
-        let mut accum = 0;
+        let mut accum: u32 = 0;
         const CHUNK_SIZE: usize = 32;
         while data.len() >= CHUNK_SIZE {
             let mut d = &data[..CHUNK_SIZE];
             while d.len() >= 2 {
-                accum += u16::from_be_bytes([d[0], d[1]]) as u32;
+                accum = accum.wrapping_add(u16::from_be_bytes([d[0], d[1]]) as u32);
                 d = &d[2..];
             }
             data = &data[CHUNK_SIZE..];
         }
         while data.len() >= 2 {
-            accum += u16::from_be_bytes([data[0], data[1]]) as u32;
+            accum = accum.wrapping_add(u16::from_be_bytes([data[0], data[1]]) as u32);
             data = &data[2..];
         }
         if let Some(&value) = data.first() {
-            accum += (value as u32) << 8;
+            accum = accum.wrapping_add((value as u32) << 8);
         }
         propagate_carries(accum)
     }
@@ -1921,7 +1921,7 @@ mod checksum {
     pub fn combine(checksums: &[u16]) -> u16 {
         let mut accum: u32 = 0;
         for &word in checksums {
-            accum += word as u32;
+            accum = accum.wrapping_add(word as u32);
         }
         propagate_carries(accum)
     }
@@ -1932,20 +1932,27 @@ mod checksum {
         next_header: IpProtocol,
         length: u32,
     ) -> u16 {
-        let mut proto_len = [0u8; 4];
-        proto_len[1] = next_header.into();
-        proto_len[2..4].copy_from_slice(&(length as u16).to_be_bytes());
         match (src_addr, dst_addr) {
-            (IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => combine(&[
-                data(&src_addr.octets()),
-                data(&dst_addr.octets()),
-                data(&proto_len),
-            ]),
-            (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => combine(&[
-                data(&src_addr.octets()),
-                data(&dst_addr.octets()),
-                data(&proto_len),
-            ]),
+            (IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
+                let mut proto_len = [0u8; 4];
+                proto_len[1] = next_header.into();
+                proto_len[2..4].copy_from_slice(&(length as u16).to_be_bytes());
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&proto_len),
+                ])
+            }
+            (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
+                let mut len_proto = [0u8; 8];
+                len_proto[0..4].copy_from_slice(&length.to_be_bytes());
+                len_proto[7] = next_header.into();
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&len_proto),
+                ])
+            }
             _ => unreachable!("mismatched IP address families"),
         }
     }
