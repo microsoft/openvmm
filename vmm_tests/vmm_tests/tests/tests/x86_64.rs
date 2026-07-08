@@ -50,33 +50,39 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
 }
 
 /// Boot the guest-test UEFI image, which purposefully triple-faults itself via
-/// an expiring watchdog, with `--crash-dump-path` configured. Verify that the
-/// worker wrote a well-formed `.vmrs` crash dump before signaling the halt.
+/// an expiring watchdog. Once the crash is observed, ask the VM to dump its
+/// state and verify that a well-formed `.vmrs` file is written.
 #[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
 async fn crash_dump_on_triple_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
     let dump_path = dump_dir.path().join("crash.vmrs");
-    let dump_path_str = dump_path.to_string_lossy().into_owned();
 
-    let vm = config
+    let mut vm = config
         .with_memory(petri::MemoryConfig {
             startup_bytes: 256 * 1024 * 1024,
             ..Default::default()
         })
-        .modify_backend(move |b| {
-            b.with_custom_config(move |c| c.crash_dump_path = Some(dump_path_str))
-        })
         .run_without_agent()
         .await?;
 
-    // The guest triple-faults; the worker writes the dump before notifying the
-    // client, so the file is present once teardown reports the crash.
-    let halt_reason = vm.wait_for_teardown().await?;
+    // Wait for the guest to triple-fault. The worker stays alive after
+    // signaling the crash, so it can still service the dump request.
+    let halt_reason = vm.wait_for_halt().await?;
     if halt_reason.reason != PetriHaltReason::TripleFault {
         anyhow::bail!("expected TripleFault, got {halt_reason:?}");
     }
+
+    // The controlling process (this test) creates the dump file and drives the
+    // dump via the worker, mirroring how the OpenVMM control process handles
+    // `--crash-dump-path`.
+    vm.backend()
+        .dump_state(&dump_path)
+        .await
+        .context("failed to dump VM state on crash")?;
+
+    vm.teardown().await?;
 
     // Validate the dump is a well-formed HyperV saved-state file by reading a
     // required key back out of it.

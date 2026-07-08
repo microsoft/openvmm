@@ -2000,10 +2000,6 @@ async fn vm_config_from_command_line(
         // For `halt` or `exit`, the guest reset must surface as a halt event so
         // the controller can hold the VM or exit instead of rebooting in place.
         automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
-        crash_dump_path: opt
-            .crash_dump_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
         efi_diagnostics_log_level: {
             match opt.efi_diagnostics_log_level.unwrap_or_default() {
                 EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
@@ -2737,6 +2733,7 @@ async fn run_control_inner(
         memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
+        crash_dump_path: opt.crash_dump_path.clone(),
         guest_power_actions: vm_controller::GuestPowerActions {
             shutdown: opt.guest_shutdown_action,
             reset: opt.guest_reset_action,

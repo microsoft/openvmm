@@ -64,9 +64,6 @@ pub struct Config {
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
-    /// If set, the worker writes a WinDbg-compatible `.vmrs` dump to this path
-    /// when the guest triple-faults, before notifying the client of the halt.
-    pub crash_dump_path: Option<String>,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 

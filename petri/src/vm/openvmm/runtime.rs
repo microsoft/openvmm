@@ -315,6 +315,9 @@ impl PetriVmOpenVmm {
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        pub async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Wait for a connection from a pipette agent
         pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
@@ -516,7 +519,9 @@ impl PetriVmInner {
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         self.worker.remove_pcie_device(port_name).await
     }
-
+    async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()> {
+        self.worker.dump_state(path).await
+    }
     async fn restore_openhcl(&self) -> anyhow::Result<()> {
         let ged_send = self
             .resources

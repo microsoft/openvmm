@@ -628,9 +628,6 @@ impl PetriVmConfigOpenVmm {
             // Don't automatically reset the guest by default
             automatic_guest_reset: false,
 
-            // No automatic crash dump unless a test opts in via with_custom_config
-            crash_dump_path: None,
-
             // Disabled for VMM tests by default
             #[cfg(windows)]
             kernel_vmnics: vec![],

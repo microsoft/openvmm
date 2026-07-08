@@ -689,7 +689,6 @@ impl VmService {
             layout: layout_config,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
-            crash_dump_path: None,
             efi_diagnostics_log_level: Default::default(),
         };
 
@@ -839,6 +838,7 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            crash_dump_path: None,
             // The ttrpc/grpc server never exits on a guest power event; it uses
             // the historical defaults (none of which is Exit), so the
             // ExitRequested event handled below is unreachable here.

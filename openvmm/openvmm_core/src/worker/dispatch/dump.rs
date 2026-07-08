@@ -8,9 +8,7 @@ use anyhow::Context;
 use guestmem::GuestMemory;
 use hyperv_dump::GuestMemoryReader;
 use hyperv_dump::VmrsWriter;
-use std::ffi::OsString;
 use std::fs::File;
-use std::path::Path;
 
 impl LoadedVm {
     /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
@@ -24,39 +22,6 @@ impl LoadedVm {
             self.resume().await;
         }
         result
-    }
-
-    /// Writes a `.vmrs` crash dump to `path`.
-    ///
-    /// Used by the automatic dump-on-crash path in the worker's halt handler.
-    /// The VPs are already halted at that point, so this dumps directly
-    /// without pausing/resuming. The dump is written to a sibling temporary
-    /// file and renamed into place so readers never observe a partial dump.
-    /// Any existing dump at `path` is overwritten, so repeated crashes replace
-    /// the previous dump.
-    pub(super) async fn write_crash_dump(&mut self, path: &Path) -> anyhow::Result<()> {
-        let mut tmp = OsString::from(path.as_os_str());
-        tmp.push(".tmp");
-        let tmp_path = Path::new(&tmp);
-
-        let file = File::create(tmp_path)
-            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-        if let Err(err) = self.dump_state_inner(file).await {
-            let _ = std::fs::remove_file(tmp_path);
-            return Err(err);
-        }
-
-        // Remove any existing dump first: on Windows `rename` fails if the
-        // destination already exists, and each crash should overwrite the
-        // previous dump. If the rename still fails, clean up the temp file so
-        // we don't leave a partial `.tmp` behind.
-        let _ = std::fs::remove_file(path);
-        if let Err(err) = std::fs::rename(tmp_path, path) {
-            let _ = std::fs::remove_file(tmp_path);
-            return Err(err)
-                .with_context(|| format!("failed to rename crash dump to {}", path.display()));
-        }
-        Ok(())
     }
 
     async fn dump_state_inner(&mut self, file: File) -> anyhow::Result<()> {

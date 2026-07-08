@@ -220,7 +220,6 @@ impl Manifest {
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
-            crash_dump_path: config.crash_dump_path,
             efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
                 EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
@@ -272,7 +271,6 @@ pub struct Manifest {
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
-    crash_dump_path: Option<String>,
     efi_diagnostics_log_level: LogLevel,
 }
 
@@ -789,8 +787,6 @@ struct LoadedVmInner {
     client_notify_send: mesh::Sender<HaltReason>,
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
-    /// If set, write a `.vmrs` dump to this path when the guest triple-faults.
-    crash_dump_path: Option<String>,
     chipset: Arc<vmotherboard::Chipset>,
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
@@ -2998,7 +2994,6 @@ impl InitializedVm {
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
-                crash_dump_path: cfg.crash_dump_path,
                 chipset: chipset.chipset.clone(),
                 iommu_devices,
                 #[cfg(guest_arch = "x86_64")]
@@ -3800,24 +3795,6 @@ impl LoadedVm {
                             break;
                         }
                     } else {
-                        // On a guest crash, write a .vmrs dump before notifying
-                        // the client (which decides the configured crash action).
-                        if matches!(reason, HaltReason::TripleFault { .. }) {
-                            if let Some(path) = self.inner.crash_dump_path.clone() {
-                                tracing::info!(%path, "dumping VM state on guest crash");
-                                match self.write_crash_dump(std::path::Path::new(&path)).await {
-                                    Ok(()) => tracing::info!(
-                                        %path,
-                                        "VM state dumped to VMRS file on guest crash"
-                                    ),
-                                    Err(err) => tracing::error!(
-                                        error = err.as_ref() as &dyn std::error::Error,
-                                        %path,
-                                        "failed to write VM crash dump"
-                                    ),
-                                }
-                            }
-                        }
                         self.inner.client_notify_send.send(reason);
                     }
                 }
@@ -3983,7 +3960,6 @@ impl LoadedVm {
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
-            crash_dump_path: self.inner.crash_dump_path.clone(),
             efi_diagnostics_log_level: Default::default(),
         };
         #[expect(unreachable_code, reason = "TODO")]
