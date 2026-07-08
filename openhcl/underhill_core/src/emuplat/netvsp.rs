@@ -719,7 +719,7 @@ impl HclNetworkVFManagerWorker {
                             // Regardless of device state, if the VF is offered, revoke it
                             // to preserve the invariant that a hidden VF is not offered.
                             tracing::info!(
-                                vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
+                                vtl0_vfid = vtl0_vfid_from_bus_control(&old_bus_control),
                                 vtl0_vf_offered,
                                 vtl2_device_state = ?vtl2_device_state,
                                 "VTL0 VF will be revoked as part of hide operation"
