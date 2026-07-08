@@ -713,7 +713,21 @@ impl HclNetworkVFManagerWorker {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent);
                     if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
+                        let vtl0_vf_offered = self.guest_state.is_offered_to_guest().await;
+                        if vtl0_vf_offered {
+                            // Reconfigure may have left the VTL0 VF offered to the guest.
+                            // Regardless of device state, if the VF is offered, revoke it
+                            // to preserve the invariant that a hidden VF is not offered.
+                            tracing::info!(
+                                vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
+                                vtl0_vf_offered,
+                                vtl2_device_state = ?vtl2_device_state,
+                                "VTL0 VF will be revoked as part of hide operation"
+                            );
+                        }
+
+                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) || vtl0_vf_offered
+                        {
                             *self.guest_state.vtl0_vfid.lock().await =
                                 vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
                             self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
