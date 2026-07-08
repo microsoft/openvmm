@@ -1111,14 +1111,17 @@ impl LxFile {
         )
     }
 
+    /// Returns whether the file was opened with write access (including append-only).
+    fn is_writable(&self) -> bool {
+        (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 != 0
+    }
+
     pub fn set_attr(&self, mut attr: SetAttributes) -> lx::Result<()> {
         // ftruncate requires the descriptor to be writable, matching Linux where truncating an
         // O_RDONLY descriptor fails with EINVAL. This is enforced here because the truncate below
         // may run on a handle reopened with FILE_WRITE_DATA, which would otherwise allow truncating
         // a read-only descriptor.
-        if attr.size.is_some()
-            && (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 == 0
-        {
+        if attr.size.is_some() && !self.is_writable() {
             return Err(lx::Error::EINVAL);
         }
 
@@ -1269,7 +1272,7 @@ impl LxFile {
         // Linux allows using fsync on files that have been opened read-only, while
         // Windows does not, so reopen the file if necessary.
         let mut _reopened = None;
-        let handle = if (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 != 0 {
+        let handle = if self.is_writable() {
             &self.handle
         } else {
             let file = match util::reopen_file(&self.handle, W32Fs::FILE_WRITE_DATA) {
