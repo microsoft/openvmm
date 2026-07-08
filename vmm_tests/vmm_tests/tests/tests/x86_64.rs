@@ -50,8 +50,9 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
 }
 
 /// Boot the guest-test UEFI image, which purposefully triple-faults itself via
-/// an expiring watchdog. Once the crash is observed, ask the VM to dump its
-/// state and verify that a well-formed `.vmrs` file is written.
+/// an expiring watchdog. Once the crash is observed, explicitly drive a state
+/// dump via the `DumpState` RPC and verify that a well-formed `.vmrs` file is
+/// written.
 #[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
 async fn crash_dump_on_triple_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -75,8 +76,7 @@ async fn crash_dump_on_triple_fault(
     }
 
     // The controlling process (this test) creates the dump file and drives the
-    // dump via the worker, mirroring how the OpenVMM control process handles
-    // `--crash-dump-path`.
+    // dump via the `DumpState` RPC directly.
     vm.backend()
         .dump_state(&dump_path)
         .await

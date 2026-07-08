@@ -279,7 +279,7 @@ impl VmController {
                     // On a guest crash, write a `.vmrs` dump (if configured)
                     // before applying the crash action, since a `Reset` action
                     // would wipe the guest state we want to capture.
-                    if matches!(reason, HaltReason::TripleFault { .. }) {
+                    if matches!(&reason, HaltReason::TripleFault { .. }) {
                         if let Some(path) = self.crash_dump_path.clone() {
                             tracing::info!(path = %path.display(), "dumping VM state on guest crash");
                             match self.handle_dump_state(&path).await {

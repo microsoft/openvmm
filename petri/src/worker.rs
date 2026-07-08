@@ -67,7 +67,10 @@ impl Worker {
     }
 
     pub(crate) async fn dump_state(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
         let tmp_file = tempfile::NamedTempFile::new_in(parent)
             .context("failed to create temp file for dump")?;
         self.rpc
