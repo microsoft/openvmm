@@ -153,7 +153,6 @@ pub fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
 /// Static configuration for the UEFI device.
 #[derive(Clone, Protobuf)]
 pub struct UefiConfig {
-    pub base_secure_boot_template_vars: CustomVars,
     pub custom_uefi_vars: CustomVars,
     pub secure_boot: bool,
     pub initial_generation_id: [u8; 16],
@@ -161,6 +160,7 @@ pub struct UefiConfig {
     pub command_set: UefiCommandSet,
     pub diagnostics_log_level: LogLevel,
     pub diagnostics_rate_limit: Option<u32>,
+    pub base_secure_boot_template_vars: CustomVars,
 }
 
 /// Resource kind for the platform-provided UEFI logger.

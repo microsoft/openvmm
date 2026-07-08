@@ -34,7 +34,11 @@ use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::in_memory;
+use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
+use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
+use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -47,6 +51,7 @@ const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 // TODO: how big required for secure boot with db/dbx?
 const INITIAL_NVRAM_SIZE: usize = 32768;
 const MAXIMUM_NVRAM_SIZE: usize = INITIAL_NVRAM_SIZE * 4;
+const WIN_CERT_REVISION_2_0: u16 = 0x0200;
 
 /// One Secure Boot signature entry, including both the owner header and the
 /// signature payload bytes.
@@ -649,6 +654,7 @@ fn collect_signature_entries(
     data: &[u8],
 ) -> Result<BTreeSet<SignatureEntry>, ParseSignatureListError> {
     let mut entries = BTreeSet::new();
+    let data = signature_list_payload(data);
 
     for list in ParseSignatureLists::new(data) {
         match list? {
@@ -676,6 +682,8 @@ fn remove_present_signature_entries(
     data: &[u8],
     missing: &mut BTreeSet<SignatureEntry>,
 ) -> Result<(), ParseSignatureListError> {
+    let data = signature_list_payload(data);
+
     for list in ParseSignatureLists::new(data) {
         match list? {
             ParseSignatureList::X509(certs) => {
@@ -699,6 +707,29 @@ fn remove_present_signature_entries(
         }
     }
     Ok(())
+}
+
+/// Return the signature-list payload, skipping a valid time-based auth prefix
+/// if one is present.
+fn signature_list_payload(data: &[u8]) -> &[u8] {
+    let Ok((auth, _)) = EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data) else {
+        return data;
+    };
+
+    if auth.auth_info.header.revision != WIN_CERT_REVISION_2_0
+        || auth.auth_info.header.certificate_type != WIN_CERT_TYPE_EFI_GUID
+        || auth.auth_info.cert_type != EFI_CERT_TYPE_PKCS7_GUID
+    {
+        return data;
+    }
+
+    let cert_len = auth.auth_info.header.length as usize;
+    if cert_len < size_of::<WIN_CERTIFICATE_UEFI_GUID>() {
+        return data;
+    }
+
+    let auth_len = size_of_val(&auth.timestamp) + cert_len;
+    data.get(auth_len..).unwrap_or(data)
 }
 
 #[cfg(feature = "save_restore")]
@@ -939,6 +970,23 @@ mod test {
         remove_present_signature_entries(&current, &mut missing).unwrap();
 
         assert_eq!(missing.len(), 1);
+    }
+
+    #[test]
+    fn secure_boot_template_entries_skip_auth_prefix() {
+        let owner = Guid::new_random();
+
+        let mut expected = Vec::new();
+        extend_x509_signature_list(&mut expected, owner, &[1, 2, 3]);
+
+        let mut current = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+        current.extend_from_slice(&expected);
+
+        let mut missing = collect_signature_entries(&expected).unwrap();
+        remove_present_signature_entries(&current, &mut missing).unwrap();
+
+        assert!(missing.is_empty());
+        assert_eq!(collect_signature_entries(&current).unwrap().len(), 1);
     }
 
     fn extend_x509_signature_list(data: &mut Vec<u8>, owner: Guid, cert: &[u8]) {
