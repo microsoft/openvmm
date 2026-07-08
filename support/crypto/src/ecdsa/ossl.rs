@@ -53,6 +53,30 @@ impl EcdsaKeyPairInner {
         Ok(result)
     }
 
+    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
+        let key_size = self.curve.key_size();
+        // A signature must be exactly `r || s`, each `key_size` bytes. Any
+        // other length cannot be a valid signature for this curve.
+        if signature.len() != key_size * 2 {
+            return Ok(false);
+        }
+
+        let ec_key = self
+            .pkey
+            .ec_key()
+            .map_err(|e| err(e, "getting EC key from PKey"))?;
+
+        let r = openssl::bn::BigNum::from_slice(&signature[..key_size])
+            .map_err(|e| err(e, "parsing r"))?;
+        let s = openssl::bn::BigNum::from_slice(&signature[key_size..])
+            .map_err(|e| err(e, "parsing s"))?;
+        let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
+            .map_err(|e| err(e, "constructing signature"))?;
+
+        sig.verify(hash, &ec_key)
+            .map_err(|e| err(e, "ECDSA verify"))
+    }
+
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
         let ec_key = self
             .pkey

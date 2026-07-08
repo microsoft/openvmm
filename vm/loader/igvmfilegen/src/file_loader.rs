@@ -20,6 +20,7 @@ use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
 use crate::vp_context_builder::vbs::VbsVpContext;
 use anyhow::Context;
+use crypto::sha_384::Sha384;
 use hvdef::Vtl;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
@@ -50,8 +51,6 @@ use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use range_map_vec::Entry;
 use range_map_vec::RangeMap;
-use sha2::Digest;
-use sha2::Sha384;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -578,7 +577,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
         });
-        hasher.finalize().to_vec()
+        hasher.finish().to_vec()
     }
 
     /// Finalize the loader state, returning an IGVM file.
