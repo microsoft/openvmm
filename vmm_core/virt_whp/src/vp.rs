@@ -1275,7 +1275,8 @@ mod x86 {
                     msr @ (X86X_MSR_APIC_BASE | X2APIC_MSR_BASE..=X2APIC_MSR_END) => {
                         self.apic_msr_write(dev, msr, v)
                     }
-                    x86defs::X86X_AMD_MSR_HW_CFG
+                    x86defs::X86X_AMD_MSR_PERF_EVT_SEL0..=x86defs::X86X_AMD_MSR_PERF_CTR3
+                    | x86defs::X86X_AMD_MSR_HW_CFG
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
