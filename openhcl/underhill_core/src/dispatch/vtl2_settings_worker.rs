@@ -899,7 +899,7 @@ fn modify_network_configuration(
 pub struct UhIdeControllerConfig {
     pub config: IdeControllerConfig,
     pub dvds: Vec<(IdePath, mesh::Sender<SimpleScsiDvdRequest>)>,
-    pub disk_params: Vec<(IdePath, scsidisk_resources::DiskParameters)>,
+    pub disk_params: HashMap<IdePath, scsidisk_resources::DiskParameters>,
 }
 
 pub struct UhScsiControllerConfig {
@@ -1358,7 +1358,7 @@ async fn make_ide_controller_config(
     let mut io_queue_depth = None;
 
     let mut dvds = Vec::new();
-    let mut disk_params = Vec::new();
+    let mut disk_params = HashMap::new();
     if let Some(ide_controller) = &settings.ide_controller {
         io_queue_depth = ide_controller.io_queue_depth;
         for disk in &ide_controller.disks {
@@ -1368,7 +1368,7 @@ async fn make_ide_controller_config(
                 dvds.push((config.path, dvd));
             }
             if let Some(params) = params {
-                disk_params.push((config.path, params));
+                disk_params.insert(config.path, params);
             }
             if disk.channel == 0 {
                 primary_channel_disks.push(config);
@@ -1829,7 +1829,7 @@ fn calculate_device_change_from_map<'a, T>(
 
 pub struct InitialControllers {
     pub ide_controller: Option<IdeControllerConfig>,
-    pub ide_disk_params: Vec<(IdePath, scsidisk_resources::DiskParameters)>,
+    pub ide_disk_params: HashMap<IdePath, scsidisk_resources::DiskParameters>,
     pub vmbus_devices: Vec<Resource<VmbusDeviceHandleKind>>,
     pub vpci_devices: Vec<UhVpciDeviceConfig>,
     pub mana: Vec<NicConfig>,
@@ -1889,7 +1889,7 @@ impl InitialControllers {
         let mut scsi_dvds = HashMap::new();
         let mut scsi_request = HashMap::new();
 
-        let mut ide_disk_params = Vec::new();
+        let mut ide_disk_params = HashMap::new();
         let ide_controller = ide_controller.map(|c| {
             scsi_dvds.extend(
                 c.dvds

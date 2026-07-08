@@ -374,7 +374,10 @@ impl StorageBuilder {
                     guest_media,
                 });
 
-                // Hard disks also get a storvsp IDE accelerator channel.
+                // Hard disks also get a storvsp IDE accelerator channel offered over
+                // VMBus. This is the accelerator half of the IDE path; the emulated IDE
+                // drive itself is built in openvmm_core's worker. OpenVMM has no CLI
+                // surface for per-disk SCSI parameters, so they are left as Default here.
                 if !is_dvd {
                     let storvsp_disk = disk_open(kind, read_only).await?;
                     self.storvsp_ide_handles.push((
@@ -711,7 +714,11 @@ impl StorageBuilder {
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
-        if config.vmbus.is_some() {
+        if !self.storvsp_ide_handles.is_empty() {
+            anyhow::ensure!(
+                config.vmbus.is_some(),
+                "IDE accelerator requires VMBus to be enabled"
+            );
             config.vmbus_devices.append(&mut self.storvsp_ide_handles);
         }
 

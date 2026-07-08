@@ -2787,9 +2787,8 @@ async fn new_underhill_vm(
                         let path = ide_resources::IdePath { channel, drive };
                         let params = controllers
                             .ide_disk_params
-                            .iter()
-                            .find(|(p, _)| *p == path)
-                            .map(|(_, dp)| dp.clone())
+                            .get(&path)
+                            .cloned()
                             .unwrap_or_default();
                         let scsi_disk =
                             Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params));

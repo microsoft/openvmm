@@ -251,7 +251,11 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        if !properties.no_vmbus {
+        if !storvsp_ide_handles.is_empty() {
+            anyhow::ensure!(
+                !properties.no_vmbus,
+                "IDE accelerator requires VMBus to be enabled"
+            );
             vmbus_devices.extend(storvsp_ide_handles);
         }
 

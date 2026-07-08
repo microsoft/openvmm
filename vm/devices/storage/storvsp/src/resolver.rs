@@ -28,10 +28,10 @@ use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// Default I/O queue depth when not explicitly configured.
 const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
-use vmcore::vm_task::VmTaskDriverSource;
 
 /// The resolver for [`ScsiControllerHandle`].
 pub struct StorvspResolver;

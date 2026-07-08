@@ -1554,6 +1554,10 @@ impl InitializedVm {
                         disk_type,
                         read_only,
                     } => {
+                        // This builds only the emulated IDE drive. The storvsp IDE accelerator
+                        // counterpart (which carries any per-disk SCSI parameters via
+                        // SimpleScsiDiskHandle) is offered separately as a VMBus device; the two
+                        // paths are not yet unified.
                         let disk =
                             open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                                 .await
