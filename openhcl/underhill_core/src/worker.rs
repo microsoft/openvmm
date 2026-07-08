@@ -202,6 +202,10 @@ const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
 const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
+// NVIDIA PCI vendor ID (used to relay NVIDIA GPUs and NVLink/NVSwitch fabric
+// devices to Azure Local confidential guests).
+const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
+
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -3321,6 +3325,33 @@ async fn new_underhill_vm(
                     prog_if: Some(ProgrammingInterface::NONE),
                     sub_class: Some(Subclass::NONE),
                     base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
+                // enumerate as a 3D controller (class 0x0302), not VGA.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                    device_id: None,
+                    revision_id: None,
+                    prog_if: None,
+                    sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+                    base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                // HGX clusters additionally expose NVSwitch NVLink-fabric
+                // devices, which enumerate as an "other" PCI bridge (class
+                // 0x0680) rather than a display controller.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                    device_id: None,
+                    revision_id: None,
+                    prog_if: None,
+                    sub_class: Some(Subclass::BRIDGE_OTHER),
+                    base_class: Some(ClassCode::BRIDGE),
                     sub_vendor_id: None,
                     sub_system_id: None,
                 });
