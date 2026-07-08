@@ -554,18 +554,25 @@ impl VirtioPciDevice {
         });
     }
 
-    /// Length of the BAR selected by a `pci_cfg_data` access, or `None` if
-    /// `bar` does not correspond to a BAR reachable through the window. Used to
-    /// bound guest-programmed `cap.offset`/`cap.length` accesses.
-    fn pci_cfg_bar_len(&self, bar: u8) -> Option<u32> {
-        match bar {
-            0 => Some(u32::from(BAR0_DEVICE_CFG_OFFSET) + self.pci.device_register_length),
+    /// Validate a guest-programmed `pci_cfg_data` access against the selected
+    /// BAR, returning the offset as a `u16`, or `None` if `bar`, `offset`, and
+    /// `length` do not address `length` bytes within a reachable BAR.
+    fn pci_cfg_bar_offset(&self, bar: u8, offset: u32, length: u32) -> Option<u16> {
+        let bar_len = match bar {
+            0 => u32::from(BAR0_DEVICE_CFG_OFFSET) + self.pci.device_register_length,
             2 => match &self.pci.interrupt_kind {
-                InterruptKind::Msix(msix) => Some(msix.bar_len() as u32),
-                _ => None,
+                InterruptKind::Msix(msix) => msix.bar_len() as u32,
+                _ => return None,
             },
-            _ => None,
+            _ => return None,
+        };
+        // The access must fit entirely within the BAR, and the offset must be
+        // addressable as a `u16` (all reachable regions live within the first
+        // 64 KiB of their BARs).
+        if offset.checked_add(length)? > bar_len {
+            return None;
         }
+        u16::try_from(offset).ok()
     }
 
     /// Service a read of the `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
@@ -589,16 +596,11 @@ impl VirtioPciDevice {
         if !offset.is_multiple_of(length) {
             return IoResult::Err(IoError::UnalignedAccess);
         }
-        // Reject accesses that fall outside the selected BAR. The transport,
-        // MSI-X, and device-config regions all live within the first 64 KiB of
-        // their BARs, so a validated offset always fits in a `u16`.
-        let Some(bar_len) = self.pci_cfg_bar_len(bar) else {
+        // Reject accesses that do not address `length` bytes within the
+        // selected BAR.
+        let Some(offset) = self.pci_cfg_bar_offset(bar, offset, length) else {
             return IoResult::Err(IoError::InvalidRegister);
         };
-        if offset.checked_add(length).is_none_or(|end| end > bar_len) {
-            return IoResult::Err(IoError::InvalidRegister);
-        }
-        let offset = offset as u16;
         let len = length as usize;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
             // The device-config region is owned by the async device task, so
@@ -636,15 +638,11 @@ impl VirtioPciDevice {
         if !offset.is_multiple_of(length) {
             return IoResult::Err(IoError::UnalignedAccess);
         }
-        // Reject accesses that fall outside the selected BAR (see
-        // `read_pci_cfg_data`).
-        let Some(bar_len) = self.pci_cfg_bar_len(bar) else {
+        // Reject accesses that do not address `length` bytes within the
+        // selected BAR (see `read_pci_cfg_data`).
+        let Some(offset) = self.pci_cfg_bar_offset(bar, offset, length) else {
             return IoResult::Err(IoError::InvalidRegister);
         };
-        if offset.checked_add(length).is_none_or(|end| end > bar_len) {
-            return IoResult::Err(IoError::InvalidRegister);
-        }
-        let offset = offset as u16;
         let len = length as usize;
         // Take the value from the first `cap.length` bytes of `pci_cfg_data`,
         // as required by the spec.
