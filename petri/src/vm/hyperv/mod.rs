@@ -601,8 +601,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         {
             Ok(run) => Ok(run),
             Err(_) => {
-                tracing::error!("Timed out after {timeout:?} waiting for OpenTMK results on COM1");
-                Ok(crate::opentmk::TmkRun::default())
+                anyhow::bail!("timed out after {timeout:?} waiting for OpenTMK results on COM1")
             }
         }
     }

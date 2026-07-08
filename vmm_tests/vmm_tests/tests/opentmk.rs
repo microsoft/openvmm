@@ -73,11 +73,13 @@ fn run_opentmk_uefi<T: PetriVmmBackend>(
             .run_without_agent()
             .await?;
 
-        let run = vm.wait_for_opentmk(OPENTMK_TIMEOUT).await?;
-        let result = petri::opentmk::evaluate(&run);
+        // Capture the result so teardown always runs, even on failure: OpenTMK
+        // never powers the guest off, so we must not leak a running VM.
+        let result = vm
+            .wait_for_opentmk(OPENTMK_TIMEOUT)
+            .await
+            .and_then(|run| petri::opentmk::evaluate(&run));
 
-        // OpenTMK never powers the guest off, so always tear it down explicitly,
-        // even on failure, rather than leaking a running VM.
         vm.teardown().await?;
 
         result

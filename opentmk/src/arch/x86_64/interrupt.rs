@@ -30,6 +30,18 @@ pub(super) fn dispatch(vector: u8) {
     let handlers = unsafe { &*core::ptr::addr_of!(HANDLERS) };
     if let Some(handler) = handlers[vector as usize].as_ref() {
         handler();
+        return;
+    }
+    // No handler registered: log so an unexpected fault is not silently
+    // `iretq`'d back into the faulting instruction with no diagnostics.
+    log::error!("unhandled interrupt/exception vector {vector}");
+    // Vectors 8 (#DF) and 18 (#MC) cannot be resumed; returning here would
+    // `iretq` and almost certainly re-fault into a triple fault (silent reset).
+    // Halt instead so the message above survives on the serial log.
+    if matches!(vector, 8 | 18) {
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 }
 

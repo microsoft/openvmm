@@ -161,14 +161,14 @@ async fn read_capped_line<R: AsyncBufRead + Unpin>(
             let take = (max.saturating_sub(buf.len())).min(nl);
             buf.extend_from_slice(&available[..take]);
             let n = nl + 1;
-            consumed += n;
+            consumed = consumed.saturating_add(n);
             reader.consume_unpin(n);
             return Ok(consumed);
         }
         let n = available.len();
         let take = (max.saturating_sub(buf.len())).min(n);
         buf.extend_from_slice(&available[..take]);
-        consumed += n;
+        consumed = consumed.saturating_add(n);
         reader.consume_unpin(n);
     }
 }
