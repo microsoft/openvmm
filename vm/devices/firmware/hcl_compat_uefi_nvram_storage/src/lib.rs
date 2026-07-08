@@ -22,14 +22,19 @@ use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
+use uefi_nvram_specvars::signature_list::ParseError as ParseSignatureListError;
+use uefi_nvram_specvars::signature_list::ParseSignatureList;
+use uefi_nvram_specvars::signature_list::ParseSignatureLists;
 use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::in_memory;
+use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -42,6 +47,47 @@ const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 // TODO: how big required for secure boot with db/dbx?
 const INITIAL_NVRAM_SIZE: usize = 32768;
 const MAXIMUM_NVRAM_SIZE: usize = INITIAL_NVRAM_SIZE * 4;
+
+/// One Secure Boot signature entry, including both the owner header and the
+/// signature payload bytes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SignatureEntry {
+    /// The `EFI_SIGNATURE_DATA` header, including `SignatureOwner`.
+    header: EFI_SIGNATURE_DATA,
+    /// The X.509 certificate DER bytes or SHA-256 digest bytes.
+    data: Vec<u8>,
+}
+
+impl SignatureEntry {
+    /// Create an owned entry key from parser-borrowed signature data.
+    fn new(header: EFI_SIGNATURE_DATA, data: &[u8]) -> Self {
+        Self {
+            header,
+            data: data.to_vec(),
+        }
+    }
+}
+
+/// Secure Boot variable contents expected to be present in loaded NVRAM.
+#[derive(Clone, Debug)]
+pub struct SecureBootTemplateVariables {
+    pk: Vec<u8>,
+    kek: Vec<u8>,
+    db: Vec<u8>,
+    dbx: Vec<u8>,
+}
+
+impl SecureBootTemplateVariables {
+    /// Create a new Secure Boot template variable baseline.
+    pub fn new(pk: Vec<u8>, kek: Vec<u8>, db: Vec<u8>, dbx: Vec<u8>) -> Self {
+        Self { pk, kek, db, dbx }
+    }
+
+    /// Return whether the baseline has no Secure Boot variables to check.
+    fn is_empty(&self) -> bool {
+        self.pk.is_empty() && self.kek.is_empty() && self.db.is_empty() && self.dbx.is_empty()
+    }
+}
 
 mod format {
     use super::*;
@@ -98,6 +144,9 @@ pub struct HclCompatNvram<S> {
 
     // whether the NVRAM has been loaded, either from storage or saved state
     loaded: bool,
+
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    secure_boot_template_variables: Option<SecureBootTemplateVariables>,
 }
 
 impl<S: StorageBackend> HclCompatNvram<S> {
@@ -115,7 +164,24 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             nvram_buf: Vec::new(),
 
             loaded: false,
+
+            secure_boot_template_variables: None,
         }
+    }
+
+    /// Enable load-time Secure Boot template compliance checks.
+    ///
+    /// The template is treated as a per-variable set of required signature
+    /// entries. Loading NVRAM remains non-fatal: corrupt NVRAM still fails as
+    /// before, but missing template entries are only reported through tracing.
+    pub fn with_secure_boot_template_compliance_check(
+        mut self,
+        template: SecureBootTemplateVariables,
+    ) -> Self {
+        if !template.is_empty() {
+            self.secure_boot_template_variables = Some(template);
+        }
+        self
     }
 
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
@@ -142,6 +208,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             .await
             .map_err(|e| NvramStorageError::Load(e.into()))?
             .unwrap_or_default();
+        let loaded_existing_state = !nvram_buf.is_empty();
 
         if nvram_buf.len() > MAXIMUM_NVRAM_SIZE {
             return Err(NvramStorageError::Load(
@@ -275,7 +342,123 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         }
 
         self.loaded = true;
+        if loaded_existing_state {
+            self.check_secure_boot_template_compliance();
+        }
         Ok(())
+    }
+
+    /// Check whether loaded persistent NVRAM contains all expected Secure Boot
+    /// template entries for each tracked variable.
+    fn check_secure_boot_template_compliance(&self) {
+        let Some(template) = &self.secure_boot_template_variables else {
+            return;
+        };
+
+        use uefi_specs::uefi::nvram::vars;
+
+        self.check_secure_boot_template_variable("PK", vars::PK(), &template.pk);
+        self.check_secure_boot_template_variable("KEK", vars::KEK(), &template.kek);
+        self.check_secure_boot_template_variable("db", vars::DB(), &template.db);
+        self.check_secure_boot_template_variable("dbx", vars::DBX(), &template.dbx);
+    }
+
+    /// Check one Secure Boot variable by treating both the template and loaded
+    /// variable as sets of `EFI_SIGNATURE_DATA` entries.
+    fn check_secure_boot_template_variable(
+        &self,
+        variable: &'static str,
+        (vendor, name): (Guid, &Ucs2LeSlice),
+        expected_data: &[u8],
+    ) {
+        // If the template has no expected entries, there's nothing to check.
+        if expected_data.is_empty() {
+            return;
+        }
+
+        // Start with every expected template entry as "missing", and remove entries as they
+        // are found in the loaded variable. If any expected entries remain after scanning the
+        // loaded variable, they are missing.
+        let mut missing = match collect_signature_entries(expected_data) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    variable,
+                    "could not evaluate secure boot template compliance"
+                );
+                tracing::warn!(
+                    CVM_CONFIDENTIAL,
+                    variable,
+                    error = &e as &dyn std::error::Error,
+                    "could not parse secure boot template variable"
+                );
+                return;
+            }
+        };
+
+        // If the template has no expected entries, there's nothing to check.
+        let expected_entries = missing.len();
+        if expected_entries == 0 {
+            return;
+        }
+
+        // Get the loaded NVRAM variable data, if present.
+        // If the variable is missing entirely, all expected entries are missing.
+        let Some(current_data) = self.loaded_variable_data(vendor, name) else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                variable,
+                expected_entries,
+                missing_entries = expected_entries,
+                "secure boot variable is missing expected template entries"
+            );
+            return;
+        };
+
+        // Try to remove the expected entries that are present in the loaded variable.
+        // If the loaded variable is corrupt, we can't check for missing entries.
+        if let Err(e) = remove_present_signature_entries(current_data, &mut missing) {
+            tracing::warn!(
+                CVM_ALLOWED,
+                variable,
+                "could not evaluate secure boot template compliance"
+            );
+            tracing::warn!(
+                CVM_CONFIDENTIAL,
+                variable,
+                error = &e as &dyn std::error::Error,
+                "could not parse loaded secure boot variable"
+            );
+            return;
+        }
+
+        // Report the number of missing entries, if any.
+        let missing_entries = missing.len();
+        if missing_entries == 0 {
+            tracing::info!(
+                CVM_ALLOWED,
+                variable,
+                expected_entries,
+                "secure boot variable contains all expected template entries"
+            );
+        } else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                variable,
+                expected_entries,
+                missing_entries,
+                "secure boot variable is missing expected template entries"
+            );
+        }
+    }
+
+    /// Return a variable from the already-loaded in-memory NVRAM snapshot.
+    fn loaded_variable_data(&self, vendor: Guid, name: &Ucs2LeSlice) -> Option<&[u8]> {
+        self.in_memory
+            .iter()
+            .find(|entry| entry.vendor == vendor && entry.name.as_bytes() == name.as_bytes())
+            .map(|entry| entry.data)
     }
 
     /// Dump in-memory nvram to the underlying storage device.
@@ -458,6 +641,68 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         self.in_memory.next_variable(name_vendor).await
     }
+
+    fn log_post_load_observations(&self) {
+        self.check_secure_boot_template_compliance();
+    }
+}
+
+/// Parse a serialized signature-list variable into a comparable set of
+/// `EFI_SIGNATURE_DATA` entries.
+fn collect_signature_entries(
+    data: &[u8],
+) -> Result<BTreeSet<SignatureEntry>, ParseSignatureListError> {
+    let mut entries = BTreeSet::new();
+
+    for list in ParseSignatureLists::new(data) {
+        match list? {
+            ParseSignatureList::X509(certs) => {
+                for cert in certs {
+                    let cert = cert?;
+                    entries.insert(SignatureEntry::new(cert.header, cert.data.0.as_ref()));
+                }
+            }
+            ParseSignatureList::Sha256(sigs) => {
+                for sig in sigs {
+                    let sig = sig?;
+                    entries.insert(SignatureEntry::new(sig.header, &sig.data.0.as_ref()[..]));
+                }
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Remove entries found in `data` from `missing`, stopping once all expected
+/// entries have been observed.
+fn remove_present_signature_entries(
+    data: &[u8],
+    missing: &mut BTreeSet<SignatureEntry>,
+) -> Result<(), ParseSignatureListError> {
+    for list in ParseSignatureLists::new(data) {
+        match list? {
+            ParseSignatureList::X509(certs) => {
+                for cert in certs {
+                    let cert = cert?;
+                    missing.remove(&SignatureEntry::new(cert.header, cert.data.0.as_ref()));
+                    if missing.is_empty() {
+                        return Ok(());
+                    }
+                }
+            }
+            ParseSignatureList::Sha256(sigs) => {
+                for sig in sigs {
+                    let sig = sig?;
+                    missing.remove(&SignatureEntry::new(sig.header, &sig.data.0.as_ref()[..]));
+                    if missing.is_empty() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "save_restore")]
@@ -490,7 +735,10 @@ mod test {
     use super::storage_backend::StorageBackendError;
     use super::*;
     use pal_async::async_test;
+    use std::borrow::Cow;
     use ucs2::Ucs2LeVec;
+    use uefi_nvram_specvars::signature_list::SignatureData;
+    use uefi_nvram_specvars::signature_list::SignatureList;
     use uefi_nvram_storage::in_memory::impl_agnostic_tests;
     use wchar::wchz;
 
@@ -659,5 +907,54 @@ mod test {
         assert_eq!(result_attr, attr);
         assert_eq!(result_data, data);
         assert_eq!(result_timestamp, timestamp);
+    }
+
+    #[test]
+    fn secure_boot_template_entries_allow_extra_current_entries() {
+        let owner_one = Guid::new_random();
+        let owner_two = Guid::new_random();
+
+        let mut expected = Vec::new();
+        extend_x509_signature_list(&mut expected, owner_one, &[1, 2, 3]);
+        extend_sha256_signature_list(&mut expected, owner_one, [4; 32]);
+
+        let mut current = expected.clone();
+        extend_x509_signature_list(&mut current, owner_two, &[5, 6, 7]);
+
+        let mut missing = collect_signature_entries(&expected).unwrap();
+        remove_present_signature_entries(&current, &mut missing).unwrap();
+
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn secure_boot_template_entries_report_missing_entries() {
+        let owner_one = Guid::new_random();
+        let owner_two = Guid::new_random();
+
+        let mut expected = Vec::new();
+        extend_x509_signature_list(&mut expected, owner_one, &[1, 2, 3]);
+        extend_x509_signature_list(&mut expected, owner_two, &[5, 6, 7]);
+
+        let mut current = Vec::new();
+        extend_x509_signature_list(&mut current, owner_one, &[1, 2, 3]);
+
+        let mut missing = collect_signature_entries(&expected).unwrap();
+        remove_present_signature_entries(&current, &mut missing).unwrap();
+
+        assert_eq!(missing.len(), 1);
+    }
+
+    fn extend_x509_signature_list(data: &mut Vec<u8>, owner: Guid, cert: &[u8]) {
+        SignatureList::X509(SignatureData::new_x509(owner, Cow::Borrowed(cert)))
+            .extend_as_spec_signature_list(data);
+    }
+
+    fn extend_sha256_signature_list(data: &mut Vec<u8>, owner: Guid, digest: [u8; 32]) {
+        SignatureList::Sha256(vec![SignatureData::new_sha256(
+            owner,
+            Cow::Borrowed(&digest),
+        )])
+        .extend_as_spec_signature_list(data);
     }
 }

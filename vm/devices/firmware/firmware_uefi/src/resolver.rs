@@ -18,7 +18,11 @@ use firmware_uefi_resources::UefiLoggerHandleKind;
 use firmware_uefi_resources::UefiVsmConfigHandleKind;
 use firmware_uefi_resources::UefiWatchdogPlatformHandleKind;
 use hcl_compat_uefi_nvram_storage::HclCompatNvram;
+use hcl_compat_uefi_nvram_storage::SecureBootTemplateVariables;
+use std::borrow::Cow;
 use thiserror::Error;
+use uefi_nvram_specvars::signature_list::SignatureData;
+use uefi_nvram_specvars::signature_list::SignatureList;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
@@ -55,6 +59,66 @@ pub enum ResolveUefiDeviceError {
     /// Failed to initialize the UEFI device.
     #[error("failed to initialize UEFI device")]
     Init(#[from] crate::UefiInitError),
+}
+
+/// Build the load-time compliance baseline from the configured initial UEFI
+/// variables.
+fn secure_boot_template_variables(
+    custom_vars: &firmware_uefi_custom_vars::CustomVars,
+) -> Option<SecureBootTemplateVariables> {
+    let signatures = custom_vars.signatures.as_ref()?;
+
+    let mut pk = Vec::new();
+    extend_signature_var(std::iter::once(&signatures.pk), &mut pk);
+
+    let mut kek = Vec::new();
+    extend_signature_var(&signatures.kek, &mut kek);
+
+    let mut db = Vec::new();
+    extend_signature_var(&signatures.db, &mut db);
+
+    let mut dbx = Vec::new();
+    extend_signature_var(&signatures.dbx, &mut dbx);
+
+    Some(SecureBootTemplateVariables::new(pk, kek, db, dbx))
+}
+
+/// Serialize configured Secure Boot signatures into the same
+/// `EFI_SIGNATURE_LIST` shape used when first-boot variables are injected.
+fn extend_signature_var<'a>(
+    signatures: impl IntoIterator<Item = &'a firmware_uefi_custom_vars::Signature>,
+    data: &mut Vec<u8>,
+) {
+    use firmware_uefi_custom_vars::Signature;
+    use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
+
+    for sig in signatures {
+        match sig {
+            Signature::X509(certs) => {
+                for cert in certs {
+                    SignatureList::X509(SignatureData::new_x509(
+                        MSFT_SECURE_BOOT_PRODUCTION_GUID,
+                        Cow::Borrowed(cert.0.as_slice()),
+                    ))
+                    .extend_as_spec_signature_list(data);
+                }
+            }
+            Signature::Sha256(digests) => {
+                SignatureList::Sha256(
+                    digests
+                        .iter()
+                        .map(|digest| {
+                            SignatureData::new_sha256(
+                                MSFT_SECURE_BOOT_PRODUCTION_GUID,
+                                Cow::Borrowed(&digest.0),
+                            )
+                        })
+                        .collect(),
+                )
+                .extend_as_spec_signature_list(data);
+            }
+        }
+    }
 }
 
 // The ACPI GPE0 line to use for generation ID. This must match the value in
@@ -133,12 +197,20 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             }
         };
 
-        let nvram_storage = Box::new(HclCompatNvram::new(
+        let nvram_storage = HclCompatNvram::new(
             vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter(
                 nvram_storage,
             ),
             storage_quirks,
-        ));
+        );
+
+        // Extract the expected Secure Boot variable contents from the configured
+        // template so NVRAM storage can compare against them when it loads.
+        let nvram_storage = match secure_boot_template_variables(&config.custom_uefi_vars) {
+            Some(template) => nvram_storage.with_secure_boot_template_compliance_check(template),
+            None => nvram_storage,
+        };
+        let nvram_storage = Box::new(nvram_storage);
 
         let gm = input.encrypted_guest_memory.clone();
         let runtime_deps = UefiRuntimeDeps {
