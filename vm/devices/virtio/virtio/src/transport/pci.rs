@@ -808,10 +808,8 @@ mod saved_state {
             #[mesh(1)]
             pub bar: u8,
             #[mesh(2)]
-            pub id: u8,
-            #[mesh(3)]
             pub offset: u32,
-            #[mesh(4)]
+            #[mesh(3)]
             pub length: u32,
         }
     }
@@ -870,7 +868,6 @@ mod saved_state {
             let state = self.state.lock();
             Ok(state::CfgCapSavedState {
                 bar: state.bar,
-                id: state.id,
                 offset: state.offset,
                 length: state.length,
             })
@@ -879,13 +876,11 @@ mod saved_state {
         fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
             let state::CfgCapSavedState {
                 bar,
-                id,
                 offset,
                 length,
             } = saved_state;
             let mut state = self.state.lock();
             state.bar = bar;
-            state.id = id;
             state.offset = offset;
             state.length = length;
             Ok(())
@@ -1021,7 +1016,6 @@ const VIRTIO_PCI_CFG_DATA_OFFSET: u16 = 16;
 #[derive(Debug, Default, Inspect)]
 struct PciCfgAccessState {
     bar: u8,
-    id: u8,
     #[inspect(hex)]
     offset: u32,
     #[inspect(hex)]
@@ -1046,7 +1040,6 @@ impl Inspect for VirtioPciCfgCapability {
         req.respond()
             .field("label", "virtio-pci-cfg")
             .field("bar", state.bar)
-            .field("id", state.id)
             .hex("offset", state.offset)
             .hex("length", state.length);
     }
@@ -1075,8 +1068,9 @@ impl PciCapability for VirtioPciCfgCapability {
                     | (VIRTIO_PCI_CFG_CAP_LEN as u32) << 16
                     | (VirtioPciCapType::PCI_CFG.0 as u32) << 24
             }
-            // bar | id | padding
-            4 => state.bar as u32 | (state.id as u32) << 8,
+            // bar | id | padding. The id field is read-only and unused for
+            // this capability, so it always reads as zero.
+            4 => state.bar as u32,
             8 => state.offset,
             12 => state.length,
             // pci_cfg_data is serviced by VirtioPciDevice::pci_cfg_read.
@@ -1091,11 +1085,9 @@ impl PciCapability for VirtioPciCfgCapability {
             // The header dword (cap_vndr/cap_next/cap_len/cfg_type) is
             // read-only.
             0 => {}
-            4 => {
-                let merged = val.merge(state.bar as u32 | (state.id as u32) << 8);
-                state.bar = merged as u8;
-                state.id = (merged >> 8) as u8;
-            }
+            // Only bar is writable here; the id byte is read-only and unused
+            // for this capability.
+            4 => state.bar = val.merge(state.bar.into()) as u8,
             8 => state.offset = val.merge(state.offset),
             12 => state.length = val.merge(state.length),
             // pci_cfg_data is serviced by VirtioPciDevice::pci_cfg_write.
