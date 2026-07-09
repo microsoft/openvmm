@@ -116,6 +116,13 @@ pub trait NvramStorage: Send + Sync {
             NextVariable::EndOfList
         ))
     }
+
+    /// Log any backend-specific observations after NVRAM has been loaded from
+    /// storage or initialized for first boot.
+    ///
+    /// Most backends do not need post-load telemetry and can use the default
+    /// no-op implementation.
+    fn log_post_load_observations(&self) {}
 }
 
 #[async_trait::async_trait]
@@ -166,6 +173,10 @@ impl NvramStorage for Box<dyn NvramStorage> {
         name_vendor: Option<(&Ucs2LeSlice, Guid)>,
     ) -> Result<NextVariable, NvramStorageError> {
         (**self).next_variable(name_vendor).await
+    }
+
+    fn log_post_load_observations(&self) {
+        (**self).log_post_load_observations()
     }
 }
 
@@ -235,6 +246,10 @@ mod save_restore {
             name_vendor: Option<(&Ucs2LeSlice, Guid)>,
         ) -> Result<NextVariable, NvramStorageError> {
             (**self).next_variable(name_vendor).await
+        }
+
+        fn log_post_load_observations(&self) {
+            (**self).log_post_load_observations()
         }
     }
 

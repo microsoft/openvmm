@@ -84,7 +84,10 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            nvram.inject_vars_on_first_boot(custom_vars).await?;
+            let injected_first_boot_vars = nvram.inject_vars_on_first_boot(custom_vars).await?;
+            if injected_first_boot_vars {
+                nvram.services.log_post_load_observations();
+            }
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
         }
@@ -100,11 +103,12 @@ impl NvramServices {
     }
 
     /// Check if this is the VM's first boot, and if so, inject various
-    /// hard-coded and custom UEFI vars.
+    /// hard-coded and custom UEFI vars. Returns whether any first-boot vars
+    /// were injected.
     async fn inject_vars_on_first_boot(
         &mut self,
         custom_vars: CustomVars,
-    ) -> Result<(), NvramSetupError> {
+    ) -> Result<bool, NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
             .services
@@ -112,7 +116,7 @@ impl NvramServices {
             .await
             .map_err(NvramSetupError::BadNvramStorage)?
         {
-            return Ok(());
+            return Ok(false);
         }
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
@@ -161,7 +165,7 @@ impl NvramServices {
 
         self.inject_custom_vars(custom_vars).await?;
 
-        Ok(())
+        Ok(true)
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {

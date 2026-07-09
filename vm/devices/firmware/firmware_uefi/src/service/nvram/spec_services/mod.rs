@@ -242,6 +242,11 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         self.storage.is_empty().await
     }
 
+    /// Log storage-backed observations after NVRAM has been loaded or initialized.
+    pub fn log_post_load_observations(&self) {
+        self.storage.log_post_load_observations();
+    }
+
     /// Update "SetupMode" based on the current value of "PK"
     ///
     /// From UEFI spec section 32.3
