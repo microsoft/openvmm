@@ -26,6 +26,7 @@ use cfg_if::cfg_if;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
@@ -4181,12 +4182,9 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_read_with_routing(
+    fn pci_cfg_type0_read(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        address: PciConfigAddress,
         value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
         Some(
@@ -4194,16 +4192,13 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_type0_read(address, value),
         )
     }
 
-    fn pci_cfg_write_with_routing(
+    fn pci_cfg_type0_write(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
         Some(
@@ -4211,7 +4206,35 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_type0_write(address, value),
+        )
+    }
+
+    fn pci_cfg_type1_read(
+        &mut self,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_type1_read(address, value),
+        )
+    }
+
+    fn pci_cfg_type1_write(
+        &mut self,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> Option<IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_type1_write(address, value),
         )
     }
 }

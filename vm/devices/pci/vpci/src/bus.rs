@@ -349,7 +349,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
             .lock()
             .supports_pci()
             .unwrap()
-            .pci_cfg_read(addr.byte_offset(), value)
+            .pci_cfg_type0_read(addr, value)
     }
 
     fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
@@ -357,7 +357,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
             .lock()
             .supports_pci()
             .unwrap()
-            .pci_cfg_write(addr.byte_offset(), value)
+            .pci_cfg_type0_write(addr, value)
     }
 }
 

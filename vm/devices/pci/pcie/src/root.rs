@@ -458,10 +458,10 @@ impl GenericPcieRootComplex {
     /// Most RCiEPs should be registered at function 0. Config space
     /// accesses to other functions of the same device will be forwarded
     /// to the function 0 device via
-    /// [`pci_cfg_read_with_routing`](GenericPciBusDevice::pci_cfg_read_with_routing),
+    /// [`pci_cfg_type0_read`](GenericPciBusDevice::pci_cfg_type0_read),
     /// whose default implementation returns all-1s (no device present).
-    /// A multi-function RCiEP should override `pci_cfg_read_with_routing`
-    /// and `pci_cfg_write_with_routing` to handle non-zero functions.
+    /// A multi-function RCiEP should override `pci_cfg_type0_read`
+    /// and `pci_cfg_type0_write` to handle non-zero functions.
     pub fn add_rciep(
         &mut self,
         devfn: u8,
@@ -693,12 +693,12 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
             // Look up the exact devfn first; if not found, fall back to
             // function 0 of the same device so that multi-function
             // endpoints can handle the access via
-            // `pci_cfg_read_with_routing`.
-            let devfn_fn0 = addr.device_function & !7;
+            // `pci_cfg_type0_read`/`pci_cfg_type0_write`.
+            let devfn_fn0 = addr.devfn & !7;
             let mut idx = None;
             let mut exact = false;
             for (i, (d, _)) in self.devices.iter().enumerate() {
-                if *d == addr.device_function {
+                if *d == addr.devfn {
                     idx = Some(i);
                     exact = true;
                     break;
@@ -706,7 +706,7 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
                 if *d == devfn_fn0 {
                     idx = Some(i);
                 }
-                if *d > addr.device_function {
+                if *d > addr.devfn {
                     break;
                 }
             }
@@ -751,21 +751,12 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
 
         match target {
             CfgAccessTarget::Rciep(dev) => dev
-                .pci_cfg_read_with_routing(
-                    addr.bus,
-                    addr.bus,
-                    addr.device_function,
-                    addr.byte_offset(),
-                    value.reborrow(),
-                )
+                .pci_cfg_type0_read(addr, value.reborrow())
                 .unwrap_or_else(|| {
                     value.set(!0);
                     IoResult::Ok
                 }),
-            CfgAccessTarget::RootPort(port) => port
-                .port
-                .cfg_space
-                .read_byte_enabled(addr.byte_offset(), value),
+            CfgAccessTarget::RootPort(port) => port.port.cfg_space.read(addr, value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_read(addr, value),
         }
     }
@@ -777,19 +768,10 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
         };
 
         match target {
-            CfgAccessTarget::Rciep(dev) => dev
-                .pci_cfg_write_with_routing(
-                    addr.bus,
-                    addr.bus,
-                    addr.device_function,
-                    addr.byte_offset(),
-                    value,
-                )
-                .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => port
-                .port
-                .cfg_space
-                .write_byte_enabled(addr.byte_offset(), value),
+            CfgAccessTarget::Rciep(dev) => {
+                dev.pci_cfg_type0_write(addr, value).unwrap_or(IoResult::Ok)
+            }
+            CfgAccessTarget::RootPort(port) => port.port.cfg_space.write(addr, value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }
@@ -1080,6 +1062,7 @@ mod tests {
     use cxl_spec::component_registers::test_helper::TestCxlComponentRegisterBlock;
     use pal_async::async_test;
     use parking_lot::Mutex;
+    use pci_core::test_helpers::TestCfgAccess;
     use zerocopy::IntoBytes;
 
     struct DeferredEndpoint {
@@ -1154,38 +1137,36 @@ mod tests {
             Some(self.0.lock().pci_cfg_write(offset, value))
         }
 
-        fn pci_cfg_read_with_routing(
+        fn pci_cfg_type0_read(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            Some(self.0.lock().pci_cfg_read_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
+            Some(self.0.lock().pci_cfg_type0_read(address, value))
         }
 
-        fn pci_cfg_write_with_routing(
+        fn pci_cfg_type0_write(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            Some(self.0.lock().pci_cfg_write_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
-                value,
-            ))
+            Some(self.0.lock().pci_cfg_type0_write(address, value))
+        }
+
+        fn pci_cfg_type1_read(
+            &mut self,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
+            Some(self.0.lock().pci_cfg_type1_read(address, value))
+        }
+
+        fn pci_cfg_type1_write(
+            &mut self,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
+            Some(self.0.lock().pci_cfg_type1_write(address, value))
         }
     }
 
@@ -1590,11 +1571,8 @@ mod tests {
 
         switch
             .lock()
-            .pci_cfg_write_with_routing(
-                SWITCH_BUS,
-                SWITCH_BUS,
-                0,
-                0x18,
+            .pci_cfg_type0_write(
+                PciConfigAddress::new(SWITCH_BUS, 0, 0x18 / 4).unwrap(),
                 ByteEnabledDwordWrite::with_all_bytes_enabled(
                     (10u32 << 16) | ((SWITCH_INTERNAL_BUS as u32) << 8) | SWITCH_BUS as u32,
                 ),
@@ -1602,11 +1580,8 @@ mod tests {
             .unwrap();
         switch
             .lock()
-            .pci_cfg_write_with_routing(
-                SWITCH_BUS,
-                SWITCH_INTERNAL_BUS,
-                0,
-                0x18,
+            .pci_cfg_type1_write(
+                PciConfigAddress::new(SWITCH_INTERNAL_BUS, 0, 0x18 / 4).unwrap(),
                 ByteEnabledDwordWrite::with_all_bytes_enabled(
                     ((ENDPOINT_BUS as u32) << 16)
                         | ((ENDPOINT_BUS as u32) << 8)
@@ -1805,12 +1780,7 @@ mod tests {
         };
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
-        let mut vendor_device_id: u32 = 0;
-        root_port_no_hotplug
-            .port
-            .cfg_space
-            .read_u32(0x0, &mut vendor_device_id)
-            .unwrap();
+        let vendor_device_id = root_port_no_hotplug.port.cfg_space.read_u32(0x0);
         let expected = (ROOT_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
 
@@ -1827,12 +1797,7 @@ mod tests {
                 PciePortSettings::default(),
             )
         };
-        let mut vendor_device_id_hotplug: u32 = 0;
-        root_port_with_hotplug
-            .port
-            .cfg_space
-            .read_u32(0x0, &mut vendor_device_id_hotplug)
-            .unwrap();
+        let vendor_device_id_hotplug = root_port_with_hotplug.port.cfg_space.read_u32(0x0);
         assert_eq!(vendor_device_id_hotplug, expected);
         // The slot number and hotplug capability would be tested via PCIe capability registers
         // but that requires more complex setup
@@ -2144,7 +2109,7 @@ mod tests {
     #[test]
     fn test_rciep_function0_fallback() {
         // Test that a config read to function 1 of an RCiEP device falls
-        // back to the function-0 device via pci_cfg_read_with_routing,
+        // back to the function-0 device via pci_cfg_type0_read,
         // which by default returns all-1s for non-zero functions.
         let mut register_mmio = TestPcieMmioRegistration {};
         let start_bus: u8 = 0;
@@ -2171,7 +2136,7 @@ mod tests {
         assert_eq!(val, 0xCAFE_F00D);
 
         // Function 1 (devfn 1) falls back to the function-0 device's
-        // pci_cfg_read_with_routing, which returns all-1s by default.
+        // pci_cfg_type0_read, which returns all-1s by default.
         let mut val_fn1: u32 = 0;
         // devfn 1 → offset 1 * 4096
         rc.mmio_read(4096, val_fn1.as_mut_bytes()).unwrap();
