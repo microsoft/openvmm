@@ -25,15 +25,19 @@ use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineHelper;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 
+use report::ATTESTATION_REPORT_OFFSET;
 use report::IGVM_ATTEST_REQUEST_VERSION_1;
 use report::IGVM_ATTESTATION_SIGNATURE;
 use report::IGVM_ATTESTATION_VERSION;
+use report::IGVM_REPORT_TYPE_SNP_VM_REPORT;
 use report::IGVM_REQUEST_BASE_SIZE;
 use report::IGVM_REQUEST_DATA_OFFSET;
 use report::IGVM_REQUEST_DATA_SIZE;
 use report::IGVM_REQUEST_TYPE_AK_CERT;
 use report::IgvmAttestRequestData;
 use report::IgvmAttestRequestHeader;
+use report::SNP_ID_KEY_DIGEST_OFFSET;
+use report::SNP_ID_KEY_DIGEST_SIZE;
 use tpm::Tpm;
 
 const NV_INDEX_AK_CERT: u32 = tpm_protocol::TPM_NV_INDEX_AIK_CERT;
@@ -216,6 +220,7 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     if config.report {
         let payload = build_guest_input_payload(config.user_data.as_deref())?;
         let att_report = handle_report(&mut helper, &payload)?;
+        print_snp_id_key_digest(&att_report)?;
         if config.show_runtime_claims {
             print_runtime_claims(&att_report)?;
         }
@@ -469,6 +474,56 @@ fn print_runtime_claims(attestation_report: &[u8]) -> Result<(), Box<dyn Error>>
         }
         None => println!("Runtime claims: <empty>"),
     }
+
+    Ok(())
+}
+
+/// If the attestation report is an SNP report, print its `id_key_digest` field
+/// as hex (line prefix `SNP ID key digest:`).
+///
+/// `id_key_digest` is the SHA-384 of the ID public key that signed the ID block
+/// provided at `SNP_LAUNCH_FINISH`. It is non-zero only when the VM launched
+/// with `id_block_en = 1`, so a consumer can use it to confirm an ID block was
+/// accepted. The report type is read from the report itself, so no
+/// platform-specific input is needed; non-SNP reports print nothing.
+fn print_snp_id_key_digest(attestation_report: &[u8]) -> Result<(), Box<dyn Error>> {
+    let request_data_end = IGVM_REQUEST_DATA_OFFSET + IGVM_REQUEST_DATA_SIZE;
+    if request_data_end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before request data",
+        )
+        .into());
+    }
+
+    let (request_data, _) = IgvmAttestRequestData::read_from_prefix(
+        &attestation_report[IGVM_REQUEST_DATA_OFFSET..request_data_end],
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to read attestation request data",
+        )
+    })?;
+
+    if request_data.report_type != IGVM_REPORT_TYPE_SNP_VM_REPORT {
+        // Not an SNP report; `id_key_digest` is meaningless here.
+        return Ok(());
+    }
+
+    let start = ATTESTATION_REPORT_OFFSET + SNP_ID_KEY_DIGEST_OFFSET;
+    let end = start + SNP_ID_KEY_DIGEST_SIZE;
+    if end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before SNP id_key_digest",
+        )
+        .into());
+    }
+
+    let digest = &attestation_report[start..end];
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    println!("SNP ID key digest: {hex}");
 
     Ok(())
 }

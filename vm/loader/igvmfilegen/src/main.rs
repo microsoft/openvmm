@@ -10,18 +10,27 @@ crypto::ensure_single_backend!();
 
 mod file_loader;
 mod identity_mapping;
-mod signed_measurement;
+mod measurement_diag;
+mod platform_mask;
+mod snp_id_block;
 mod vp_context_builder;
 
 use crate::file_loader::IgvmLoader;
 use crate::file_loader::LoaderIsolationType;
+use crate::identity_mapping::Measurement;
+use crate::identity_mapping::SnpMeasurement;
+use crate::identity_mapping::TdxMeasurement;
+use crate::identity_mapping::VbsMeasurement;
+use crate::measurement_diag::log_measurement_diagnostic;
 use anyhow::Context;
 use anyhow::bail;
 use clap::Parser;
 use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
+use igvm::IgvmSerializer;
 use igvm_defs::IGVM_FIXED_HEADER;
+use igvm_defs::IgvmPlatformType;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
 use igvmfilegen_config::Config;
@@ -62,7 +71,12 @@ enum Options {
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
-    /// Build an IGVM file according to a manifest
+    /// Build an IGVM file according to a manifest.
+    ///
+    /// Also emits per-platform sibling files next to `--output`:
+    /// `<base>-{snp,tdx,vbs}.json` (legacy identity documents) for every
+    /// measurable platform in the manifest, and `<base>-snp.idblock` (the
+    /// SEV-SNP ID block signing payload) for SNP.
     Manifest {
         /// Config manifest file path
         #[clap(short, long = "manifest")]
@@ -89,6 +103,57 @@ enum Options {
         /// Only enable this flag if you understand the security implications.
         #[clap(long)]
         confidential_debug: bool,
+    },
+    /// Add a SEV-SNP ID block to an existing IGVM file.
+    ///
+    /// The IGVM file must contain an SEV-SNP platform header and a matching
+    /// `GuestPolicy`. The SNP launch measurement is computed once and embedded
+    /// as the ID block's launch digest (`ld`); the ID block is not part of the
+    /// measured page set, so the digest stays valid. Its presence signals the
+    /// IGVM loader to set `id_block_en` at launch. Adding a second ID block is
+    /// refused.
+    ///
+    /// Two signing modes are supported:
+    ///
+    /// * Out-of-band (production): pass `--id-block <signing payload>` (the
+    ///   `<base>-snp.idblock` emitted by `manifest`, which is the raw ID block
+    ///   bytes) together with `--id-signature <sig.der>` (a DER-encoded ECDSA
+    ///   signature produced by a file-content signer over those exact bytes,
+    ///   e.g. `openssl dgst -sha384 -sign key.pem -out sig.der file.idblock`)
+    ///   and `--id-public-key <key.pem>` (the signer's X.509 certificate or
+    ///   SPKI public key, PEM or DER). No private key is held by this tool.
+    ///   The guest SVN comes from the signing payload.
+    /// * Temporary key (development/test): pass `--guest-svn <N>` or
+    ///   `--manifest <config.json>` (to source the SVN from the SNP guest
+    ///   config). An ephemeral ECDSA P-384 key signs the block in-process.
+    AddSnpIdBlock {
+        /// Input IGVM file path
+        #[clap(short, long)]
+        input: PathBuf,
+        /// Output IGVM file path (can be the same as input to modify in place)
+        #[clap(short, long)]
+        output: PathBuf,
+        /// Temporary-key mode: guest security version number to embed.
+        /// Mutually exclusive with the out-of-band inputs and with `--manifest`.
+        #[clap(long, conflicts_with_all = ["manifest", "id_block", "id_signature", "id_public_key"])]
+        guest_svn: Option<u32>,
+        /// Temporary-key mode: source the guest SVN from the SNP guest config
+        /// in this manifest instead of `--guest-svn`.
+        #[clap(long, conflicts_with_all = ["guest_svn", "id_block", "id_signature", "id_public_key"])]
+        manifest: Option<PathBuf>,
+        /// Out-of-band mode: path to the SNP ID block signing payload
+        /// (`<base>-snp.idblock` emitted by `manifest`). Requires
+        /// `--id-signature` and `--id-public-key`.
+        #[clap(long, requires_all = ["id_signature", "id_public_key"], conflicts_with_all = ["guest_svn", "manifest"])]
+        id_block: Option<PathBuf>,
+        /// Out-of-band mode: path to the DER-encoded ECDSA signature over the
+        /// signing payload bytes. Requires `--id-block`.
+        #[clap(long, requires = "id_block")]
+        id_signature: Option<PathBuf>,
+        /// Out-of-band mode: path to the signer's public key (X.509 cert or
+        /// SPKI public key, PEM or DER). Requires `--id-block`.
+        #[clap(long, requires = "id_block")]
+        id_public_key: Option<PathBuf>,
     },
 }
 
@@ -191,7 +256,103 @@ fn main() -> anyhow::Result<()> {
                 ),
             }
         }
+        Options::AddSnpIdBlock {
+            input,
+            output,
+            guest_svn,
+            manifest,
+            id_block,
+            id_signature,
+            id_public_key,
+        } => add_snp_id_block_command(
+            input,
+            output,
+            guest_svn,
+            manifest,
+            id_block,
+            id_signature,
+            id_public_key,
+        ),
     }
+}
+
+/// Per-config measurement metadata captured during the build loop and
+/// consumed after merging to emit JSON identity documents.
+struct PlatformMeta {
+    platform: IgvmPlatformType,
+    svn: u32,
+    debug_enabled: bool,
+}
+
+/// Build a sibling path of `output` named `<base>-<isolation><ext>`,
+/// where `base` is `output`'s stem, `<isolation>` is derived from
+/// `meta.platform`, and `ext` includes the leading dot
+/// (e.g. `".json"`).
+fn sibling_path(
+    base: &std::ffi::OsStr,
+    output: &std::path::Path,
+    meta: &PlatformMeta,
+    ext: &str,
+) -> PathBuf {
+    let isolation = platform_mask::isolation_label(meta.platform);
+    let mut name = base.to_os_string();
+    name.push("-");
+    name.push(isolation);
+    name.push(ext);
+    output.with_file_name(name)
+}
+
+/// Build a JSON identity document for a platform measurement.
+///
+/// The digest is produced by `IgvmSerializer::measurement_for(platform)`
+/// which contractually returns 48 bytes for SNP/TDX and 32 bytes for
+/// VBS; a length mismatch is an in-tree invariant violation and panics.
+/// `platform` is restricted to the three measurable platforms by the
+/// only call site (`create_igvm_file`'s `platform_metas` loop); any
+/// other value is `unreachable!`.
+fn build_endorsement_json(
+    platform: IgvmPlatformType,
+    digest: &[u8],
+    svn: u32,
+    debug_enabled: bool,
+) -> Measurement {
+    match platform {
+        IgvmPlatformType::SEV_SNP => {
+            let ld: [u8; 48] = digest.try_into().expect("SNP launch digest is 48 bytes");
+            Measurement::Snp(SnpMeasurement::new(ld, svn, debug_enabled))
+        }
+        IgvmPlatformType::TDX => {
+            let mrtd: [u8; 48] = digest.try_into().expect("TDX MRTD is 48 bytes");
+            Measurement::Tdx(TdxMeasurement::new(mrtd, svn, debug_enabled))
+        }
+        IgvmPlatformType::VSM_ISOLATION => {
+            let boot_digest: [u8; 32] = digest.try_into().expect("VBS boot digest is 32 bytes");
+            Measurement::Vbs(VbsMeasurement::new(boot_digest, svn, debug_enabled))
+        }
+        other => {
+            unreachable!("build_endorsement_json called for non-measurable platform {other:?}")
+        }
+    }
+}
+
+/// Write a per-platform sibling file (a JSON identity document or an SNP ID
+/// block signing payload) next to `output`, named `<base>-<isolation><ext>`.
+/// `ext` must include the leading dot.
+fn write_platform_sibling(
+    base: &std::ffi::OsStr,
+    output: &std::path::Path,
+    meta: &PlatformMeta,
+    ext: &str,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    let path = sibling_path(base, output, meta, ext);
+    tracing::info!(
+        path = %path.display(),
+        size = bytes.len(),
+        "Writing sibling file",
+    );
+    fs_err::write(&path, bytes).context("writing sibling file")?;
+    Ok(())
 }
 
 /// Create an IGVM file from the specified config
@@ -205,6 +366,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
     let mut igvm_file: Option<IgvmFile> = None;
     let mut map_files = Vec::new();
+    let mut platform_metas: Vec<PlatformMeta> = Vec::new();
     let base_path = output.file_stem().unwrap();
     for config in igvm_config.guest_configs {
         // Max VTL must be 2 or 0.
@@ -212,12 +374,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             bail!("max_vtl must be 2 or 0");
         }
 
-        let isolation_string = match config.isolation_type {
-            ConfigIsolationType::None => "none",
-            ConfigIsolationType::Vbs { .. } => "vbs",
-            ConfigIsolationType::Snp { .. } => "snp",
-            ConfigIsolationType::Tdx { .. } => "tdx",
-        };
         let loader_isolation_type = match config.isolation_type {
             ConfigIsolationType::None => LoaderIsolationType::None,
             ConfigIsolationType::Vbs { enable_debug } => LoaderIsolationType::Vbs { enable_debug },
@@ -251,6 +407,57 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             },
         };
 
+        // Track measurement metadata for measurable platforms so the
+        // post-merge step can look up the digest from `IgvmSerializer`
+        // and emit a JSON identity document.
+        //
+        // Each measurable platform type may appear at most once across
+        // all guest configs: the post-merge step keys both the
+        // `IgvmSerializer::measurement_for(platform)` lookup and the
+        // `<base>-<isolation>.json` sibling filenames purely by
+        // platform type, so a duplicate would silently overwrite the
+        // earlier artifacts and could pair the wrong svn/debug bit with
+        // the merged measurement. Fail fast here with a clear error.
+        let platform = match &loader_isolation_type {
+            LoaderIsolationType::Snp { .. } => Some(IgvmPlatformType::SEV_SNP),
+            LoaderIsolationType::Tdx { .. } => Some(IgvmPlatformType::TDX),
+            LoaderIsolationType::Vbs { .. } => Some(IgvmPlatformType::VSM_ISOLATION),
+            LoaderIsolationType::None => None,
+        };
+        if let Some(platform) = platform
+            && platform_metas.iter().any(|m| m.platform == platform)
+        {
+            bail!(
+                "manifest contains more than one guest config for measurable platform {platform:?}; \
+                 at most one is supported because endorsement artifacts and the post-merge \
+                 measurement lookup are keyed by platform type"
+            );
+        }
+        match &loader_isolation_type {
+            LoaderIsolationType::Snp { policy, .. } => {
+                platform_metas.push(PlatformMeta {
+                    platform: IgvmPlatformType::SEV_SNP,
+                    svn: config.guest_svn,
+                    debug_enabled: policy.debug() == 1,
+                });
+            }
+            LoaderIsolationType::Tdx { policy } => {
+                platform_metas.push(PlatformMeta {
+                    platform: IgvmPlatformType::TDX,
+                    svn: config.guest_svn,
+                    debug_enabled: policy.debug_allowed() == 1,
+                });
+            }
+            LoaderIsolationType::Vbs { enable_debug } => {
+                platform_metas.push(PlatformMeta {
+                    platform: IgvmPlatformType::VSM_ISOLATION,
+                    svn: config.guest_svn,
+                    debug_enabled: *enable_debug,
+                });
+            }
+            LoaderIsolationType::None => {}
+        }
+
         // Max VTL of 2 implies paravisor.
         let with_paravisor = config.max_vtl == 2;
 
@@ -258,9 +465,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
         load_image(&mut loader.loader(), &config.image, &resources)?;
 
-        let igvm_output = loader
-            .finalize(config.guest_svn)
-            .context("finalizing loader")?;
+        let igvm_output = loader.finalize().context("finalizing loader")?;
 
         // Merge the loaded guest into the overall IGVM file.
         match &mut igvm_file {
@@ -271,45 +476,67 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         }
 
         map_files.push(igvm_output.map);
+    }
 
-        if let Some(doc) = igvm_output.doc {
-            // Write the measurement document to a file with the same name,
-            // but with -[isolation].json extension.
-            let doc_path = {
-                let mut name = base_path.to_os_string();
-                name.push("-");
-                name.push(isolation_string);
-                name.push(".json");
-                output.with_file_name(name)
-            };
-            tracing::info!(
-                path = %doc_path.display(),
-                "Writing document json file",
-            );
-            let mut doc_file = fs_err::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(doc_path)
-                .context("creating doc file")?;
+    let Some(igvm_file) = igvm_file else {
+        bail!("manifest contained no guest configs");
+    };
 
-            writeln!(
-                doc_file,
-                "{}",
-                serde_json::to_string(&doc).expect("json string")
-            )
-            .context("writing doc file")?;
+    // Construct the serializer once on the merged IGVM file. This eagerly
+    // computes the launch measurement for every measurable platform and
+    // serves as the single source of truth for the digest used in the JSON
+    // identity documents and the SNP ID block signing payload.
+    let serializer = IgvmSerializer::new(&igvm_file).context("constructing IGVM serializer")?;
+
+    // For each measurable platform: log the diagnostic and write the JSON
+    // identity document (plus, for SNP, the ID block signing payload).
+    for meta in &platform_metas {
+        let (digest, compatibility_mask) = {
+            let m = serializer.measurement_for(meta.platform).with_context(|| {
+                format!("no measurement computed for platform {:?}", meta.platform)
+            })?;
+            (m.digest.clone(), m.compatibility_mask)
+        };
+
+        // Emit the platform-specific launch-measurement diagnostic
+        // structure (VBS signed data, SNP ID block, TDX MRTD) for human
+        // inspection. The digest itself does not depend on these inputs.
+        log_measurement_diagnostic(
+            meta.platform,
+            &digest,
+            meta.svn,
+            meta.debug_enabled,
+            serializer.file(),
+            compatibility_mask,
+        );
+
+        let json = build_endorsement_json(meta.platform, &digest, meta.svn, meta.debug_enabled);
+        let mut json_bytes =
+            serde_json::to_vec(&json).expect("serializing measurement JSON cannot fail");
+        json_bytes.push(b'\n');
+        write_platform_sibling(base_path, &output, meta, ".json", &json_bytes)?;
+
+        // For SEV-SNP, also emit the SNP ID block signing payload. An
+        // out-of-band signer signs it, and the result is applied
+        // later via `add-snp-id-block --id-block ... --id-signature ...`.
+        if meta.platform == IgvmPlatformType::SEV_SNP {
+            let policy = snp_id_block::guest_policy(serializer.file(), compatibility_mask)
+                .context("SNP GuestPolicy missing; cannot emit SNP ID block signing payload")?;
+            let signing_payload =
+                snp_id_block::id_block_signing_payload(&digest, meta.svn, policy)?;
+            write_platform_sibling(base_path, &output, meta, ".idblock", &signing_payload)?;
         }
     }
 
     let mut igvm_binary = Vec::new();
-    let igvm_file = igvm_file.expect("should have an igvm file");
-    igvm_file
+    serializer
         .serialize(&mut igvm_binary)
         .context("serializing igvm")?;
 
-    // If enabled, perform additional validation.
+    // If enabled, perform additional validation by round-tripping the
+    // serialized binary through the parser and re-serializer.
     if debug_validation {
-        debug_validate_igvm_file(&igvm_file, &igvm_binary);
+        debug_validate_igvm_file(&igvm_binary);
     }
 
     // Write the IGVM file to the specified file path in the config.
@@ -333,11 +560,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         path = %map_path.display(),
         "Writing output map file",
     );
-    let mut map_file = fs_err::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(map_path)
-        .context("creating map file")?;
+    let mut map_file = fs_err::File::create(map_path).context("creating map file")?;
 
     for map in map_files {
         writeln!(map_file, "{}", map).context("writing map file")?;
@@ -346,13 +569,146 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
     Ok(())
 }
 
-/// Validate an in-memory IGVM file and the binary repr are equivalent.
+/// Add a SEV-SNP ID block to an existing IGVM file, either from an out-of-band
+/// signature (production) or signed with an ephemeral key (development/test).
+fn add_snp_id_block_command(
+    input: PathBuf,
+    output: PathBuf,
+    guest_svn: Option<u32>,
+    manifest: Option<PathBuf>,
+    id_block: Option<PathBuf>,
+    id_signature: Option<PathBuf>,
+    id_public_key: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let igvm_data = fs_err::read(&input)
+        .with_context(|| format!("reading input IGVM file at {}", input.display()))?;
+
+    let new_igvm = if let Some(id_block_path) = id_block {
+        // Out-of-band (production) mode. clap guarantees `id_signature` and
+        // `id_public_key` are present whenever `id_block` is.
+        let sig_path =
+            id_signature.expect("clap ensures --id-signature is present with --id-block");
+        let key_path =
+            id_public_key.expect("clap ensures --id-public-key is present with --id-block");
+        let signing_payload = fs_err::read(&id_block_path).with_context(|| {
+            format!(
+                "reading SNP ID block signing payload at {}",
+                id_block_path.display()
+            )
+        })?;
+        let signature_der = fs_err::read(&sig_path)
+            .with_context(|| format!("reading SNP ID block signature at {}", sig_path.display()))?;
+        let public_key = fs_err::read(&key_path).with_context(|| {
+            format!("reading SNP ID block public key at {}", key_path.display())
+        })?;
+
+        tracing::info!(
+            input = %input.display(),
+            output = %output.display(),
+            id_block = %id_block_path.display(),
+            signature = %sig_path.display(),
+            public_key = %key_path.display(),
+            "Adding SNP ID block (out-of-band signature)"
+        );
+        snp_id_block::add_snp_id_block_signed(
+            &igvm_data,
+            &signing_payload,
+            &signature_der,
+            &public_key,
+        )?
+    } else {
+        // Temporary-key (development/test) mode. The SVN comes from
+        // `--guest-svn` or is sourced from the SNP guest config in `--manifest`.
+        let svn = if let Some(svn) = guest_svn {
+            svn
+        } else if let Some(manifest_path) = manifest {
+            let config: Config = serde_json::from_str(
+                &fs_err::read_to_string(&manifest_path)
+                    .with_context(|| format!("reading manifest at {}", manifest_path.display()))?,
+            )
+            .with_context(|| format!("parsing manifest at {}", manifest_path.display()))?;
+            snp_guest_svn_from_config(&config)?
+        } else {
+            bail!(
+                "provide either --guest-svn/--manifest (temporary-key signing) \
+                 or --id-block with --id-signature and --id-public-key (out-of-band signing)"
+            );
+        };
+
+        tracing::info!(
+            input = %input.display(),
+            output = %output.display(),
+            guest_svn = svn,
+            "Adding SNP ID block (temporary key)"
+        );
+        snp_id_block::add_snp_id_block_temp_key(&igvm_data, svn)?
+    };
+
+    // Write output file atomically: write to a temporary file in the same
+    // directory, then rename into place. This prevents a crash during the
+    // write from corrupting the output (which may be the same file as the
+    // input for in-place edits). Same-volume renames are atomic on both POSIX
+    // and Windows.
+    let temp_path = {
+        let mut s = output.as_os_str().to_owned();
+        s.push(".tmp");
+        PathBuf::from(s)
+    };
+
+    tracing::info!(
+        path = %output.display(),
+        size = new_igvm.len(),
+        "Writing IGVM file with SNP ID block"
+    );
+    fs_err::write(&temp_path, &new_igvm)
+        .with_context(|| format!("writing temporary IGVM file at {}", temp_path.display()))?;
+
+    fs_err::rename(&temp_path, &output).with_context(|| {
+        format!(
+            "renaming temporary file {} to {}",
+            temp_path.display(),
+            output.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Extract the guest SVN from the (single) SEV-SNP guest config in a manifest.
+fn snp_guest_svn_from_config(config: &Config) -> anyhow::Result<u32> {
+    let mut snp_svns = config
+        .guest_configs
+        .iter()
+        .filter(|c| matches!(c.isolation_type, ConfigIsolationType::Snp { .. }))
+        .map(|c| c.guest_svn);
+    let svn = snp_svns
+        .next()
+        .context("manifest has no SEV-SNP guest config to source --guest-svn from")?;
+    anyhow::ensure!(
+        snp_svns.next().is_none(),
+        "manifest has more than one SEV-SNP guest config; cannot unambiguously \
+         source --guest-svn (pass --guest-svn explicitly instead)"
+    );
+    Ok(svn)
+}
+
+/// Validate that the serialized IGVM file round-trips through the parser
+/// and re-serializer producing identical structural headers.
 // TODO: should live in the igvm crate
-fn debug_validate_igvm_file(igvm_file: &IgvmFile, binary_file: &[u8]) {
+fn debug_validate_igvm_file(binary_file: &[u8]) {
     use igvm::IgvmDirectiveHeader;
     tracing::info!("Debug validation of serialized IGVM file.");
 
-    let igvm_reserialized = IgvmFile::new_from_binary(binary_file, None).expect("should be valid");
+    let igvm_file =
+        IgvmFile::new_from_binary(binary_file, None).expect("first parse should succeed");
+
+    let mut reserialized = Vec::new();
+    igvm_file
+        .serialize(&mut reserialized)
+        .expect("re-serialize should succeed");
+
+    let igvm_reserialized =
+        IgvmFile::new_from_binary(&reserialized, None).expect("re-parse should succeed");
 
     for (a, b) in igvm_file
         .platforms()

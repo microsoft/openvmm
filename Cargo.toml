@@ -402,7 +402,6 @@ igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
 page_pool_alloc = { path = "vm/page_pool_alloc" }
-vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
 vmgs_format = { path = "vm/vmgs/vmgs_format" }
@@ -614,8 +613,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-igvm = { git = "https://github.com/microsoft/igvm", rev = "3d1a950116d624746bf3342e09ea0a3416d89dd3" }
-igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "3d1a950116d624746bf3342e09ea0a3416d89dd3", default-features = false }
+igvm = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73" }
+igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73", default-features = false }
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
