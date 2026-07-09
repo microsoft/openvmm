@@ -729,13 +729,14 @@ impl<T: Client> Sender<'_, T> {
         };
         let n = ETHERNET_HEADER_LEN + ip_total_len;
 
-        let Some(payload) = payload else {
-            // No payload: fill the checksum over the header-only segment and
-            // send the contiguous buffer.
-            tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
-            let buffer = &self.state.buffer;
-            self.client.recv(&buffer[..n], &checksum_state);
-            return;
+        let payload = match payload {
+            Some(p) if p.len() != 0 => p,
+            _ => {
+                tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+                let buffer = &self.state.buffer;
+                self.client.recv(&buffer[..n], &checksum_state);
+                return;
+            }
         };
 
         // Zero-copy payload path: leave the TCP window bytes in place and hand
@@ -767,11 +768,13 @@ impl<T: Client> Sender<'_, T> {
         tcp_packet.set_checksum(checksum);
 
         let header_len = n - payload_len;
-        // Re-borrow `buffer` immutably now that the header packet views above
-        // are no longer used.
         let buffer = &self.state.buffer;
-        self.client
-            .recv_segments(&[&buffer[..header_len], a, b], &checksum_state);
+        let header = &buffer[..header_len];
+        if b.is_empty() {
+            self.client.recv_segments(&[header, a], &checksum_state);
+        } else {
+            self.client.recv_segments(&[header, a, b], &checksum_state);
+        }
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
