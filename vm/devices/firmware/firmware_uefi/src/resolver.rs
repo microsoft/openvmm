@@ -205,13 +205,16 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
 
         // Extract the expected Secure Boot variable contents from the stock
         // template so NVRAM storage can compare against them when it loads.
-        let nvram_storage =
+        let nvram_storage = if config.secure_boot {
             match base_secure_boot_template_variables(&config.base_secure_boot_template_vars) {
                 Some(template) => {
                     nvram_storage.with_secure_boot_template_compliance_check(template)
                 }
                 None => nvram_storage,
-            };
+            }
+        } else {
+            nvram_storage
+        };
         let nvram_storage = Box::new(nvram_storage);
 
         let gm = input.encrypted_guest_memory.clone();
