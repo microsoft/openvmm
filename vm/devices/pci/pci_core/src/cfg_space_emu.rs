@@ -3269,7 +3269,8 @@ mod tests {
 
     #[test]
     fn test_type1_bdf_capturing() {
-        // Test that the bridge captures the BDF of the device behind it
+        // Test that the type1 config space emulator captures
+        // the BDF of accesses it receives.
         let mut type1_emulator = create_type1_emulator(vec![]);
 
         // Initially, the captured BDF should be 0.
@@ -3319,7 +3320,8 @@ mod tests {
 
     #[test]
     fn test_type0_bdf_capturing() {
-        // Test that the bridge captures the BDF of the device behind it
+        // Test that the type0 config space emulator captures
+        // the BDF of accesses it receives.
         let mut type0_emulator = create_type0_emulator(vec![]);
 
         // Initially, the captured BDF should be 0.
