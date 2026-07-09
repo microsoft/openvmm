@@ -219,7 +219,7 @@ impl OpenhclIgvmRecipe {
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: {
                     let mut f = base_openvmm_hcl_features();
-                    f.insert(OpenvmmHclFeature::AzureLocal);
+                    f.insert(OpenvmmHclFeature::NvidiaVpciRelayAllowed);
                     f
                 },
                 target: CommonTriple::X86_64_LINUX_MUSL,

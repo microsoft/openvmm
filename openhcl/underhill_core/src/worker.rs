@@ -204,6 +204,7 @@ const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
 // NVIDIA PCI vendor ID (used to relay NVIDIA GPUs and NVLink/NVSwitch fabric
 // devices to Azure Local confidential guests).
+#[cfg(feature = "nvidia_vpci_relay_allowed")]
 const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
 
 struct GuestEmulationTransportInfra {
@@ -3329,7 +3330,7 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                #[cfg(feature = "azurelocal")]
+                #[cfg(feature = "nvidia_vpci_relay_allowed")]
                 {
                     // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
                     // enumerate as a 3D controller (class 0x0302), not VGA.
