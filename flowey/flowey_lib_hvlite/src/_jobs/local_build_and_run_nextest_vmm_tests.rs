@@ -270,6 +270,7 @@ impl SimpleFlowNode for Node {
                     custom_target: None,
                     extra_features: BTreeSet::new(),
                     disable_secure_avic,
+                    confidential_debug: true,
                     openhcl_igvm,
                     openhcl_igvm_extras,
                 });

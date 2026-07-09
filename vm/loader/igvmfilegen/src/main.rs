@@ -47,6 +47,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
+use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -78,6 +79,15 @@ enum Options {
         /// Override secure AVIC to disabled for debug SNP guest configs
         #[clap(long)]
         disable_secure_avic: bool,
+        /// Add the confidential debug flag to the measured OpenHCL command
+        /// line, enabling confidential diagnostics on CVM guest configs even
+        /// in release builds.
+        ///
+        /// WARNING: This is security-sensitive. OpenHCL uses this flag to decide
+        /// whether it can trust host-provided boot options for isolated guests.
+        /// Only enable this flag if you understand the security implications.
+        #[clap(long)]
+        confidential_debug: bool,
     },
 }
 
@@ -116,6 +126,7 @@ fn main() -> anyhow::Result<()> {
             output,
             debug_validation,
             disable_secure_avic,
+            confidential_debug,
         } => {
             // Read the config from the JSON manifest path.
             let mut config: Config = serde_json::from_str(
@@ -129,6 +140,18 @@ fn main() -> anyhow::Result<()> {
                         &mut guest_config.isolation_type
                     {
                         *secure_avic = SecureAvicType::Disabled;
+                    }
+                }
+            }
+
+            if confidential_debug {
+                for guest_config in &mut config.guest_configs {
+                    if let Image::Openhcl { command_line, .. } = &mut guest_config.image {
+                        if !command_line.is_empty() {
+                            command_line.push(' ');
+                        }
+                        command_line.push_str(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME);
+                        command_line.push_str("=1");
                     }
                 }
             }
