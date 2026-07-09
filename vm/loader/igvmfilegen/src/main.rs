@@ -143,13 +143,11 @@ fn main() -> anyhow::Result<()> {
             if confidential_debug {
                 for guest_config in &mut config.guest_configs {
                     if let Image::Openhcl { command_line, .. } = &mut guest_config.image {
-                        if !command_line.contains(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
-                            if !command_line.is_empty() {
-                                command_line.push(' ');
-                            }
-                            command_line.push_str(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME);
-                            command_line.push_str("=1");
+                        if !command_line.is_empty() {
+                            command_line.push(' ');
                         }
+                        command_line.push_str(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME);
+                        command_line.push_str("=1");
                     }
                 }
             }
