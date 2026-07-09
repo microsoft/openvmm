@@ -82,7 +82,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         address: PciConfigAddress,
         value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
-        Some(PciConfigSpace::pci_cfg_type0_read(
+        Some(PciConfigSpace::pci_cfg_read_with_routing(
             &mut self.0,
             access_type,
             address,
@@ -96,7 +96,7 @@ impl GenericPciBusDevice for SwitchAdapter {
         address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
-        Some(PciConfigSpace::pci_cfg_type0_write(
+        Some(PciConfigSpace::pci_cfg_write_with_routing(
             &mut self.0,
             access_type,
             address,

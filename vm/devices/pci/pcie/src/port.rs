@@ -711,11 +711,13 @@ impl PcieDownstreamPort {
             PciConfigAccessType::Type1
         };
 
-        device.pci_cfg_read_with_routing(new_access_type, addr,value.reborrow()).unwrap_or_else(|| {
-            tracelimit::warn_ratelimited!("failed to read from connected device");
-            value.set(!0);
-            IoResult::Ok
-        })
+        device
+            .pci_cfg_read_with_routing(new_access_type, addr, value.reborrow())
+            .unwrap_or_else(|| {
+                tracelimit::warn_ratelimited!("failed to read from connected device");
+                value.set(!0);
+                IoResult::Ok
+            })
     }
 
     /// Forward a configuration space write to the connected device.
@@ -757,10 +759,12 @@ impl PcieDownstreamPort {
             PciConfigAccessType::Type1
         };
 
-        device.pci_cfg_write_with_routing(new_access_type, addr, value).unwrap_or_else(|| {
-            tracelimit::warn_ratelimited!("failed to write to connected device");
-            IoResult::Ok
-        })
+        device
+            .pci_cfg_write_with_routing(new_access_type, addr, value)
+            .unwrap_or_else(|| {
+                tracelimit::warn_ratelimited!("failed to write to connected device");
+                IoResult::Ok
+            })
     }
 
     /// Connect a device to this specific port by exact name match.

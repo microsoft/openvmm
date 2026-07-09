@@ -22,8 +22,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
-use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigAccessType;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::poll_device::PollDevice;
 use cxl_spec::CxlComponentRegisters;
@@ -769,9 +769,9 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
         };
 
         match target {
-            CfgAccessTarget::Rciep(dev) => {
-                dev.pci_cfg_write_with_routing(PciConfigAccessType::Type0, addr, value).unwrap_or(IoResult::Ok)
-            }
+            CfgAccessTarget::Rciep(dev) => dev
+                .pci_cfg_write_with_routing(PciConfigAccessType::Type0, addr, value)
+                .unwrap_or(IoResult::Ok),
             CfgAccessTarget::RootPort(port) => port.port.cfg_space.write(addr, value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
@@ -1144,7 +1144,11 @@ mod tests {
             address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            Some(self.0.lock().pci_cfg_read_with_routing(access_type, address, value))
+            Some(
+                self.0
+                    .lock()
+                    .pci_cfg_read_with_routing(access_type, address, value),
+            )
         }
 
         fn pci_cfg_write_with_routing(
@@ -1153,7 +1157,11 @@ mod tests {
             address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            Some(self.0.lock().pci_cfg_write_with_routing(access_type, address, value))
+            Some(
+                self.0
+                    .lock()
+                    .pci_cfg_write_with_routing(access_type, address, value),
+            )
         }
     }
 
