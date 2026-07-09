@@ -360,7 +360,7 @@ impl PetriVmConfigOpenVmm {
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
             let uefi_cfg = firmware.uefi_config();
-            let custom_uefi_vars =
+            let base_secure_boot_template_vars =
                 uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
                     (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
                         hyperv_secure_boot_templates::x64::microsoft_windows()
@@ -378,6 +378,7 @@ impl PetriVmConfigOpenVmm {
                     ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
                     (_, None) => Default::default(),
                 });
+            let custom_uefi_vars = base_secure_boot_template_vars.clone(); // TODO: Change to use custom vars
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
                 .map(|c| c.efi_diagnostics_log_level)
@@ -400,7 +401,7 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                custom_uefi_vars.clone(),
+                base_secure_boot_template_vars,
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
@@ -497,31 +498,33 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
-        let (secure_boot_enabled, custom_uefi_vars) = firmware.uefi_config().map_or_else(
-            || (false, Default::default()),
-            |c| {
-                (
-                    c.secure_boot_enabled,
-                    match (arch, c.secure_boot_template) {
-                        (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::X86_64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                        (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::Aarch64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                        (_, None) => Default::default(),
-                    },
-                )
-            },
-        );
+        let (secure_boot_enabled, base_secure_boot_template_vars) =
+            firmware.uefi_config().map_or_else(
+                || (false, Default::default()),
+                |c| {
+                    (
+                        c.secure_boot_enabled,
+                        match (arch, c.secure_boot_template) {
+                            (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                                hyperv_secure_boot_templates::x64::microsoft_windows()
+                            }
+                            (
+                                MachineArch::X86_64,
+                                Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                            ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
+                            (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                                hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                            }
+                            (
+                                MachineArch::Aarch64,
+                                Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                            ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
+                            (_, None) => Default::default(),
+                        },
+                    )
+                },
+            );
+        let custom_uefi_vars = base_secure_boot_template_vars.clone(); // TODO: Change to use custom vars
 
         let vmgs = if firmware.is_openhcl() {
             None
@@ -624,7 +627,7 @@ impl PetriVmConfigOpenVmm {
             vga_firmware,
 
             secure_boot_enabled,
-            base_secure_boot_template_vars: custom_uefi_vars.clone(),
+            base_secure_boot_template_vars,
             custom_uefi_vars,
             vmgs,
 
