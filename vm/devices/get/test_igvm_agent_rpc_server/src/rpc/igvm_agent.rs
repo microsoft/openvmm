@@ -19,6 +19,7 @@ use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use test_igvm_agent_lib::Error;
 use test_igvm_agent_lib::IgvmAgentTestSetting;
@@ -41,8 +42,9 @@ struct AgentRegistry {
     /// Default setting (from CLI `--test_config`), applied to VMs that
     /// don't match any hardcoded pattern.
     default_setting: Option<IgvmAgentTestSetting>,
-    /// Live per-VM agents, lazily created on first request.
-    agents: HashMap<String, TestIgvmAgent>,
+    /// Live per-VM agents, lazily created on first request. Each agent has its
+    /// own lock so request processing for unrelated VMs can run concurrently.
+    agents: HashMap<String, Arc<Mutex<TestIgvmAgent>>>,
     /// Maps a VM's `VmId` GUID to its resolved test config.
     ///
     /// The two RPC entry points receive different `VmName` values: the IGVM
@@ -264,34 +266,45 @@ pub fn process_igvm_attest(
     vm_name: &str,
     report: &[u8],
 ) -> TestAgentResult<Vec<u8>> {
-    let mut reg = registry().lock();
+    let agent = {
+        let mut reg = registry().lock();
 
-    // Clone the default setting before entering the entry API so the
-    // borrow checker is happy.
-    let default_setting = reg.default_setting.clone();
+        // Clone the default setting before entering the entry API so the
+        // borrow checker is happy.
+        let default_setting = reg.default_setting.clone();
 
-    // Record the resolved config keyed by `vm_id` for the GSP RPC path.
-    if let Some(vm_id) = vm_id {
-        if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone()) {
-            reg.vm_id_settings.insert(vm_id, setting);
+        // Record the resolved config keyed by `vm_id` for the GSP RPC path.
+        if let Some(vm_id) = vm_id {
+            if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone())
+            {
+                reg.vm_id_settings.insert(vm_id, setting);
+            }
         }
-    }
 
-    let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
-        let mut agent = TestIgvmAgent::new(vm_name);
-        if let Some(setting) = resolve_test_config(vm_name) {
-            agent.install_plan_from_setting(&setting);
-        } else if let Some(ref default) = default_setting {
-            agent.install_plan_from_setting(default);
-        }
-        tracing::info!(vm_name, "created per-VM test agent");
-        agent
-    });
+        reg.agents
+            .entry(vm_name.to_owned())
+            .or_insert_with(|| {
+                let mut agent = TestIgvmAgent::new(vm_name);
+                if let Some(setting) = resolve_test_config(vm_name) {
+                    agent.install_plan_from_setting(&setting);
+                } else if let Some(ref default) = default_setting {
+                    agent.install_plan_from_setting(default);
+                }
+                tracing::info!(vm_name, "created per-VM test agent");
+                Arc::new(Mutex::new(agent))
+            })
+            .clone()
+    };
 
-    let (payload, expected_len) = agent.handle_request(report).map_err(|err| match err {
-        Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
-        _ => TestAgentFacadeError::AgentFailure,
-    })?;
+    // Key generation and response encryption can be expensive. Keep them
+    // outside the registry lock while preserving request order for this VM.
+    let (payload, expected_len) = agent
+        .lock()
+        .handle_request(report)
+        .map_err(|err| match err {
+            Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
+            _ => TestAgentFacadeError::AgentFailure,
+        })?;
     if payload.len() != expected_len as usize {
         return Err(TestAgentFacadeError::InvalidRequest);
     }
