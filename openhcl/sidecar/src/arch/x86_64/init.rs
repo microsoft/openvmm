@@ -352,9 +352,13 @@ fn init(
             // kernel-started via `boot_cpus=` makes the driver and the
             // kernel-start path contend over the same VP and hang AP bring-up.
             // If one ever reaches sidecar, fail loudly here.
-            if !cpu_status[1..vp_count as usize]
-                .iter()
-                .any(|status| status.load(Relaxed) == CpuStatus::RUN.0)
+            //
+            // Only nodes that actually have APs (vp_count > 1) can be "empty" in
+            // this sense; a single-VP node legitimately has no APs to start.
+            if vp_count > 1
+                && !cpu_status[1..vp_count as usize]
+                    .iter()
+                    .any(|status| status.load(Relaxed) == CpuStatus::RUN.0)
             {
                 panic!(
                     "sidecar node {node_index} (base_vp={base_vp}, vp_count={vp_count}) has no sidecar-started APs"
