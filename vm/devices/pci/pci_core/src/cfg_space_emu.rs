@@ -536,22 +536,22 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         }
     }
 
-    /// Retrieved the captured bus number.
+    /// Returns the currently captured bus number.
     pub fn captured_bus_number(&self) -> u8 {
         self.state.captured_bus_number
     }
 
-    /// Retrieved the captured devfn (device << 3 | function) number.
+    /// Returns the currently captured devfn (device << 3 | function) number.
     pub fn captured_devfn(&self) -> u8 {
         self.state.captured_devfn
     }
 
-    /// Overwrite the captured bus number.
+    /// Overwrites the captured bus number.
     pub fn set_captured_bus_number(&mut self, bus_number: u8) {
         self.state.captured_bus_number = bus_number;
     }
 
-    /// Overwrite the captured devfn (device << 3 | fn) number.
+    /// Overwrites the captured devfn (device << 3 | fn) number.
     pub fn set_captured_devfn(&mut self, devfn: u8) {
         self.state.captured_devfn = devfn;
     }
@@ -1108,12 +1108,12 @@ impl ConfigSpaceType0Emulator {
         self.common.set_interrupt_pin(pin, line)
     }
 
-    /// Retrieved the captured bus number.
+    /// Returns the currently captured bus number.
     pub fn captured_bus_number(&self) -> u8 {
         self.common.captured_bus_number()
     }
 
-    /// Retrieved the captured devfn (device << 3 | function) number.
+    /// Returns the currently captured devfn (device << 3 | function) number.
     pub fn captured_devfn(&self) -> u8 {
         self.common.captured_devfn()
     }
@@ -1395,12 +1395,12 @@ impl ConfigSpaceType1Emulator {
         }
     }
 
-    /// Retrieved the captured bus number.
+    /// Returns the currently captured bus number.
     pub fn captured_bus_number(&self) -> u8 {
         self.common.captured_bus_number()
     }
 
-    /// Retrieved the captured devfn (device << 3 | function) number.
+    /// Returns the currently captured devfn (device << 3 | function) number.
     pub fn captured_devfn(&self) -> u8 {
         self.common.captured_devfn()
     }

@@ -345,7 +345,7 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// and multi-function devices should instead implement
     /// [`pci_cfg_type0_read`](Self::pci_cfg_type0_read) for full routing context.
     ///
-    /// `byte_offset` is guaranteed be aligned to a 4-byte boundary.
+    /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
     fn pci_cfg_read(&mut self, byte_offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult;
 
     /// Dispatch a PCI config space write to the device with the given address.
@@ -355,7 +355,7 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// and multi-function devices should instead implement
     /// [`pci_cfg_type0_write`](Self::pci_cfg_type0_write) for full routing context.
     ///
-    /// `byte_offset` is guaranteed be aligned to a 4-byte boundary.
+    /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
     fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult;
 
     /// Handle a Type 0 PCI configuration space read with full routing context.

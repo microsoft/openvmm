@@ -66,6 +66,7 @@ pub trait TestCfgAccess {
 
 impl TestCfgAccess for ConfigSpaceType0Emulator {
     fn read_u32(&self, offset: u16) -> u32 {
+        assert!(offset.is_multiple_of(4));
         let mut val = 0;
         self.read(
             PciConfigAddress::new(0, 0, offset / 4).unwrap(),
@@ -76,6 +77,7 @@ impl TestCfgAccess for ConfigSpaceType0Emulator {
     }
 
     fn write_u32(&mut self, offset: u16, value: u32) {
+        assert!(offset.is_multiple_of(4));
         self.write(
             PciConfigAddress::new(0, 0, offset / 4).unwrap(),
             ByteEnabledDwordWrite::with_all_bytes_enabled(value),
@@ -86,6 +88,7 @@ impl TestCfgAccess for ConfigSpaceType0Emulator {
 
 impl TestCfgAccess for ConfigSpaceType1Emulator {
     fn read_u32(&self, offset: u16) -> u32 {
+        assert!(offset.is_multiple_of(4));
         let mut val = 0;
         self.read(
             PciConfigAddress::new(0, 0, offset / 4).unwrap(),
@@ -96,6 +99,7 @@ impl TestCfgAccess for ConfigSpaceType1Emulator {
     }
 
     fn write_u32(&mut self, offset: u16, value: u32) {
+        assert!(offset.is_multiple_of(4));
         self.write(
             PciConfigAddress::new(0, 0, offset / 4).unwrap(),
             ByteEnabledDwordWrite::with_all_bytes_enabled(value),
