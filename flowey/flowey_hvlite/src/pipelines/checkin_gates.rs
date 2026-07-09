@@ -1129,6 +1129,9 @@ impl IntoPipeline for CheckinGatesCli {
                                         // VTL2 memory) since mi-secure adds overhead that may not fit in
                                         // the tighter release memory budget.
                                         release_cfg: release && !mi_secure,
+                                        // Enable confidential diagnostics on the CVM IGVM
+                                        // consumed by the VMM tests.
+                                        confidential_debug: true,
                                     },
                                     ctx.publish_typed_artifact(pub_openhcl_igvm),
                                     ctx.publish_typed_artifact(pub_openhcl_igvm_extras),

@@ -3757,6 +3757,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
  "vbs_defs",
  "x86defs",
  "zerocopy",
