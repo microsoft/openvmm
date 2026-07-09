@@ -26,6 +26,7 @@ use cfg_if::cfg_if;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
@@ -4182,8 +4183,9 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_type0_read(
+    fn pci_cfg_read_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
@@ -4192,12 +4194,13 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_type0_read(address, value),
+                .pci_cfg_read_with_routing(access_type, address, value),
         )
     }
 
-    fn pci_cfg_type0_write(
+    fn pci_cfg_write_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
@@ -4206,35 +4209,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_type0_write(address, value),
-        )
-    }
-
-    fn pci_cfg_type1_read(
-        &mut self,
-        address: PciConfigAddress,
-        value: ByteEnabledDwordRead<'_>,
-    ) -> Option<IoResult> {
-        Some(
-            self.0
-                .upgrade()?
-                .lock()
-                .supports_pci()?
-                .pci_cfg_type1_read(address, value),
-        )
-    }
-
-    fn pci_cfg_type1_write(
-        &mut self,
-        address: PciConfigAddress,
-        value: ByteEnabledDwordWrite,
-    ) -> Option<IoResult> {
-        Some(
-            self.0
-                .upgrade()?
-                .lock()
-                .supports_pci()?
-                .pci_cfg_type1_write(address, value),
+                .pci_cfg_write_with_routing(access_type, address, value),
         )
     }
 }

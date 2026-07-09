@@ -12,6 +12,7 @@ use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
@@ -75,25 +76,29 @@ impl GenericPciBusDevice for SwitchAdapter {
         Some(self.0.pci_cfg_write(offset, value))
     }
 
-    fn pci_cfg_type0_read(
+    fn pci_cfg_read_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
         Some(PciConfigSpace::pci_cfg_type0_read(
             &mut self.0,
+            access_type,
             address,
             value,
         ))
     }
 
-    fn pci_cfg_type0_write(
+    fn pci_cfg_write_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
         Some(PciConfigSpace::pci_cfg_type0_write(
             &mut self.0,
+            access_type,
             address,
             value,
         ))

@@ -22,6 +22,7 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pio::ControlPortIoIntercept;
@@ -74,7 +75,8 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// This function serves as a shorthand that single-function endpoint devices
     /// can implement directly. More advanced routing components (switches, bridges)
     /// and multi-function devices should instead implement
-    /// [`pci_cfg_type0_read`](Self::pci_cfg_type0_read) for full routing context.
+    /// [`pci_cfg_read_with_routing`](Self::pci_cfg_read_with_routing) for full
+    /// routing context.
     ///
     /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
     fn pci_cfg_read(
@@ -88,111 +90,67 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// This function serves as a shorthand that single-function endpoint devices
     /// can implement directly. More advanced routing components (switches, bridges)
     /// and multi-function devices should instead implement
-    /// [`pci_cfg_type0_write`](Self::pci_cfg_type0_write) for full routing context.
+    /// [`pci_cfg_write_with_routing`](Self::pci_cfg_write_with_routing) for full
+    /// routing context.
     ///
     /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
     fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite)
     -> Option<IoResult>;
 
-    /// Handle a Type 0 PCI configuration space read with full routing context.
+    /// Dispatch a PCI configuration space read with full routing context.
     ///
-    /// This method receives configuration space accesses with the target bus,
-    /// packed device/function number, and DWORD offset. For a device directly
-    /// behind a PCIe port, the device number is always zero and `devfn`
-    /// identifies the function within that endpoint.
+    /// This method receives configuration space read with the access type,
+    /// target bus, target device/function number, and DWORD offset.
     ///
-    /// The default implementation dispatches function 0 to
+    /// The default implementation dispatches type 0 access to function 0 to
     /// [`pci_cfg_read`](Self::pci_cfg_read) and returns all-1s for other
     /// functions (the standard "no device present" response). Routing
     /// components (switches, bridges) and multi-function devices should
     /// override this method.
     ///
     /// # Parameters
+    /// - `access_type`: The type of PCI configuration space access (Type 0 or Type 1)
     /// - `address`: The target address (BDF + offset) being accessed
     /// - `value`: Byte-enabled DWORD value to receive the read
-    fn pci_cfg_type0_read(
+    fn pci_cfg_read_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         mut value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
-        if address.devfn == 0 {
-            self.pci_cfg_read(address.byte_offset(), value)
-        } else {
-            value.set(!0);
-            Some(IoResult::Ok)
+        match (access_type, address.devfn) {
+            (PciConfigAccessType::Type0, 0) => self.pci_cfg_read(address.byte_offset(), value),
+            _ => {
+                value.set(!0);
+                Some(IoResult::Ok)
+            }
         }
     }
 
-    /// Handle a Type 0 PCI configuration space write with full routing context.
+    /// Dispatch a PCI configuration space write with full routing context.
     ///
-    /// This method receives configuration space accesses with the target bus,
-    /// packed device/function number, and DWORD offset. For a device directly
-    /// behind a PCIe port, the device number is always zero and `devfn`
-    /// identifies the function within that endpoint.
+    /// This method receives configuration space write with the access type,
+    /// target bus, target device/function number, and DWORD offset.
     ///
-    /// The default implementation dispatches function 0 to
+    /// The default implementation dispatches type 0 access to function 0 to
     /// [`pci_cfg_write`](Self::pci_cfg_write) and silently drops writes to
     /// other functions. Routing components (switches, bridges) and
     /// multi-function devices should override this method.
     ///
     /// # Parameters
+    /// - `access_type`: The type of PCI configuration space access (Type 0 or Type 1)
     /// - `address`: The target address (BDF + offset) being accessed
     /// - `value`: Byte-enabled DWORD value to write
-    fn pci_cfg_type0_write(
+    fn pci_cfg_write_with_routing(
         &mut self,
+        access_type: PciConfigAccessType,
         address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
-        if address.devfn == 0 {
-            self.pci_cfg_write(address.byte_offset(), value)
-        } else {
-            Some(IoResult::Ok)
+        match (access_type, address.devfn) {
+            (PciConfigAccessType::Type0, 0) => self.pci_cfg_write(address.byte_offset(), value),
+            _ => Some(IoResult::Ok),
         }
-    }
-
-    /// Handle a Type 1 PCI configuration space read with full routing context.
-    ///
-    /// This method receives configuration space accesses with the target bus,
-    /// packed device/function number, and DWORD offset. For a device directly
-    /// behind a PCIe port, the device number is always zero and `devfn`
-    /// identifies the function within that endpoint.
-    ///
-    /// The default implementation returns all-1s. Routing components (switches,
-    /// bridges) and multi-function devices that span bus numbers should override
-    /// this method.
-    ///
-    /// # Parameters
-    /// - `address`: The target address (BDF + offset) being accessed
-    /// - `value`: Byte-enabled DWORD value to receive the read
-    fn pci_cfg_type1_read(
-        &mut self,
-        _address: PciConfigAddress,
-        mut value: ByteEnabledDwordRead<'_>,
-    ) -> Option<IoResult> {
-        value.set(!0);
-        Some(IoResult::Ok)
-    }
-
-    /// Handle a Type 1 PCI configuration space write with full routing context.
-    ///
-    /// This method receives configuration space accesses with the target bus,
-    /// packed device/function number, and DWORD offset. For a device directly
-    /// behind a PCIe port, the device number is always zero and `devfn`
-    /// identifies the function within that endpoint.
-    ///
-    /// The default implementation drops writes. Routing components (switches,
-    /// bridges) and multi-function devices that span bus numbers should override
-    /// this method.
-    ///
-    /// # Parameters
-    /// - `address`: The target address (BDF + offset) being accessed
-    /// - `value`: Byte-enabled DWORD value to write
-    fn pci_cfg_type1_write(
-        &mut self,
-        _address: PciConfigAddress,
-        _value: ByteEnabledDwordWrite,
-    ) -> Option<IoResult> {
-        Some(IoResult::Ok)
     }
 }
 

@@ -9,6 +9,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
@@ -704,13 +705,13 @@ impl PcieDownstreamPort {
 
         // If the target bus number is the secondary bus number of this port, turn the type 1 access into
         // a type 0 access to the connected device. Otherwise, forward the type 1 access as-is.
-        let result = if addr.bus == *bus_range.start() {
-            device.pci_cfg_type0_read(addr, value.reborrow())
+        let new_access_type = if addr.bus == *bus_range.start() {
+            PciConfigAccessType::Type0
         } else {
-            device.pci_cfg_type1_read(addr, value.reborrow())
+            PciConfigAccessType::Type1
         };
 
-        result.unwrap_or_else(|| {
+        device.pci_cfg_read_with_routing(new_access_type, addr,value.reborrow()).unwrap_or_else(|| {
             tracelimit::warn_ratelimited!("failed to read from connected device");
             value.set(!0);
             IoResult::Ok
@@ -750,13 +751,13 @@ impl PcieDownstreamPort {
 
         // If the target bus number is the secondary bus number of this port, turn the type 1 access into
         // a type 0 access to the connected device. Otherwise, forward the type 1 access as-is.
-        let result = if addr.bus == *bus_range.start() {
-            device.pci_cfg_type0_write(addr, value)
+        let new_access_type = if addr.bus == *bus_range.start() {
+            PciConfigAccessType::Type0
         } else {
-            device.pci_cfg_type1_write(addr, value)
+            PciConfigAccessType::Type1
         };
 
-        result.unwrap_or_else(|| {
+        device.pci_cfg_write_with_routing(new_access_type, addr, value).unwrap_or_else(|| {
             tracelimit::warn_ratelimited!("failed to write to connected device");
             IoResult::Ok
         })
@@ -961,41 +962,32 @@ mod tests {
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_type0_read(
+        fn pci_cfg_read_with_routing(
             &mut self,
+            access_type: PciConfigAccessType,
             address: PciConfigAddress,
             mut value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            self.stats.lock().type0_reads.push(address);
+            let mut stats = self.stats.lock();
+            match access_type {
+                PciConfigAccessType::Type0 => stats.type0_reads.push(address),
+                PciConfigAccessType::Type1 => stats.type1_reads.push(address),
+            }
             value.set(0x1234_5678);
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_type0_write(
+        fn pci_cfg_write_with_routing(
             &mut self,
+            access_type: PciConfigAccessType,
             address: PciConfigAddress,
             _value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            self.stats.lock().type0_writes.push(address);
-            Some(IoResult::Ok)
-        }
-
-        fn pci_cfg_type1_read(
-            &mut self,
-            address: PciConfigAddress,
-            mut value: ByteEnabledDwordRead<'_>,
-        ) -> Option<IoResult> {
-            self.stats.lock().type1_reads.push(address);
-            value.set(0x1234_5678);
-            Some(IoResult::Ok)
-        }
-
-        fn pci_cfg_type1_write(
-            &mut self,
-            address: PciConfigAddress,
-            _value: ByteEnabledDwordWrite,
-        ) -> Option<IoResult> {
-            self.stats.lock().type1_writes.push(address);
+            let mut stats = self.stats.lock();
+            match access_type {
+                PciConfigAccessType::Type0 => stats.type0_writes.push(address),
+                PciConfigAccessType::Type1 => stats.type1_writes.push(address),
+            }
             Some(IoResult::Ok)
         }
     }

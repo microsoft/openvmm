@@ -654,6 +654,7 @@ mod weak_mutex_pci {
     use chipset_device::io::IoResult;
     use chipset_device::pci::ByteEnabledDwordRead;
     use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigAccessType;
     use chipset_device::pci::PciConfigAddress;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
@@ -691,8 +692,9 @@ mod weak_mutex_pci {
             )
         }
 
-        fn pci_cfg_type0_read(
+        fn pci_cfg_read_with_routing(
             &mut self,
+            access_type: PciConfigAccessType,
             address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
@@ -702,12 +704,13 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_type0_read(address, value),
+                    .pci_cfg_read_with_routing(access_type, address, value),
             )
         }
 
-        fn pci_cfg_type0_write(
+        fn pci_cfg_write_with_routing(
             &mut self,
+            access_type: PciConfigAccessType,
             address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
@@ -717,37 +720,7 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_type0_write(address, value),
-            )
-        }
-
-        fn pci_cfg_type1_read(
-            &mut self,
-            address: PciConfigAddress,
-            value: ByteEnabledDwordRead<'_>,
-        ) -> Option<IoResult> {
-            Some(
-                self.0
-                    .upgrade()?
-                    .lock()
-                    .supports_pci()
-                    .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_type1_read(address, value),
-            )
-        }
-
-        fn pci_cfg_type1_write(
-            &mut self,
-            address: PciConfigAddress,
-            value: ByteEnabledDwordWrite,
-        ) -> Option<IoResult> {
-            Some(
-                self.0
-                    .upgrade()?
-                    .lock()
-                    .supports_pci()
-                    .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_type1_write(address, value),
+                    .pci_cfg_write_with_routing(access_type, address, value),
             )
         }
     }
