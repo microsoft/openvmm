@@ -761,5 +761,7 @@ pub struct ExtendedSevFeaturesEbx {
     pub encryption_physical_bits_used: u8,
     #[bits(4)]
     pub number_of_vmpls: u8,
+    #[bits(15)]
     _reserved: u16,
+    pub coherency_sfw_no: bool,
 }

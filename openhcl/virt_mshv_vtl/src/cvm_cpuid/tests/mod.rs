@@ -560,6 +560,41 @@ fn zeros_unsupported_leaf() {
     );
 }
 
+#[test]
+fn coherency_sfw_no() {
+    let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
+
+    pages[0].count += 1;
+    pages[0].cpuid_leaf_info[0] = HvPspCpuidLeaf {
+        eax_in: CpuidFunction::ExtendedSevFeatures.0,
+        ecx_in: 0,
+        xfem_in: 0,
+        xss_in: 0,
+        eax_out: 0xffffffff,
+        ebx_out: 0xffffffff,
+        ecx_out: 0xffffffff,
+        edx_out: 0xffffffff,
+        reserved_z: 0,
+    };
+
+    fill_required_leaves(&mut pages, Some(&[CpuidFunction::ExtendedSevFeatures]));
+    let cpuid = CpuidResultsIsolationType::Snp {
+        cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
+        secure_avic: false,
+    }
+    .build()
+    .unwrap();
+
+    assert!(
+        cpuid::ExtendedSevFeaturesEbx::from(
+            cpuid_result(&cpuid, CpuidFunction::ExtendedSevFeatures, 0).ebx
+        )
+        .coherency_sfw_no()
+    );
+}
+
 /// Test effects of turning off tsc aux virtualization
 #[test]
 fn tsc_aux() {

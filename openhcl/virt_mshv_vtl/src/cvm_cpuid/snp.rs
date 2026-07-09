@@ -222,6 +222,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
                     .with_cbit_position(0x3f)
                     .with_encryption_physical_bits_used(0x3f)
                     .with_number_of_vmpls(0xf)
+                    .with_coherency_sfw_no(true)
                     .into(),
                 0xffffffff, // MaximumEncryptedGuests
                 0xffffffff, // MinimumNonEsAsid

@@ -90,6 +90,13 @@ pub fn setup_vtl2_memory(
         _ => None,
     };
 
+    if shim_params.isolation_type == IsolationType::Snp {
+        log::info!(
+            "SNP cache coherency fixup required={}",
+            super::snp::cache_fixup_required()
+        );
+    }
+
     // Make sure imported regions are in increasing order.
     let mut last_range_end = None;
     for (imported_range, _) in shim_params.imported_regions() {

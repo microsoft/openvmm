@@ -12,6 +12,8 @@ use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 use x86defs::X64_PAGE_SIZE;
 use x86defs::X86X_AMD_MSR_GHCB;
+use x86defs::cpuid::CpuidFunction;
+use x86defs::cpuid::ExtendedSevFeaturesEbx;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
 
@@ -27,6 +29,13 @@ use {
     hvdef::hypercall::HypercallOutput, x86defs::snp::GhcbProtocolVersion, x86defs::snp::GhcbUsage,
     x86defs::snp::SevExitCode, x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
 };
+
+/// Returns whether this processor requires the SNP cache coherency workaround.
+/// `COHERENCY_SFW_NO` indicates that the software workaround is not needed.
+pub(super) fn cache_fixup_required() -> bool {
+    let result = safe_intrinsics::cpuid(CpuidFunction::ExtendedSevFeatures.0, 0);
+    !ExtendedSevFeaturesEbx::from(result.ebx).coherency_sfw_no()
+}
 
 /// Touch a freshly (re)assigned page so the cache engine clears any stale
 /// state left over from the previous page assignment.
@@ -564,12 +573,6 @@ impl Ghcb {
         // Map the page as non-confidential by updating the PTE.
         page_table[PT_INDEX] = pte_for_pfn(page_number, false);
         flush_tlb();
-        // Fixup the page from the cache before changing the encrypted state.
-        // SAFETY: The GHCB page is mapped at `GHCB_GVA` (its PTE was set above
-        // and the TLB flushed), so it is mapped and readable here.
-        unsafe {
-            cache_lines_fixup_page(GHCB_GVA.into_bits());
-        }
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
@@ -872,8 +875,9 @@ fn pvalidate(
 /// pvalidate over the GPA range with the desired value of the validate bit.
 ///
 /// When accepting (`validate` is true), the cache lines of each freshly
-/// validated page are fixed up before the page is accessed under its new
-/// (private) assignment. No fixup is performed when unvalidating.
+/// validated page are fixed up, if required by the processor, before the page
+/// is accessed under its new (private) assignment. No fixup is performed when
+/// unvalidating.
 pub fn set_page_acceptance(
     local_map: &mut LocalMap<'_>,
     range: MemoryRange,
@@ -882,6 +886,7 @@ pub fn set_page_acceptance(
     let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / X64_PAGE_SIZE;
     let mut page_count = range.page_count_4k();
     let mut page_base = range.start_4k_gpn();
+    let fixup_cache = validate && cache_fixup_required();
 
     while page_count != 0 {
         // Attempt to validate a large page.
@@ -894,7 +899,7 @@ pub fn set_page_acceptance(
             let res = pvalidate(page_base, va, true, validate)?;
             match res {
                 AcceptGpaStatus::Success => {
-                    if validate {
+                    if fixup_cache {
                         // Fix up the cache state of every 4K page that was just
                         // validated, before it is accessed under its new
                         // (private) assignment.
@@ -925,7 +930,7 @@ pub fn set_page_acceptance(
         let res = pvalidate(page_base, va, false, validate)?;
         match res {
             AcceptGpaStatus::Success => {
-                if validate {
+                if fixup_cache {
                     // Fix up the cache state of the page just validated, before
                     // it is accessed under its new (private) assignment.
                     // SAFETY: `va` is the base of a mapping covering this
