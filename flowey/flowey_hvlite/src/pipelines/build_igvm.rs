@@ -137,7 +137,11 @@ pub struct BuildIgvmCliCustomizations {
     /// Enable confidential diagnostics by adding `OPENHCL_CONFIDENTIAL_DEBUG=1`
     /// to the measured OpenHCL command line. This disables the diagnostic
     /// filtering that CVM release builds otherwise apply, so
-    /// diagnostics remain available. Only meaningful for CVM recipes.
+    /// diagnostics remain available
+    ///
+    /// WARNING: This is security-sensitive. OpenHCL uses this flag to decide
+    /// whether it can trust host-provided boot options for isolated guests.
+    /// Only enable this flag if you understand the security implications.
     #[clap(long)]
     pub confidential_debug: bool,
 

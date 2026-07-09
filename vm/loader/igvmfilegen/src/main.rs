@@ -82,6 +82,10 @@ enum Options {
         /// Add the confidential debug flag to the measured OpenHCL command
         /// line, enabling confidential diagnostics on CVM guest configs even
         /// in release builds.
+        ///
+        /// WARNING: This is security-sensitive. OpenHCL uses this flag to decide
+        /// whether it can trust host-provided boot options for isolated guests.
+        /// Only enable this flag if you understand the security implications.
         #[clap(long)]
         confidential_debug: bool,
     },
