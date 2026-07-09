@@ -845,7 +845,7 @@ pub fn main() -> anyhow::Result<()> {
                     .into_iter()
                     .enumerate()
                     .map(|(i, i_stream)| {
-                        new_output.set_file_name(format!("{}-{}", &file_stem, i));
+                        new_output.set_file_name(format!("{}-{}", file_stem, i));
                         new_output.set_extension(extension);
                         let mut out = AllowStdIo::new(fs_err::File::create(&new_output)?);
                         Ok(async move { futures::io::copy(i_stream, &mut out).await })

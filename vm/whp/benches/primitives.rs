@@ -490,7 +490,7 @@ mod windows {
                 group.bench_with_input(
                     BenchmarkId::new(
                         format!("interrupt_{}", if *halt { "halted" } else { "running" }),
-                        format!("{:?}", &method),
+                        format!("{:?}", method),
                     ),
                     &(*method, *halt),
                     |b, (method, halt)| {

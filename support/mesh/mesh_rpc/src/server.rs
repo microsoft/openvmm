@@ -681,7 +681,7 @@ mod tests {
                         bar: input.bar + "456",
                     }));
                 }
-                _ => panic!("{:?}", &req),
+                _ => panic!("{:?}", req),
             }
 
             assert!(recv.next().await.is_none());
