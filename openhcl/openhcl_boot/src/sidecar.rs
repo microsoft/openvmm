@@ -89,7 +89,7 @@ fn sidecar_node_is_empty(
         return false;
     }
     // Empty iff no non-base VP is left for sidecar to start.
-    !(1..size).any(|i| overrides.sidecar_starts_cpu[base_vp + i])
+    size != 1 && !(1..size).any(|i| overrides.sidecar_starts_cpu[base_vp + i])
 }
 
 pub fn start_sidecar<'a>(
