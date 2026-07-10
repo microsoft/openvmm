@@ -5,6 +5,7 @@
 
 #![cfg(windows)]
 
+use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
 use Memory::GetLargePageMinimum;
 use Memory::MEM_COMMIT;
@@ -39,6 +40,7 @@ use std::ptr::null;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::System::Memory;
+use windows_sys::Win32::System::SystemServices::NUMA_NO_PREFERRED_NODE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const PAGE_SIZE: usize = 4096;
@@ -890,6 +892,7 @@ pub fn alloc_shared_memory_hugetlb(
     size: usize,
     _name: &str,
     hugepage_size: Option<usize>,
+    numa_node: Option<u32>,
 ) -> io::Result<OwnedHandle> {
     // SAFETY: no preconditions.
     let large_page_minimum = unsafe { GetLargePageMinimum() };
@@ -928,13 +931,14 @@ pub fn alloc_shared_memory_hugetlb(
     with_lock_memory_privilege(|| {
         // SAFETY: calling according to API
         let h = unsafe {
-            CreateFileMappingW(
+            CreateFileMappingNumaW(
                 INVALID_HANDLE_VALUE,
                 null_mut(),
                 PAGE_READWRITE | SEC_COMMIT | SEC_LARGE_PAGES,
                 (size >> 32) as u32,
                 size as u32,
                 null(),
+                numa_node.unwrap_or(NUMA_NO_PREFERRED_NODE),
             )
         } as RawHandle;
         if h.is_null() {

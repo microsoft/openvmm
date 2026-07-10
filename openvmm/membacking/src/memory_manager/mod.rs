@@ -268,7 +268,8 @@ impl RamBackingRequest {
     }
 
     /// Bind this backing's memory to a specific host NUMA node
-    /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
+    /// (Linux: `mbind(MPOL_BIND)`, Windows: `CreateFileMappingNuma` for
+    /// large-page sections and `MemExtendedParameterNumaNode` otherwise).
     ///
     /// Only supported on Linux and Windows; returns
     /// [`MemoryBuildError::HostNumaNodeUnsupportedPlatform`] at build time on
@@ -504,6 +505,7 @@ impl GuestMemoryBuilder {
                         backing_size,
                         &name,
                         Some(hugepage_size),
+                        req.host_numa_node,
                     )
                     .map_err(|error| MemoryBuildError::HugepageAllocationFailed {
                         size: MemorySize(size),

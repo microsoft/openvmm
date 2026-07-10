@@ -525,6 +525,7 @@ pub fn alloc_shared_memory_hugetlb(
     size: usize,
     name: &str,
     hugepage_size: Option<usize>,
+    _numa_node: Option<u32>,
 ) -> io::Result<OwnedFd> {
     const MFD_HUGE_SHIFT: libc::c_uint = 26;
 
@@ -560,6 +561,7 @@ pub fn alloc_shared_memory_hugetlb(
     _size: usize,
     _name: &str,
     _hugepage_size: Option<usize>,
+    _numa_node: Option<u32>,
 ) -> io::Result<OwnedFd> {
     Err(Error::new(
         io::ErrorKind::Unsupported,

@@ -274,8 +274,8 @@ const SLAT_INSPECT_PATH: &str = "partition/vtl0/memory";
 /// Read the `(mapped_2m, mapped_1g)` counters from the `memory` inspect node
 /// (as returned by inspecting [`SLAT_INSPECT_PATH`]).
 ///
-/// Fails if the node reports `"unavailable"` (the host does not support the WHP
-/// memory counter set) or is missing the expected fields.
+/// Fails if the expected fields are missing, including when WHP could not
+/// retrieve the memory counter set and therefore omitted them from inspect.
 #[cfg(windows)]
 fn read_slat_counters(node: &inspect::Node) -> anyhow::Result<(u64, u64)> {
     let json: serde_json::Value = serde_json::from_str(&node.json().to_string())

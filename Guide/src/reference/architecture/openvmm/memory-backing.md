@@ -31,20 +31,20 @@ need to hand that object to something else:
 
 - **Snapshots** — the backing file is what gets saved and restored (see
   [Snapshots](../../../user_guide/openvmm/snapshots.md)).
-- **DMA to real hardware / IOMMU** — VFIO passthrough and emulated IOMMUs
-  need a backing fd to program device page tables.
 - **VTL2 / OpenHCL** and other consumers that mmap guest RAM out of process.
 
 **Private** memory is ordinary anonymous memory (`MAP_ANONYMOUS` on Linux,
 `VirtualAlloc` on Windows) with no backing object to share. It is lighter
-weight but cannot be used with the features above. Private memory is also
+weight but cannot be handed to another process. It can still be mapped into
+in-process DMA targets by host virtual address, so assigned-device and IOMMU
+DMA do not inherently require shared memory. Private memory is also
 incompatible with x86 PCAT/legacy RAM splitting and with reusing an existing
 backing.
 
 ```admonish tip
-Use `shared=on` when you need a feature that requires it — snapshots, device
-passthrough, or a paravisor — and `shared=off` (private) otherwise, for the
-lighter-weight anonymous backing.
+Use `shared=on` when you need a feature that requires a shareable backing
+object — such as snapshots or a paravisor — and `shared=off` (private)
+otherwise, for the lighter-weight anonymous backing.
 ```
 
 ## Prefetch
@@ -140,8 +140,9 @@ memory or explicit huge pages.
 | Goal | Backing |
 |---|---|
 | Default, general use | `shared=on` (file-backed shared memory) |
-| Smallest footprint, no snapshots/passthrough | `shared=off` (private) |
-| Snapshots, VFIO passthrough, IOMMU, VTL2 | `shared=on` |
+| Smallest footprint, no snapshots/out-of-process sharing | `shared=off` (private) |
+| Snapshots, VTL2, out-of-process memory consumers | `shared=on` |
+| In-process assigned-device/IOMMU DMA | Either backing mode |
 | Save/restore to a specific file | `file=<PATH>` |
 | Opportunistic 2 MB pages, Linux | `shared=off,thp=on` |
 | Guaranteed large pages, best TLB behavior | `hugepages=on` |
@@ -151,7 +152,7 @@ memory or explicit huge pages.
 
 | Option | Requires | Platform | Notes |
 |---|---|---|---|
-| `shared=off` (private) | — | all | No snapshots/passthrough; not with PCAT legacy RAM |
+| `shared=off` (private) | — | all | No snapshots/out-of-process sharing; not with PCAT legacy RAM |
 | `prefetch=on` | — | WHP only | Commits + populates SLAT up front; no-op on KVM/mshv |
 | `thp=on` | `shared=off` | Linux | Best-effort 2 MB pages |
 | `hugepages=on` | `shared=on` | Linux, Windows | Guaranteed; size/range must be huge-page aligned |
