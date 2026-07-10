@@ -106,7 +106,6 @@ use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::future::pending;
 use std::io;
 #[cfg(unix)]
 use std::io::IsTerminal;
@@ -183,6 +182,8 @@ pub fn openvmm_main() {
 #[derive(Default)]
 struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
+    /// Keeps the dedicated serial reactor alive while serial I/O objects exist.
+    serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
@@ -231,8 +232,6 @@ async fn vm_config_from_command_line(
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
-    // Ensure the serial driver stays alive with no tasks.
-    serial_driver.spawn("leak", pending::<()>()).detach();
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -423,7 +422,10 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let mut resources = VmResources::default();
+    let mut resources = VmResources {
+        serial_driver: Some(serial_driver),
+        ..Default::default()
+    };
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
         resources.console_in = Some(input);
@@ -2719,6 +2721,10 @@ async fn run_control_inner(
     let (vm_controller_event_send, vm_controller_event_recv) = mesh::channel();
 
     let has_vtl2 = resources.vtl2_settings.is_some();
+    let serial_driver = resources
+        .serial_driver
+        .take()
+        .expect("serial driver must outlive serial resources");
 
     // Build the VmController with exclusive resources.
     let controller = vm_controller::VmController {
@@ -2771,6 +2777,7 @@ async fn run_control_inner(
     // Wait for the controller task to finish (it stops the VM worker and
     // shuts down the mesh).
     controller_task.await;
+    drop(serial_driver);
 
     // run_repl returns the exit status: the code the guest drove via an opt-in
     // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.
