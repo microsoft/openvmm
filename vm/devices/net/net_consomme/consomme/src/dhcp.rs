@@ -12,6 +12,7 @@ use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
 use smoltcp::wire::DhcpPacket;
 use smoltcp::wire::DhcpRepr;
+use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
@@ -75,7 +76,7 @@ impl<T: Client> Access<'_, T> {
                 router: Some(self.inner.state.params.gateway_ip),
                 subnet_mask: Some(self.inner.state.params.net_mask),
                 relay_agent_ip: Ipv4Address::UNSPECIFIED,
-                broadcast: false,
+                broadcast: dhcp_req.broadcast,
                 requested_ip: None,
                 client_identifier: None,
                 server_identifier: Some(self.inner.state.params.gateway_ip),
@@ -94,15 +95,15 @@ impl<T: Client> Access<'_, T> {
                 secs: 0,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
-                your_ip: Ipv4Address::BROADCAST,
-                server_ip: self.inner.state.params.gateway_ip,
+                your_ip: Ipv4Address::UNSPECIFIED,
+                server_ip: Ipv4Address::UNSPECIFIED,
                 router: None,
                 subnet_mask: None,
                 relay_agent_ip: Ipv4Address::UNSPECIFIED,
-                broadcast: false,
+                broadcast: dhcp_req.broadcast,
                 requested_ip: None,
                 client_identifier: None,
-                server_identifier: None,
+                server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
                 dns_servers: None,
                 max_size: None,
@@ -117,16 +118,22 @@ impl<T: Client> Access<'_, T> {
             src_port: DHCP_SERVER,
             dst_port: DHCP_CLIENT,
         };
+        // RFC 2131 section 4.1 requires consistent link- and network-layer
+        // destinations. A DHCPNAK is always broadcast when no relay is involved.
+        let (dst_hardware_address, dst_ip) = match (dhcp_req.broadcast, your_ip) {
+            (true, _) | (_, None) => (EthernetAddress::BROADCAST, Ipv4Address::BROADCAST),
+            (false, Some(ip)) => (dhcp_req.client_hardware_address, ip),
+        };
         let resp_ipv4 = Ipv4Repr {
             src_addr: self.inner.state.params.gateway_ip,
-            dst_addr: Ipv4Address::BROADCAST,
+            dst_addr: dst_ip,
             next_header: IpProtocol::Udp,
             payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
             hop_limit: 64,
         };
         let resp_eth = EthernetRepr {
             src_addr: self.inner.state.params.gateway_mac,
-            dst_addr: dhcp_req.client_hardware_address,
+            dst_addr: dst_hardware_address,
             ethertype: EthernetProtocol::Ipv4,
         };
 
@@ -153,8 +160,174 @@ impl<T: Client> Access<'_, T> {
                 + resp_ipv4.buffer_len()
                 + resp_udp.header_len()
                 + resp_dhcp.buffer_len()],
-            &ChecksumState::IPV4_ONLY,
+            &ChecksumState::UDP4,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Consomme;
+    use crate::ConsommeParams;
+    use pal_async::DefaultDriver;
+    use pal_async::driver::Driver;
+
+    const CLIENT_MAC: EthernetAddress = EthernetAddress([0x00, 0x15, 0x5d, 0x12, 0x34, 0x56]);
+    const CLIENT_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 2);
+    const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
+
+    struct CaptureClient {
+        driver: DefaultDriver,
+        frames: Vec<(Vec<u8>, ChecksumState)>,
+    }
+
+    impl Client for CaptureClient {
+        fn driver(&self) -> &dyn Driver {
+            &self.driver
+        }
+
+        fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
+            self.frames.push((data.to_vec(), *checksum));
+        }
+
+        fn rx_mtu(&mut self) -> usize {
+            1514
+        }
+    }
+
+    fn request(
+        message_type: DhcpMessageType,
+        broadcast: bool,
+        requested_ip: Option<Ipv4Address>,
+    ) -> Vec<u8> {
+        let request = DhcpRepr {
+            message_type,
+            transaction_id: 0x1234_5678,
+            secs: 0,
+            client_hardware_address: CLIENT_MAC,
+            client_ip: Ipv4Address::UNSPECIFIED,
+            your_ip: Ipv4Address::UNSPECIFIED,
+            server_ip: Ipv4Address::UNSPECIFIED,
+            router: None,
+            subnet_mask: None,
+            relay_agent_ip: Ipv4Address::UNSPECIFIED,
+            broadcast,
+            requested_ip,
+            client_identifier: None,
+            server_identifier: None,
+            parameter_request_list: None,
+            dns_servers: None,
+            max_size: None,
+            lease_duration: None,
+            renew_duration: None,
+            rebind_duration: None,
+            additional_options: &[],
+        };
+        let mut payload = vec![0; request.buffer_len()];
+        request
+            .emit(&mut DhcpPacket::new_unchecked(&mut payload))
+            .unwrap();
+        payload
+    }
+
+    struct Reply {
+        message_type: DhcpMessageType,
+        ethernet_dst: EthernetAddress,
+        ip_dst: Ipv4Address,
+        your_ip: Ipv4Address,
+        server_ip: Ipv4Address,
+        server_identifier: Option<Ipv4Address>,
+        broadcast: bool,
+        checksum_state: ChecksumState,
+    }
+
+    fn reply(
+        driver: DefaultDriver,
+        message_type: DhcpMessageType,
+        broadcast: bool,
+        requested_ip: Option<Ipv4Address>,
+    ) -> Reply {
+        let mut params = ConsommeParams::new().unwrap();
+        params.client_mac = CLIENT_MAC;
+        let mut consomme = Consomme::new(params);
+        let mut client = CaptureClient {
+            driver,
+            frames: Vec::new(),
+        };
+        consomme
+            .access(&mut client)
+            .handle_dhcp(&request(message_type, broadcast, requested_ip))
+            .unwrap();
+
+        let (frame, checksum_state) = client.frames.last().expect("DHCP reply");
+        let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
+        let ethernet_repr = EthernetRepr::parse(&ethernet).unwrap();
+        let ipv4 = Ipv4Packet::new_checked(ethernet.payload()).unwrap();
+        let ipv4_repr = Ipv4Repr::parse(&ipv4, &ChecksumCapabilities::default()).unwrap();
+        let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+        let dhcp = DhcpPacket::new_checked(udp.payload()).unwrap();
+        let dhcp_repr = DhcpRepr::parse(&dhcp).unwrap();
+
+        Reply {
+            message_type: dhcp_repr.message_type,
+            ethernet_dst: ethernet_repr.dst_addr,
+            ip_dst: ipv4_repr.dst_addr,
+            your_ip: dhcp_repr.your_ip,
+            server_ip: dhcp_repr.server_ip,
+            server_identifier: dhcp_repr.server_identifier,
+            broadcast: dhcp_repr.broadcast,
+            checksum_state: *checksum_state,
+        }
+    }
+
+    fn assert_udp4(checksum_state: ChecksumState) {
+        assert!(checksum_state.ipv4);
+        assert!(checksum_state.udp);
+        assert!(!checksum_state.tcp);
+        assert_eq!(checksum_state.tso, None);
+        assert_eq!(checksum_state.gso, None);
+    }
+
+    #[pal_async::async_test]
+    async fn broadcasts_offer_when_requested(driver: DefaultDriver) {
+        let reply = reply(driver, DhcpMessageType::Discover, true, None);
+
+        assert_eq!(reply.message_type, DhcpMessageType::Offer);
+        assert_eq!(reply.ethernet_dst, EthernetAddress::BROADCAST);
+        assert_eq!(reply.ip_dst, Ipv4Address::BROADCAST);
+        assert!(reply.broadcast);
+        assert_udp4(reply.checksum_state);
+    }
+
+    #[pal_async::async_test]
+    async fn unicasts_offer_when_supported(driver: DefaultDriver) {
+        let reply = reply(driver, DhcpMessageType::Discover, false, None);
+
+        assert_eq!(reply.message_type, DhcpMessageType::Offer);
+        assert_eq!(reply.ethernet_dst, CLIENT_MAC);
+        assert_eq!(reply.ip_dst, CLIENT_IP);
+        assert!(!reply.broadcast);
+        assert_udp4(reply.checksum_state);
+    }
+
+    #[pal_async::async_test]
+    async fn broadcasts_nak_with_required_fields(driver: DefaultDriver) {
+        let reply = reply(
+            driver,
+            DhcpMessageType::Request,
+            false,
+            Some(Ipv4Address::new(10, 0, 0, 99)),
+        );
+
+        assert_eq!(reply.message_type, DhcpMessageType::Nak);
+        assert_eq!(reply.ethernet_dst, EthernetAddress::BROADCAST);
+        assert_eq!(reply.ip_dst, Ipv4Address::BROADCAST);
+        assert_eq!(reply.your_ip, Ipv4Address::UNSPECIFIED);
+        assert_eq!(reply.server_ip, Ipv4Address::UNSPECIFIED);
+        assert_eq!(reply.server_identifier, Some(GATEWAY_IP));
+        assert!(!reply.broadcast);
+        assert_udp4(reply.checksum_state);
     }
 }
