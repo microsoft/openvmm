@@ -725,6 +725,28 @@ async fn test_tcp_host_to_guest_data(driver: DefaultDriver) {
     assert_eq!(tcp.payload, b"response data");
 }
 
+/// Guest-bound data segments must carry a correct TCP checksum computed over
+/// the populated payload (not skipped, not stale over a zeroed payload).
+#[pal_async::async_test]
+async fn test_tcp_guest_packet_checksum_valid(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+
+    h.clear_guest_packets();
+    h.host_write(b"checksum me").await;
+
+    let pkt = h.poll_until_guest_packet(|t| !t.payload.is_empty()).await;
+    let eth = EthernetFrame::new_unchecked(&pkt[..]);
+    let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+    let src_ip = ipv4.src_addr();
+    let dst_ip = ipv4.dst_addr();
+    let tcp_pkt = TcpPacket::new_unchecked(ipv4.payload());
+
+    assert!(
+        tcp_pkt.verify_checksum(&src_ip.into(), &dst_ip.into()),
+        "guest-bound TCP segment must have a valid checksum"
+    );
+}
+
 /// Test that a host-side EOF (shutdown write) causes consomme to send
 /// a FIN to the guest.
 #[pal_async::async_test]

@@ -29,6 +29,21 @@ impl EcdsaKeyPairInner {
         self.key.ecdsa_sign(hash).map_err(|e| err(e, "ECDSA sign"))
     }
 
+    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
+        match self.key.ecdsa_verify(signature, hash) {
+            Ok(()) => Ok(true),
+            // `SignatureVerificationFailure` is the expected error for a
+            // signature that does not match. `InvalidArgument` occurs when the
+            // signature is malformed (e.g. wrong length, or a component that is
+            // out of range), which likewise means "does not verify".
+            Err(
+                symcrypt::errors::SymCryptError::SignatureVerificationFailure
+                | symcrypt::errors::SymCryptError::InvalidArgument,
+            ) => Ok(false),
+            Err(e) => Err(err(e, "ECDSA verify")),
+        }
+    }
+
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
         self.key
             .export_public_key()

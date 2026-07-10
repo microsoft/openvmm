@@ -5,11 +5,14 @@
 //!
 //! In firmware-less Linux direct boot there is no UEFI/PCAT firmware to
 //! synthesize SMBIOS tables, so the loader must build them itself. This module
-//! builds a SMBIOS 3.1 entry point (`_SM3_`) and a minimal structure table
-//! (Type 0 BIOS, Type 1 System, Type 127 End-of-table). The caller decides
-//! where the structure table lives in guest memory and how the entry point is
-//! delivered to the guest (x86 F-segment scan vs. aarch64 EFI configuration
-//! table).
+//! builds a SMBIOS 3.0 (64-bit) entry point (`_SM3_`) whose structure table
+//! implements SMBIOS 3.1 (Type 0 BIOS, Type 1 System, Type 127 End-of-table).
+//! Per DMTF DSP0134, "SMBIOS 3.0 (64-bit) Entry Point" is the fixed name of the
+//! entry-point format (entry-point revision `01h`); the SMBIOS version the
+//! tables conform to is carried separately in the entry point's major/minor
+//! version fields. The caller decides where the structure table lives in guest
+//! memory and how the entry point is delivered to the guest (x86 F-segment scan
+//! vs. aarch64 EFI configuration table).
 
 mod spec;
 
@@ -66,8 +69,8 @@ pub struct SmbiosTables<'a> {
     pub system: SmbiosSystemInfo<'a>,
 }
 
-/// Size in bytes of the SMBIOS 3.1 entry point (`_SM3_`). Callers that place
-/// the entry point and structure table separately (e.g. the aarch64 EFI
+/// Size in bytes of the SMBIOS 3.0 (64-bit) entry point (`_SM3_`). Callers that
+/// place the entry point and structure table separately (e.g. the aarch64 EFI
 /// configuration-table path) use this to reserve space for the entry point
 /// before knowing the structure table's address.
 pub const ENTRY_POINT_SIZE: usize = size_of::<Smbios30EntryPoint>();

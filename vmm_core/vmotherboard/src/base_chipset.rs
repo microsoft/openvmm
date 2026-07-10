@@ -654,6 +654,8 @@ mod weak_mutex_pci {
     use chipset_device::io::IoResult;
     use chipset_device::pci::ByteEnabledDwordRead;
     use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigAccessType;
+    use chipset_device::pci::PciConfigAddress;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;
@@ -692,10 +694,8 @@ mod weak_mutex_pci {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
             Some(
@@ -704,16 +704,14 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+                    .pci_cfg_read_with_routing(access_type, address, value),
             )
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
             Some(
@@ -722,7 +720,7 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+                    .pci_cfg_write_with_routing(access_type, address, value),
             )
         }
     }

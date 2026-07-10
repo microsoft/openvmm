@@ -7,6 +7,7 @@ use super::EcdsaCurve;
 use super::EcdsaError;
 use crate::win::AlgHandle;
 use std::sync::LazyLock;
+use windows::Win32::Foundation::STATUS_INVALID_SIGNATURE;
 use windows::Win32::Security::Cryptography::*;
 
 static ECDSA_P384: LazyLock<Result<AlgHandle, EcdsaError>> = LazyLock::new(|| {
@@ -92,6 +93,25 @@ impl EcdsaKeyPairInner {
 
         signature.truncate(bytes_written as usize);
         Ok(signature)
+    }
+
+    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
+        // A signature must be exactly `r || s`, each `curve.key_size()` bytes.
+        if signature.len() != self.curve.key_size() * 2 {
+            return Ok(false);
+        }
+
+        // SAFETY: FFI call with a valid key handle and valid input slices.
+        let status =
+            unsafe { BCryptVerifySignature(self.handle, None, hash, signature, BCRYPT_FLAGS(0)) };
+
+        // A signature that simply does not match yields STATUS_INVALID_SIGNATURE,
+        // which is a valid "not verified" result rather than an operational error.
+        if status == STATUS_INVALID_SIGNATURE {
+            return Ok(false);
+        }
+        status.ok().map_err(|e| err(e, "BCryptVerifySignature"))?;
+        Ok(true)
     }
 
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {

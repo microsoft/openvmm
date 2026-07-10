@@ -574,21 +574,34 @@ options:
     #[clap(long, value_name = "RC_NAME")]
     pub smmu: Vec<String>,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    ///
+    /// Prefix the binding with `debugger-mode:` to run this COM port in
+    /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
+    /// `--com1 debugger-mode:listen=<path>` or
+    /// `--com1 debugger-mode:listen=tcp:<ip>:<port>`. In debugger mode OpenVMM
+    /// keeps this port's backend drained and may drop bytes instead of applying
+    /// backpressure, so the KD transport does not deadlock across guest
+    /// resets/reboots (KD recovers dropped bytes via its own retransmission).
+    /// Debugger mode is independent per COM port.
     #[clap(long, value_name = "SERIAL")]
-    pub com1: Option<SerialConfigCli>,
+    pub com1: Option<ComSerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com2: Option<SerialConfigCli>,
+    pub com2: Option<ComSerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com3: Option<SerialConfigCli>,
+    pub com3: Option<ComSerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com4: Option<SerialConfigCli>,
+    pub com4: Option<ComSerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
@@ -2504,6 +2517,33 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
+/// A COM port binding, optionally prefixed with `debugger-mode:` to run the
+/// port in debugger mode for WinDbg / KD-over-serial.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComSerialConfigCli {
+    /// Whether this COM port runs in debugger mode (for WinDbg / KD-over-serial).
+    pub debugger_mode: bool,
+    /// The serial backend for this COM port.
+    pub backend: SerialConfigCli,
+}
+
+impl FromStr for ComSerialConfigCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.strip_prefix("debugger-mode:") {
+            Some(rest) => Ok(Self {
+                debugger_mode: true,
+                backend: rest.parse()?,
+            }),
+            None => Ok(Self {
+                debugger_mode: false,
+                backend: s.parse()?,
+            }),
+        }
+    }
+}
+
 /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
@@ -3720,6 +3760,7 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+    use test_with_tracing::test;
 
     #[test]
     fn test_parse_file_opts() {
@@ -5058,6 +5099,49 @@ mod tests {
         assert!(opt.prefetch_memory());
         assert!(opt.private_memory());
         assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_serial_debugger_mode_option_parsed() {
+        // No COM port configured: no debugger mode.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.com1.is_none());
+
+        // A plain backend is not in debugger mode.
+        let opt = Options::try_parse_from(["openvmm", "--com1", "none"]).unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(!com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::None);
+
+        // The `debugger-mode:` prefix enables debugger mode for just that port,
+        // and the remainder still parses as the backend.
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=/tmp/kd",
+            "--com2",
+            "none",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::Pipe("/tmp/kd".into()));
+        // Other ports remain independent (not in debugger mode).
+        assert!(!opt.com2.unwrap().debugger_mode);
+
+        // The prefix must not eat colons in the backend (e.g. a tcp address).
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=tcp:127.0.0.1:5555",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(
+            com1.backend,
+            SerialConfigCli::Tcp("127.0.0.1:5555".parse().unwrap())
+        );
     }
 
     #[test]

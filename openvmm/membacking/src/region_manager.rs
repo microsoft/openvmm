@@ -241,7 +241,7 @@ fn inspect_regions(regions: &Vec<Region>) -> impl '_ + Inspect {
         let mut resp = req.respond();
         for region in regions {
             resp.field(
-                &format!("{}:{}", region.params.range, &region.params.name),
+                &format!("{}:{}", region.params.range, region.params.name),
                 inspect::adhoc(|req| {
                     req.respond()
                         .field("map_params", region.map_params)

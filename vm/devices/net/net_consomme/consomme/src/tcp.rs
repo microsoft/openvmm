@@ -26,7 +26,6 @@ use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
-use smoltcp::phy::Checksum;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
@@ -727,11 +726,14 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
-        // Skip the TCP checksum during emit--fill_checksum below recomputes
-        // it after the payload has been copied in.
-        let mut caps = ChecksumCapabilities::default();
-        caps.tcp = Checksum::None;
-        tcp.emit(&mut tcp_packet, &dst_ip_addr, &src_ip_addr, &caps);
+        // Skip the TCP checksum during emit; it is filled in below after the
+        // payload has been copied in.
+        tcp.emit(
+            &mut tcp_packet,
+            &dst_ip_addr,
+            &src_ip_addr,
+            &ChecksumCapabilities::ignored(),
+        );
         // Copy payload into TCP packet
         if let Some(payload) = &payload {
             payload.copy_to_slice(tcp_packet.payload_mut());
@@ -739,7 +741,7 @@ impl<T: Client> Sender<'_, T> {
 
         if tso_mss.is_none() {
             // Normal single-segment packet: compute the full checksum.
-            tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+            tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
         } else {
             // TSO packet (NEEDS_CSUM): seed the field with the pseudo-header
             // partial checksum so the guest can complete each segment. smoltcp

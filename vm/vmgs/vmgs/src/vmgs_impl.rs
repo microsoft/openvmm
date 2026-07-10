@@ -802,7 +802,7 @@ impl Vmgs {
             .copy_from_slice(new_file_table.as_bytes());
 
         // write the files
-        for (_, res) in files.iter() {
+        for res in files.values() {
             self.write_file_internal(&res.fcb, res.data.get()).await?;
         }
 

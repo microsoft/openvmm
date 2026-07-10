@@ -712,7 +712,7 @@ impl EmulatedOverlayState {
         let index = self
             .overlays
             .binary_search_by_key(&gpa, |m| m.gpa)
-            .map_err(|_| panic!("overlay must be mapped: {gpa} {:?}", &self.overlays))
+            .map_err(|_| panic!("overlay must be mapped: {gpa} {:?}", self.overlays))
             .unwrap();
 
         let _overlay = self.overlays.remove(index);

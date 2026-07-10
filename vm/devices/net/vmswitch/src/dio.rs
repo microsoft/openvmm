@@ -79,7 +79,7 @@ impl DioNic {
         mac_address: [u8; 6],
     ) -> io::Result<Self> {
         let full_nic_name = format!("{}--{}", vm_id, nic_name);
-        let path = format!(r#"\\.\VmSwitch\{}"#, &full_nic_name);
+        let path = format!(r#"\\.\VmSwitch\{}"#, full_nic_name);
 
         let handle = unsafe {
             let mut raw_handle = ptr::null_mut();

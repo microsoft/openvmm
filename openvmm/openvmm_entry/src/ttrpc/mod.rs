@@ -785,7 +785,7 @@ impl VmService {
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
-                format!("failed to bind hvsocket path: {}", &hvsocket_config.path)
+                format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
             config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
             config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
