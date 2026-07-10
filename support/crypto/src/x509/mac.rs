@@ -200,6 +200,19 @@ impl X509CertificateInner {
             .map_err(|e| der_err(e, "encoding certificate as DER"))
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        Ok(self.parsed.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        Ok(self
+            .parsed
+            .tbs_certificate()
+            .serial_number()
+            .as_bytes()
+            .to_vec())
+    }
+
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         let mut cn: CFStringRef = ptr::null();
         // SAFETY: self.cert.0 is a valid SecCertificateRef.

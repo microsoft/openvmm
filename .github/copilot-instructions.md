@@ -92,9 +92,12 @@ invisible.
 
 For VMM test validation during development, use `cargo xflowey vmm-tests-run`:
 ```bash
-# Run a specific test
-cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir <output-dir>
+cargo xflowey vmm-tests-run --filter "test(my_test_name)"
 ```
+Do not pass `--dir` — it is only required when cross-compiling for Windows
+from WSL2 (where the output directory must be on the Windows filesystem, e.g.,
+`--dir /mnt/d/vmm_tests`). For native host tests it is unnecessary.
+
 This automatically discovers artifacts, builds dependencies, and runs tests.
 See `Guide/src/dev_guide/tests/vmm.md` for details.
 

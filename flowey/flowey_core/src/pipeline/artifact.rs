@@ -70,6 +70,12 @@ pub trait Artifact: Serialize + DeserializeOwned {
     const TAR_GZ_NAME: Option<&'static str> = None;
 }
 
+/// A trait representing a type of an [`Artifact`]
+pub trait ArtifactType: Serialize + DeserializeOwned + Ord + Clone {
+    /// Get the artifact name
+    fn name(&self, flavor: Option<&str>, suffix: Option<&str>) -> String;
+}
+
 fn json_to_fs(value: serde_json::Value, path: &Path) -> anyhow::Result<()> {
     if let serde_json::Value::Object(map) = value {
         json_to_fs_inner(map, path)

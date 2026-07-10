@@ -973,19 +973,18 @@ pub fn set_attr(
     mut attr: SetAttributes,
 ) -> lx::Result<()> {
     set_attr_check_kill_priv(handle, state, &mut attr)?;
-    set_attr_core(handle, handle, state, &attr)
+    set_attr_core(handle, state, &attr)
 }
 
 /// Set the attributes of a file (assumes the kill privilege check was already done)
 /// N.B. All functions attempting to change attributes should call set_attr_check_kill_priv() first.
 pub fn set_attr_core(
     handle: &OwnedHandle,
-    truncate_handle: &OwnedHandle,
     state: &super::VolumeState,
     attr: &SetAttributes,
 ) -> lx::Result<()> {
     if let Some(size) = attr.size {
-        fs::truncate(truncate_handle, size as u64)?;
+        fs::truncate(handle, size as u64)?;
     }
 
     if state.options.metadata && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some()) {

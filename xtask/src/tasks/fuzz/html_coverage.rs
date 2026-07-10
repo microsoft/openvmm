@@ -49,9 +49,9 @@ pub(super) fn generate_html_coverage_report(
 
     let llvm_tools_dir = 'llvm_tools_dir: {
         let output = std::process::Command::new("rustc")
-            .args(["+nightly", "--print", "sysroot"])
+            .args(["--print", "sysroot"])
             .output()
-            .context("failed to run `rustc +nightly --print sysroot`")?;
+            .context("failed to run `rustc --print sysroot`")?;
         let rustc_sysroot = String::from_utf8_lossy(&output.stdout).to_string();
         let rustc_sysroot = rustc_sysroot.trim();
 
@@ -65,7 +65,7 @@ pub(super) fn generate_html_coverage_report(
         }
 
         anyhow::bail!(
-            "failed to find `llvm-tools` directory. did you run `rustup +nightly component add llvm-tools`?"
+            "failed to find `llvm-tools` directory. did you run `rustup component add llvm-tools`?"
         )
     };
 

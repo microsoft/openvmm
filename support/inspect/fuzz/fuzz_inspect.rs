@@ -127,7 +127,7 @@ impl InspectNode<'_, '_> {
 
     fn respond(&mut self, mut resp: &mut Response<'_>) -> Result<(), arbitrary::Error> {
         for _ in 0..self.u.int_in_range(0..=4)? {
-            resp = match self.u.int_in_range(0..=11)? {
+            resp = match self.u.int_in_range(0..=14)? {
                 0 => {
                     fuzz_eprintln!("nothing");
                     resp
@@ -212,6 +212,23 @@ impl InspectNode<'_, '_> {
                         depth: self.depth + 1,
                         depth_limit: self.depth_limit,
                     })
+                }
+                12 => {
+                    fuzz_eprintln!("field");
+                    resp.field(self.u.arbitrary()?, String::arbitrary(self.u)?)
+                }
+                13 => {
+                    fuzz_eprintln!("sensitivity_field");
+                    resp.sensitivity_field(
+                        self.u.arbitrary()?,
+                        self.u.arbitrary()?,
+                        String::arbitrary(self.u)?,
+                    )
+                }
+                14 => {
+                    fuzz_eprintln!("field_with");
+                    let value = String::arbitrary(self.u)?;
+                    resp.field_with(self.u.arbitrary()?, || value)
                 }
                 _ => unreachable!(),
             };

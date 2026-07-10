@@ -13,16 +13,14 @@ use zerocopy::IntoBytes;
 pub enum FormatError {
     #[error("parsing signature list from auth_var_data")]
     SignatureList(#[source] signature_list::ParseError),
-    #[error("adding x509 cert from signature list to store")]
-    SignatureListX509(#[source] crypto::pkcs7::Pkcs7Error),
+    #[error("parsing x509 cert from signature list")]
+    SignatureListX509(#[source] crypto::x509::X509Error),
     #[error("parsing auth var's pkcs7_data as pkcs#7 DER")]
     AuthVarPkcs7Der(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("could not reconstruct signedData header for auth var's pkcs#7 data: {0:?}")]
     AuthVarPkcs7DerHeader(der::Error),
-    #[error("creating PKCS#7 certificate store")]
-    AuthVarPkcs7Store(#[source] crypto::pkcs7::Pkcs7Error),
-    #[error("setting up PKCS#7 verification")]
-    AuthVarPkcs7Verify(#[source] crypto::pkcs7::Pkcs7Error),
+    #[error("PKCS#7 verification")]
+    AuthVarPkcs7Verify(#[source] crypto::pkcs7::Pkcs7VerifyError),
 }
 
 impl FormatError {
@@ -32,7 +30,6 @@ impl FormatError {
             FormatError::SignatureList(_) | FormatError::SignatureListX509(_) => true,
             FormatError::AuthVarPkcs7Der(_)
             | FormatError::AuthVarPkcs7DerHeader(_)
-            | FormatError::AuthVarPkcs7Store(_)
             | FormatError::AuthVarPkcs7Verify(_) => false,
         }
     }
@@ -83,8 +80,7 @@ pub fn authenticate_variable(
     };
 
     // stage 2 - extract all the x509 certs from the signature list(s)
-    //           and add them to a certificate store
-    let mut store = crypto::pkcs7::Pkcs7CertStore::new().map_err(FormatError::AuthVarPkcs7Store)?;
+    let mut trusted_certs = Vec::new();
 
     let lists = signature_list::ParseSignatureLists::new(signature_lists);
     for list in lists {
@@ -93,9 +89,10 @@ pub fn authenticate_variable(
         if let signature_list::ParseSignatureList::X509(certs) = list {
             for cert in certs {
                 let cert = cert.map_err(FormatError::SignatureList)?;
-                store
-                    .add_cert_der(&cert.data.0)
-                    .map_err(FormatError::SignatureListX509)?;
+                trusted_certs.push(
+                    crypto::x509::X509Certificate::from_der(&cert.data.0)
+                        .map_err(FormatError::SignatureListX509)?,
+                );
             }
         }
     }
@@ -112,7 +109,7 @@ pub fn authenticate_variable(
 
     // stage 4 - verify the signed data using trusted certs from EFI signature lists
     var_pkcs7
-        .verify(store, &verify_buf, true)
+        .verify_uefi(&trusted_certs, &verify_buf)
         .map_err(FormatError::AuthVarPkcs7Verify)
 }
 

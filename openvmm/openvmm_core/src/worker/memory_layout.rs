@@ -77,14 +77,31 @@ pub(super) struct ResolvedMemoryLayout {
     /// Resolved VTL2 framebuffer GPA base. `None` when VTL2 graphics is not
     /// configured.
     pub vtl2_framebuffer_gpa_base: Option<u64>,
-    /// Resolved MMIO ranges for SMMUv3 instances, one per configured SMMU.
-    /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
+    /// Resolved MMIO ranges for the VM's IOMMU, if any. At most one IOMMU
+    /// type is configured per VM, so this is keyed by type rather than stored
+    /// as three independent fields.
+    pub iommu_ranges: ResolvedIommuRanges,
+}
+
+/// Resolved MMIO ranges for the VM's IOMMU, keyed by IOMMU type.
+///
+/// A VM has at most one IOMMU type, so encoding the ranges as an enum makes the
+/// "only one kind" invariant structural rather than relying on three separate
+/// fields that callers must remember are mutually exclusive.
+#[derive(Debug, Default)]
+pub(super) enum ResolvedIommuRanges {
+    /// No IOMMU is configured.
+    #[default]
+    None,
+    /// Arm SMMUv3 instances, one `SMMU_SIZE`-byte range each.
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
-    pub smmu_ranges: Vec<MemoryRange>,
-    /// Resolved MMIO ranges for AMD IOMMU instances, one per configured IOMMU.
-    /// Each range is 16 KiB. Empty when no AMD IOMMUs are configured.
+    Smmu(Vec<MemoryRange>),
+    /// AMD IOMMU instances, one 16 KiB range each.
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-    pub amd_iommu_ranges: Vec<MemoryRange>,
+    AmdVi(Vec<MemoryRange>),
+    /// Intel VT-d units, one 4 KiB range each.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    IntelVtd(Vec<MemoryRange>),
 }
 
 #[derive(Debug)]
@@ -215,11 +232,8 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
-    // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
-    // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
-    //
-    // TODO: fix the Linux loader and move this above 4GB before the layout
-    // is stabilized.
+    // ECAM: dynamically allocated above 4GB, keeping the low MMIO window free
+    // for devices that require 32-bit addressing.
     for se in &mut segment_ecams {
         let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
         builder.request(
@@ -227,7 +241,7 @@ pub(super) fn resolve_memory_layout(
             &mut se.range,
             bus_count * PCIE_ECAM_BYTES_PER_BUS,
             PCIE_ECAM_BYTES_PER_BUS,
-            Placement::Mmio32,
+            Placement::Mmio64,
         );
     }
 
@@ -301,40 +315,46 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
-    // SMMUv3: allocate one 128 KiB region per instance. Placed below 4 GiB
-    // alongside other aarch64 system devices (GIC, ITS, PL011).
-    let smmu_count = input
+    // IOMMU: a VM has at most one IOMMU type, so determine it once and
+    // allocate one MMIO region per configured instance, placed below 4 GiB
+    // alongside other system devices. Geometry is per-type; the ranges are
+    // collapsed into `ResolvedIommuRanges` after allocation.
+    let iommu_kind = input
         .pcie_root_complexes
         .iter()
-        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
-        .count();
-    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; smmu_count];
-    for (idx, range) in smmu_ranges.iter_mut().enumerate() {
-        builder.request(
-            format!("smmu-{idx}"),
-            range,
-            SMMU_SIZE,
-            SMMU_SIZE,
-            Placement::Mmio32,
-        );
-    }
-
-    // AMD IOMMU: allocate one 16 KiB region per instance, placed below 4 GiB.
-    const AMD_IOMMU_MMIO_SIZE: u64 = 0x4000; // 16 KiB per AMD IOMMU spec §3.4
-    let amd_iommu_count = input
+        .find_map(|rc| rc.iommu.clone());
+    let iommu_count = input
         .pcie_root_complexes
         .iter()
-        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::AmdVi)))
+        .filter(|rc| rc.iommu.is_some())
         .count();
-    let mut amd_iommu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; amd_iommu_count];
-    for (idx, range) in amd_iommu_ranges.iter_mut().enumerate() {
-        builder.request(
-            format!("amd-iommu-{idx}"),
-            range,
-            AMD_IOMMU_MMIO_SIZE,
-            AMD_IOMMU_MMIO_SIZE,
-            Placement::Mmio32,
+    let mut iommu_ranges = vec![MemoryRange::EMPTY; iommu_count];
+    if let Some(kind) = &iommu_kind {
+        assert!(
+            input
+                .pcie_root_complexes
+                .iter()
+                .filter_map(|rc| rc.iommu.as_ref())
+                .all(|other| std::mem::discriminant(other) == std::mem::discriminant(kind)),
+            "all configured IOMMUs must be the same type"
         );
+        let (name, size) = match kind {
+            // SMMUv3: 128 KiB region (two 64 KiB pages).
+            PcieIommuConfig::Smmu => ("smmu", SMMU_SIZE),
+            // AMD IOMMU: 16 KiB per AMD IOMMU spec §3.4.
+            PcieIommuConfig::AmdVi => ("amd-iommu", 0x4000),
+            // Intel VT-d: 4 KiB per VT-d spec.
+            PcieIommuConfig::IntelVtd => ("intel-vtd", 0x1000),
+        };
+        for (idx, range) in iommu_ranges.iter_mut().enumerate() {
+            builder.request(
+                format!("{name}-{idx}"),
+                range,
+                size,
+                size,
+                Placement::Mmio32,
+            );
+        }
     }
 
     // RAM request order is part of the NUMA compatibility contract: the first
@@ -404,6 +424,16 @@ pub(super) fn resolve_memory_layout(
     let placed_ranges = builder
         .allocate()
         .context("allocating memory layout ranges")?;
+
+    // Collapse the allocated IOMMU ranges into the type-keyed enum. The Vec
+    // could not be moved earlier because the builder borrowed its elements
+    // until `allocate`.
+    let iommu_ranges = match iommu_kind {
+        None => ResolvedIommuRanges::None,
+        Some(PcieIommuConfig::Smmu) => ResolvedIommuRanges::Smmu(iommu_ranges),
+        Some(PcieIommuConfig::AmdVi) => ResolvedIommuRanges::AmdVi(iommu_ranges),
+        Some(PcieIommuConfig::IntelVtd) => ResolvedIommuRanges::IntelVtd(iommu_ranges),
+    };
 
     // Subdivide per-segment ECAM blocks into per-RC sub-ranges.
     for (root_complex, ranges) in input
@@ -514,8 +544,7 @@ pub(super) fn resolve_memory_layout(
         } else {
             Some(vtl2_framebuffer_range.start())
         },
-        smmu_ranges,
-        amd_iommu_ranges,
+        iommu_ranges,
     })
 }
 
@@ -639,6 +668,8 @@ mod tests {
             ports: Vec::new(),
             cxl: None,
             iommu: None,
+            vnode: None,
+            preserve_bars: false,
         }
     }
 
@@ -714,8 +745,8 @@ mod tests {
         let ranges = &actual.pcie_root_complex_ranges[0];
 
         assert!(
-            ranges.ecam_range.end() <= 4 * GB,
-            "ECAM should be below 4 GB"
+            ranges.ecam_range.start() >= 4 * GB,
+            "ECAM should be above 4 GB"
         );
         assert_eq!(ranges.low_mmio.len(), 64 * MB);
         assert_eq!(ranges.high_mmio.len(), GB);
@@ -752,6 +783,8 @@ mod tests {
                 ports: Vec::new(),
                 cxl: None,
                 iommu: None,
+                vnode: None,
+                preserve_bars: false,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -764,6 +797,8 @@ mod tests {
                 ports: Vec::new(),
                 cxl: None,
                 iommu: None,
+                vnode: None,
+                preserve_bars: false,
             },
         ];
         let mut config = input(&[2 * GB], None);
@@ -800,6 +835,8 @@ mod tests {
             ports: Vec::new(),
             cxl: None,
             iommu: None,
+            vnode: None,
+            preserve_bars: false,
         }];
         let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
@@ -991,33 +1028,6 @@ mod tests {
             err.to_string().contains("must end at or below 4 GiB"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn ecam_below_256mb_is_rejected() {
-        // Force ECAM placement below 256 MiB by reserving most of the free
-        // Mmio32 window for low_mmio. The fixed chipset_low_mmio at the top
-        // of 32-bit space leaves 3968 MiB on x86_64 and 3584 MiB on aarch64
-        // for dynamic Mmio32 requests; size low_mmio to push ECAM near
-        // 127 MiB on both. The resolver must bail because MCFG cannot
-        // represent a bus-0 base below the ECAM start.
-        let low_mmio_size = if cfg!(guest_arch = "x86_64") {
-            3840 * MB
-        } else {
-            3456 * MB
-        };
-        let root_complexes = [pcie_root_complex(
-            PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
-            },
-            PcieMmioRangeConfig::Dynamic { size: GB },
-        )];
-        let mut config = input(&[2 * GB], None);
-        config.pcie_root_complexes = &root_complexes;
-
-        let err = resolve_memory_layout(config).unwrap_err();
-
-        assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
     }
 
     #[test]

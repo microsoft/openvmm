@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::KvmProcessor;
 use super::regs::register_to_msr;
 use crate::KvmError;
 use crate::KvmPartitionInner;
@@ -12,58 +13,85 @@ use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
-use vm_topology::processor::x86::X86VpInfo;
 use x86defs::SegmentAttributes;
 use zerocopy::FromZeros;
 
-pub struct KvmVpStateAccess<'a> {
-    partition: &'a KvmPartitionInner,
-    vp_info: X86VpInfo,
+/// Per-VP state access for a bound [`KvmProcessor`].
+///
+/// This borrows the processor mutably so that synic save/restore can read and
+/// re-establish the SIMP/SIEFP overlay pages (and the processor's tracked synic
+/// register state) through the very same `OverlayPage` instances the run loop
+/// maintains.
+pub struct KvmVpStateAccess<'a, 'b> {
+    vp: &'a mut KvmProcessor<'b>,
+}
+
+impl<'a, 'b> KvmVpStateAccess<'a, 'b> {
+    pub(crate) fn new(vp: &'a mut KvmProcessor<'b>) -> Self {
+        Self { vp }
+    }
 }
 
 impl KvmPartitionInner {
-    #[track_caller]
-    pub fn vp_state_access(&self, vp_index: VpIndex) -> KvmVpStateAccess<'_> {
-        KvmVpStateAccess {
-            partition: self,
-            vp_info: self.vp(vp_index).unwrap().vp_info,
-        }
+    /// Returns a KVM vcpu handle for the given VP, for partition-level register
+    /// access that does not require a bound [`KvmProcessor`].
+    pub(crate) fn vp_kvm(&self, vp_index: VpIndex) -> kvm::Processor<'_> {
+        self.kvm.vp(self.vp(vp_index).unwrap().vp_info.apic_id)
     }
 }
 
-impl KvmVpStateAccess<'_> {
+/// Reads MSR-backed register state from a KVM vcpu.
+pub(crate) fn get_msrs_state<T, const N: usize>(kvm: &kvm::Processor<'_>) -> Result<T, KvmError>
+where
+    T: HvRegisterState<HvX64RegisterName, N>,
+{
+    let mut msrs = T::default();
+    let names = msrs.names().map(|name| register_to_msr(name).unwrap());
+    let mut values = [0; N];
+    kvm.get_msrs(&names, &mut values)?;
+    msrs.set_values(values.into_iter().map(|v| v.into()));
+    Ok(msrs)
+}
+
+/// Writes MSR-backed register state to a KVM vcpu.
+pub(crate) fn set_msrs_state<T, const N: usize>(
+    kvm: &kvm::Processor<'_>,
+    value: &T,
+) -> Result<(), KvmError>
+where
+    T: HvRegisterState<HvX64RegisterName, N>,
+{
+    let mut values = [HvRegisterValue::new_zeroed(); N];
+    value.get_values(values.iter_mut());
+
+    let msrs: Vec<_> = value
+        .names()
+        .map(|name| register_to_msr(name).unwrap())
+        .into_iter()
+        .zip(values.map(|v| v.as_u64()))
+        .collect();
+
+    kvm.set_msrs(&msrs)?;
+    Ok(())
+}
+
+impl KvmVpStateAccess<'_, '_> {
     pub(crate) fn kvm(&self) -> kvm::Processor<'_> {
-        self.partition.kvm.vp(self.vp_info.apic_id)
+        self.vp.partition.kvm.vp(self.vp.inner.vp_info.apic_id)
     }
 
-    pub(crate) fn set_register_state<T, const N: usize>(&self, value: &T) -> Result<(), KvmError>
+    fn set_register_state<T, const N: usize>(&self, value: &T) -> Result<(), KvmError>
     where
         T: HvRegisterState<HvX64RegisterName, N>,
     {
-        let mut values = [HvRegisterValue::new_zeroed(); N];
-        value.get_values(values.iter_mut());
-
-        let msrs: Vec<_> = value
-            .names()
-            .map(|name| register_to_msr(name).unwrap())
-            .into_iter()
-            .zip(values.map(|v| v.as_u64()))
-            .collect();
-
-        self.kvm().set_msrs(&msrs)?;
-        Ok(())
+        set_msrs_state(&self.kvm(), value)
     }
 
-    pub(crate) fn get_register_state<T, const N: usize>(&self) -> Result<T, KvmError>
+    fn get_register_state<T, const N: usize>(&self) -> Result<T, KvmError>
     where
         T: HvRegisterState<HvX64RegisterName, N>,
     {
-        let mut msrs = T::default();
-        let names = msrs.names().map(|name| register_to_msr(name).unwrap());
-        let mut values = [0; N];
-        self.kvm().get_msrs(&names, &mut values)?;
-        msrs.set_values(values.into_iter().map(|v| v.into()));
-        Ok(msrs)
+        get_msrs_state(&self.kvm())
     }
 }
 
@@ -121,11 +149,11 @@ fn table_reg_from_kvm(reg: kvm::kvm_dtable) -> TableRegister {
     }
 }
 
-impl AccessVpState for KvmVpStateAccess<'_> {
+impl AccessVpState for KvmVpStateAccess<'_, '_> {
     type Error = KvmError;
 
     fn caps(&self) -> &virt::PartitionCapabilities {
-        &self.partition.caps
+        &self.vp.partition.caps
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
@@ -363,12 +391,12 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
         let mut data = [0; 4096];
         self.kvm().get_xsave(&mut data)?;
-        Ok(vp::Xsave::from_standard(&data, &self.partition.caps))
+        Ok(vp::Xsave::from_standard(&data, &self.vp.partition.caps))
     }
 
     fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
         let mut data = [0; 4096];
-        value.write_standard(&mut data, &self.partition.caps);
+        value.write_standard(&mut data, &self.vp.partition.caps);
         self.kvm().set_xsave(&data)?;
         Ok(())
     }
@@ -506,42 +534,59 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     }
 
     fn set_synic_msrs(&mut self, value: &vp::SyntheticMsrs) -> Result<(), Self::Error> {
-        self.set_register_state(value)
+        self.set_register_state(value)?;
+
+        // Mirror the restored synic MSRs into the processor's tracked state and
+        // overlay pages. Runs before set_synic_{message,event_flags}_page (per
+        // the state_trait! ordering) so those writes land in the right backing.
+        let scontrol = hvdef::HvSynicScontrol::from(value.scontrol);
+        let simp = hvdef::HvSynicSimpSiefp::from(value.simp);
+        let siefp = hvdef::HvSynicSimpSiefp::from(value.siefp);
+        let partition = self.vp.partition;
+        super::sync_synic_overlay(&mut self.vp.simp_overlay, simp, &partition.gm);
+        super::sync_synic_overlay(&mut self.vp.siefp_overlay, siefp, &partition.gm);
+        self.vp.scontrol = scontrol;
+        self.vp.simp = simp;
+        self.vp.siefp = siefp;
+        *self.vp.inner.siefp.write() = if scontrol.enabled() { siefp } else { 0.into() };
+        Ok(())
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        // TODO
-        Ok(vp::SynicMessagePage { data: [0; 4096] })
+        let data = self.vp.simp_overlay.save_page();
+        Ok(vp::SynicMessagePage { data })
     }
 
-    fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        // TODO
+    fn set_synic_message_page(&mut self, value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
+        // set_synic_msrs has already synced the overlay to the restored SIMP
+        // MSR, so this lands the contents in the right backing.
+        self.vp.simp_overlay.restore_page(&value.data);
         Ok(())
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        // TODO
-        Ok(vp::SynicEventFlagsPage { data: [0; 4096] })
+        let data = self.vp.siefp_overlay.save_page();
+        Ok(vp::SynicEventFlagsPage { data })
     }
 
     fn set_synic_event_flags_page(
         &mut self,
-        _value: &vp::SynicEventFlagsPage,
+        value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        // TODO
+        // See set_synic_message_page.
+        self.vp.siefp_overlay.restore_page(&value.data);
         Ok(())
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
-        // TODO
-        Ok(Default::default())
+        Ok(self.vp.inner.synic_message_queue.save())
     }
 
     fn set_synic_message_queues(
         &mut self,
-        _value: &vp::SynicMessageQueues,
+        value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
-        // TODO
+        self.vp.inner.synic_message_queue.restore(value);
         Ok(())
     }
 

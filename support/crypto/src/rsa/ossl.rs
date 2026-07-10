@@ -4,6 +4,7 @@
 //! RSA implementation using OpenSSL.
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> RsaError {
@@ -176,13 +177,12 @@ impl RsaPublicKeyInner {
         self.0.rsa().unwrap().size() as usize
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
         // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
-        self.0.rsa().unwrap().n().to_vec()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
-        self.0.rsa().unwrap().e().to_vec()
+        let rsa = self.0.rsa().unwrap();
+        RsaPublicKeyComponents {
+            modulus: rsa.n().to_vec(),
+            public_exponent: rsa.e().to_vec(),
+        }
     }
 }

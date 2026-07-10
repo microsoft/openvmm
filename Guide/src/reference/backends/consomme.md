@@ -131,6 +131,16 @@ Key implications of the split-TCP design:
 Consomme supports TCP Segmentation Offload (TSO) from the guest NIC,
 window scaling, and MSS negotiation.
 
+The per-connection ring buffers autotune. Each connection starts with a
+small buffer (16 KiB by default) and grows on demand — doubling under
+sustained throughput pressure up to a ceiling (4 MiB by default) — so
+idle and short-lived connections stay cheap while bulk transfers can
+ramp up to a large window. Embedders can override the bounds via the
+`tcp_rx_buffer` and `tcp_tx_buffer` fields on `ConsommeParams` (each a
+`TcpBufferBounds { initial, max }`); the values are clamped to
+`[16 KiB, 4 MiB]` and rounded up to a power of two. Setting
+`initial == max` pins a fixed size and disables growth.
+
 Inbound connections require explicit port forwarding — OpenVMM can
 programmatically bind host ports and forward them into the guest.
 

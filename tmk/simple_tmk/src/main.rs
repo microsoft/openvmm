@@ -9,6 +9,7 @@
 
 mod prelude;
 
+mod aarch64;
 mod common;
 mod x86_64;
 

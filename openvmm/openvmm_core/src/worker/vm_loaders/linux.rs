@@ -5,12 +5,8 @@ use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
-use loader::linux::AcpiConfig;
-use loader::linux::CommandLineConfig;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
-use loader::linux::RegisterConfig;
-use loader::linux::ZeroPageConfig;
 use memory_range::MemoryRange;
 use std::ffi::CString;
 use std::io::Seek;
@@ -54,26 +50,39 @@ pub struct KernelConfig<'a> {
     pub mem_layout: &'a MemoryLayout,
 }
 
-pub struct AcpiTables {
-    /// The RDSP. Assumed to be given a whole page.
-    pub rdsp: Vec<u8>,
-    /// The remaining tables pointed to by the RDSP.
-    pub tables: Vec<u8>,
+/// The default SMBIOS identity for firmware-less Linux direct boot.
+///
+/// There is no configuration surface yet, so every direct-boot VM gets this
+/// fixed OpenVMM identity. The UUID is left nil.
+fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
+    use loader::smbios;
+
+    smbios::SmbiosTables {
+        bios: smbios::SmbiosBiosInfo {
+            vendor: "OpenVMM",
+            version: "OpenVMM Direct",
+            release_date: "06/19/2026",
+            major: 0,
+            minor: 0,
+        },
+        system: smbios::SmbiosSystemInfo {
+            manufacturer: "OpenVMM",
+            product_name: "OpenVMM Virtual Machine",
+            version: "",
+            serial_number: "",
+            sku_number: "",
+            family: "",
+            uuid: [0; 16],
+        },
+    }
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
-    acpi_at_gpa: impl FnOnce(u64) -> AcpiTables,
+    acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
 ) -> Result<Vec<X86Register>, Error> {
-    const GDT_BASE: u64 = 0x1000;
-    const CR3_BASE: u64 = 0x4000;
-    const ZERO_PAGE_BASE: u64 = 0x2000;
-    const CMDLINE_BASE: u64 = 0x3000;
-    const ACPI_BASE: u64 = 0xe0000;
-
-    let kaddr: u64 = 0x100000;
     let mut kernel_file = cfg.kernel;
 
     let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
@@ -92,45 +101,19 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
-    let cmdline_config = CommandLineConfig {
-        address: CMDLINE_BASE,
-        cmdline: &cmdline,
-    };
-
-    let register_config = RegisterConfig {
-        gdt_address: GDT_BASE,
-        page_table_address: CR3_BASE,
-    };
-
-    let acpi_tables = acpi_at_gpa(ACPI_BASE);
-
-    // NOTE: The rdsp is given a whole page.
-    let acpi_len = acpi_tables.tables.len() + 0x1000;
-    let acpi_config = AcpiConfig {
-        rdsp_address: ACPI_BASE,
-        rdsp: &acpi_tables.rdsp,
-        tables_address: ACPI_BASE + 0x1000,
-        tables: &acpi_tables.tables,
-    };
-
-    let zero_page_config = ZeroPageConfig {
-        address: ZERO_PAGE_BASE,
-        mem_layout: cfg.mem_layout,
-        acpi_base_address: ACPI_BASE,
-        acpi_len,
-    };
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
+    // The loader owns the sub-1 MB layout; we supply only the kernel, command
+    // line, an ACPI builder, and the default SMBIOS identity.
     loader::linux::load_x86(
         &mut loader,
         &mut kernel_file,
-        kaddr,
         initrd_config,
-        cmdline_config,
-        zero_page_config,
-        acpi_config,
-        register_config,
+        &cmdline,
+        cfg.mem_layout,
+        acpi_at_gpa,
+        Some(default_smbios_tables()),
     )
     .map_err(Error::Loader)?;
 
@@ -241,6 +224,7 @@ fn build_dt(
     let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
     let p_iommu_cells = builder.add_string("#iommu-cells")?;
     let p_iommu_map = builder.add_string("iommu-map")?;
+    let p_linux_pci_probe_only = builder.add_string("linux,pci-probe-only")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
@@ -508,6 +492,14 @@ fn build_dt(
             // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
             node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
         }
+        if bridge.preserve_boot_config {
+            // Tell Linux to keep the firmware-assigned PCI boot configuration
+            // (bus numbers and BARs) instead of re-enumerating. Linux checks
+            // this via of_pci_preserve_config(). This is the device-tree
+            // equivalent of the host-bridge "Ignore PCI Boot Configurations"
+            // _DSM emitted on the ACPI path.
+            node = node.add_u32(p_linux_pci_probe_only, 1)?;
+        }
         root_builder = node.end_node()?;
     }
 
@@ -625,6 +617,7 @@ fn write_efi_and_acpi_tables(
     use uefi_specs::uefi::boot::EfiMemoryType;
     use uefi_specs::uefi::boot::EfiRtPropertiesTable;
     use uefi_specs::uefi::boot::EfiSystemTable;
+    use uefi_specs::uefi::boot::SMBIOS3_TABLE_GUID;
 
     // Helper to align a value up to the given power-of-two alignment.
     fn align_up(val: u64, align: u64) -> u64 {
@@ -633,7 +626,7 @@ fn write_efi_and_acpi_tables(
 
     // --- ACPI tables ---
     let tables_addr = rsdp_addr + 0x1000;
-    gm.write_at(rsdp_addr, &acpi_tables.rdsp)
+    gm.write_at(rsdp_addr, &acpi_tables.rsdp)
         .map_err(Error::Efi)?;
     gm.write_at(tables_addr, &acpi_tables.tables)
         .map_err(Error::Efi)?;
@@ -648,7 +641,7 @@ fn write_efi_and_acpi_tables(
 
     // Configuration table entries (24 bytes each: 16-byte GUID + 8-byte pointer)
     const CONFIG_ENTRY_SIZE: u64 = 24;
-    let num_config_entries: u64 = 2;
+    let num_config_entries: u64 = 3;
     let config_table_addr = cursor;
     cursor += num_config_entries * CONFIG_ENTRY_SIZE;
 
@@ -666,6 +659,19 @@ fn write_efi_and_acpi_tables(
     let rt_props = EfiRtPropertiesTable::NONE_SUPPORTED;
     cursor += size_of::<EfiRtPropertiesTable>() as u64;
 
+    // SMBIOS — unlike x86 (which brute-force scans the F-segment for the
+    // `_SM3_` anchor), the aarch64 kernel discovers DMI only via the SMBIOS3
+    // EFI configuration-table entry. Reserve the entry point and structure
+    // table from the metadata page (16-byte aligned) and build them with the
+    // shared arch-neutral table builder.
+    cursor = align_up(cursor, 16);
+    let smbios_ep_addr = cursor;
+    cursor += loader::smbios::ENTRY_POINT_SIZE as u64;
+    cursor = align_up(cursor, 16);
+    let smbios_table_addr = cursor;
+    let smbios = loader::smbios::build(&default_smbios_tables(), smbios_table_addr);
+    cursor += smbios.structure_table.len() as u64;
+
     // Compute how many pages the metadata region spans.
     let metadata_end = align_up(cursor, 0x1000);
     let metadata_pages = (metadata_end - efi_base) / 0x1000;
@@ -678,11 +684,18 @@ fn write_efi_and_acpi_tables(
     gm.write_at(rt_props_addr, rt_props.as_bytes())
         .map_err(Error::Efi)?;
 
-    let mut config_entries = [0u8; 48];
+    gm.write_at(smbios_ep_addr, &smbios.entry_point)
+        .map_err(Error::Efi)?;
+    gm.write_at(smbios_table_addr, &smbios.structure_table)
+        .map_err(Error::Efi)?;
+
+    let mut config_entries = [0u8; 72];
     config_entries[0..16].copy_from_slice(ACPI_20_TABLE_GUID.as_bytes());
     config_entries[16..24].copy_from_slice(&rsdp_addr.to_le_bytes());
     config_entries[24..40].copy_from_slice(EFI_RT_PROPERTIES_TABLE_GUID.as_bytes());
     config_entries[40..48].copy_from_slice(&rt_props_addr.to_le_bytes());
+    config_entries[48..64].copy_from_slice(SMBIOS3_TABLE_GUID.as_bytes());
+    config_entries[64..72].copy_from_slice(&smbios_ep_addr.to_le_bytes());
     gm.write_at(config_table_addr, &config_entries)
         .map_err(Error::Efi)?;
 

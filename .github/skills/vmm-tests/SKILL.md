@@ -16,18 +16,18 @@ building, and test execution automatically.
 
 ```bash
 # Run a specific test
-cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
+cargo xflowey vmm-tests-run --filter "test(my_test_name)"
 
 # Run all tests matching a prefix
-cargo xflowey vmm-tests-run --filter "test(/^boot_/)" --dir /tmp/vmm-tests-run
+cargo xflowey vmm-tests-run --filter "test(/^boot_/)"
 
 # Run all tests (rarely needed locally)
-cargo xflowey vmm-tests-run --filter "all()" --dir /tmp/vmm-tests-run
+cargo xflowey vmm-tests-run --filter "all()"
 ```
 
-The `--dir` flag is **required** and specifies where build artifacts go.
-**Always ask the user** which directory to use for `--dir` — do not guess
-or pick a default. Storage requirements vary and the user knows their setup.
+Do not pass `--dir` — it defaults to `target/vmm_tests` and is only required
+when cross-compiling for Windows from WSL2, where the output directory must be
+on the Windows filesystem (e.g., `--dir /mnt/d/vmm_tests`).
 
 ## Filter Syntax
 
@@ -57,8 +57,9 @@ cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
 | `linux-x64` | Linux x86_64 |
 
 **Windows from WSL2**: The output directory **must** be on the Windows
-filesystem (e.g., `/mnt/d/...`). Cross-compilation setup is required first —
-see `Guide/src/dev_guide/getting_started/cross_compile.md`.
+filesystem (e.g., `/mnt/d/...`). `--dir` is required in this case.
+Cross-compilation setup is required first — see
+`Guide/src/dev_guide/getting_started/cross_compile.md`.
 
 ## Artifact Handling (Lazy Fetch)
 
@@ -72,12 +73,11 @@ SQLite caching. This avoids multi-GB upfront downloads.
 
 ## Viewing Logs
 
-```bash
-# Show test output (petri logs, guest serial, etc.)
-cargo xflowey vmm-tests-run --filter "test(foo)" --dir /tmp/vmm-tests-run -- --no-capture
+Test output (petri logs, guest serial, etc.) is shown by default on failure.
+For full OpenVMM tracing, set the `OPENVMM_LOG` environment variable:
 
-# Full OpenVMM trace output
-OPENVMM_LOG=trace cargo xflowey vmm-tests-run --filter "test(foo)" --dir /tmp/vmm-tests-run -- --no-capture
+```bash
+OPENVMM_LOG=trace cargo xflowey vmm-tests-run --filter "test(foo)"
 ```
 
 ## Other Useful Flags

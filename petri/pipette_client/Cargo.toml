@@ -17,6 +17,7 @@ anyhow.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
+term.workspace = true
 tracing.workspace = true
 typed-path.workspace = true
 xshell-macros.workspace = true

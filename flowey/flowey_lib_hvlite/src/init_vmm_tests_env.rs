@@ -4,7 +4,7 @@
 //! Setup the environment variables and directory structure that the VMM tests
 //! require to run.
 
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::common::CommonArch;
@@ -38,14 +38,7 @@ flowey_request! {
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
-        pub register_openhcl_igvm_files: Option<
-            ReadVar<
-                Vec<(
-                    OpenhclIgvmRecipe,
-                    crate::run_igvmfilegen::IgvmOutput,
-                )>,
-            >,
-        >,
+        pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -54,6 +47,8 @@ flowey_request! {
         pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
         /// Register a vmgstool binary
         pub register_vmgstool: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
+        /// Register a vmgstool-dev binary
+        pub register_vmgstool_dev: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
         /// Register a Windows tpm_guest_tests binary
         pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Linux tpm_guest_tests binary
@@ -103,6 +98,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmgstool_dev,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
@@ -147,6 +143,11 @@ impl SimpleFlowNode for Node {
 
         let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
 
+        // In CI, unstable test failures are non-gating and should be reported as
+        // passing (with a warning). Outside of CI, unstable test failures are
+        // reported as failures unless the user explicitly opts in.
+        let ignore_unstable_failures = !matches!(ctx.backend(), FlowBackend::Local);
+
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
@@ -160,6 +161,7 @@ impl SimpleFlowNode for Node {
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let vmgstool = register_vmgstool.claim(ctx);
+            let vmgstool_dev = register_vmgstool_dev.claim(ctx);
             let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
@@ -279,6 +281,10 @@ impl SimpleFlowNode for Node {
                     env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
                 }
 
+                if ignore_unstable_failures {
+                    env.insert("PETRI_IGNORE_UNSTABLE_FAILURES".into(), "1".into());
+                }
+
                 if let Some(openvmm) = openvmm {
                     // TODO OSS: update filenames to use openvmm naming (requires petri updates)
                     match rt.read(openvmm) {
@@ -313,7 +319,9 @@ impl SimpleFlowNode for Node {
                 if let Some(pipette_linux) = pipette_linux {
                     match rt.read(pipette_linux) {
                         crate::build_pipette::PipetteOutput::LinuxBin { bin, dbg: _ } => {
-                            fs_err::copy(bin, test_content_dir.join("pipette"))?;
+                            let dst = test_content_dir.join("pipette");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
                         }
                         _ => {
                             anyhow::bail!("did not find `pipette.exe` in RegisterPipetteLinuxMusl")
@@ -373,6 +381,19 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
+                if let Some(vmgstool_dev) = vmgstool_dev {
+                    match rt.read(vmgstool_dev) {
+                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe, .. } => {
+                            fs_err::copy(exe, test_content_dir.join("vmgstool-dev.exe"))?;
+                        }
+                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin, .. } => {
+                            let dst = test_content_dir.join("vmgstool-dev");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
+                        }
+                    }
+                }
+
                 if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {
                     let TpmGuestTestsOutput::WindowsBin { exe, .. } =
                         rt.read(tpm_guest_tests_windows)
@@ -398,27 +419,16 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 
-                if let Some(openhcl_igvm_files) = openhcl_igvm_files {
-                    for (recipe, openhcl_igvm) in rt.read(openhcl_igvm_files) {
-                        let crate::run_igvmfilegen::IgvmOutput { igvm_bin, .. } = openhcl_igvm;
-
-                        let filename = match recipe {
-                            OpenhclIgvmRecipe::X64 => "openhcl-x64.bin",
-                            OpenhclIgvmRecipe::X64Devkern => "openhcl-x64-devkern.bin",
-                            OpenhclIgvmRecipe::X64Cvm => "openhcl-x64-cvm.bin",
-                            OpenhclIgvmRecipe::X64TestLinuxDirect => {
-                                "openhcl-x64-test-linux-direct.bin"
-                            }
-                            OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64.bin",
-                            OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-devkern.bin",
-                            _ => {
-                                log::info!("petri doesn't support this OpenHCL recipe: {recipe:?}");
-                                continue;
-                            }
-                        };
-
-                        fs_err::copy(igvm_bin, test_content_dir.join(filename))?;
-                    }
+                for openhcl_igvm in rt.read(openhcl_igvm_files) {
+                    let igvm_bin = openhcl_igvm.igvm_bin();
+                    if let Some(recipe) = openhcl_igvm.recipe() {
+                        fs_err::copy(
+                            igvm_bin,
+                            test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
+                        )?;
+                    } else {
+                        log::warn!("petri doesn't support custom OpenHCL files");
+                    };
                 }
 
                 if let Some(release_igvm_files) = release_igvm_files_dir {

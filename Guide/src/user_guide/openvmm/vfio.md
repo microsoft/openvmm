@@ -118,6 +118,9 @@ The `--vfio` value is a comma-separated list of `key=value` pairs:
 - `host=<pci_bdf>` (required) — the PCI BDF of the VFIO device on the host (e.g., `0000:01:00.0`)
 - `port=<name>` (required) — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
 - `iommu=<id>` (optional) — reference to an `--iommu` context; see [Using iommufd (cdev path)](#using-iommufd-cdev-path) below
+- `bar0=pt` through `bar5=pt` (optional) — pin the specified BAR to its
+  physical host address (GPA = HPA); see [Peer-to-peer DMA](#peer-to-peer-dma)
+  below
 
 ```admonish tip
 You can assign multiple devices by adding more root ports and `--vfio` flags:
@@ -163,6 +166,40 @@ lspci
 ```
 
 The device will appear with its real vendor and device ID from the physical hardware.
+
+## Peer-to-peer DMA
+
+Normally, peer-to-peer (P2P) DMA between two passthrough devices works
+via ATS (Address Translation Services): each device translates DMA
+addresses through the IOMMU, so guest BAR placement doesn't matter.
+
+Some platforms — notably NVIDIA GB200 and GB300 — do not support ATS in
+their root complex. On these machines, P2P DMA between devices (e.g., GPU
+and NIC) works by disabling ACS on the physical PCIe switch so that TLPs
+route directly between devices without going through the IOMMU. Since
+there is no translation layer, the devices use raw physical addresses for
+P2P DMA. This means the guest BAR addresses must be identity-mapped to
+the host BAR addresses (GPA = HPA), or P2P DMA will target the wrong
+location.
+
+To enable this, pin the relevant BARs with `bar<N>=pt` on each `--vfio`
+device and set `preserve_bars` on the root complex so the PCI resource
+allocator keeps pinned BARs at their physical addresses:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex \
+    rc0,preserve_bars,low_mmio_base=0xc0000000,high_mmio_base=0x100000000 \
+  --pcie-root-port rc0:rp0 \
+  --pcie-root-port rc0:rp1 \
+  --vfio host=0000:01:00.0,port=rp0,bar0=pt \
+  --vfio host=0000:02:00.0,port=rp1,bar0=pt \
+  ...
+```
+
+The `low_mmio_base=` and `high_mmio_base=` options pin the MMIO apertures
+to fixed addresses so the allocator can place both pinned and dynamic BARs
+correctly.
 
 ## Optional: use hugetlb-backed guest RAM
 

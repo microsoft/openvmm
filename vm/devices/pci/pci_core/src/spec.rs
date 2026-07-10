@@ -117,6 +117,7 @@ pub mod hwid {
             NONE = 0x00,
 
             // Mass Storage Controller (Class code: 0x01)
+            MASS_STORAGE_CONTROLLER_SCSI = 0x00,
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY = 0x08,
 
             // Network Controller (Class code: 0x02)
@@ -126,6 +127,10 @@ pub mod hwid {
             // Display Controller (Class code: 0x03)
             // Other values: 0x00 (VGA), 0x01 (XGA), 0x80 (Other)
             DISPLAY_CONTROLLER_3D = 0x02,
+
+            // Simple Communication Controller (Class code: 0x07)
+            // Other values: 0x00 - 0x07
+            SIMPLE_COMMUNICATION_CONTROLLER_OTHER = 0x80,
 
             // Bridge (Class code: 0x06)
             // Other values: 0x02 - 0x0A

@@ -14,13 +14,17 @@ use openvmm_defs::config::VpAssignment;
 ///
 /// Validation checks:
 /// - At least one node exists
-/// - All nodes use the same VP assignment mode (no mixing)
+/// - All CPU-bearing nodes use the same VP assignment mode (no mixing)
 /// - When `Explicit`, VP lists are disjoint, complete, and in range
 /// - Distance entries reference valid nodes, have values >= 10, and
 ///   self-distances are exactly 10
 ///
-/// `FromTopology` assigns VPs by `(vp_index / vps_per_socket) % num_nodes`.
-/// `Explicit` uses the specified VP-to-node assignments directly.
+/// `FromTopology` assigns VPs by round-robin over the CPU-bearing nodes.
+/// `Explicit` uses the specified VP-to-node assignments directly. `Empty`
+/// declares a CPU-less node; it claims no VPs and is compatible with either
+/// mode, so a CPU-less node can be combined with auto-assigned
+/// (`FromTopology`) nodes without forcing every other node to spell out its
+/// VP set.
 pub fn resolve_numa_vp_assignment(
     topology: &NumaTopology,
     proc_count: u32,
@@ -33,6 +37,9 @@ pub fn resolve_numa_vp_assignment(
     let mut explicit_count = 0usize;
     let mut vp_to_vnode = vec![0u32; proc_count as usize];
     let mut assigned = vec![false; proc_count as usize];
+    // Node indices eligible to receive auto-assigned VPs, i.e. the
+    // `FromTopology` nodes. CPU-less (`Empty`) nodes are not included.
+    let mut from_topology_nodes: Vec<u32> = Vec::new();
 
     for (i, node) in topology.nodes.iter().enumerate() {
         match &node.vps {
@@ -51,26 +58,32 @@ pub fn resolve_numa_vp_assignment(
                     vp_to_vnode[vp as usize] = i as u32;
                 }
             }
-            VpAssignment::FromTopology => {}
+            VpAssignment::FromTopology => from_topology_nodes.push(i as u32),
+            // CPU-less node: claims no VPs, compatible with any mode.
+            VpAssignment::Empty => {}
         }
     }
 
-    if explicit_count > 0 {
-        // All nodes must be explicit — no mixing.
+    if !from_topology_nodes.is_empty() {
+        // Some nodes request automatic VP assignment. That can't be combined
+        // with nodes that list specific VPs, since automatic assignment needs
+        // to own the full set of VPs to distribute. CPU-less nodes are fine:
+        // they claim no VPs.
         anyhow::ensure!(
-            explicit_count == num_nodes,
-            "cannot mix Explicit and FromTopology VP assignments; \
-             all nodes must use the same mode"
+            explicit_count == 0,
+            "NUMA nodes mix automatic and explicit VP assignment; \
+             give every CPU-bearing node an explicit VP list, or none of them"
         );
-        // Every VP must be assigned.
-        for (vp, &is_assigned) in assigned.iter().enumerate() {
-            anyhow::ensure!(is_assigned, "VP {vp} not assigned to any NUMA node");
+        // Assign VPs by socket round-robin across the CPU-bearing nodes only,
+        // skipping any CPU-less (Empty) nodes.
+        let n = from_topology_nodes.len() as u32;
+        for vp in 0..proc_count {
+            vp_to_vnode[vp as usize] = from_topology_nodes[((vp / vps_per_socket) % n) as usize];
         }
     } else {
-        // All FromTopology: assign by socket round-robin.
-        let num_nodes = num_nodes as u32;
-        for vp in 0..proc_count {
-            vp_to_vnode[vp as usize] = (vp / vps_per_socket) % num_nodes;
+        // All CPU-bearing nodes are explicit. Every VP must be assigned.
+        for (vp, &is_assigned) in assigned.iter().enumerate() {
+            anyhow::ensure!(is_assigned, "VP {vp} not assigned to any NUMA node");
         }
     }
 
@@ -366,7 +379,94 @@ mod tests {
             distances: Vec::new(),
         };
         let err = validate(&topo, 4).unwrap_err();
-        assert!(err.to_string().contains("cannot mix"), "{err}");
+        assert!(
+            err.to_string().contains("mix automatic and explicit"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn empty_node_mixed_with_from_topology_accepted() {
+        // A CPU-less (Empty) node can coexist with auto-assigned nodes
+        // without forcing the others to spell out their VP sets. The empty
+        // node is skipped during round-robin assignment.
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(2 * 1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                // CPU-less node (e.g. a generic-initiator target).
+                NumaNode {
+                    mem: None,
+                    vps: VpAssignment::Empty,
+                },
+            ],
+            distances: Vec::new(),
+        };
+        // All VPs land on node 0; node 1 (Empty) is skipped.
+        let map = resolve_numa_vp_assignment(&topo, 4, 1).unwrap();
+        assert_eq!(map, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn empty_node_skipped_in_round_robin() {
+        // Two CPU-bearing FromTopology nodes with a CPU-less node between
+        // them: VPs round-robin only over the two CPU-bearing nodes (0 and 2).
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                NumaNode {
+                    mem: None,
+                    vps: VpAssignment::Empty,
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+            ],
+            distances: Vec::new(),
+        };
+        let map = resolve_numa_vp_assignment(&topo, 4, 1).unwrap();
+        // Round-robin over [node 0, node 2]: 0, 2, 0, 2.
+        assert_eq!(map, vec![0, 2, 0, 2]);
+    }
+
+    #[test]
+    fn empty_node_mixed_with_explicit_accepted() {
+        // A CPU-less node can also coexist with explicit nodes.
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::Explicit(vec![0, 1, 2, 3]),
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::Empty,
+                },
+            ],
+            distances: Vec::new(),
+        };
+        let map = resolve_numa_vp_assignment(&topo, 4, 1).unwrap();
+        assert_eq!(map, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn all_empty_nodes_with_no_vps() {
+        // Degenerate but valid: a single CPU-less node and zero VPs.
+        let topo = NumaTopology {
+            nodes: vec![NumaNode {
+                mem: mem(1024 * 1024 * 1024),
+                vps: VpAssignment::Empty,
+            }],
+            distances: Vec::new(),
+        };
+        let map = resolve_numa_vp_assignment(&topo, 0, 1).unwrap();
+        assert_eq!(map, Vec::<u32>::new());
     }
 
     #[test]

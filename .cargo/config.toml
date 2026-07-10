@@ -33,6 +33,12 @@ AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/aa
 AARCH64_UNDERHILL_LINUX_MUSL_SYMCRYPT_STATIC = "1"
 AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_STATIC = "1"
 
+# Tell ms-tpm-20-ref where to get the prebuilt libtpm.
+X86_64_UNDERHILL_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/x86_64-sysroot/tpm-oss-openssl/lib", relative = true }
+X86_64_UNKNOWN_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/x86_64-sysroot/tpm-oss-openssl/lib", relative = true }
+AARCH64_UNDERHILL_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tpm-oss-openssl/lib", relative = true }
+AARCH64_UNKNOWN_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tpm-oss-openssl/lib", relative = true }
+
 # Tell cc-rs where the Underhill compilers are.
 CC_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
 CC_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
@@ -57,6 +63,24 @@ AARCH64_OPENVMM_LINUX_DIRECT_INITRD = { value = ".packages/underhill-deps-privat
 # what UEFI firmware to use (i.e: use the Microsoft MSVM firmware)
 X86_64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
 AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd", relative = true }
+
+# Hack needed to use the prebuilt libmimalloc.a shipped in openvmm-deps
+# instead of having `libmimalloc-sys`'s build.rs recompile on every run.
+#
+# This is a cargo `links` override: `libmimalloc-sys` declares
+# `links = "mimalloc"`, and the presence of a `[target.<triple>.mimalloc]`
+# table here causes cargo to skip that crate's build script entirely.
+# Skipping it avoids the slow C recompile, but mainly it avoids the
+# `-l static=mimalloc` directive it would otherwise emit. The tables below are
+# therefore intentionally empty stubs.
+[target.x86_64-unknown-linux-musl.mimalloc]
+rustc-link-search = []
+[target.x86_64-underhill-linux-musl.mimalloc]
+rustc-link-search = []
+[target.aarch64-unknown-linux-musl.mimalloc]
+rustc-link-search = []
+[target.aarch64-underhill-linux-musl.mimalloc]
+rustc-link-search = []
 
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [

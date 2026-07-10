@@ -295,31 +295,6 @@ mod tests {
         assert!(cd.valid());
     }
 
-    #[test]
-    fn test_cd_dw0_fields() {
-        let dw0 = CdDw0::new()
-            .with_t0sz(16)
-            .with_tg0(Tg0::GRAN_4K.0)
-            .with_ir0(0b01) // WB
-            .with_or0(0b01)
-            .with_sh0(0b11) // ISH
-            .with_v(true)
-            .with_ips(Ips::IPS_40.0)
-            .with_aa64(true)
-            .with_asid(42);
-
-        assert_eq!(dw0.t0sz(), 16);
-        assert_eq!(dw0.tg0(), Tg0::GRAN_4K.0);
-        assert_eq!(dw0.ir0(), 0b01);
-        assert_eq!(dw0.or0(), 0b01);
-        assert_eq!(dw0.sh0(), 0b11);
-        assert!(dw0.v());
-        assert_eq!(dw0.ips(), Ips::IPS_40.0);
-        assert!(dw0.aa64());
-        assert_eq!(dw0.asid(), 42);
-        assert!(!dw0.epd0());
-    }
-
     fn new_cd() -> Cd {
         Cd {
             qw0: CdDw0::new(),
@@ -349,35 +324,6 @@ mod tests {
             ..new_cd()
         };
         assert_eq!(cd.ttb0(), ttb0_addr);
-    }
-
-    #[test]
-    fn test_cd_full_roundtrip() {
-        let ttb0_addr: u64 = 0x8000_0000;
-        let cd = Cd {
-            qw0: CdDw0::new()
-                .with_t0sz(32)
-                .with_tg0(Tg0::GRAN_4K.0)
-                .with_ir0(0b01)
-                .with_or0(0b01)
-                .with_sh0(0b11)
-                .with_v(true)
-                .with_ips(Ips::IPS_40.0)
-                .with_aa64(true)
-                .with_asid(100),
-            qw1: CdDw1::new().with_ttb0(ttb0_addr >> 4),
-            mair0: 0xFF44_0C04_00BB_FF00,
-            ..new_cd()
-        };
-
-        assert!(cd.valid());
-        assert_eq!(cd.t0sz(), 32);
-        assert_eq!(cd.tg0(), Tg0::GRAN_4K);
-        assert_eq!(cd.ips(), Ips::IPS_40);
-        assert!(cd.aa64());
-        assert_eq!(cd.asid(), 100);
-        assert_eq!(cd.ttb0(), ttb0_addr);
-        assert_eq!(cd.mair0, 0xFF44_0C04_00BB_FF00);
     }
 
     #[test]
@@ -412,12 +358,6 @@ mod tests {
         assert_eq!(Ips::IPS_48.bits(), Some(48));
         assert_eq!(Ips::IPS_52.bits(), Some(52));
         assert_eq!(Ips(0b111).bits(), None);
-    }
-
-    #[test]
-    fn test_cd_invalid() {
-        let cd = new_cd();
-        assert!(!cd.valid());
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
+use crate::memory::KvmMemoryBackingMode;
 use aarch64defs::SystemReg;
 use aarch64defs::Vendor;
 use aarch64defs::gic::GicV2mRegister;
@@ -239,7 +240,7 @@ impl Kvm {
         // Probe GIC version by creating a throwaway VM and attempting to
         // create a GICv3 device. If that fails, try GICv2.
         let kvm = kvm::Kvm::from(file);
-        let probe_vm = kvm.new_vm()?;
+        let probe_vm = kvm.new_vm(kvm::VmType::Default)?;
         let supports_gic_v3 = if probe_vm
             .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3)
             .is_ok()
@@ -830,6 +831,14 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
+            memory_backing_mode: KvmMemoryBackingMode::Userspace,
+            ram_ranges: config
+                .mem_layout
+                .ram()
+                .iter()
+                .map(|range| range.range)
+                .chain(config.mem_layout.vtl2_range())
+                .collect(),
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
             vps: self
@@ -1145,7 +1154,7 @@ impl virt::Hypervisor for Kvm {
             _ => 40,
         };
 
-        let vm = self.kvm.new_vm()?;
+        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
 
         Ok(KvmProtoPartition {
             vm,

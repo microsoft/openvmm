@@ -11,6 +11,7 @@ mesh.workspace = true
 vmcore.workspace = true
 inspect.workspace = true
 tdisp.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

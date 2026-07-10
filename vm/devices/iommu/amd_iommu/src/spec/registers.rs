@@ -328,7 +328,7 @@ pub struct ExtFeat {
     /// Dual event log support.
     #[bits(2)]
     pub dual_evt_log_sup: u8,
-    #[bits(2)]
+    #[bits(1)]
     _reserved2: u64,
     /// SATS (secure ATS) support.
     pub sats_sup: bool,
@@ -375,6 +375,8 @@ pub struct ExtFeat {
     pub vm_guard_io_sup: bool,
     #[bits(4)]
     _reserved3: u64,
+    /// v2 Host Access/Dirty disable support.
+    pub v2_had_dis_sup: bool,
     /// Force physical destination mode support.
     pub force_phy_dest: bool,
     /// SNP support.

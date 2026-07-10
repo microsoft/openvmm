@@ -717,6 +717,130 @@ pub struct Cdw11FeatureReservationPersistence {
     _rsvd: u32,
 }
 
+/// CDW11 layout for Set/Get Features - Asynchronous Event Configuration
+/// (Feature Identifier 0Bh).
+///
+/// Defined in the NVMe Base Specification, "Asynchronous Event Configuration"
+/// Feature section (Base 2.0c section 5.21.1.11 / Base 2.3 section
+/// 5.2.26.1.5). Each bit, when set to 1, enables the corresponding
+/// Asynchronous Event Notification class; when cleared to 0, the
+/// controller shall not report that notification.
+///
+/// Bits 0..13 inclusive (SMART/Health critical warnings byte plus the
+/// six notice classes defined through NVMe 1.4) are named here. Bits
+/// 14..31 cover newer-revision and transport-specific events; this type
+/// preserves them as opaque pass-through state so the controller can
+/// store and echo an arbitrary CDW11 value via Set/Get Features even
+/// without acting on every individual bit.
+#[bitfield(u32)]
+pub struct Cdw11FeatureAsyncEventConfig {
+    /// SMART / Health Critical Warnings (SHCW) - one bit per critical
+    /// warning class defined in the SMART/Health Information log page.
+    pub smart_health_critical_warnings: u8,
+    /// Attached Namespace Attribute Notices (NAN) - notify on attached
+    /// namespace attribute changes (e.g. namespace added or removed).
+    pub namespace_attribute_notices: bool,
+    /// Firmware Activation Notices (FAN).
+    pub firmware_activation_notices: bool,
+    /// Telemetry Log Notices (TLN).
+    pub telemetry_log_notices: bool,
+    /// Asymmetric Namespace Access Change Notices (ANACN).
+    pub ana_change_notices: bool,
+    /// Predictable Latency Event Aggregate Log Change Notices (PLEALCN).
+    pub predictable_latency_event_aggregate_log_change_notices: bool,
+    /// LBA Status Information Alert Notices (LSIAN) - I/O Command Set
+    /// specific (NVM).
+    pub lba_status_info_alert_notices: bool,
+    /// Higher bits (Endurance Group Event Aggregate Log Change,
+    /// Reachability, Cross-Controller, Discovery, etc.) - this
+    /// implementation does not act on individual bits in this range
+    /// but stores them verbatim so that Set Features followed by Get
+    /// Features round-trips an arbitrary CDW11 value byte-for-byte.
+    #[bits(18)]
+    _higher_bits: u32,
+}
+
+/// Arbitration feature (01h). See NVMe Base 2.3 Figure 404.
+#[bitfield(u32)]
+pub struct Cdw11FeatureArbitration {
+    /// Arbitration Burst (power-of-two burst; `111b` means no limit)
+    #[bits(3)]
+    pub ab: u8,
+    #[bits(5)]
+    _rsvd: u8,
+    /// Low Priority Weight (0-based)
+    pub lpw: u8,
+    /// Medium Priority Weight (0-based)
+    pub mpw: u8,
+    /// High Priority Weight (0-based)
+    pub hpw: u8,
+}
+
+/// Power Management feature (02h). See NVMe Base 2.3 Figure 405.
+#[bitfield(u32)]
+pub struct Cdw11FeaturePowerManagement {
+    /// Power State
+    #[bits(5)]
+    pub ps: u8,
+    /// Workload Hint
+    #[bits(3)]
+    pub wh: u8,
+    #[bits(24)]
+    _rsvd: u32,
+}
+
+/// Temperature Threshold feature (04h). See NVMe Base 2.3 Figure 407.
+#[bitfield(u32)]
+pub struct Cdw11FeatureTemperatureThreshold {
+    /// Temperature Threshold, in Kelvin
+    pub tmpth: u16,
+    /// Threshold Temperature Select (`0h` = composite, `1h`-`8h` = sensors,
+    /// `Fh` = all sensors on a Set)
+    #[bits(4)]
+    pub tmpsel: u8,
+    /// Threshold Type Select (`00b` = over-temperature, `01b` = under-temperature)
+    #[bits(2)]
+    pub thsel: u8,
+    /// Temperature Threshold Hysteresis
+    #[bits(3)]
+    pub tmpthh: u8,
+    #[bits(7)]
+    _rsvd: u8,
+}
+
+/// Error Recovery feature (05h). See NVM Command Set 1.2 Figure 96.
+#[bitfield(u32)]
+pub struct Cdw11FeatureErrorRecovery {
+    /// Time Limited Error Recovery, in 100 ms units
+    pub tler: u16,
+    /// Deallocated or Unwritten Logical Block Error Enable
+    pub dulbe: bool,
+    #[bits(15)]
+    _rsvd: u16,
+}
+
+/// Interrupt Coalescing feature (08h). See NVMe Base 2.3 Figure 474.
+#[bitfield(u32)]
+pub struct Cdw11FeatureInterruptCoalescing {
+    /// Aggregation Threshold (0-based)
+    pub thr: u8,
+    /// Aggregation Time, in 100 µs units (`0h` = no delay)
+    pub time: u8,
+    #[bits(16)]
+    _rsvd: u16,
+}
+
+/// Interrupt Vector Configuration feature (09h). See NVMe Base 2.3 Figure 475.
+#[bitfield(u32)]
+pub struct Cdw11FeatureInterruptVectorConfig {
+    /// Interrupt Vector
+    pub iv: u16,
+    /// Coalescing Disable
+    pub cd: bool,
+    #[bits(15)]
+    _rsvd: u16,
+}
+
 #[bitfield(u32)]
 pub struct Cdw10CreateIoQueue {
     pub qid: u16,
@@ -773,6 +897,20 @@ open_enum! {
         FIRMWARE_SLOT_INFORMATION = 3,
         CHANGED_NAMESPACE_LIST = 4,
     }
+}
+
+/// LID Supported and Effects Data Structure, one per LID in the Supported Log
+/// Pages log page (LID 00h). See NVMe Base 2.3 Figure 208.
+#[bitfield(u32)]
+pub struct LidSupportedAndEffects {
+    /// LID Supported
+    pub lsupp: bool,
+    /// Index Offset Supported
+    pub ios: bool,
+    #[bits(14)]
+    _rsvd: u16,
+    /// LID Specific Parameter
+    pub lidsp: u16,
 }
 
 #[bitfield(u32)]

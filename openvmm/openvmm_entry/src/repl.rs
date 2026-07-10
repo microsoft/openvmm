@@ -35,6 +35,10 @@ use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPort;
+use net_backend_resources::consomme::HostPortConfig;
+use net_backend_resources::consomme::HostPortProtocol;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::DeviceVtl;
@@ -315,6 +319,26 @@ enum InteractiveCommand {
 
     /// Use KVP to interact with the guest.
     Kvp(kvp::KvpCommand),
+
+    /// Bind a host port to forward traffic to the guest (consomme).
+    BindPort {
+        /// The protocol to forward (tcp or udp).
+        #[clap(long, default_value = "tcp")]
+        protocol: PortProtocolArg,
+        /// The host port to listen on.
+        host_port: u16,
+        /// The guest port to forward to.
+        guest_port: u16,
+    },
+
+    /// Unbind a previously forwarded port (consomme).
+    UnbindPort {
+        /// The protocol of the port to unbind (tcp or udp).
+        #[clap(long, default_value = "tcp")]
+        protocol: PortProtocolArg,
+        /// The guest port to unbind.
+        guest_port: u16,
+    },
 }
 
 /// Subcommands for managing VTL2 settings.
@@ -362,6 +386,22 @@ enum Vtl2SettingsCommand {
     },
 }
 
+/// Protocol argument for port bind/unbind commands.
+#[derive(Clone, clap::ValueEnum)]
+enum PortProtocolArg {
+    Tcp,
+    Udp,
+}
+
+impl PortProtocolArg {
+    fn to_host_port_protocol(&self) -> HostPortProtocol {
+        match self {
+            PortProtocolArg::Tcp => HostPortProtocol::Tcp,
+            PortProtocolArg::Udp => HostPortProtocol::Udp,
+        }
+    }
+}
+
 struct CommandParser {
     app: clap::Command,
 }
@@ -393,6 +433,7 @@ pub(crate) struct ReplResources {
     pub vm_controller_events: mesh::Receiver<VmControllerEvent>,
     pub scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     pub nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
+    pub consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     pub shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
@@ -403,13 +444,14 @@ pub(crate) struct ReplResources {
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
     resources: ReplResources,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let ReplResources {
         vm_rpc,
         vm_controller,
         mut vm_controller_events,
         mut scsi_rpc,
         mut nvme_vtl2_rpc,
+        consomme_rpc,
         shutdown_ic,
         kvp_ic,
         console_in,
@@ -484,7 +526,7 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                term::set_raw_console(true).expect("failed to set raw console mode");
+                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -504,7 +546,8 @@ pub(crate) async fn run_repl(
                     }
                 }
 
-                term::set_raw_console(false).expect("failed to set raw console mode");
+                crossterm::terminal::disable_raw_mode()
+                    .expect("failed to disable raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");
@@ -586,7 +629,10 @@ pub(crate) async fn run_repl(
     let mut inspect_completion_engine_recv =
         inspect_completion_engine_recv.map(Event::InspectRequestFromCompletionEngine);
 
-    loop {
+    // The exit status to return: 0 normally, or the code the controller asks to
+    // exit with on a guest power event the user opted into. The top-level runner
+    // does cleanup and exits with it.
+    let exit_request: i32 = loop {
         let event = {
             let pulse_save_restore = pin!(async {
                 match pulse_save_restore_interval {
@@ -645,7 +691,7 @@ pub(crate) async fn run_repl(
                 res.send(deferred);
                 continue;
             }
-            Event::Quit => break,
+            Event::Quit => break 0,
             Event::PulseSaveRestore => {
                 vm_rpc.call(VmRpc::PulseSaveRestore, ()).await??;
                 continue;
@@ -736,7 +782,8 @@ pub(crate) async fn run_repl(
                         if let Some(err) = &error {
                             tracing::error!(error = err.as_str(), "vm worker stopped");
                         }
-                        break;
+                        // Non-zero exit when the worker stopped with an error.
+                        break i32::from(error.is_some());
                     }
                     VmControllerEvent::VncWorkerStopped { .. } => {
                         // VNC stopped but VM is still running, continue.
@@ -744,6 +791,7 @@ pub(crate) async fn run_repl(
                     VmControllerEvent::GuestHalt(reason) => {
                         tracing::info!(reason = reason.as_str(), "guest halted");
                     }
+                    VmControllerEvent::ExitRequested { code } => break code,
                 }
                 continue;
             }
@@ -1469,11 +1517,60 @@ pub(crate) async fn run_repl(
                     eprintln!("error: {err:#}");
                 }
             }
+            InteractiveCommand::BindPort {
+                protocol,
+                host_port,
+                guest_port,
+            } => {
+                let action = async {
+                    let rpc = consomme_rpc.as_ref().context("no consomme device")?;
+                    let cfg = HostPortConfig {
+                        protocol: protocol.to_host_port_protocol(),
+                        host_address: None,
+                        host_port: HostPort::Fixed(host_port),
+                        guest_port,
+                    };
+                    rpc.call_failable(ConsommeRequest::Bind, cfg).await?;
+                    anyhow::Ok(())
+                };
+                match action.await {
+                    Ok(()) => {
+                        tracing::info!(host_port, guest_port, "port forward bound");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = error.as_error(), "error binding port");
+                    }
+                }
+            }
+            InteractiveCommand::UnbindPort {
+                protocol,
+                guest_port,
+            } => {
+                let action = async {
+                    let rpc = consomme_rpc.as_ref().context("no consomme device")?;
+                    let cfg = HostPortConfig {
+                        protocol: protocol.to_host_port_protocol(),
+                        host_address: None,
+                        host_port: HostPort::Fixed(0),
+                        guest_port,
+                    };
+                    rpc.call_failable(ConsommeRequest::Unbind, cfg).await?;
+                    anyhow::Ok(())
+                };
+                match action.await {
+                    Ok(()) => {
+                        tracing::info!(guest_port, "port forward unbound");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = error.as_error(), "error unbinding port");
+                    }
+                }
+            }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
         }
-    }
+    };
 
-    Ok(())
+    Ok(exit_request)
 }
 
 // -- Rustyline helpers --

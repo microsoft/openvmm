@@ -9,6 +9,7 @@ pub use device_memory::DeviceMemoryMapper;
 
 use crate::RemoteProcess;
 use crate::mapping_manager::Mappable;
+use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::VaMapper;
@@ -66,7 +67,6 @@ struct RamBacking {
     /// Prefetch pages at build time.
     prefetch: bool,
     /// THP is enabled for this backing.
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
     /// Host NUMA node for this backing. `None` means OS default placement.
     host_numa_node: Option<u32>,
@@ -116,6 +116,24 @@ pub enum MemoryBuildError {
     /// Couldn't allocate VA mapper.
     #[error("failed to create VA mapper")]
     VaMapper(#[source] VaMapperError),
+    /// Failed to map RAM into VA space.
+    #[error("failed to map RAM range {range}")]
+    RamMapping {
+        /// The GPA range that failed to map.
+        range: MemoryRange,
+        /// The mapping error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
+    /// Failed to enable RAM region.
+    #[error("failed to enable RAM region {range}")]
+    RamRegionEnable {
+        /// The GPA range that failed.
+        range: MemoryRange,
+        /// The error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
     /// Memory layout incompatible with VTL0 alias map.
     #[error("not enough guest address space available for the vtl0 alias map")]
     AliasMapWontFit,
@@ -128,9 +146,6 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
-    /// Failed to allocate private RAM range.
-    #[error("failed to allocate private RAM range {1}")]
-    PrivateRamAlloc(#[source] io::Error, MemoryRange),
     /// THP requires private memory mode.
     #[error("transparent huge pages requires private memory mode")]
     ThpWithoutPrivateMemory,
@@ -532,7 +547,7 @@ impl GuestMemoryBuilder {
 
         let va_mapper = mapping_manager
             .client()
-            .new_mapper()
+            .new_mapper(true)
             .await
             .map_err(MemoryBuildError::VaMapper)?;
 
@@ -564,52 +579,44 @@ impl GuestMemoryBuilder {
                 for sub_range in &sub_ranges {
                     let region = region_manager
                         .client()
-                        .new_region("ram".into(), *sub_range, RAM_PRIORITY, true)
+                        .new_region(
+                            "ram".into(),
+                            *sub_range,
+                            RAM_PRIORITY,
+                            crate::region_manager::MappingType::Ram,
+                        )
                         .await
                         .expect("regions cannot overlap yet");
 
-                    if let Some(ref mappable) = backing.mappable {
-                        region
-                            .add_mapping(
-                                MemoryRange::new(0..sub_range.len()),
-                                mappable.clone(),
-                                file_offset,
-                                true,
-                                backing.host_numa_node,
-                            )
-                            .await;
-                        // TODO: file-backed RAM mappings are established lazily
-                        // via page faults, so NUMA binding errors are not
-                        // caught here. Replace lazy mapping with eager push
-                        // model to propagate errors at build time.
-                    } else {
-                        va_mapper
-                            .alloc_range(
-                                sub_range.start() as usize,
-                                sub_range.len() as usize,
-                                backing.host_numa_node,
-                            )
-                            .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *sub_range))?;
-                        va_mapper.set_range_name(
-                            sub_range.start() as usize,
-                            sub_range.len() as usize,
-                            "guest-ram-private",
-                        );
-
-                        #[cfg(target_os = "linux")]
-                        if backing.transparent_hugepages {
-                            if let Err(e) = va_mapper.madvise_hugepage(
-                                sub_range.start() as usize,
-                                sub_range.len() as usize,
-                            ) {
-                                tracing::warn!(
-                                    error = &e as &dyn std::error::Error,
-                                    range = %sub_range,
-                                    "failed to mark RAM as THP eligible"
-                                );
-                            }
-                        }
-                    }
+                    // Register the mapping with the region. File-backed RAM
+                    // passes its `Mappable` so the mapping manager mmaps it.
+                    // Private/anonymous RAM passes `MappingBacking::Private`:
+                    // the mapping manager commits its anonymous pages directly
+                    // (there is no fd to mmap), but it still participates in the
+                    // region-driven DMA machinery (mapped by host VA). Without
+                    // this, an assigned device DMAing to private RAM would take
+                    // IOMMU faults (silent DMA failure).
+                    let backing_kind = match &backing.mappable {
+                        Some(mappable) => MappingBacking::File {
+                            mappable: mappable.clone(),
+                            file_offset,
+                        },
+                        None => MappingBacking::Private {
+                            transparent_hugepages: backing.transparent_hugepages,
+                        },
+                    };
+                    region
+                        .add_mapping(
+                            MemoryRange::new(0..sub_range.len()),
+                            backing_kind,
+                            true,
+                            backing.host_numa_node,
+                        )
+                        .await
+                        .map_err(|error| MemoryBuildError::RamMapping {
+                            range: *sub_range,
+                            error,
+                        })?;
 
                     region
                         .map(MapParams {
@@ -617,7 +624,11 @@ impl GuestMemoryBuilder {
                             executable: true,
                             prefetch: backing.prefetch && backing.mappable.is_some(),
                         })
-                        .await;
+                        .await
+                        .map_err(|error| MemoryBuildError::RamRegionEnable {
+                            range: *sub_range,
+                            error,
+                        })?;
 
                     ram_regions.push(RamRegion {
                         range: *sub_range,
@@ -676,7 +687,7 @@ impl GuestMemoryClient {
     pub async fn guest_memory(&self) -> Result<GuestMemory, VaMapperError> {
         Ok(GuestMemory::new(
             "ram",
-            self.mapping_manager.new_mapper().await?,
+            self.mapping_manager.new_mapper(false).await?,
         ))
     }
 }
@@ -805,8 +816,20 @@ pub enum RamVisibility {
 
 /// An error returned by [`RamVisibilityControl::set_ram_visibility`].
 #[derive(Debug, Error)]
-#[error("{0} is not a controllable RAM range")]
-pub struct InvalidRamRegion(MemoryRange);
+pub enum RamVisibilityError {
+    /// The range is not a controllable RAM region.
+    #[error("{0} is not a controllable RAM range")]
+    InvalidRange(MemoryRange),
+    /// Failed to map the region.
+    #[error("failed to map RAM range {range}")]
+    Map {
+        /// The range that failed.
+        range: MemoryRange,
+        /// The error.
+        #[source]
+        error: mesh::error::RemoteError,
+    },
+}
 
 impl RamVisibilityControl {
     /// Sets the visibility of a RAM region.
@@ -819,12 +842,12 @@ impl RamVisibilityControl {
         &self,
         range: MemoryRange,
         visibility: RamVisibility,
-    ) -> Result<(), InvalidRamRegion> {
+    ) -> Result<(), RamVisibilityError> {
         let region = self
             .regions
             .iter()
             .find(|region| region.range == range)
-            .ok_or(InvalidRamRegion(range))?;
+            .ok_or(RamVisibilityError::InvalidRange(range))?;
 
         match visibility {
             RamVisibility::ReadWrite | RamVisibility::ReadOnly => {
@@ -836,6 +859,7 @@ impl RamVisibilityControl {
                         prefetch: false,
                     })
                     .await
+                    .map_err(|error| RamVisibilityError::Map { range, error })?;
             }
             RamVisibility::Unmapped => region.handle.unmap().await,
         }

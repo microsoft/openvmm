@@ -88,7 +88,9 @@ impl PetriVmConfigOpenVmm {
 
         let log_env = match host_log_levels {
             None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
-                ("OPENVMM_LOG".into(), "debug".into()),
+                // Quiet down `hyper_util`'s connection-pool debug spam that
+                // `disk_blob` triggers on every HTTP range request.
+                ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
                 ("OPENVMM_SHOW_SPANS".into(), "true".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
@@ -125,6 +127,18 @@ impl PetriVmConfigOpenVmm {
 
         let is_minimal = resources.properties.minimal_mode;
 
+        // Resolve the TCP pipette port now, while the VM is starting.
+        // Consomme binds the port during launch, so the oneshot should
+        // be ready.  Caching the resolved port here lets wait_for_agent
+        // reconnect after a reset without needing the oneshot again.
+        let tcp_pipette_port = match resources.tcp_pipette_port.take() {
+            Some(recv) => Some(
+                recv.await
+                    .context("failed to receive TCP pipette port from consomme")?,
+            ),
+            None => None,
+        };
+
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
@@ -132,6 +146,7 @@ impl PetriVmConfigOpenVmm {
                 worker,
                 framebuffer_view,
                 cidata_mounted: false,
+                tcp_pipette_port,
                 pid,
             },
             halt_notif,
@@ -154,9 +169,12 @@ impl PetriVmConfigOpenVmm {
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         // Set up the IMC hive for Windows guests that use pipette in VTL0.
+        // Skip when VMBus is disabled — the no-vmbus prepped image has
+        // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
+            && !self.resources.properties.no_vmbus
         {
             let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
             imc_hive_file

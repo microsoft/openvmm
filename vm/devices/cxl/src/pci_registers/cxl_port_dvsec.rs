@@ -3,6 +3,8 @@
 
 //! CXL Port PCIe DVSEC extended capability implementation.
 
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -85,44 +87,52 @@ impl CxlPortDvsecExtendedCapability {
         usize::from(CXL_PORT_DVSEC_LENGTH)
     }
 
-    fn read_dvsec_u32(&self, offset: u16) -> u32 {
+    fn read_dvsec(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         const DVSEC_HEADER1_OFFSET: u16 = DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0;
 
-        match offset {
-            DVSEC_HEADER1_OFFSET => Self::dvsec_header1().into_bits(),
+        match CxlPortDvsecRegisterOffset(offset) {
+            _ if offset == DVSEC_HEADER1_OFFSET => value.set(Self::dvsec_header1().into_bits()),
             CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS => {
-                u32::from(Self::dvsec_header2().into_bits())
-                    | (u32::from(self.status.into_bits()) << 16)
+                value.set_low_high(Self::dvsec_header2().into_bits(), self.status.into_bits());
             }
             CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT => {
-                u32::from(self.control.into_bits())
-                    | (u32::from(self.alt_bus_base) << 16)
-                    | (u32::from(self.alt_bus_limit) << 24)
+                value.set_low_high(
+                    self.control.into_bits(),
+                    (self.alt_bus_base as u16) | ((self.alt_bus_limit as u16) << 8),
+                );
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT => {
-                u32::from(self.alt_mem_base.into_bits())
-                    | (u32::from(self.alt_mem_limit.into_bits()) << 16)
+                value.set_low_high(
+                    self.alt_mem_base.into_bits(),
+                    self.alt_mem_limit.into_bits(),
+                );
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT => {
-                u32::from(self.alt_prefetch_mem_base.into_bits())
-                    | (u32::from(self.alt_prefetch_mem_limit.into_bits()) << 16)
+                value.set_low_high(
+                    self.alt_prefetch_mem_base.into_bits(),
+                    self.alt_prefetch_mem_limit.into_bits(),
+                );
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH => {
-                self.alt_prefetch_mem_base_high
+                value.set(self.alt_prefetch_mem_base_high);
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH => {
-                self.alt_prefetch_mem_limit_high
+                value.set(self.alt_prefetch_mem_limit_high);
             }
-            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE => self.cxl_rcrb_base.into_bits(),
-            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH => self.cxl_rcrb_base_high,
-            _ => !0,
+            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE => {
+                value.set(self.cxl_rcrb_base.into_bits())
+            }
+            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH => {
+                value.set(self.cxl_rcrb_base_high)
+            }
+            _ => value.set(!0),
         }
     }
 
-    fn write_dvsec_u32(&mut self, offset: u16, value: u32) {
-        match offset {
+    fn write_dvsec(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
+        match CxlPortDvsecRegisterOffset(offset) {
             CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS => {
-                let mut clear_mask = ((value >> 16) as u16) & CXL_PORT_DVSEC_STATUS_RW1C_MASK;
+                let mut clear_mask = value.extract_high() & CXL_PORT_DVSEC_STATUS_RW1C_MASK;
                 if !self.supports_viral {
                     clear_mask &= !CxlPortDvsecStatus::new()
                         .with_viral_status(true)
@@ -134,7 +144,8 @@ impl CxlPortDvsecExtendedCapability {
                 }
             }
             CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT => {
-                let requested = (value as u16) & CXL_PORT_DVSEC_CONTROL_WRITABLE_MASK;
+                let requested = value.merge_low(self.control.into_bits())
+                    & CXL_PORT_DVSEC_CONTROL_WRITABLE_MASK;
                 let mut next_control = CxlPortDvsecControl::from_bits(requested);
                 if !self.supports_uio_to_hdm_enable {
                     next_control = next_control.with_uio_to_hdm_enable(false);
@@ -143,20 +154,24 @@ impl CxlPortDvsecExtendedCapability {
                     next_control = next_control.with_viral_enable(false);
                 }
                 self.control = next_control;
-                self.alt_bus_base = (value >> 16) as u8;
-                self.alt_bus_limit = (value >> 24) as u8;
+                let alt_bus = value.merge_high(
+                    u16::from(self.alt_bus_base) | (u16::from(self.alt_bus_limit) << 8),
+                );
+                self.alt_bus_base = alt_bus as u8;
+                self.alt_bus_limit = (alt_bus >> 8) as u8;
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT => {
-                let base_bits = (value as u16) & CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
-                let limit_bits =
-                    ((value >> 16) as u16) & CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
+                let base_bits = value.merge_low(self.alt_mem_base.into_bits())
+                    & CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
+                let limit_bits = value.merge_high(self.alt_mem_limit.into_bits())
+                    & CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
                 self.alt_mem_base = CxlPortDvsecAltMemoryBase::from_bits(base_bits);
                 self.alt_mem_limit = CxlPortDvsecAltMemoryLimit::from_bits(limit_bits);
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT => {
-                let base_bits = (value as u16)
+                let base_bits = value.merge_low(self.alt_prefetch_mem_base.into_bits())
                     & CXL_PORT_DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT_WRITABLE_MASK;
-                let limit_bits = ((value >> 16) as u16)
+                let limit_bits = value.merge_high(self.alt_prefetch_mem_limit.into_bits())
                     & CXL_PORT_DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT_WRITABLE_MASK;
                 self.alt_prefetch_mem_base =
                     CxlPortDvsecAltPrefetchableMemoryBase::from_bits(base_bits);
@@ -164,17 +179,18 @@ impl CxlPortDvsecExtendedCapability {
                     CxlPortDvsecAltPrefetchableMemoryLimit::from_bits(limit_bits);
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH => {
-                self.alt_prefetch_mem_base_high = value;
+                value.merge_into(&mut self.alt_prefetch_mem_base_high);
             }
             CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH => {
-                self.alt_prefetch_mem_limit_high = value;
+                value.merge_into(&mut self.alt_prefetch_mem_limit_high);
             }
             CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE => {
-                let bits = value & CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
+                let bits = value.merge(self.cxl_rcrb_base.into_bits())
+                    & CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
                 self.cxl_rcrb_base = CxlPortDvsecRcrbBase::from_bits(bits);
             }
             CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH => {
-                self.cxl_rcrb_base_high = value;
+                value.merge_into(&mut self.cxl_rcrb_base_high);
             }
             _ => {}
         }
@@ -213,17 +229,20 @@ impl PciExtendedCapability for CxlPortDvsecExtendedCapability {
         self.dvsec_len()
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         if offset == 0 {
-            u32::from(self.extended_capability_id()) | (u32::from(self.capability_version()) << 16)
+            value.set_low_high(
+                self.extended_capability_id(),
+                self.capability_version().into(),
+            );
         } else {
-            self.read_dvsec_u32(offset)
+            self.read_dvsec(offset, value);
         }
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
         if offset != 0 {
-            self.write_dvsec_u32(offset, val);
+            self.write_dvsec(offset, value);
         }
     }
 
@@ -324,8 +343,12 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigByteEnable;
     use pci_core::capabilities::extended::PciExtendedCapability;
     use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
+    use pci_core::test_helpers::read_extended_cap_u32;
+    use pci_core::test_helpers::write_extended_cap_u32;
     use vmcore::save_restore::SaveRestore;
 
     use super::CxlPortDvsecControl;
@@ -338,11 +361,14 @@ mod tests {
         let cap = CxlPortDvsecExtendedCapability::new();
 
         assert_eq!(
-            cap.read_u32(DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
+            read_extended_cap_u32(&cap, DvsecExtendedCapabilityHeader::DVSEC_HEADER1.0),
             0x0280_1e98
         );
         assert_eq!(
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS) & 0xffff,
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0
+            ) & 0xffff,
             0x0003
         );
     }
@@ -361,15 +387,16 @@ mod tests {
             .with_viral_enable(true)
             .into_bits();
 
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT.0,
             u32::from(requested),
         );
 
-        let control =
-            CxlPortDvsecControl::from_bits(cap.read_u32(
-                CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT,
-            ) as u16);
+        let control = CxlPortDvsecControl::from_bits(read_extended_cap_u32(
+            &cap,
+            CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT.0,
+        ) as u16);
         assert!(!control.uio_to_hdm_enable());
         assert!(!control.viral_enable());
     }
@@ -379,8 +406,9 @@ mod tests {
         let mut cap = CxlPortDvsecExtendedCapability::new().with_viral_support(true);
         cap.set_viral_status(true);
 
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0,
             u32::from(
                 CxlPortDvsecStatus::new()
                     .with_viral_status(true)
@@ -389,10 +417,31 @@ mod tests {
         );
 
         let status = CxlPortDvsecStatus::from_bits(
-            (cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS) >> 16)
-                as u16,
+            (read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0,
+            ) >> 16) as u16,
         );
         assert!(!status.viral_status());
+    }
+
+    #[test]
+    fn status_rw1c_ignores_disabled_byte_lanes() {
+        let mut cap = CxlPortDvsecExtendedCapability::new().with_viral_support(true);
+        cap.set_viral_status(true);
+
+        cap.write(
+            CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0,
+            ByteEnabledDwordWrite::new(0xffff_ffff, PciConfigByteEnable::new(0b0011).unwrap()),
+        );
+
+        let status = CxlPortDvsecStatus::from_bits(
+            (read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0,
+            ) >> 16) as u16,
+        );
+        assert!(status.viral_status());
     }
 
     #[test]
@@ -400,29 +449,39 @@ mod tests {
         let mut cap = CxlPortDvsecExtendedCapability::new()
             .with_uio_to_hdm_enable(true)
             .with_viral_support(true);
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT.0,
             0xa55a_001f,
         );
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT.0,
             0x1234_5678,
         );
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT.0,
             0x9abc_def0,
         );
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH.0,
             0x1020_3040,
         );
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH.0,
             0x5060_7080,
         );
-        cap.write_u32(CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE, 0x3fff_e001);
-        cap.write_u32(
-            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH,
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE.0,
+            0x3fff_e001,
+        );
+        write_extended_cap_u32(
+            &mut cap,
+            CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH.0,
             0x1111_2222,
         );
         cap.set_port_power_management_initialization_complete(true);
@@ -433,40 +492,75 @@ mod tests {
         restored.restore(saved).expect("restore should succeed");
 
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS)
-        );
-        assert_eq!(
-            restored.read_u32(
-                CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0
             ),
-            cap.read_u32(
-                CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_HEADER2_PORT_EXTENSION_STATUS.0
             )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT)
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT.0
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_PORT_CONTROL_EXTENSIONS_ALT_BUS_BASE_LIMIT.0
+            )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT)
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT.0
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_MEMORY_BASE_LIMIT.0
+            )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH)
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT.0
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT.0
+            )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH)
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH.0
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_HIGH.0
+            )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE)
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH.0
+            ),
+            read_extended_cap_u32(
+                &cap,
+                CxlPortDvsecRegisterOffset::DVSEC_ALT_PREFETCHABLE_MEMORY_LIMIT_HIGH.0
+            )
         );
         assert_eq!(
-            restored.read_u32(CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH),
-            cap.read_u32(CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH)
+            read_extended_cap_u32(&restored, CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE.0),
+            read_extended_cap_u32(&cap, CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE.0)
+        );
+        assert_eq!(
+            read_extended_cap_u32(
+                &restored,
+                CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH.0
+            ),
+            read_extended_cap_u32(&cap, CxlPortDvsecRegisterOffset::DVSEC_CXL_RCRB_BASE_HIGH.0)
         );
     }
 }

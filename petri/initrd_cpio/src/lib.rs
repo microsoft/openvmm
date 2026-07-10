@@ -21,6 +21,12 @@ const CPIO_TRAILER: &[u8] = b"TRAILER!!!";
 /// Decompresses the initrd, inserts the file entry before the TRAILER!!!
 /// marker, and recompresses as a single gzip stream. Returns the new
 /// gzip-compressed initrd bytes.
+///
+/// If `file_name` already exists in the archive, this does not remove the
+/// existing entry; the new entry is appended just before the trailer. Because
+/// the kernel's initramfs extractor applies entries in order and later entries
+/// overwrite earlier ones, the injected file wins. The original bytes remain
+/// in the archive but are inert.
 pub fn inject_into_initrd(
     initrd_gz: &[u8],
     file_name: &str,

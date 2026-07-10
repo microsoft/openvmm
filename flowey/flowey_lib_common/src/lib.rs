@@ -52,4 +52,5 @@ pub mod run_cargo_clippy;
 pub mod run_cargo_doc;
 pub mod run_cargo_nextest_archive;
 pub mod run_cargo_nextest_run;
+pub mod system_info;
 pub mod use_gh_cli;

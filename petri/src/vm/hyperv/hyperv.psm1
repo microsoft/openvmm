@@ -352,7 +352,11 @@ function New-CustomVM
             $vsid = $entry.Name
             $targetVtl = $entry.Value["Vtl"]
             $nsid = $entry.Value["Nsid"]
-            $resourceSettings += Get-PhysicalNvmeDeviceRasd -Vsid $vsid -Nsid $nsid -TargetVtl $targetVtl
+            $resourceSettings += Get-PhysicalNvmeDeviceRasd `
+              -Vsid $vsid `
+              -Nsid $nsid `
+              -TargetVtl $targetVtl `
+              | ConvertTo-CimEmbeddedString
         }
     }
 

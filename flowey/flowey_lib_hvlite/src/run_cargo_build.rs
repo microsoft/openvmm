@@ -22,7 +22,11 @@ use std::collections::BTreeMap;
 pub enum CargoBuildOutput {
     WindowsBin {
         exe: PathBuf,
-        pdb: PathBuf,
+        /// Path to the separate debug file (`.pdb`), if one was produced.
+        ///
+        /// `None` for GNU (mingw-w64) builds, which embed debug info in the
+        /// `.exe` rather than emitting a separate `.pdb`.
+        pdb: Option<PathBuf>,
     },
     ElfBin {
         bin: PathBuf,
@@ -274,7 +278,7 @@ impl FlowNode for Node {
                     }
                 });
             } else {
-                base_output.write_into(ctx, output, |o| {
+                base_output.write_into_with(ctx, output, |o| {
                     CargoBuildOutput::from_base_cargo_build_output(o, None)
                 });
             }

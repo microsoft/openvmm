@@ -173,13 +173,16 @@ Options:
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
   VP lists use bracket syntax with comma-separated indices and dash
-  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5].
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5]. An empty list, vps=[],
+  declares a CPU-less node (e.g. a generic-initiator target); unlike a
+  non-empty list, it may be combined with nodes that omit vps.
 
 Examples:
     --numa size=2G --numa size=2G
     --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
     --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
-    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]"#
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
+    --numa size=2G --numa size=0,vps=[]"#
     )]
     pub numa: Option<Vec<NumaNodeCli>>,
 
@@ -278,7 +281,6 @@ Examples:
             "vmbus_max_version",
             "vmbus_com1_serial",
             "vmbus_com2_serial",
-            "disk",
             "vtl2",
             "get",
             "pcat",
@@ -572,21 +574,34 @@ options:
     #[clap(long, value_name = "RC_NAME")]
     pub smmu: Vec<String>,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    ///
+    /// Prefix the binding with `debugger-mode:` to run this COM port in
+    /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
+    /// `--com1 debugger-mode:listen=<path>` or
+    /// `--com1 debugger-mode:listen=tcp:<ip>:<port>`. In debugger mode OpenVMM
+    /// keeps this port's backend drained and may drop bytes instead of applying
+    /// backpressure, so the KD transport does not deadlock across guest
+    /// resets/reboots (KD recovers dropped bytes via its own retransmission).
+    /// Debugger mode is independent per COM port.
     #[clap(long, value_name = "SERIAL")]
-    pub com1: Option<SerialConfigCli>,
+    pub com1: Option<ComSerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com2: Option<SerialConfigCli>,
+    pub com2: Option<ComSerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com3: Option<SerialConfigCli>,
+    pub com3: Option<ComSerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com4: Option<SerialConfigCli>,
+    pub com4: Option<ComSerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
@@ -619,6 +634,10 @@ options:
     /// enable memory protections in UEFI
     #[clap(long, requires("uefi"))]
     pub uefi_enable_memory_protections: bool,
+
+    /// force UEFI to bounce-buffer all DMA traffic
+    #[clap(long, requires("uefi"))]
+    pub uefi_force_dma_bounce: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -848,25 +867,22 @@ flags:
     /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires
-    ///                          user_mode_apic=false and host WHP
-    ///                          support)
-    ///
-    /// KVM parameters (x86_64 guests only):
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires host KVM
-    ///                          nested-virt support)
     ///
     /// Examples:
     ///   --hypervisor whp
     ///   --hypervisor whp:user_mode_apic
     ///   --hypervisor whp:user_mode_apic,no_enlightenments
-    ///   --hypervisor whp:nested_virt
     ///   --hypervisor kvm
-    ///   --hypervisor kvm:nested_virt
     #[clap(long)]
     pub hypervisor: Option<String>,
+
+    /// expose hardware virtualization (VMX/SVM) to the guest so it can run its
+    /// own hypervisor.
+    ///
+    /// Only supported on x86_64, and only by backends that support nested
+    /// virtualization (currently WHP and KVM). Requires host support.
+    #[clap(long)]
+    pub nested_virt: bool,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///
@@ -952,9 +968,29 @@ flags:
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
-    /// halt the VM when the guest requests a reset, instead of resetting it
-    #[clap(long)]
-    pub halt_on_reset: bool,
+    /// what to do when the guest requests a reset: reset it (default), halt the
+    /// VM for inspection, or exit the VMM process (use `exit:<code>` to set the
+    /// exit status)
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action)]
+    pub guest_reset_action: GuestPowerAction,
+
+    /// what to do when the guest powers off or hibernates: halt the VM for
+    /// inspection (default), reset it, or exit the VMM process (use
+    /// `exit:<code>` to set the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_shutdown_action: GuestPowerAction,
+
+    /// what to do when the guest triple-faults: halt the VM for inspection
+    /// (default), reset it, or exit the VMM process (use `exit:<code>` to set
+    /// the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_crash_action: GuestPowerAction,
+
+    /// what to do when the guest watchdog fires (the guest stopped petting it):
+    /// reset the VM (default), halt it for inspection, or exit the VMM process
+    /// (use `exit:<code>` to set the exit status). Requires `--guest-watchdog`.
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action, requires = "guest_watchdog")]
+    pub guest_watchdog_action: GuestPowerAction,
 
     /// write saved state .proto files to the specified path
     #[clap(long)]
@@ -997,6 +1033,15 @@ options:
     #[clap(long)]
     pub amd_iommu: Vec<String>,
 
+    /// Enable Intel VT-d IOMMU emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --intel-vtd rc0 --intel-vtd rc1
+    /// Mutually exclusive with --amd-iommu within the same VM.
+    /// Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub intel_vtd: Vec<String>,
+
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
@@ -1016,9 +1061,13 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `low_mmio_base=<addr>`         pin low MMIO window base address (0x-prefixed hex)
+    `high_mmio_base=<addr>`        pin high MMIO window base address (0x-prefixed hex)
     `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
     `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
                                    default DEVICE_COHERENT (bit 0, value 0x1)
+    `preserve_bars`                keep pinned BARs at their assigned addresses
+    `node=<value>`                 NUMA node the root complex is associated with
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -1034,9 +1083,17 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
+    # Attach root port rc0rp2 at device 5, function 0
+    --pcie-root-port rc0:rc0rp2,addr=5
+
+    # Attach root port rc0rp3 at device 5, function 1
+    --pcie-root-port rc0:rc0rp3,addr=5.1
+
 Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
+    `addr=<dev>[.<fn>]`            device/function to place this port at (default:
+                                   lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
@@ -1076,6 +1133,33 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Declare the device behind a PCIe port as an SRAT generic initiator
+    #[clap(long_help = r#"
+Declare that the device directly behind a PCIe port is a generic initiator
+(GI) for a NUMA node, generating an SRAT Generic Initiator Affinity structure.
+
+The port may be a root port or a switch downstream port, so this works for
+devices that sit behind a switch (e.g. a GPU placed under a switch shared
+with a NIC for peer-to-peer DMA). The port is resolved by name against the
+live topology after switch downstream ports are enumerated.
+
+Examples:
+    # The device behind switch downstream port sw1-downstream-0 is a generic
+    # initiator for NUMA node 1
+    --pcie-generic-initiator port=sw1-downstream-0,node=1
+
+    # Also works for a root port name
+    --pcie-generic-initiator port=rp0,node=2
+
+Syntax: port=<port_name>,node=<node>
+"#)]
+    #[clap(
+        long = "pcie-generic-initiator",
+        value_name = "port=<name>,node=<node>",
+        conflicts_with("pcat")
+    )]
+    pub pcie_generic_initiator: Vec<PcieGenericInitiatorCli>,
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
@@ -1263,6 +1347,39 @@ impl FromStr for FsArgsWithOptions {
     }
 }
 
+/// What the VMM does on a guest power event (reset, power-off/hibernate,
+/// triple-fault, or watchdog timeout). Parsed from `reset`, `halt`, `exit`, or
+/// `exit:<code>`; a bare `exit` uses status 0.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GuestPowerAction {
+    /// Restart the guest.
+    Reset,
+    /// Stop the VM but keep the VMM process, so it can be inspected or
+    /// restarted from the REPL.
+    Halt,
+    /// Exit the VMM process with this status code.
+    Exit(u8),
+}
+
+/// Parse a [`GuestPowerAction`] from `reset`, `halt`, `exit`, or `exit:<code>`.
+/// A bare `exit` exits with status 0; `exit:<code>` exits with `<code>` (0-255).
+fn parse_guest_power_action(s: &str) -> Result<GuestPowerAction, String> {
+    match s {
+        "reset" => Ok(GuestPowerAction::Reset),
+        "halt" => Ok(GuestPowerAction::Halt),
+        "exit" => Ok(GuestPowerAction::Exit(0)),
+        _ => match s.strip_prefix("exit:") {
+            Some(code) => code
+                .parse::<u8>()
+                .map(GuestPowerAction::Exit)
+                .map_err(|err| format!("invalid exit code '{code}' (expected 0-255): {err}")),
+            None => Err(format!(
+                "expected reset, halt, exit, or exit:<code>, got '{s}'"
+            )),
+        },
+    }
+}
+
 #[derive(Copy, Clone, clap::ValueEnum)]
 pub enum VirtioBusCli {
     Auto,
@@ -1340,6 +1457,15 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+/// Parses an address, which must be a `0x`-prefixed hexadecimal value.
+fn parse_address(s: &str) -> anyhow::Result<u64> {
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .with_context(|| format!("invalid address '{s}', expected a 0x-prefixed hex value"))?;
+    u64::from_str_radix(hex, 16).with_context(|| format!("invalid address '{s}'"))
 }
 
 fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
@@ -2391,6 +2517,33 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
+/// A COM port binding, optionally prefixed with `debugger-mode:` to run the
+/// port in debugger mode for WinDbg / KD-over-serial.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComSerialConfigCli {
+    /// Whether this COM port runs in debugger mode (for WinDbg / KD-over-serial).
+    pub debugger_mode: bool,
+    /// The serial backend for this COM port.
+    pub backend: SerialConfigCli,
+}
+
+impl FromStr for ComSerialConfigCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.strip_prefix("debugger-mode:") {
+            Some(rest) => Ok(Self {
+                debugger_mode: true,
+                backend: rest.parse()?,
+            }),
+            None => Ok(Self {
+                debugger_mode: false,
+                backend: s.parse()?,
+            }),
+        }
+    }
+}
+
 /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
@@ -2858,8 +3011,12 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub low_mmio_base: Option<u64>,
+    pub high_mmio_base: Option<u64>,
+    pub preserve_bars: bool,
     pub hdm: u64,
     pub hdm_window_restrictions: CfmwsWindowRestrictions,
+    pub vnode: Option<u32>,
 }
 
 impl FromStr for PcieRootComplexCli {
@@ -2883,8 +3040,12 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut low_mmio_base = None;
+        let mut high_mmio_base = None;
+        let mut preserve_bars = false;
         let mut hdm = DEFAULT_PCIE_HDM_SIZE;
         let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
+        let mut vnode = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -2913,6 +3074,22 @@ impl FromStr for PcieRootComplexCli {
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
                 }
+                "low_mmio_base" => {
+                    let base_str = s.next().context("expected low MMIO base address")?;
+                    low_mmio_base = Some(
+                        parse_address(base_str).context("failed to parse low MMIO base address")?,
+                    );
+                }
+                "high_mmio_base" => {
+                    let base_str = s.next().context("expected high MMIO base address")?;
+                    high_mmio_base = Some(
+                        parse_address(base_str)
+                            .context("failed to parse high MMIO base address")?,
+                    );
+                }
+                "preserve_bars" => {
+                    preserve_bars = true;
+                }
                 "hdm" => {
                     let hdm_str = s.next().context("expected HDM decoder size")?;
                     hdm = parse_memory(hdm_str).context("failed to parse HDM decoder size")?;
@@ -2924,6 +3101,11 @@ impl FromStr for PcieRootComplexCli {
                     hdm_window_restrictions =
                         parse_cxl_cfmws_window_restriction_u16_bitmask(mask_str)
                             .context("failed to parse HDM window restrictions bitmask")?;
+                }
+                "node" => {
+                    let node_str = s.next().context("expected NUMA node number")?;
+                    vnode =
+                        Some(u32::from_str(node_str).context("failed to parse NUMA node number")?);
                 }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
@@ -2940,8 +3122,12 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            low_mmio_base,
+            high_mmio_base,
+            preserve_bars,
             hdm,
             hdm_window_restrictions,
+            vnode,
         })
     }
 }
@@ -2963,6 +3149,7 @@ fn parse_cxl_cfmws_window_restriction_u16_bitmask(
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub devfn: Option<u8>,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
@@ -2986,6 +3173,7 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
+        let mut devfn = None;
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
         let mut cxl = false;
@@ -2997,6 +3185,13 @@ impl FromStr for PcieRootPortCli {
             let value = kv.next();
 
             match key {
+                "addr" => {
+                    let value = value.context("addr option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("addr option expects a single value")
+                    }
+                    devfn = Some(parse_pcie_addr(value)?);
+                }
                 "hotplug" => {
                     if value.is_some() {
                         anyhow::bail!("hotplug option does not take a value")
@@ -3023,11 +3218,42 @@ impl FromStr for PcieRootPortCli {
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            devfn,
             hotplug,
             acs_capabilities_supported,
             cxl,
         })
     }
+}
+
+/// Parses a PCIe address of the form `XX[.Y]`, where `XX` is the device number
+/// (0-31) and the optional `Y` is the function number (0-7), into a devfn
+/// (`device << 3 | function`).
+fn parse_pcie_addr(s: &str) -> anyhow::Result<u8> {
+    let parse_int = |v: &str| -> anyhow::Result<u8> {
+        if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).context("invalid hex number")
+        } else {
+            v.parse().context("invalid number")
+        }
+    };
+
+    let mut parts = s.split('.');
+    let device = parse_int(parts.next().context("expected device number")?)?;
+    let function = match parts.next() {
+        Some(f) => parse_int(f)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected token in addr '{s}'");
+    }
+    if device > 31 {
+        anyhow::bail!("device number {device} out of range (0-31)");
+    }
+    if function > 7 {
+        anyhow::bail!("function number {function} out of range (0-7)");
+    }
+    Ok((device << 3) | function)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3096,6 +3322,57 @@ impl FromStr for GenericPcieSwitchCli {
             num_downstream_ports,
             hotplug,
             acs_capabilities_supported,
+        })
+    }
+}
+
+/// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieGenericInitiatorCli {
+    /// Name of the PCIe port (root port or switch downstream port) behind
+    /// which the generic-initiator device resides.
+    pub port_name: String,
+    /// NUMA node the device is a generic initiator for.
+    pub node: u32,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut port_name = None;
+        let mut node = None;
+
+        for opt in s.split(',') {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+            if kv.next().is_some() {
+                anyhow::bail!("option '{key}' expects a single value")
+            }
+
+            match key {
+                "port" => {
+                    let value = value.context("port option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("port option requires a value");
+                    }
+                    port_name = Some(value.to_string());
+                }
+                "node" => {
+                    let value = value.context("node option requires a value")?;
+                    node = Some(
+                        u32::from_str(value)
+                            .context("failed to parse generic initiator NUMA node")?,
+                    );
+                }
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: port_name.context("expected 'port=<name>'")?,
+            node: node.context("expected 'node=<node>'")?,
         })
     }
 }
@@ -3172,7 +3449,7 @@ impl FromStr for PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -3183,6 +3460,9 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
+    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
+    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
+    pub bar_pt: [bool; 6],
 }
 
 #[cfg(target_os = "linux")]
@@ -3193,6 +3473,7 @@ impl FromStr for VfioDeviceCli {
         let mut host: Option<String> = None;
         let mut port: Option<String> = None;
         let mut iommu: Option<String> = None;
+        let mut bar_pt = [false; 6];
 
         for kv in s.split(',') {
             let (key, value) = kv
@@ -3220,6 +3501,13 @@ impl FromStr for VfioDeviceCli {
                     }
                     iommu = Some(value.to_string());
                 }
+                "bar0" | "bar1" | "bar2" | "bar3" | "bar4" | "bar5" => {
+                    if value != "pt" {
+                        anyhow::bail!("--vfio: '{key}' only accepts 'pt' as a value");
+                    }
+                    let idx: usize = key[3..].parse().unwrap();
+                    bar_pt[idx] = true;
+                }
                 _ => anyhow::bail!("unknown --vfio key: '{key}'"),
             }
         }
@@ -3236,6 +3524,7 @@ impl FromStr for VfioDeviceCli {
             port_name,
             pci_id,
             iommu,
+            bar_pt,
         })
     }
 }
@@ -3471,6 +3760,7 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+    use test_with_tracing::test;
 
     #[test]
     fn test_parse_file_opts() {
@@ -4208,6 +4498,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4222,6 +4516,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4236,6 +4534,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4250,6 +4552,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4264,6 +4570,10 @@ mod tests {
                 high_mmio: 2 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4278,6 +4588,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4292,6 +4606,10 @@ mod tests {
                 high_mmio: 64 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4306,6 +4624,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: 2 * ONE_GB,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4320,6 +4642,10 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
+                vnode: None,
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
 
@@ -4340,6 +4666,25 @@ mod tests {
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions=bad").is_err());
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions").is_err());
         assert!(PcieRootComplexCli::from_str("rc,cxl").is_err());
+
+        // node option
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc9,node=1").unwrap(),
+            PcieRootComplexCli {
+                name: "rc9".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: Some(1),
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
+            }
+        );
     }
 
     #[test]
@@ -4349,6 +4694,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4360,6 +4706,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4372,6 +4719,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
+                devfn: None,
                 hotplug: true,
                 acs_capabilities_supported: None,
                 cxl: false,
@@ -4383,6 +4731,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
@@ -4394,6 +4743,7 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
@@ -4405,9 +4755,45 @@ mod tests {
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
+                devfn: None,
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: true,
+            }
+        );
+
+        // Test addr= (device only, and device.function)
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port5,addr=5").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port5".to_string(),
+                devfn: Some(5 << 3),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port6,addr=5.1").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port6".to_string(),
+                devfn: Some((5 << 3) | 1),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port7,addr=0x1f.7").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port7".to_string(),
+                devfn: Some(0xff),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -4418,6 +4804,39 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=32").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,addr").is_err());
+    }
+
+    #[test]
+    fn test_pcie_generic_initiator_from_str() {
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+            }
+        );
+
+        // Order should not matter.
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str("node=2,port=sw0-downstream-1").unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "sw0-downstream-1".to_string(),
+                node: 2,
+            }
+        );
+
+        // Error cases
+        assert!(PcieGenericInitiatorCli::from_str("").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
     #[test]
@@ -4683,6 +5102,49 @@ mod tests {
     }
 
     #[test]
+    fn test_serial_debugger_mode_option_parsed() {
+        // No COM port configured: no debugger mode.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.com1.is_none());
+
+        // A plain backend is not in debugger mode.
+        let opt = Options::try_parse_from(["openvmm", "--com1", "none"]).unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(!com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::None);
+
+        // The `debugger-mode:` prefix enables debugger mode for just that port,
+        // and the remainder still parses as the backend.
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=/tmp/kd",
+            "--com2",
+            "none",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::Pipe("/tmp/kd".into()));
+        // Other ports remain independent (not in debugger mode).
+        assert!(!opt.com2.unwrap().debugger_mode);
+
+        // The prefix must not eat colons in the backend (e.g. a tcp address).
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=tcp:127.0.0.1:5555",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(
+            com1.backend,
+            SerialConfigCli::Tcp("127.0.0.1:5555".parse().unwrap())
+        );
+    }
+
+    #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
         opt.validate_memory_options().unwrap();
@@ -4719,6 +5181,55 @@ mod tests {
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_guest_power_action_flags() {
+        // Defaults preserve the historical behavior: reset and watchdog reboot,
+        // power-off and crash keep the stopped VM.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Reset);
+        // The CLI defaults must match the shared GuestPowerActions::default() the
+        // ttrpc server uses, so the two launch paths never drift.
+        assert_eq!(
+            crate::vm_controller::GuestPowerActions {
+                shutdown: opt.guest_shutdown_action,
+                reset: opt.guest_reset_action,
+                crash: opt.guest_crash_action,
+                watchdog: opt.guest_watchdog_action,
+            },
+            crate::vm_controller::GuestPowerActions::default(),
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--guest-watchdog",
+            "--guest-reset-action",
+            "exit",
+            "--guest-shutdown-action",
+            "exit:5",
+            "--guest-crash-action",
+            "reset",
+            "--guest-watchdog-action",
+            "halt",
+        ])
+        .unwrap();
+        // A bare `exit` is status 0; `exit:5` carries the code through.
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Exit(0));
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Exit(5));
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Halt);
+
+        // Malformed and out-of-range exit codes are rejected (status is 0-255).
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:nope"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:300"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:-1"]).is_err());
+
+        // --guest-watchdog-action requires the watchdog device (--guest-watchdog).
+        assert!(Options::try_parse_from(["openvmm", "--guest-watchdog-action", "halt"]).is_err());
     }
 
     #[cfg(target_os = "linux")]

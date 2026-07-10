@@ -150,6 +150,18 @@ impl EventEntry {
         }
     }
 
+    /// Create a COMMAND_HARDWARE_ERROR event (code 6, §2.5.7).
+    ///
+    /// - `cmd_address`: physical address of the command that failed to read.
+    pub fn command_hardware_error(cmd_address: u64) -> Self {
+        Self {
+            dw0: 0,
+            dw1: (EventCode::COMMAND_HARDWARE_ERROR.0 as u32) << 28,
+            dw2: cmd_address as u32,
+            dw3: (cmd_address >> 32) as u32,
+        }
+    }
+
     /// Create an INVALID_DEVICE_REQUEST event (code 8, §2.5.9).
     ///
     /// - `device_id`: the device that caused the request.

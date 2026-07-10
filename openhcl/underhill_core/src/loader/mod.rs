@@ -77,8 +77,6 @@ pub enum Error {
     Finalize(#[source] vtl0_config::Error),
     #[error("invalid acpi table: too short")]
     InvalidAcpiTableLength,
-    #[error("invalid acpi table: unknown header signature {0:?}")]
-    InvalidAcpiTableSignature([u8; 4]),
     #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
@@ -251,12 +249,6 @@ struct LoadLinuxParams<'a> {
 /// Load Linux into VTL0.
 #[cfg(guest_arch = "x86_64")]
 fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
-    const GDT_BASE: u64 = 0x1000;
-    const CR3_BASE: u64 = 0x4000;
-    const ZERO_PAGE_BASE: u64 = 0x2000;
-    const CMDLINE_BASE: u64 = 0x3000;
-    const ACPI_BASE: u64 = 0xe0000;
-
     let LoadLinuxParams {
         gm,
         mem_layout,
@@ -270,17 +262,13 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         command_line,
     } = params;
 
-    let cmdline_config = loader::linux::CommandLineConfig {
-        address: CMDLINE_BASE,
-        cmdline: &command_line,
-    };
-
     let acpi_builder = AcpiTablesBuilder {
         processor_topology,
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
         slit_info: None,
+        generic_initiators: &[],
         arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
             with_ioapic: true, // openhcl always runs with ioapic
             with_pic: chipset_capabilities.with_pic,
@@ -288,51 +276,8 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             with_psp: platform_config.general.psp_enabled,
             pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
             acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
-            amd_iommu: None,
+            iommu: None,
         },
-    };
-
-    let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |dsdt| {
-        dsdt.add_apic();
-
-        // Add serial ports if enabled.
-        if platform_config.general.com1_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR1",
-                b"COM1",
-                1,
-                ComPort::Com1.io_port(),
-                ComPort::Com1.irq().into(),
-            );
-        }
-
-        if platform_config.general.com2_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR2",
-                b"COM2",
-                2,
-                ComPort::Com2.io_port(),
-                ComPort::Com2.irq().into(),
-            );
-        }
-
-        dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
-        // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false, None);
-        dsdt.add_rtc();
-    });
-    let acpi_len = acpi_tables.tables.len() + 0x1000;
-
-    let acpi_config = loader::linux::AcpiConfig {
-        rdsp_address: ACPI_BASE,
-        rdsp: &acpi_tables.rdsp,
-        tables_address: ACPI_BASE + 0x1000,
-        tables: &acpi_tables.tables,
-    };
-
-    let register_config = loader::linux::RegisterConfig {
-        gdt_address: GDT_BASE,
-        page_table_address: CR3_BASE,
     };
 
     let mut loader = vm_loader::Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);
@@ -358,13 +303,6 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         None
     };
 
-    let zero_page_config = loader::linux::ZeroPageConfig {
-        address: ZERO_PAGE_BASE,
-        mem_layout,
-        acpi_base_address: ACPI_BASE,
-        acpi_len,
-    };
-
     tracing::trace!(?initrd_info);
 
     // Accept the kernel range to detect overlaps.
@@ -388,13 +326,50 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         bzimage_setup_header: None,
     };
 
-    loader::linux::load_config(
+    // The loader owns the sub-1 MB layout; we supply only the command line and
+    // a builder that produces the ACPI tables at the loader's chosen address.
+    // OpenHCL's VTL0 direct boot exposes no SMBIOS identity.
+    loader::linux::load_config_x86(
         &mut loader,
         &load_info,
-        cmdline_config,
-        zero_page_config,
-        acpi_config,
-        register_config,
+        &command_line,
+        mem_layout,
+        |gpa| {
+            let acpi_tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                dsdt.add_apic();
+
+                // Add serial ports if enabled.
+                if platform_config.general.com1_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR1",
+                        b"COM1",
+                        1,
+                        ComPort::Com1.io_port(),
+                        ComPort::Com1.irq().into(),
+                    );
+                }
+
+                if platform_config.general.com2_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR2",
+                        b"COM2",
+                        2,
+                        ComPort::Com2.io_port(),
+                        ComPort::Com2.irq().into(),
+                    );
+                }
+
+                dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+                // TODO: change this once PCI is running in underhill
+                dsdt.add_vmbus(false, None);
+                dsdt.add_rtc();
+            });
+            loader::linux::AcpiTables {
+                rsdp: acpi_tables.rsdp,
+                tables: acpi_tables.tables,
+            }
+        },
+        None,
     )
     .map_err(Error::LinuxLoader)?;
 
@@ -455,20 +430,11 @@ pub fn write_uefi_config(
                 .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 .0;
             match &header.signature {
-                b"APIC" => {
-                    build_madt = false;
-                    cfg.add_raw(config::BlobStructureType::Madt, table)
-                }
-                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
-                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
-                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
-                b"SRAT" => {
-                    build_srat = false;
-                    cfg.add_raw(config::BlobStructureType::Srat, table)
-                }
-                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
-                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
+                b"APIC" => build_madt = false,
+                b"SRAT" => build_srat = false,
+                _ => {}
             };
+            cfg.add_raw(config::BlobStructureType::AcpiTable, table);
         }
     }
 
@@ -481,6 +447,7 @@ pub fn write_uefi_config(
             cache_topology: None,
             pcie_host_bridges: &vec![],
             slit_info: None,
+            generic_initiators: &[],
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: true,
@@ -489,7 +456,7 @@ pub fn write_uefi_config(
                 with_psp: platform_config.general.psp_enabled,
                 pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
                 acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
-                amd_iommu: None,
+                iommu: None,
             },
             #[cfg(guest_arch = "aarch64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
@@ -502,13 +469,17 @@ pub fn write_uefi_config(
 
         // Build the ACPI tables as specified.
         if build_madt {
-            let madt = acpi_builder.build_madt();
-            cfg.add_raw(config::BlobStructureType::Madt, &madt);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_madt(),
+            );
         }
 
         if build_srat {
-            let srat = acpi_builder.build_srat();
-            cfg.add_raw(config::BlobStructureType::Srat, &srat);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_srat(),
+            );
         }
     }
 
@@ -549,12 +520,12 @@ pub fn write_uefi_config(
         });
 
         if let Some(slit) = igvm_parameters.slit() {
-            cfg.add_raw(config::BlobStructureType::Slit, slit);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, slit);
         }
 
         // TODO: reconstruct this instead of getting it from the host.
         if let Some(pptt) = igvm_parameters.pptt() {
-            cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
         }
     }
 
@@ -688,7 +659,7 @@ pub fn write_uefi_config(
 
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
-        flags.set_hv_sint_enabled(platform_config.general.hv_sint_enabled);
+        flags.set_force_dma_bounce_enabled(platform_config.general.force_dma_bounce_enabled);
 
         // Some settings do not depend on host config
 

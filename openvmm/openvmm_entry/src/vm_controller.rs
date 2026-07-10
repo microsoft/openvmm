@@ -5,6 +5,7 @@
 //! DiagInspector, vtl2_settings) and exposes them to the REPL via mesh RPC.
 
 use crate::DiagInspector;
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use anyhow::Context;
 use futures::FutureExt;
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Instant;
+use vmm_core_defs::HaltReason;
 
 /// Inspection target: host-side workers or the paravisor.
 #[derive(Clone, Copy, mesh::MeshPayload)]
@@ -102,6 +104,9 @@ pub enum VmControllerEvent {
     VncWorkerStopped { error: Option<String> },
     /// The guest halted.
     GuestHalt(String),
+    /// The controller requests that the process exit with this code, because the
+    /// guest drove a power event the user opted into exiting on.
+    ExitRequested { code: i32 },
 }
 
 /// Owns exclusive VM resources and services RPCs from the REPL.
@@ -120,6 +125,45 @@ pub struct VmController {
     pub(crate) memory: u64,
     pub(crate) processors: u32,
     pub(crate) log_file: Option<PathBuf>,
+    pub(crate) guest_power_actions: GuestPowerActions,
+}
+
+/// The action to take for each guest power event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GuestPowerActions {
+    /// Guest powered off or hibernated.
+    pub(crate) shutdown: GuestPowerAction,
+    /// Guest requested a reset.
+    pub(crate) reset: GuestPowerAction,
+    /// Guest triple-faulted.
+    pub(crate) crash: GuestPowerAction,
+    /// Guest watchdog timer expired.
+    pub(crate) watchdog: GuestPowerAction,
+}
+
+impl Default for GuestPowerActions {
+    /// The historical behavior: a guest reset and a watchdog timeout reboot in
+    /// place; a power-off or crash keeps the stopped VM.
+    fn default() -> Self {
+        Self {
+            shutdown: GuestPowerAction::Halt,
+            reset: GuestPowerAction::Reset,
+            crash: GuestPowerAction::Halt,
+            watchdog: GuestPowerAction::Reset,
+        }
+    }
+}
+
+/// Decide what to do for a guest halt, given the per-event actions.
+fn action_for(reason: &HaltReason, actions: &GuestPowerActions) -> GuestPowerAction {
+    match reason {
+        HaltReason::PowerOff | HaltReason::Hibernate => actions.shutdown,
+        HaltReason::Reset => actions.reset,
+        HaltReason::TripleFault { .. } => actions.crash,
+        HaltReason::Watchdog => actions.watchdog,
+        // Any other halt reason keeps the stopped VM for inspection.
+        _ => GuestPowerAction::Halt,
+    }
 }
 
 impl VmController {
@@ -129,14 +173,14 @@ impl VmController {
         mut self,
         mut rpc_recv: mesh::Receiver<VmControllerRpc>,
         event_send: mesh::Sender<VmControllerEvent>,
-        mut notify_recv: mesh::Receiver<vmm_core_defs::HaltReason>,
+        mut notify_recv: mesh::Receiver<HaltReason>,
     ) {
         enum Event {
             Rpc(VmControllerRpc),
             RpcClosed,
             Worker(WorkerEvent),
             VncWorker(WorkerEvent),
-            Halt(vmm_core_defs::HaltReason),
+            Halt(HaltReason),
         }
 
         let mut quit = false;
@@ -231,7 +275,37 @@ impl VmController {
                 },
                 Event::Halt(reason) => {
                     tracing::info!(?reason, "guest halted");
-                    event_send.send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                    let action = action_for(&reason, &self.guest_power_actions);
+                    match action {
+                        GuestPowerAction::Exit(code) => {
+                            // The VM worker's teardown deadlocks once the guest vCPUs
+                            // are parked, so don't stop it here; signal the runner to
+                            // exit instead.
+                            tracing::info!(exit_code = code, "requesting exit on guest halt");
+                            event_send.send(VmControllerEvent::ExitRequested {
+                                code: i32::from(code),
+                            });
+                            return;
+                        }
+                        GuestPowerAction::Reset => {
+                            // Reboot the VM in place. A guest reset with the default
+                            // action is handled by `automatic_guest_reset` and never
+                            // reaches here; this path covers a reset chosen for a
+                            // power-off or crash.
+                            tracing::info!("resetting VM on guest power event");
+                            if let Err(err) = self.vm_rpc.call_failable(VmRpc::Reset, ()).await {
+                                tracing::error!(
+                                    error = &err as &dyn std::error::Error,
+                                    "failed to reset VM on guest power event; keeping it stopped"
+                                );
+                                event_send
+                                    .send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                            }
+                        }
+                        GuestPowerAction::Halt => {
+                            event_send.send(VmControllerEvent::GuestHalt(format!("{reason:?}")));
+                        }
+                    }
                 }
             }
         }

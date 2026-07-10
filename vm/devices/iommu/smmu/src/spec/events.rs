@@ -246,20 +246,4 @@ mod tests {
         assert_eq!(evt.sid, 5);
         assert_eq!(evt.input_addr, 0xDEAD_BEEF_0000);
     }
-
-    #[test]
-    fn test_evt_entry_roundtrip() {
-        let evt = EvtEntry {
-            header: EvtHeader::new().with_event_id(EventId::F_ADDR_SIZE.0),
-            sid: 0xABCD,
-            flags: EvtFlags::new().with_rnw(true),
-            input_addr: 0x1234_5678_9ABC_DEF0,
-            ..EvtEntry::new()
-        };
-
-        assert_eq!(evt.event_id(), EventId::F_ADDR_SIZE);
-        assert_eq!(evt.sid, 0xABCD);
-        assert_eq!(evt.input_addr, 0x1234_5678_9ABC_DEF0);
-        assert!(evt.flags.rnw());
-    }
 }

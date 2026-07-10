@@ -58,14 +58,9 @@ pub async fn assign_pci_resources_for_root_complexes(
         let params = pci_resource_assignment::AssignmentParams {
             start_bus: hb.start_bus,
             end_bus: hb.end_bus,
-            low_mmio: (!hb.low_mmio.is_empty()).then(|| pci_resource_assignment::MmioAperture {
-                base: hb.low_mmio.start(),
-                len: hb.low_mmio.len(),
-            }),
-            high_mmio: (!hb.high_mmio.is_empty()).then(|| pci_resource_assignment::MmioAperture {
-                base: hb.high_mmio.start(),
-                len: hb.high_mmio.len(),
-            }),
+            low_mmio: hb.low_mmio,
+            high_mmio: hb.high_mmio,
+            preserve_bars: hb.preserve_bars,
         };
         let mut ecam =
             EcamConfigAccess::new(chipset, hb.ecam_range.start(), hb.start_bus, hb.end_bus);

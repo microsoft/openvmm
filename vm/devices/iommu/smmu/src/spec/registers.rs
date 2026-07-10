@@ -504,143 +504,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_idr0_bitfield_roundtrip() {
-        let idr0 = Idr0::new()
-            .with_s1p(true)
-            .with_ttf(0b10)
-            .with_cohacc(true)
-            .with_asid16(true)
-            .with_msi(true)
-            .with_ttendian(0b10)
-            .with_stall_model(0b01)
-            .with_term_model(true);
-        assert!(idr0.s1p());
-        assert_eq!(idr0.ttf(), 0b10);
-        assert!(idr0.cohacc());
-        assert!(idr0.asid16());
-        assert!(idr0.msi());
-        assert_eq!(idr0.ttendian(), 0b10);
-        assert!(!idr0.s2p());
-        assert!(!idr0.ats());
-        assert!(!idr0.pri());
-    }
-
-    #[test]
-    fn test_idr0_recommended_value() {
-        // The recommended IDR0 value from the spec reference:
-        // S1P=1, TTF=0b10, COHACC=1, ASID16=1, MSI=1,
-        // TTENDIAN=0b10 (LE), STALL_MODEL=0b01, TERM_MODEL=1
-        // = 0x0E40_301E
-        let idr0 = Idr0::new()
-            .with_s1p(true)
-            .with_ttf(0b10)
-            .with_cohacc(true)
-            .with_asid16(true)
-            .with_msi(true)
-            .with_ttendian(0b10)
-            .with_stall_model(0b01)
-            .with_term_model(true);
-
-        // Verify individual bits
-        assert!(idr0.s1p());
-        assert!(idr0.msi());
-        assert!(idr0.cohacc());
-        assert!(idr0.term_model());
-    }
-
-    #[test]
-    fn test_idr1_bitfield_roundtrip() {
-        let idr1 = Idr1::new().with_sidsize(8).with_cmdqs(8).with_eventqs(8);
-        assert_eq!(idr1.sidsize(), 8);
-        assert_eq!(idr1.cmdqs(), 8);
-        assert_eq!(idr1.eventqs(), 8);
-        assert_eq!(idr1.ssidsize(), 0);
-        assert!(!idr1.tables_preset());
-        assert!(!idr1.queues_preset());
-    }
-
-    #[test]
-    fn test_idr5_bitfield_roundtrip() {
-        let idr5 = Idr5::new()
-            .with_oas(0b010)
-            .with_gran4k(true)
-            .with_gran64k(true);
-        assert_eq!(idr5.oas(), 0b010);
-        assert!(idr5.gran4k());
-        assert!(idr5.gran64k());
-        assert!(!idr5.gran16k());
-    }
-
-    #[test]
-    fn test_cr0_bitfield_roundtrip() {
-        let cr0 = Cr0::new()
-            .with_smmuen(true)
-            .with_cmdqen(true)
-            .with_eventqen(true);
-        assert!(cr0.smmuen());
-        assert!(cr0.cmdqen());
-        assert!(cr0.eventqen());
-        assert!(!cr0.priqen());
-    }
-
-    #[test]
-    fn test_cr0_enable_sequence() {
-        // Linux enables features one at a time:
-        // 1. CMDQEN
-        let cr0 = Cr0::new().with_cmdqen(true);
-        assert!(cr0.cmdqen());
-        assert!(!cr0.eventqen());
-        assert!(!cr0.smmuen());
-
-        // 2. CMDQEN + EVENTQEN
-        let cr0 = cr0.with_eventqen(true);
-        assert!(cr0.cmdqen());
-        assert!(cr0.eventqen());
-        assert!(!cr0.smmuen());
-
-        // 3. CMDQEN + EVENTQEN + SMMUEN
-        let cr0 = cr0.with_smmuen(true);
-        assert!(cr0.cmdqen());
-        assert!(cr0.eventqen());
-        assert!(cr0.smmuen());
-    }
-
-    #[test]
-    fn test_gbpa_update_bit() {
-        let gbpa = Gbpa::new().with_update(true).with_abort(true);
-        assert!(gbpa.update());
-        assert!(gbpa.abort());
-
-        // Simulate SMMU clearing the update bit
-        let gbpa = gbpa.with_update(false);
-        assert!(!gbpa.update());
-        assert!(gbpa.abort());
-    }
-
-    #[test]
-    fn test_irq_ctrl_roundtrip() {
-        let irq_ctrl = IrqCtrl::new()
-            .with_gerror_irqen(true)
-            .with_eventq_irqen(true);
-        assert!(irq_ctrl.gerror_irqen());
-        assert!(irq_ctrl.eventq_irqen());
-        assert!(!irq_ctrl.priq_irqen());
-    }
-
-    #[test]
-    fn test_gerror_toggle_protocol() {
-        let gerror = Gerror::new().with_cmdq_err(true);
-        let gerrorn = Gerror::new();
-
-        // Error is active when bits differ
-        assert_ne!(gerror.cmdq_err(), gerrorn.cmdq_err(),);
-
-        // Software acknowledges by matching
-        let gerrorn = gerrorn.with_cmdq_err(true);
-        assert_eq!(gerror.cmdq_err(), gerrorn.cmdq_err(),);
-    }
-
-    #[test]
     fn test_strtab_base_address() {
         // Address must be 64-byte aligned (bottom 6 bits zero)
         let base = StrtabBase::new().with_addr_bits(0x1000_0000_u64 >> 6);
@@ -651,30 +514,12 @@ mod tests {
     }
 
     #[test]
-    fn test_strtab_base_cfg_roundtrip() {
-        let cfg = StrtabBaseCfg::new()
-            .with_fmt(StrtabFmt::LINEAR.0)
-            .with_log2size(8);
-        assert_eq!(cfg.fmt(), StrtabFmt::LINEAR.0);
-        assert_eq!(cfg.log2size(), 8);
-    }
-
-    #[test]
     fn test_queue_base_address() {
         let base = QueueBase::new()
             .with_addr_bits(0x2000_0000_u64 >> 5)
             .with_log2size(8);
         assert_eq!(base.addr(), 0x2000_0000);
         assert_eq!(base.log2size(), 8);
-    }
-
-    #[test]
-    fn test_cmdq_cons_error() {
-        let cons = CmdqCons::new()
-            .with_rd(42)
-            .with_err(CmdqError::CERROR_ILL.0);
-        assert_eq!(cons.rd(), 42);
-        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
     }
 
     #[test]

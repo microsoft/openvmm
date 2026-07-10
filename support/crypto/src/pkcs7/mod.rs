@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! PKCS#7 signed data verification.
+//! PKCS#7 signed data verification for UEFI Secure Boot authenticated variables.
+//!
+//! This module intentionally implements only the PKCS#7/CMS verification shape
+//! needed by UEFI Secure Boot signature database checks. It is not a general
+//! purpose PKCS#7 verifier and should not be used for other PKCS#7 use cases.
 
 #![cfg(any(
     openssl,
@@ -31,13 +35,11 @@ mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
 
+use crate::x509::X509Certificate;
 use thiserror::Error;
 
 /// A parsed PKCS#7 signedData object.
 pub struct Pkcs7SignedData(sys::Pkcs7SignedDataInner);
-
-/// A store of trusted X509 certificates used for PKCS#7 verification.
-pub struct Pkcs7CertStore(sys::Pkcs7CertStoreInner);
 
 /// An error for PKCS#7 operations.
 #[cfg(not(rust))]
@@ -51,38 +53,19 @@ pub struct Pkcs7Error(#[source] super::BackendError);
 #[error("PKCS#7 error during {1}")]
 pub struct Pkcs7Error(#[source] der::Error, &'static str);
 
-impl Pkcs7CertStore {
-    /// Creates a new empty certificate store.
-    pub fn new() -> Result<Self, Pkcs7Error> {
-        sys::Pkcs7CertStoreInner::new().map(Self)
-    }
-
-    /// Adds an X509 certificate to the store.
-    #[cfg(any(openssl, rust, symcrypt))]
-    pub fn add_cert(&mut self, cert: &super::x509::X509Certificate) -> Result<(), Pkcs7Error> {
-        self.0.add_cert(cert)
-    }
-
-    /// Adds a DER-encoded X509 certificate to the store.
-    // TODO: Remove this method and make every backend support add_cert.
-    pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), Pkcs7Error> {
-        #[cfg(any(openssl, symcrypt))]
-        {
-            self.0.add_cert(
-                &crate::x509::X509Certificate::from_der(data).map_err(|e| Pkcs7Error(e.0))?,
-            )
-        }
-        #[cfg(rust)]
-        {
-            self.0.add_cert(
-                &crate::x509::X509Certificate::from_der(data).map_err(|e| Pkcs7Error(e.0, e.1))?,
-            )
-        }
-        #[cfg(not(any(openssl, rust, symcrypt)))]
-        {
-            self.0.add_cert_der(data)
-        }
-    }
+/// An error encountered while verifying a PKCS#7 signed data object.
+// TODO: Make this Clone when RsaError becomes Clone
+#[derive(Debug, Error)]
+pub enum Pkcs7VerifyError {
+    /// A PKCS#7 parsing or structural error.
+    #[error("PKCS#7 error")]
+    Pkcs7(#[from] Pkcs7Error),
+    /// An RSA signature verification error.
+    #[error("RSA error")]
+    Rsa(#[from] crate::rsa::RsaError),
+    /// An X.509 certificate error.
+    #[error("X509 error")]
+    X509(#[from] crate::x509::X509Error),
 }
 
 impl Pkcs7SignedData {
@@ -92,76 +75,136 @@ impl Pkcs7SignedData {
     }
 
     /// Encode this PKCS#7 object as DER bytes.
-    #[cfg(any(openssl, rust, symcrypt))]
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0.to_der()
     }
 
     /// Creates a detached PKCS#7 signed-data object by signing `data` with the
     /// given certificate and key pair.
-    #[cfg(any(openssl, rust, symcrypt))]
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn sign(
-        cert: &super::x509::X509Certificate,
-        key_pair: &super::rsa::RsaKeyPair,
+        cert: &X509Certificate,
+        key_pair: &crate::rsa::RsaKeyPair,
         data: &[u8],
     ) -> Result<Self, crate::rsa::RsaError> {
         sys::Pkcs7SignedDataInner::sign(cert, key_pair, data).map(Self)
     }
 
-    /// Verifies signed data against a trusted certificate store.
+    /// Returns the first signer's embedded certificate and their signature.
+    /// Errors if there are no or multiple signers.
+    #[cfg(not(openssl))]
+    pub fn signer_cert_sig(&self) -> Result<(X509Certificate, Vec<u8>), Pkcs7Error> {
+        self.0.signer_cert_sig()
+    }
+
+    /// Returns every certificate embedded in the PKCS#7 SignedData's
+    /// certificate bag.
+    #[cfg(not(openssl))]
+    pub fn embedded_certificates(&self) -> Result<Vec<X509Certificate>, Pkcs7Error> {
+        self.0.embedded_certificates()
+    }
+
+    /// Verifies UEFI Secure Boot signed data against trusted certificates.
     ///
-    /// Consumes the store, since the backend may need to finalize it.
+    /// This is a narrow verifier for UEFI authenticated variable / Secure Boot
+    /// signature-list semantics. It does not provide full PKCS#7/CMS support
+    /// and should not be used for other PKCS#7 verification scenarios.
     ///
-    /// Returns `Ok(true)` when verification succeeds. Different backends may
-    /// return `Ok(false)` or an `Err` when the signature check fails.
-    ///
-    /// No certificate revocation checking is performed.
-    ///
-    /// # `uefi_mode`
-    ///
-    /// When `false`, verification uses the backend's default PKI rules: the
-    /// signer must chain up to a root certificate in `store`, all certs in
-    /// the chain must be currently time-valid, and the chain must be valid
-    /// for the default purpose.
-    ///
-    /// When `true`, the following relaxations are applied so that PKCS#7
-    /// signatures can be verified against the certificates found in a UEFI
-    /// `EFI_SIGNATURE_LIST` (`db`/`dbx`/`KEK`/`PK`):
-    ///
-    /// 1. **Partial chains are accepted.** Any certificate in `store` is
-    ///    treated as a trust anchor, not just self-signed roots. UEFI
-    ///    signature lists typically contain leaf or intermediate certs with
-    ///    no full chain available to the verifier.
-    /// 2. **Certificate time validity is ignored.** Expired certificates are
-    ///    accepted. UEFI signing certs in the wild are often long expired
-    ///    and existing firmware implementations accept them.
-    /// 3. **Any key-usage / extended-key-usage is accepted.** UEFI signature
-    ///    list certs are not marked with the usages that a general-purpose
-    ///    PKI verifier expects for the default purpose.
-    #[cfg(not(any(rust, symcrypt)))]
-    pub fn verify(
-        self,
-        store: Pkcs7CertStore,
+    /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
+    /// signature, signer, or trust check fails. No certificate revocation
+    /// checking is performed.
+    pub fn verify_uefi(
+        &self,
+        trusted_certs: &[X509Certificate],
         signed_content: &[u8],
-        uefi_mode: bool,
-    ) -> Result<bool, Pkcs7Error> {
-        // Our only caller of this method today, uefi, always wants 'uefi_mode'.
-        // set to true. Behavior of our current backends is known to be subtly
-        // different when uefi_mode is false. If a caller ever needs support for
-        // uefi_mode = false, the backend implementation will need to be updated
-        // to handle the stricter PKI rules.
-        //
-        // Specifically known is that the handling of the x509 purpose (EKU)
-        // constraints has different defaults on different backends, but there
-        // may be other subtle differences as well.
-        assert!(uefi_mode, "only uefi_mode is currently supported");
-        self.0.verify(store.0, signed_content, uefi_mode)
+    ) -> Result<bool, Pkcs7VerifyError> {
+        verify_inner(self, trusted_certs, signed_content)
     }
 }
 
-#[cfg(all(test, openssl))]
+#[cfg(openssl)]
+fn verify_inner(
+    p7: &Pkcs7SignedData,
+    trusted_certs: &[X509Certificate],
+    signed_content: &[u8],
+) -> Result<bool, Pkcs7VerifyError> {
+    p7.0.verify(trusted_certs, signed_content)
+}
+
+/// Shared UEFI PKCS#7 verification flow.
+///
+/// 1. Require exactly one signer.
+/// 2. Verify the signer's signature over the detached content.
+/// 3. Walk the chain starting at the signer cert: at each step, succeed
+///    if the current cert is itself trusted or is issued (and validly
+///    signed) by a trusted cert.
+#[cfg(not(openssl))]
+fn verify_inner(
+    p7: &Pkcs7SignedData,
+    trusted_certs: &[X509Certificate],
+    signed_content: &[u8],
+) -> Result<bool, Pkcs7VerifyError> {
+    let (signer, signature) = p7.signer_cert_sig()?;
+    if !signer.public_key()?.pkcs1_verify(
+        signed_content,
+        &signature,
+        crate::HashAlgorithm::Sha256,
+    )? {
+        return Ok(false);
+    }
+
+    #[derive(PartialEq, Eq, Hash, Clone)]
+    struct CertId {
+        issuer_dn: String,
+        serial_number: Vec<u8>,
+    }
+    fn make_id(cert: &X509Certificate) -> Result<CertId, crate::x509::X509Error> {
+        Ok(CertId {
+            issuer_dn: cert.issuer_dn()?,
+            serial_number: cert.serial_number()?,
+        })
+    }
+
+    let embedded = p7.embedded_certificates()?;
+    // Walk the chain. At each step:
+    //   - succeed if `current` equals any trusted cert,
+    //   - else succeed if any trusted cert issued `current` and that
+    //     issuer's signature on `current` verifies,
+    //   - else step up to an embedded cert that issued `current` (and
+    //     whose signature verifies).
+    let mut visited = std::collections::HashSet::new();
+    let mut current = &signer;
+    'outer: loop {
+        let current_id = make_id(current)?;
+        if !visited.insert(current_id.clone()) {
+            return Ok(false);
+        }
+
+        for trusted in trusted_certs {
+            let trusted_id = make_id(trusted)?;
+            if trusted_id == current_id
+                || (trusted.issued(current)? && current.verify(&trusted.public_key()?)?)
+            {
+                return Ok(true);
+            }
+        }
+
+        for candidate in &embedded {
+            if candidate.issued(current)? && current.verify(&candidate.public_key()?)? {
+                current = candidate;
+                continue 'outer;
+            }
+        }
+
+        return Ok(false);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rsa::RsaKeyPair;
 
     /// The detached content used by the cross-backend verification tests.
     const SIGNED_CONTENT: &[u8] = b"openvmm pkcs7 cross-backend test data";
@@ -169,9 +212,9 @@ mod tests {
     /// Build a self-signed cert + detached PKCS#7 signature over
     /// `SIGNED_CONTENT`. Used to generate fresh fixtures inside each test
     /// rather than reading them from disk.
-    fn make_fixture() -> (crate::x509::X509Certificate, Pkcs7SignedData) {
-        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
-        let cert = crate::x509::X509Certificate::build_self_signed(
+    fn make_fixture() -> (X509Certificate, Pkcs7SignedData) {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let cert = X509Certificate::build_self_signed(
             &key,
             "US",
             "WA",
@@ -192,24 +235,22 @@ mod tests {
         assert!(Pkcs7SignedData::from_der(&[0xff, 0x00, 0x01, 0x02]).is_err());
     }
 
-    /// A PKCS#7 detached signature must verify against the issuing cert
-    /// in a UEFI-mode store across all supported backends. This is the
-    /// main cross-backend coverage for the verify path.
+    /// A PKCS#7 detached signature must verify against the issuing cert using
+    /// UEFI Secure Boot trust semantics across all supported backends. This is
+    /// the main cross-backend coverage for the UEFI verification path.
     #[test]
     fn verify_with_trusted_cert_succeeds() {
         let (cert, p7) = make_fixture();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&cert).unwrap();
-        assert!(p7.verify(store, SIGNED_CONTENT, true).unwrap());
+        assert!(p7.verify_uefi(&[cert], SIGNED_CONTENT).unwrap());
     }
 
-    /// Helper: verification failures may surface as either `Ok(false)`
-    /// or `Err(_)` depending on the backend, per the documented
-    /// contract on `Pkcs7SignedData::verify`. Both are acceptable; the
-    /// only forbidden outcome is `Ok(true)`.
-    fn assert_verify_rejected(result: Result<bool, Pkcs7Error>) {
+    /// Helper: verification failures must surface as `Ok(false)`. Backend
+    /// errors are reserved for exceptional conditions, not rejected signatures
+    /// or trust failures.
+    fn assert_verify_rejected(result: Result<bool, Pkcs7VerifyError>) {
         match result {
-            Ok(false) | Err(_) => {}
+            Ok(false) => {}
+            Err(err) => panic!("verify returned unexpected error: {err}"),
             Ok(true) => panic!("verify unexpectedly succeeded"),
         }
     }
@@ -220,21 +261,17 @@ mod tests {
     #[test]
     fn verify_rejects_tampered_content() {
         let (cert, p7) = make_fixture();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&cert).unwrap();
         let mut tampered = SIGNED_CONTENT.to_vec();
         tampered[0] ^= 0xff;
-        assert_verify_rejected(p7.verify(store, &tampered, true));
+        assert_verify_rejected(p7.verify_uefi(&[cert], &tampered));
     }
 
     /// A truncated detached content must not verify.
     #[test]
     fn verify_rejects_truncated_content() {
         let (cert, p7) = make_fixture();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&cert).unwrap();
         let truncated = &SIGNED_CONTENT[..SIGNED_CONTENT.len() - 1];
-        assert_verify_rejected(p7.verify(store, truncated, true));
+        assert_verify_rejected(p7.verify_uefi(&[cert], truncated));
     }
 
     /// An empty trust store must cause verification to fail (no trust
@@ -242,17 +279,17 @@ mod tests {
     #[test]
     fn verify_with_empty_store_fails() {
         let (_cert, p7) = make_fixture();
-        let store = Pkcs7CertStore::new().unwrap();
-        assert_verify_rejected(p7.verify(store, SIGNED_CONTENT, true));
+        assert_verify_rejected(p7.verify_uefi(&[], SIGNED_CONTENT));
     }
 
-    /// A store populated only with an unrelated cert must cause
-    /// verification to fail.
+    /// Verification should try every trusted certificate supplied by the
+    /// caller. An unrelated cert must not prevent a later matching cert from
+    /// succeeding.
     #[test]
-    fn verify_with_unrelated_cert_fails() {
-        let (_cert, p7) = make_fixture();
-        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
-        let other = crate::x509::X509Certificate::build_self_signed(
+    fn verify_with_later_trusted_cert_succeeds() {
+        let (cert, p7) = make_fixture();
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let other = X509Certificate::build_self_signed(
             &key,
             "US",
             "WA",
@@ -261,16 +298,34 @@ mod tests {
             "other.test.openvmm",
         )
         .unwrap();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&other).unwrap();
-        assert_verify_rejected(p7.verify(store, SIGNED_CONTENT, true));
+        let certs = vec![other, cert];
+
+        assert!(p7.verify_uefi(&certs, SIGNED_CONTENT).unwrap());
     }
 
-    /// Full sign + verify roundtrip using freshly generated keys.
+    /// A store populated only with an unrelated cert must cause
+    /// verification to fail.
+    #[test]
+    fn verify_with_unrelated_cert_fails() {
+        let (_cert, p7) = make_fixture();
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let other = X509Certificate::build_self_signed(
+            &key,
+            "US",
+            "WA",
+            "Redmond",
+            "Other",
+            "other.test.openvmm",
+        )
+        .unwrap();
+        assert_verify_rejected(p7.verify_uefi(&[other], SIGNED_CONTENT));
+    }
+
+    /// Full sign + UEFI verification roundtrip using freshly generated keys.
     #[test]
     fn sign_verify_roundtrip() {
-        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
-        let cert = crate::x509::X509Certificate::build_self_signed(
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let cert = X509Certificate::build_self_signed(
             &key,
             "US",
             "WA",
@@ -281,17 +336,15 @@ mod tests {
         .unwrap();
         let content = b"hello pkcs7 roundtrip";
         let p7 = Pkcs7SignedData::sign(&cert, &key, content).unwrap();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&cert).unwrap();
-        assert!(p7.verify(store, content, true).unwrap());
+        assert!(p7.verify_uefi(&[cert], content).unwrap());
     }
 
     /// Cross-check: a freshly produced signature must fail verification
     /// against a different cert's store.
     #[test]
     fn sign_verify_rejects_wrong_store() {
-        let signer_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
-        let signer_cert = crate::x509::X509Certificate::build_self_signed(
+        let signer_key = RsaKeyPair::generate(2048).unwrap();
+        let signer_cert = X509Certificate::build_self_signed(
             &signer_key,
             "US",
             "WA",
@@ -300,8 +353,8 @@ mod tests {
             "signer.test.openvmm",
         )
         .unwrap();
-        let other_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
-        let other_cert = crate::x509::X509Certificate::build_self_signed(
+        let other_key = RsaKeyPair::generate(2048).unwrap();
+        let other_cert = X509Certificate::build_self_signed(
             &other_key,
             "US",
             "WA",
@@ -312,8 +365,6 @@ mod tests {
         .unwrap();
         let content = b"wrong-store content";
         let p7 = Pkcs7SignedData::sign(&signer_cert, &signer_key, content).unwrap();
-        let mut store = Pkcs7CertStore::new().unwrap();
-        store.add_cert(&other_cert).unwrap();
-        assert_verify_rejected(p7.verify(store, content, true));
+        assert_verify_rejected(p7.verify_uefi(&[other_cert], content));
     }
 }

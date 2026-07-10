@@ -34,6 +34,8 @@ unsafe extern "C" {
     ) -> CFDataRef;
     pub(crate) fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
     pub(crate) fn CFDataGetLength(data: CFDataRef) -> CFIndex;
+    pub(crate) fn CFArrayGetCount(arr: CFArrayRef) -> CFIndex;
+    pub(crate) fn CFArrayGetValueAtIndex(arr: CFArrayRef, idx: CFIndex) -> CFTypeRef;
     fn CFStringGetLength(the_string: CFStringRef) -> CFIndex;
     fn CFStringGetCString(
         the_string: CFStringRef,
@@ -69,6 +71,14 @@ unsafe extern "C" {
 /// drop. Null pointers are tolerated (drop is a no-op) so this can be
 /// constructed directly from the return value of CF/Security APIs.
 pub(crate) struct CfHandle(pub(crate) CFTypeRef);
+
+// SAFETY: CoreFoundation immutable objects and Security.framework `SecKey`
+// objects are documented as thread-safe; CFRetain/CFRelease are also
+// thread-safe. The CF types wrapped by `CfHandle` in this crate are all in
+// that category.
+unsafe impl Send for CfHandle {}
+// SAFETY: see above.
+unsafe impl Sync for CfHandle {}
 
 impl Drop for CfHandle {
     fn drop(&mut self) {
@@ -224,8 +234,6 @@ pub(crate) fn cf_dict(
 pub struct OsStatusCode(pub i32);
 
 impl OsStatusCode {
-    pub const SUCCESS: Self = Self(0);
-
     pub fn success(self) -> bool {
         self.0 == 0
     }

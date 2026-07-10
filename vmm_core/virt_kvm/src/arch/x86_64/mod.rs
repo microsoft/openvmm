@@ -17,10 +17,12 @@ use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
+use crate::memory::KvmMemoryBackingMode;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_emulator::pages::OverlayPage;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -97,8 +99,6 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
-    /// Enable nested virtualization (VMX/SVM) for the guest.
-    pub nested_virt: bool,
 }
 
 impl Kvm {
@@ -106,17 +106,13 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
-            nested_virt: false,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self {
-            kvm,
-            nested_virt: false,
-        })
+        Ok(Self { kvm })
     }
 }
 
@@ -139,6 +135,10 @@ impl virt::Hypervisor for Kvm {
         virt::PlatformInfo {}
     }
 
+    fn recognizes_nested_virt(&self) -> bool {
+        true
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -147,8 +147,14 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let nested_virt = self.nested_virt;
+        let nested_virt = config.nested_virt;
         let supported_cpuid = self.kvm.supported_cpuid()?;
+
+        // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
+        // offset 0x2F0) when the guest's IA32_MCG_CAP advertises MCG_CMCI_P.
+        // Query which MCE capability bits this host allows us to set so that
+        // bind() can advertise CMCI to the guest where supported (Intel).
+        let supported_mce_cap = self.kvm.supported_mce_cap()?;
 
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
@@ -266,7 +272,7 @@ impl virt::Hypervisor for Kvm {
             // nested virtualization features leaf (0x4000000A), but only
             // expose it when nested virtualization is enabled.
             let kvm_hv_cpuid = self.kvm.supported_hv_cpuid()?;
-            let nested_leaf = if self.nested_virt {
+            let nested_leaf = if nested_virt {
                 kvm_hv_cpuid
                     .iter()
                     .find(|e| e.function == HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES)
@@ -348,7 +354,7 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let vm = self.kvm.new_vm()?;
+        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
@@ -357,7 +363,8 @@ impl virt::Hypervisor for Kvm {
             vm,
             config,
             cpuid: cpuid_entries,
-            nested_virt: self.nested_virt,
+            nested_virt,
+            supported_mce_cap,
         })
     }
 }
@@ -368,6 +375,9 @@ pub struct KvmProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
+    /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
+    /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
+    supported_mce_cap: u64,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -455,6 +465,14 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
+            memory_backing_mode: KvmMemoryBackingMode::Userspace,
+            ram_ranges: config
+                .mem_layout
+                .ram()
+                .iter()
+                .map(|range| range.range)
+                .chain(config.mem_layout.vtl2_range())
+                .collect(),
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
             vps: self
@@ -474,6 +492,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
+            mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
         });
 
@@ -731,6 +750,21 @@ impl virt::BindProcessor for KvmProcessorBinder {
             )])?;
         }
 
+        // Advertise CMCI support (MCG_CMCI_P) in the guest's IA32_MCG_CAP when
+        // the host permits it. KVM's in-kernel LAPIC only exposes the CMCI LVT
+        // register (APIC offset 0x2F0) when MCG_CMCI_P is set, yet KVM defaults
+        // MCG_CAP with it clear; without it, a guest that programs the CMCI LVT
+        // via an x2APIC MSR takes a #GP. Preserve the default bank count and
+        // other capability bits.
+        if self.partition.mce_cmci_supported {
+            let mut mcg_cap = [0u64];
+            kvm.get_msrs(&[x86defs::X86X_MSR_MCG_CAP], &mut mcg_cap)?;
+            let cap = x86defs::McgCap::from(mcg_cap[0]);
+            if !cap.cmci_p() {
+                kvm.setup_mce(cap.with_cmci_p(true).into())?;
+            }
+        }
+
         // Set per-VP CPUID entries, fixing up APIC ID fields.
         //
         // TODO: centralize this code, probably in the topology crate,
@@ -801,6 +835,8 @@ impl virt::BindProcessor for KvmProcessorBinder {
             scontrol: HvSynicScontrol::new().with_enabled(true),
             siefp: 0.into(),
             simp: 0.into(),
+            simp_overlay: OverlayPage::default(),
+            siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
         };
 
@@ -847,6 +883,10 @@ pub struct KvmProcessor<'a> {
     siefp: HvSynicSimpSiefp,
     #[inspect(hex, with = "|&x| u64::from(x)")]
     simp: HvSynicSimpSiefp,
+    /// Overlay backing the synic message page (SIMP).
+    simp_overlay: OverlayPage,
+    /// Overlay backing the synic event flags page (SIEFP).
+    siefp_overlay: OverlayPage,
 }
 
 impl KvmProcessor<'_> {
@@ -915,6 +955,47 @@ impl KvmProcessor<'_> {
         self.partition.gm.write_at(simp + 4, &msg.as_bytes()[4..])?;
         self.partition.gm.write_plain(simp, &msg.header.typ)?;
         Ok(true)
+    }
+}
+
+/// Maps, moves, or unmaps a synic overlay page (SIMP or SIEFP) to match `reg`.
+///
+/// KVM (with `KVM_CAP_HYPERV_SYNIC2`) keeps the live page in guest RAM and does
+/// not zero it when the guest enables the overlay. But the overlay is logically
+/// separate from guest RAM: it is zeroed once and thereafter follows the
+/// overlay. Routing through [`OverlayPage`] preserves that, so a freshly enabled
+/// page is zeroed rather than exposing stale guest data that the in-kernel synic
+/// would treat as an occupied message slot and refuse to deliver into.
+fn sync_synic_overlay(overlay: &mut OverlayPage, reg: HvSynicSimpSiefp, gm: &GuestMemory) {
+    let mut prot = KvmNoVtlProtections(gm);
+    if let Err(err) = overlay.sync(reg.enabled(), reg.base_gpn(), &mut prot) {
+        tracelimit::warn_ratelimited!(
+            error = &err as &dyn std::error::Error,
+            gpn = reg.base_gpn(),
+            "failed to map synic overlay page"
+        );
+    }
+}
+
+/// A no-op [`VtlProtectAccess`] implementation for use without VTL protections,
+/// as is the case for KVM. Locking a page simply pins it in guest memory;
+/// unlocking is a no-op.
+struct KvmNoVtlProtections<'a>(&'a GuestMemory);
+
+impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        self.0
+            .lock_gpns(false, &[gpn])
+            .map_err(|_| HvError::OperationDenied)
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
+        Ok(())
     }
 }
 
@@ -1260,9 +1341,9 @@ impl hv1_hypercall::SignalEvent for KvmHypercallExit<'_> {
     }
 }
 
-impl Processor for KvmProcessor<'_> {
+impl<'p> Processor for KvmProcessor<'p> {
     type StateAccess<'a>
-        = KvmVpStateAccess<'a>
+        = KvmVpStateAccess<'a, 'p>
     where
         Self: 'a;
 
@@ -1270,7 +1351,7 @@ impl Processor for KvmProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <KvmVpStateAccess<'_> as AccessVpState>::Error> {
+    ) -> Result<(), <KvmVpStateAccess<'_, '_> as AccessVpState>::Error> {
         let mut control = 0;
         let mut db = [0; 4];
         let mut dr7 = 0;
@@ -1406,6 +1487,16 @@ impl Processor for KvmProcessor<'_> {
                         siefp,
                         simp,
                     } => {
+                        // Bring the overlay pages into agreement with the new
+                        // SIMP/SIEFP values the guest just programmed. The
+                        // overlays are owned by this processor; the save/restore
+                        // path reaches them through the bound processor.
+                        sync_synic_overlay(&mut self.simp_overlay, simp.into(), &self.partition.gm);
+                        sync_synic_overlay(
+                            &mut self.siefp_overlay,
+                            siefp.into(),
+                            &self.partition.gm,
+                        );
                         self.scontrol = control.into();
                         self.siefp = siefp.into();
                         self.simp = simp.into();
@@ -1431,6 +1522,20 @@ impl Processor for KvmProcessor<'_> {
                         };
                         KvmHypercallExit::DISPATCHER.dispatch(&self.partition.gm, &mut handler);
                         *result = handler.registers.result;
+                    }
+                    kvm::Exit::Hypercall {
+                        nr,
+                        args: _,
+                        result,
+                        flags,
+                    } => {
+                        // This is only reachable for hypercall exits explicitly
+                        // enabled on the VM. Later SNP support enables
+                        // KVM_HC_MAP_GPA_RANGE and handles it here.
+                        *result = 1;
+                        return Err(
+                            dev.fatal_error(KvmRunVpError::UnhandledHypercall { nr, flags }.into())
+                        );
                     }
                     kvm::Exit::Debug {
                         exception: _,
@@ -1468,6 +1573,30 @@ impl Processor for KvmProcessor<'_> {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
                         return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
+                    kvm::Exit::SystemEvent {
+                        event_type,
+                        event_flags,
+                    } => {
+                        // KVM reports architectural shutdown/reset/crash
+                        // notifications here; SNP adds SEV termination handling.
+                        tracing::info!(event_type, event_flags, "system event");
+                        match event_type {
+                            kvm::KVM_SYSTEM_EVENT_SHUTDOWN => {
+                                return Err(VpHaltReason::PowerOff);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_RESET => {
+                                return Err(VpHaltReason::Reset);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_CRASH => {
+                                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                            }
+                            _ => {
+                                return Err(dev.fatal_error(
+                                    KvmRunVpError::UnhandledSystemEvent(event_type).into(),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1476,14 +1605,13 @@ impl Processor for KvmProcessor<'_> {
     fn flush_async_requests(&mut self) {}
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        self.partition
-            .vp_state_access(self.vpindex)
-            .reset_all(&self.inner.vp_info)
+        let vp_info = self.inner.vp_info;
+        self.access_state(Vtl::Vtl0).reset_all(&vp_info)
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
-        self.partition.vp_state_access(self.vpindex)
+        KvmVpStateAccess::new(self)
     }
 }
 

@@ -35,6 +35,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
 use pci_core::bus_range::AssignedBusRange;
+use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
@@ -222,11 +223,11 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem,
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -259,11 +260,11 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem,
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -315,11 +316,11 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem.clone(),
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -459,11 +460,11 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let nvme = nvme_test::NvmeFaultController::new(
         &driver_source,
         guest_mem.clone(),
-        msi_conn.target(),
+        &msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         nvme_test::NvmeFaultControllerCaps {
             msix_count: MSIX_COUNT,

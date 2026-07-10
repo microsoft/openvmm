@@ -68,7 +68,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
-use pipette_client::PIPETTE_VSOCK_PORT;
+use pipette_client::PIPETTE_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
@@ -216,7 +216,8 @@ impl PetriVmConfigOpenVmm {
             chipset = chipset.without_vmbus();
         }
 
-        let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers()).await?;
+        let (ide_disks, storvsp_ide_handles) =
+            ide_controllers_to_openvmm(firmware.ide_controllers()).await?;
         let (mut vmbus_devices, vpci_devices) =
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers).await?;
 
@@ -248,6 +249,14 @@ impl PetriVmConfigOpenVmm {
                 }
                 .into_resource(),
             });
+        }
+
+        if !storvsp_ide_handles.is_empty() {
+            anyhow::ensure!(
+                !properties.no_vmbus,
+                "IDE accelerator requires VMBus to be enabled"
+            );
+            vmbus_devices.extend(storvsp_ide_handles);
         }
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
@@ -389,6 +398,7 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
+            let diagnostics_rate_limit = uefi_cfg.and_then(|c| c.efi_diagnostics_rate_limit);
             let nvram_storage = if vmgs.disk().is_some() {
                 VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
             } else {
@@ -402,6 +412,7 @@ impl PetriVmConfigOpenVmm {
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
+                diagnostics_rate_limit,
                 nvram_storage,
                 None,
             ));
@@ -587,6 +598,7 @@ impl PetriVmConfigOpenVmm {
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
+                nested_virt: false,
             },
             vmbus: if properties.no_vmbus {
                 None
@@ -611,6 +623,7 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
+            pcie_generic_initiators: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -653,7 +666,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         // Make the pipette connection listener.
-        let path = format!("{vsock_path_string}_{PIPETTE_VSOCK_PORT}");
+        let path = format!("{vsock_path_string}_{PIPETTE_PORT}");
         let pipette_listener = PolledSocket::new(
             driver,
             UnixListener::bind(path).context("failed to bind to pipette listener")?,
@@ -662,7 +675,7 @@ impl PetriVmConfigOpenVmm {
         // Make the vtl2 pipette connection listener.
         let vtl2_pipette_listener = if let Some(vtl2_vmbus) = &config.vtl2_vmbus {
             let path = vtl2_vmbus.vsock_path.as_ref().unwrap();
-            let path = format!("{path}_{PIPETTE_VSOCK_PORT}");
+            let path = format!("{path}_{PIPETTE_PORT}");
             Some(PolledSocket::new(
                 driver,
                 UnixListener::bind(path).context("failed to bind to vtl2 pipette listener")?,
@@ -687,6 +700,7 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
+                tcp_pipette_port: None,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
@@ -881,7 +895,9 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            force_dma_bounce,
                             efi_diagnostics_log_level: _, // applied to top-level Config below
+                            efi_diagnostics_rate_limit: _, // applied to top-level Config below
                         },
                 },
             ) => {
@@ -901,6 +917,7 @@ impl PetriVmConfigSetupCore<'_> {
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
                     enable_vmbus: !self.no_vmbus,
+                    force_dma_bounce: *force_dma_bounce,
                 }
             }
             (
@@ -968,6 +985,23 @@ impl PetriVmConfigSetupCore<'_> {
                     {
                         append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
                     }
+                }
+
+                // Plumb the EFI diagnostics rate-limit override to the
+                // OpenHCL-side UEFI device via env var.
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            efi_diagnostics_rate_limit: Some(limit),
+                            ..
+                        },
+                    ..
+                } = self.firmware
+                {
+                    append_cmdline(
+                        &mut cmdline,
+                        format!("HCL_EFI_DIAGNOSTICS_RATE_LIMIT={limit}"),
+                    );
                 }
 
                 let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
@@ -1042,7 +1076,9 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                force_dma_bounce,
                 efi_diagnostics_log_level,
+                efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -1106,7 +1142,7 @@ impl PetriVmConfigSetupCore<'_> {
                     get_resources::ged::EfiDiagnosticsLogLevelType::Full
                 }
             },
-            hv_sint_enabled: false,
+            force_dma_bounce_enabled: *force_dma_bounce,
         };
 
         Ok((ged, guest_request_send))
@@ -1157,6 +1193,7 @@ impl PetriVmConfigSetupCore<'_> {
         if !self.firmware.is_openhcl()
             && let Some(TpmConfig {
                 no_persistent_secrets,
+                ..
             }) = self.tpm_config
         {
             let register_layout = match self.arch {
@@ -1250,17 +1287,31 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
     handle
 }
 
-/// Convert the generic IDE configuration to OpenVMM IDE disks.
+/// Convert the generic IDE configuration to OpenVMM IDE disks and storvsp
+/// IDE accelerator handles.
 async fn ide_controllers_to_openvmm(
     ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
-) -> anyhow::Result<Vec<IdeDeviceConfig>> {
+) -> anyhow::Result<(
+    Vec<IdeDeviceConfig>,
+    Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
+)> {
     let mut ide_disks = Vec::new();
+    let mut storvsp_ide_handles = Vec::new();
 
     if let Some(ide_controllers) = ide_controllers {
         for (controller_number, controller) in ide_controllers.iter().enumerate() {
             for (controller_location, drive) in controller.iter().enumerate() {
                 if let Some(drive) = drive {
                     if let Some(disk) = &drive.disk {
+                        // Create storvsp accelerator resource before consuming
+                        // the disk reference, since petri_disk_to_openvmm
+                        // shadows the binding.
+                        let storvsp_disk = if !drive.is_dvd {
+                            Some(petri_disk_to_openvmm(disk).await?)
+                        } else {
+                            None
+                        };
+
                         let disk = petri_disk_to_openvmm(disk).await?;
                         let guest_media = if drive.is_dvd {
                             GuestMedia::Dvd(
@@ -1274,24 +1325,45 @@ async fn ide_controllers_to_openvmm(
                             GuestMedia::Disk {
                                 disk_type: disk,
                                 read_only: false,
-                                disk_parameters: None,
                             }
                         };
 
+                        let channel = controller_number as u8;
+                        let device = controller_location as u8;
+
                         ide_disks.push(IdeDeviceConfig {
                             path: ide_resources::IdePath {
-                                channel: controller_number as u8,
-                                drive: controller_location as u8,
+                                channel,
+                                drive: device,
                             },
                             guest_media,
                         });
+
+                        // Hard disks also get a storvsp IDE accelerator channel.
+                        if let Some(storvsp_disk) = storvsp_disk {
+                            storvsp_ide_handles.push((
+                                DeviceVtl::Vtl0,
+                                storvsp_resources::StorvspIdeDeviceHandle {
+                                    channel_id: channel,
+                                    device_id: device,
+                                    disk: SimpleScsiDiskHandle {
+                                        disk: storvsp_disk,
+                                        read_only: false,
+                                        parameters: Default::default(),
+                                    }
+                                    .into_resource(),
+                                    io_queue_depth: None,
+                                }
+                                .into_resource(),
+                            ));
+                        }
                     }
                 }
             }
         }
     }
 
-    Ok(ide_disks)
+    Ok((ide_disks, storvsp_ide_handles))
 }
 
 /// Convert the generic VMBUS storage configuration to OpenVMM VMBUS and VPCI devices.
@@ -1372,6 +1444,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                         requests: None,
                     }
                     .into_resource(),
+                    vnode: None,
                 });
             }
             VmbusStorageType::VirtioBlk => {
@@ -1403,6 +1476,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                             .into_resource(),
                         )
                         .into_resource(),
+                        vnode: None,
                     });
                 }
             }

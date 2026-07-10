@@ -1,396 +1,418 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! PKCS#7 signature verification using the Windows CryptoAPI.
+//! PKCS#7 SignedData parsing using the Windows CryptoAPI (`crypt32.dll`).
 
 use super::*;
-use std::ptr;
-use windows::Win32::Foundation::CRYPT_E_NOT_FOUND;
-use windows::Win32::Foundation::NTE_BAD_SIGNATURE;
-use windows::Win32::Security::Cryptography::*;
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use windows::Win32::Security::Cryptography::CMSG_CERT_COUNT_PARAM;
+use windows::Win32::Security::Cryptography::CMSG_CERT_PARAM;
+use windows::Win32::Security::Cryptography::CMSG_SIGNED;
+use windows::Win32::Security::Cryptography::CMSG_SIGNER_COUNT_PARAM;
+use windows::Win32::Security::Cryptography::CMSG_SIGNER_INFO;
+use windows::Win32::Security::Cryptography::CMSG_SIGNER_INFO_PARAM;
+use windows::Win32::Security::Cryptography::CMSG_TYPE_PARAM;
+use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
+use windows::Win32::Security::Cryptography::PKCS_7_ASN_ENCODING;
+use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
 
 fn err(e: windows_result::Error, op: &'static str) -> Pkcs7Error {
     Pkcs7Error(crate::BackendError(e, op))
 }
 
-/// RAII wrapper for HCERTSTORE.
-struct CertStoreHandle(HCERTSTORE);
-
-impl Drop for CertStoreHandle {
-    fn drop(&mut self) {
-        // SAFETY: handle is valid and not aliased.
-        let _ = unsafe { CertCloseStore(Some(self.0), 0) };
-    }
+fn last_err(op: &'static str) -> Pkcs7Error {
+    err(windows_result::Error::from_thread(), op)
 }
 
-/// RAII wrapper for *mut CERT_CONTEXT.
-struct CertContextHandle(*mut CERT_CONTEXT);
-
-impl Drop for CertContextHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: pointer is valid.
-            let _ = unsafe { CertFreeCertificateContext(Some(self.0)) };
-        }
-    }
+fn bogus_err(op: &'static str) -> Pkcs7Error {
+    err(
+        windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+        op,
+    )
 }
 
-/// RAII wrapper for *mut CERT_CHAIN_CONTEXT.
-struct ChainContextHandle(*mut CERT_CHAIN_CONTEXT);
+/// RAII wrapper around `HCRYPTMSG`.
+struct Msg(NonNull<c_void>);
+// SAFETY: handle can be sent across threads.
+unsafe impl Send for Msg {}
+// SAFETY: handle is read-only after the final CryptMsgUpdate.
+unsafe impl Sync for Msg {}
 
-impl Drop for ChainContextHandle {
+impl Drop for Msg {
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: pointer is valid.
-            unsafe { CertFreeCertificateChain(self.0) };
-        }
+        // SAFETY: handle is valid; CryptMsgClose tolerates a single close.
+        let _ =
+            unsafe { windows::Win32::Security::Cryptography::CryptMsgClose(Some(self.0.as_ptr())) };
     }
-}
-
-/// RAII wrapper for HCERTCHAINENGINE.
-struct ChainEngineHandle(HCERTCHAINENGINE);
-
-impl Drop for ChainEngineHandle {
-    fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            // SAFETY: handle is valid and not aliased.
-            unsafe { CertFreeCertificateChainEngine(Some(self.0)) };
-        }
-    }
-}
-
-/// RAII wrapper for HCRYPTMSG (*mut c_void).
-struct MsgHandle(*mut std::ffi::c_void);
-
-impl Drop for MsgHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: handle is valid and not aliased.
-            let _ = unsafe { CryptMsgClose(Some(self.0)) };
-        }
-    }
-}
-
-pub struct Pkcs7CertStoreInner {
-    store: CertStoreHandle,
 }
 
 pub struct Pkcs7SignedDataInner {
-    msg: MsgHandle,
-}
-
-const ENCODING: CERT_QUERY_ENCODING_TYPE =
-    CERT_QUERY_ENCODING_TYPE(X509_ASN_ENCODING.0 | PKCS_7_ASN_ENCODING.0);
-
-const ENCODING_RAW: u32 = X509_ASN_ENCODING.0 | PKCS_7_ASN_ENCODING.0;
-
-impl Pkcs7CertStoreInner {
-    pub fn new() -> Result<Self, Pkcs7Error> {
-        // SAFETY: CERT_STORE_PROV_MEMORY with no extra params is safe.
-        let store = unsafe {
-            CertOpenStore(
-                CERT_STORE_PROV_MEMORY,
-                CERT_QUERY_ENCODING_TYPE(0),
-                None,
-                CERT_OPEN_STORE_FLAGS(0),
-                None,
-            )
-        }
-        .map_err(|e| err(e, "open memory cert store"))?;
-
-        Ok(Self {
-            store: CertStoreHandle(store),
-        })
-    }
-
-    pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), Pkcs7Error> {
-        // SAFETY: store handle is valid, data is a valid slice.
-        unsafe {
-            CertAddEncodedCertificateToStore(
-                Some(self.store.0),
-                ENCODING,
-                data,
-                CERT_STORE_ADD_ALWAYS,
-                None,
-            )
-        }
-        .map_err(|e| err(e, "add certificate to store"))
-    }
+    msg: Msg,
 }
 
 impl Pkcs7SignedDataInner {
     pub fn from_der(data: &[u8]) -> Result<Self, Pkcs7Error> {
-        // Step 1: Decode the PKCS7 message with CMSG_DETACHED_FLAG
-        // since content is provided separately.
-        // SAFETY: standard CryptMsg decode sequence.
-        let msg =
-            unsafe { CryptMsgOpenToDecode(ENCODING_RAW, CMSG_DETACHED_FLAG, 0, None, None, None) };
-        if msg.is_null() {
-            return Err(err(
-                windows_result::Error::from_thread(),
-                "open message for decode",
-            ));
-        }
-        let msg = MsgHandle(msg);
+        let encoding = PKCS_7_ASN_ENCODING.0 | X509_ASN_ENCODING.0;
 
-        // SAFETY: msg handle is valid, data is a valid slice.
-        unsafe { CryptMsgUpdate(msg.0, Some(data), true) }
-            .map_err(|e| err(e, "decode pkcs7 message"))?;
+        // SAFETY: passing no recipient info / stream info; standard usage
+        // documented for CryptMsgOpenToDecode.
+        let h = unsafe {
+            windows::Win32::Security::Cryptography::CryptMsgOpenToDecode(
+                encoding, 0, 0, None, None, None,
+            )
+        };
+        let h = NonNull::new(h).ok_or_else(|| last_err("CryptMsgOpenToDecode"))?;
+        let msg = Msg(h);
+
+        // SAFETY: `data` is a valid byte slice; msg is a fresh decode handle.
+        unsafe {
+            windows::Win32::Security::Cryptography::CryptMsgUpdate(h.as_ptr(), Some(data), true)
+        }
+        .map_err(|e| err(e, "CryptMsgUpdate"))?;
+
+        // Confirm the message is SignedData (type 2)
+        let mtype: u32 = get_param_value::<u32>(&msg, CMSG_TYPE_PARAM, 0)?;
+        if mtype != CMSG_SIGNED.0 {
+            return Err(bogus_err("PKCS#7 message is not SignedData"));
+        }
 
         Ok(Self { msg })
     }
 
-    pub fn verify(
-        self,
-        store: Pkcs7CertStoreInner,
-        signed_content: &[u8],
-        uefi_mode: bool,
-    ) -> Result<bool, Pkcs7Error> {
-        // Feed the detached content.
-        // SAFETY: msg handle is valid.
-        unsafe { CryptMsgUpdate(self.msg.0, Some(signed_content), true) }
-            .map_err(|e| err(e, "feed signed content"))?;
+    #[cfg(any(test, feature = "test_helpers"))]
+    pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
+        use windows::Win32::Security::Cryptography::CMSG_ENCODED_MESSAGE;
+        get_param_bytes(&self.msg, CMSG_ENCODED_MESSAGE, 0)
+    }
 
-        // Step 2: Open the message's embedded certificate store.
-        // SAFETY: msg handle is valid.
-        let msg_store = unsafe {
-            CertOpenStore(
-                CERT_STORE_PROV_MSG,
-                ENCODING,
-                None,
-                CERT_OPEN_STORE_FLAGS(0),
-                Some(self.msg.0.cast_const()),
-            )
+    #[cfg(any(test, feature = "test_helpers"))]
+    pub fn sign(
+        cert: &X509Certificate,
+        key_pair: &crate::rsa::RsaKeyPair,
+        data: &[u8],
+    ) -> Result<Self, crate::rsa::RsaError> {
+        use windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_BLOB;
+        use windows::Win32::Security::Cryptography::CERT_KEY_CONTEXT;
+        use windows::Win32::Security::Cryptography::CERT_KEY_CONTEXT_0;
+        use windows::Win32::Security::Cryptography::CERT_KEY_CONTEXT_PROP_ID;
+        use windows::Win32::Security::Cryptography::CERT_NCRYPT_KEY_SPEC;
+        use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
+        use windows::Win32::Security::Cryptography::CRYPT_SIGN_MESSAGE_PARA;
+        use windows::Win32::Security::Cryptography::CertCreateCertificateContext;
+        use windows::Win32::Security::Cryptography::CertSetCertificateContextProperty;
+        use windows::Win32::Security::Cryptography::CryptSignMessage;
+        use windows::Win32::Security::Cryptography::MS_KEY_STORAGE_PROVIDER;
+        use windows::Win32::Security::Cryptography::NCRYPT_FLAGS;
+        use windows::Win32::Security::Cryptography::NCRYPT_KEY_HANDLE;
+        use windows::Win32::Security::Cryptography::NCRYPT_PROV_HANDLE;
+        use windows::Win32::Security::Cryptography::NCryptImportKey;
+        use windows::Win32::Security::Cryptography::NCryptOpenStorageProvider;
+        use windows::Win32::Security::Cryptography::szOID_NIST_sha256;
+        use windows::core::PSTR;
+
+        fn rsa_err(e: windows_result::Error, op: &'static str) -> crate::rsa::RsaError {
+            crate::rsa::RsaError(crate::BackendError(e, op))
         }
-        .map_err(|e| err(e, "open message cert store"))?;
-        let msg_store = CertStoreHandle(msg_store);
 
-        // Step 3: Get the signer count.
-        let mut signer_count: u32 = 0;
-        let mut count_size = size_of::<u32>() as u32;
-        // SAFETY: msg handle is valid.
+        // Hand the BCrypt private key to NCrypt as an ephemeral (no-name,
+        // not persisted) Software KSP key so CryptSignMessage can drive it.
+        let key_blob = crate::rsa::win::export_key(&key_pair.0.0, BCRYPT_RSAFULLPRIVATE_BLOB)?;
+
+        let mut prov_raw = NCRYPT_PROV_HANDLE::default();
+        // SAFETY: standard NCrypt provider open; MS_KEY_STORAGE_PROVIDER is
+        // a static, NUL-terminated wide string.
+        unsafe { NCryptOpenStorageProvider(&mut prov_raw, MS_KEY_STORAGE_PROVIDER, 0) }
+            .map_err(|e| rsa_err(e, "NCryptOpenStorageProvider"))?;
+        let prov = NCryptProv(prov_raw);
+
+        let mut nkey_raw = NCRYPT_KEY_HANDLE::default();
+        // SAFETY: prov is valid; key_blob holds a BCRYPT_RSAFULLPRIVATE_BLOB
+        // freshly produced by BCryptExportKey, which NCrypt accepts as an
+        // import blob type. No key name is supplied, so the key is
+        // ephemeral.
         unsafe {
-            CryptMsgGetParam(
-                self.msg.0,
-                CMSG_SIGNER_COUNT_PARAM,
-                0,
-                Some((&raw mut signer_count).cast()),
-                &mut count_size,
+            NCryptImportKey(
+                prov.0,
+                None,
+                BCRYPT_RSAFULLPRIVATE_BLOB,
+                None,
+                &mut nkey_raw,
+                &key_blob,
+                NCRYPT_FLAGS(0),
             )
         }
-        .map_err(|e| err(e, "get signer count"))?;
+        .map_err(|e| rsa_err(e, "NCryptImportKey"))?;
+        let nkey = NCryptKey(nkey_raw);
 
-        if signer_count == 0 {
-            return Ok(false);
+        // Build a fresh CERT_CONTEXT from the DER so we can attach the
+        // ephemeral key without mutating the caller's certificate.
+        let cert_der = cert.to_der().map_err(|e| crate::rsa::RsaError(e.0))?;
+        // SAFETY: cert_der is a valid DER X.509 byte slice.
+        let ctx_ptr = unsafe { CertCreateCertificateContext(X509_ASN_ENCODING, &cert_der) };
+        let ctx_ptr = NonNull::new(ctx_ptr).ok_or_else(|| {
+            rsa_err(
+                windows_result::Error::from_thread(),
+                "CertCreateCertificateContext",
+            )
+        })?;
+        let signing_ctx = OwnedCertContext(ctx_ptr);
+
+        let key_ctx = CERT_KEY_CONTEXT {
+            cbSize: size_of::<CERT_KEY_CONTEXT>() as u32,
+            Anonymous: CERT_KEY_CONTEXT_0 { hNCryptKey: nkey.0 },
+            dwKeySpec: CERT_NCRYPT_KEY_SPEC.0,
+        };
+        // SAFETY: signing_ctx owns a valid CERT_CONTEXT; key_ctx is sized
+        // to match CERT_KEY_CONTEXT.
+        unsafe {
+            CertSetCertificateContextProperty(
+                signing_ctx.0.as_ptr(),
+                CERT_KEY_CONTEXT_PROP_ID,
+                0,
+                Some(std::ptr::from_ref(&key_ctx).cast::<c_void>()),
+            )
         }
+        .map_err(|e| rsa_err(e, "CertSetCertificateContextProperty"))?;
 
-        // Create a custom chain engine with `hExclusiveRoot` set to the
-        // caller's trust store so that only the caller-provided certificates
-        // are treated as trust anchors (not the Windows system root store).
-        //
-        // The engine depends only on the trust store, so create it once here
-        // and share it across all signers.
-        let engine_config = CERT_CHAIN_ENGINE_CONFIG {
-            cbSize: size_of::<CERT_CHAIN_ENGINE_CONFIG>() as u32,
-            hExclusiveRoot: store.store.0,
+        let hash_alg = CRYPT_ALGORITHM_IDENTIFIER {
+            pszObjId: PSTR(szOID_NIST_sha256.0.cast_mut()),
+            Parameters: CRYPT_INTEGER_BLOB {
+                cbData: 0,
+                pbData: std::ptr::null_mut(),
+            },
+        };
+        // CryptSignMessage omits the signing cert from the message by
+        // default; embed it explicitly so signer_cert_sig() can find it.
+        let mut msg_cert: *mut windows::Win32::Security::Cryptography::CERT_CONTEXT =
+            signing_ctx.0.as_ptr();
+        let params = CRYPT_SIGN_MESSAGE_PARA {
+            cbSize: size_of::<CRYPT_SIGN_MESSAGE_PARA>() as u32,
+            dwMsgEncodingType: PKCS_7_ASN_ENCODING.0 | X509_ASN_ENCODING.0,
+            pSigningCert: signing_ctx.0.as_ptr(),
+            HashAlgorithm: hash_alg,
+            cMsgCert: 1,
+            rgpMsgCert: &mut msg_cert,
             ..Default::default()
         };
 
-        let mut engine = HCERTCHAINENGINE::default();
-        // SAFETY: engine_config is valid with a valid hExclusiveRoot store handle.
-        unsafe { CertCreateCertificateChainEngine(&engine_config, &mut engine) }
-            .map_err(|e| err(e, "create chain engine"))?;
-        let engine = ChainEngineHandle(engine);
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: u32 = data.len().try_into().expect("signed content fits in u32");
 
-        // Verify each signer in the message.
-        for signer_index in 0..signer_count {
-            if !self.verify_signer(&msg_store, &engine, signer_index, uefi_mode)? {
-                return Ok(false);
-            }
+        let mut needed: u32 = 0;
+        // SAFETY: size query; output buffer pointer is None.
+        unsafe {
+            CryptSignMessage(
+                &params,
+                true,
+                1,
+                Some(&data_ptr),
+                &data_len,
+                None,
+                &mut needed,
+            )
         }
+        .map_err(|e| rsa_err(e, "CryptSignMessage (size query)"))?;
 
-        Ok(true)
+        let mut out = vec![0u8; needed as usize];
+        // SAFETY: out is sized per the previous query; data buffer pointer
+        // is non-null and describes data_len bytes.
+        unsafe {
+            CryptSignMessage(
+                &params,
+                true,
+                1,
+                Some(&data_ptr),
+                &data_len,
+                Some(out.as_mut_ptr()),
+                &mut needed,
+            )
+        }
+        .map_err(|e| rsa_err(e, "CryptSignMessage"))?;
+        out.truncate(needed as usize);
+
+        Self::from_der(&out).map_err(|e| crate::rsa::RsaError(e.0))
     }
 
-    /// Verify a single signer at the given index.
-    fn verify_signer(
-        &self,
-        msg_store: &CertStoreHandle,
-        engine: &ChainEngineHandle,
-        signer_index: u32,
-        uefi_mode: bool,
-    ) -> Result<bool, Pkcs7Error> {
-        // Step 4: Get signer certificate info.
-        let mut signer_info_size: u32 = 0;
-        // SAFETY: msg handle is valid. First call to get required size.
-        unsafe {
-            CryptMsgGetParam(
-                self.msg.0,
-                CMSG_SIGNER_CERT_INFO_PARAM,
-                signer_index,
-                None,
-                &mut signer_info_size,
-            )
+    pub fn embedded_certificates(&self) -> Result<Vec<X509Certificate>, Pkcs7Error> {
+        let count: u32 = get_param_value::<u32>(&self.msg, CMSG_CERT_COUNT_PARAM, 0)?;
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let der = get_param_bytes(&self.msg, CMSG_CERT_PARAM, i)?;
+            out.push(X509Certificate::from_der(&der).map_err(|e| Pkcs7Error(e.0))?);
         }
-        .map_err(|e| err(e, "get signer info size"))?;
+        Ok(out)
+    }
 
-        if signer_info_size == 0 {
-            return Ok(false);
-        }
-
-        // Use u64 vec to guarantee 8-byte alignment for the CERT_INFO struct
-        // that Windows will write into this buffer.
-        let aligned_len = (signer_info_size as usize).div_ceil(8);
-        let mut signer_info_buf = vec![0u64; aligned_len];
-        // SAFETY: msg handle is valid, buffer is large enough and properly aligned.
-        unsafe {
-            CryptMsgGetParam(
-                self.msg.0,
-                CMSG_SIGNER_CERT_INFO_PARAM,
-                signer_index,
-                Some((signer_info_buf.as_mut_ptr()).cast()),
-                &mut signer_info_size,
-            )
-        }
-        .map_err(|e| err(e, "get signer cert info"))?;
-
-        let cert_info = signer_info_buf.as_ptr().cast::<CERT_INFO>();
-
-        // Step 5: Find the signer certificate in the message's embedded store.
-        // SAFETY: msg_store is valid, cert_info points to valid CERT_INFO.
-        let signer_cert =
-            unsafe { CertGetSubjectCertificateFromStore(msg_store.0, ENCODING, cert_info) };
-        if signer_cert.is_null() {
-            let e = windows_result::Error::from_thread();
-            // The signer's certificate not being present in the message is a
-            // signature verification failure, not an internal error.
-            if e.code() == CRYPT_E_NOT_FOUND {
-                return Ok(false);
-            }
-            return Err(err(e, "find signer certificate"));
-        }
-        let signer_cert = CertContextHandle(signer_cert);
-
-        // Step 6: Verify the cryptographic signature.
-        // SAFETY: msg handle is valid, signer_cert points to valid CERT_INFO.
-        let verify_result = unsafe {
-            CryptMsgControl(
-                self.msg.0,
-                0,
-                CMSG_CTRL_VERIFY_SIGNATURE,
-                Some((*signer_cert.0).pCertInfo as *const _),
-            )
-        };
-
-        if let Err(e) = verify_result {
-            // A bad signature is a verification failure; anything else is an
-            // internal error that should be propagated. Newer Windows builds
-            // surface the NTSTATUS form instead of the `NTE_*` HRESULT, so
-            // accept both.
-            if e.code() == NTE_BAD_SIGNATURE
-                || e.code().0 == windows::Win32::Foundation::STATUS_INVALID_SIGNATURE.0
-            {
-                return Ok(false);
-            }
-            return Err(err(e, "verify message signature"));
-        }
-
-        // Step 7: Build a certificate chain from the signer cert to our
-        // trusted store using the shared chain engine.
-        //
-        // SAFETY: CERT_CHAIN_PARA is a plain data struct that is valid when zeroed.
-        let mut chain_para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
-        chain_para.cbSize = size_of::<CERT_CHAIN_PARA>() as u32;
-
-        // No revocation checking, matching the OpenSSL backend which does not
-        // perform any revocation checks.
-        let chain_flags: u32 = 0;
-
-        let mut chain_context: *mut CERT_CHAIN_CONTEXT = ptr::null_mut();
-        // SAFETY: engine, signer_cert, and msg_store handles are valid.
-        //
-        // `CertGetCertificateChain` only fails for internal errors such as
-        // invalid parameters or out-of-memory; trust problems with the chain
-        // are reported via the `TrustStatus` field of the returned context and
-        // are surfaced later by `CertVerifyCertificateChainPolicy`.
-        unsafe {
-            CertGetCertificateChain(
-                Some(engine.0),
-                signer_cert.0,
-                None,
-                Some(msg_store.0),
-                &chain_para,
-                chain_flags,
-                None,
-                &mut chain_context,
-            )
-        }
-        .map_err(|e| err(e, "build certificate chain"))?;
-
-        let chain_context = ChainContextHandle(chain_context);
-
-        // Step 8: Verify the chain policy.
-        // SAFETY: CERT_CHAIN_POLICY_PARA is a plain data struct that is valid when zeroed.
-        let mut policy_para: CERT_CHAIN_POLICY_PARA = unsafe { std::mem::zeroed() };
-        policy_para.cbSize = size_of::<CERT_CHAIN_POLICY_PARA>() as u32;
-
-        if uefi_mode {
-            // See `Pkcs7SignedData::verify` for the semantics of `uefi_mode`.
-            //
-            // 1. Partial chain: already provided by `hExclusiveRoot` on the
-            //    chain engine above -- any cert in the caller's trust store
-            //    is treated as a trust anchor, including intermediates.
-            //
-            //    Do NOT also set `CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG`
-            //    here: that would mask the legitimate "no matching trust
-            //    anchor" error when the trust store lacks an appropriate
-            //    cert, causing untrusted signatures to be accepted.
-            //
-            // 2. Ignore time validity: `IGNORE_ALL_NOT_TIME_VALID_FLAGS`
-            //    covers the signer, intermediates, and root
-            //
-            // 3. Any key-usage / EKU: `IGNORE_WRONG_USAGE_FLAG` accepts
-            //    certs regardless of their EKU / key-usage extensions.
-            //
-            // `IGNORE_ALL_REV_UNKNOWN_FLAGS` is also set so as to not
-            // perform revocation checking. In practice CryptoAPI is not
-            // asked to fetch revocation info here (`chain_flags = 0`),
-            // but the flag makes the intent explicit and is harmless if
-            // a provider does supply one.
-            policy_para.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_NOT_TIME_VALID_FLAGS
-                | CERT_CHAIN_POLICY_IGNORE_WRONG_USAGE_FLAG
-                | CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
-        }
-
-        // SAFETY: CERT_CHAIN_POLICY_STATUS is a plain data struct that is valid when zeroed.
-        let mut policy_status: CERT_CHAIN_POLICY_STATUS = unsafe { std::mem::zeroed() };
-        policy_status.cbSize = size_of::<CERT_CHAIN_POLICY_STATUS>() as u32;
-
-        // SAFETY: chain_context is valid.
-        let policy_result = unsafe {
-            CertVerifyCertificateChainPolicy(
-                CERT_CHAIN_POLICY_BASE,
-                chain_context.0,
-                &policy_para,
-                &mut policy_status,
-            )
-        };
-
-        // FALSE from CertVerifyCertificateChainPolicy indicates a
-        // function-level error (e.g., invalid parameters), not a policy
-        // violation. Surface it as an internal error rather than panicking,
-        // since this code processes potentially untrusted signature material.
-        if !policy_result.as_bool() {
-            return Err(err(
-                windows_result::Error::from_thread(),
-                "verify certificate chain policy",
+    pub fn signer_cert_sig(&self) -> Result<(X509Certificate, Vec<u8>), Pkcs7Error> {
+        // Require exactly one signer.
+        let signer_count: u32 = get_param_value::<u32>(&self.msg, CMSG_SIGNER_COUNT_PARAM, 0)?;
+        if signer_count != 1 {
+            return Err(bogus_err(
+                "expected exactly one signer in PKCS#7 SignedData",
             ));
         }
 
-        if policy_status.dwError != 0 {
-            return Ok(false);
+        // Pull the signer info as raw bytes and reinterpret as
+        // CMSG_SIGNER_INFO.
+        let signer_buf = get_param_bytes(&self.msg, CMSG_SIGNER_INFO_PARAM, 0)?;
+        if signer_buf.len() < size_of::<CMSG_SIGNER_INFO>() {
+            return Err(bogus_err("CMSG_SIGNER_INFO buffer smaller than struct"));
         }
+        // SAFETY: CryptMsgGetParam(CMSG_SIGNER_INFO_PARAM) populates a
+        // CMSG_SIGNER_INFO at the start of the buffer. Read unaligned to
+        // sidestep the Vec alignment.
+        let si =
+            unsafe { std::ptr::read_unaligned(signer_buf.as_ptr().cast::<CMSG_SIGNER_INFO>()) };
 
-        Ok(true)
+        // CMSG_SIGNER_INFO only represents IssuerAndSerialNumber signer
+        // identifiers (PKCS#7 v1). CMS SubjectKeyIdentifier signers leave
+        // both blobs empty here; reject them explicitly rather than
+        // silently matching an empty issuer.
+        if si.Issuer.cbData == 0 || si.SerialNumber.cbData == 0 {
+            return Err(bogus_err(
+                "signer identifier is not IssuerAndSerialNumber (SubjectKeyIdentifier not supported)",
+            ));
+        }
+        let want_issuer =
+            blob_to_vec(&si.Issuer).ok_or_else(|| bogus_err("malformed signer issuer blob"))?;
+        let want_serial = blob_to_vec(&si.SerialNumber)
+            .ok_or_else(|| bogus_err("malformed signer serial blob"))?;
+        let signature = blob_to_vec(&si.EncryptedHash)
+            .ok_or_else(|| bogus_err("malformed signer signature blob"))?;
+
+        let count: u32 = get_param_value::<u32>(&self.msg, CMSG_CERT_COUNT_PARAM, 0)?;
+        for i in 0..count {
+            let der = get_param_bytes(&self.msg, CMSG_CERT_PARAM, i)?;
+            let cert = X509Certificate::from_der(&der).map_err(|e| Pkcs7Error(e.0))?;
+            let (issuer, serial) =
+                extract_issuer_and_serial(&cert.0).map_err(|e| Pkcs7Error(e.0))?;
+            if issuer == want_issuer && serial == want_serial {
+                return Ok((cert, signature));
+            }
+        }
+        Err(bogus_err("no embedded certificate matches the signer"))
+    }
+}
+
+fn blob_to_vec(b: &CRYPT_INTEGER_BLOB) -> Option<Vec<u8>> {
+    if b.cbData == 0 {
+        return Some(Vec::new());
+    }
+    if b.pbData.is_null() {
+        return None;
+    }
+    // SAFETY: pbData is non-null and describes cbData bytes owned by the
+    // CryptMsgGetParam-returned buffer; we copy the contents out.
+    Some(unsafe { std::slice::from_raw_parts(b.pbData, b.cbData as usize) }.to_vec())
+}
+
+/// Fetch the bytes of a CryptMsg parameter, allocating the buffer ourselves
+/// after a size query.
+fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Error> {
+    let mut size: u32 = 0;
+    // SAFETY: size query; passing None for the output buffer.
+    unsafe {
+        windows::Win32::Security::Cryptography::CryptMsgGetParam(
+            msg.0.as_ptr(),
+            param,
+            index,
+            None,
+            &mut size,
+        )
+    }
+    .map_err(|e| err(e, "CryptMsgGetParam (size query)"))?;
+    let mut buf = vec![0u8; size as usize];
+    // SAFETY: buf is sized per the size query.
+    unsafe {
+        windows::Win32::Security::Cryptography::CryptMsgGetParam(
+            msg.0.as_ptr(),
+            param,
+            index,
+            Some(buf.as_mut_ptr().cast::<c_void>()),
+            &mut size,
+        )
+    }
+    .map_err(|e| err(e, "CryptMsgGetParam"))?;
+    buf.truncate(size as usize);
+    Ok(buf)
+}
+
+/// Fetch a fixed-size CryptMsg parameter and reinterpret it as `T`.
+fn get_param_value<T: Copy>(msg: &Msg, param: u32, index: u32) -> Result<T, Pkcs7Error> {
+    let buf = get_param_bytes(msg, param, index)?;
+    if buf.len() < size_of::<T>() {
+        return Err(bogus_err("CryptMsgGetParam returned short buffer"));
+    }
+    // SAFETY: buffer is at least size_of::<T>() bytes; T is Copy.
+    Ok(unsafe { std::ptr::read_unaligned(buf.as_ptr().cast::<T>()) })
+}
+
+/// Extract the Issuer Name DER and SerialNumber blob from an X509Certificate
+/// by re-decoding it through CryptDecodeObjectEx. The Issuer blob holds the
+/// DER-encoded Name SEQUENCE; SerialNumber holds CryptoAPI's
+/// little-endian-ordered bytes.
+fn extract_issuer_and_serial(
+    cert: &crate::x509::win::X509CertificateInner,
+) -> Result<(Vec<u8>, Vec<u8>), crate::x509::X509Error> {
+    let info = cert.0.cert_info();
+    // SAFETY: Issuer.pbData/cbData are populated by CryptoAPI and remain
+    // valid for the lifetime of the cert context.
+    let issuer =
+        unsafe { std::slice::from_raw_parts(info.Issuer.pbData, info.Issuer.cbData as usize) }
+            .to_vec();
+    // SAFETY: same lifetime/validity argument as Issuer above.
+    let serial = unsafe {
+        std::slice::from_raw_parts(info.SerialNumber.pbData, info.SerialNumber.cbData as usize)
+    }
+    .to_vec();
+    Ok((issuer, serial))
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+struct NCryptProv(windows::Win32::Security::Cryptography::NCRYPT_PROV_HANDLE);
+
+#[cfg(any(test, feature = "test_helpers"))]
+impl Drop for NCryptProv {
+    fn drop(&mut self) {
+        // SAFETY: opened by NCryptOpenStorageProvider; NCRYPT_HANDLE and
+        // NCRYPT_PROV_HANDLE both wrap the same usize value.
+        let _ = unsafe {
+            windows::Win32::Security::Cryptography::NCryptFreeObject(
+                windows::Win32::Security::Cryptography::NCRYPT_HANDLE(self.0.0),
+            )
+        };
+    }
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+struct NCryptKey(windows::Win32::Security::Cryptography::NCRYPT_KEY_HANDLE);
+
+#[cfg(any(test, feature = "test_helpers"))]
+impl Drop for NCryptKey {
+    fn drop(&mut self) {
+        // SAFETY: imported by NCryptImportKey; NCRYPT_HANDLE and
+        // NCRYPT_KEY_HANDLE both wrap the same usize value.
+        let _ = unsafe {
+            windows::Win32::Security::Cryptography::NCryptFreeObject(
+                windows::Win32::Security::Cryptography::NCRYPT_HANDLE(self.0.0),
+            )
+        };
+    }
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+struct OwnedCertContext(NonNull<windows::Win32::Security::Cryptography::CERT_CONTEXT>);
+
+#[cfg(any(test, feature = "test_helpers"))]
+impl Drop for OwnedCertContext {
+    fn drop(&mut self) {
+        // SAFETY: produced by CertCreateCertificateContext; safe to free
+        // exactly once.
+        let _ = unsafe {
+            windows::Win32::Security::Cryptography::CertFreeCertificateContext(Some(
+                self.0.as_ptr(),
+            ))
+        };
     }
 }

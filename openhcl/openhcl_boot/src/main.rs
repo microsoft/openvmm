@@ -44,6 +44,7 @@ use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
 use dt::BootTimes;
 use dt::write_dt;
+use host_fdt_parser::ComInfo;
 use host_params::COMMAND_LINE_SIZE;
 use host_params::PartitionInfo;
 use host_params::shim_params::IsolationType;
@@ -264,12 +265,16 @@ fn build_kernel_command_line(
     // com1. This is overridden by any user customizations in the static or
     // dynamic command line, as this console argument provided by the bootloader
     // comes first.
-    let console = if partition_info.com3_serial_available && can_trust_host {
-        "ttyS2,115200"
-    } else {
-        "ttynull"
-    };
-    write!(cmdline, "console={console} ")?;
+    write!(cmdline, "console=")?;
+    match (&partition_info.com3_serial, can_trust_host) {
+        (ComInfo::Ns16550 { current_speed, .. }, true) => {
+            write!(cmdline, "ttyS2,{current_speed} ")?
+        }
+        (ComInfo::Pl011 { current_speed, .. }, true) => {
+            write!(cmdline, "ttyAMA0,{current_speed} ")?
+        }
+        _ => write!(cmdline, "ttynull ")?,
+    }
 
     if params.isolation_type != IsolationType::None {
         write!(
@@ -556,6 +561,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         enable_enlightened_panic();
     }
 
+    #[cfg(feature = "cvm_boot_log")]
+    arch::initialize_serial_io(&p);
+
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
@@ -602,8 +610,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
-    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
+    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial.clone());
     log::info!("openhcl_boot: logging enabled");
+    log::info!("serial configuration: {:#x?}", partition_info.com3_serial);
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -773,8 +782,18 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log::info!("uninitializing hypercalls, about to jump to kernel");
+    log::info!("uninitializing hypercalls");
+    #[cfg(not(feature = "cvm_boot_log"))]
+    log::info!("about to jump to kernel");
+
     hvcall().uninitialize();
+
+    #[cfg(feature = "cvm_boot_log")]
+    {
+        log::info!("uninitializing serial io");
+        log::info!("about to jump to kernel");
+        arch::uninitialize_serial_io(&p);
+    }
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
@@ -881,6 +900,7 @@ mod test {
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
+    use host_fdt_parser::ComInfo;
     use host_fdt_parser::CpuEntry;
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
@@ -931,7 +951,7 @@ mod test {
                 mmio: ArrayVec::new(),
                 connection_id: 0,
             },
-            com3_serial_available: false,
+            com3_serial: ComInfo::None,
             gic: None,
             pmu_gsiv: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,

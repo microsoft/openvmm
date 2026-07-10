@@ -11,6 +11,7 @@ use super::task::defer_config_read;
 use super::task::defer_config_write;
 use crate::DynVirtioDevice;
 use crate::MAX_QUEUE_SIZE;
+use crate::spec::VirtioDeviceType;
 use crate::spec::pci::VIRTIO_PCI_COMMON_CFG_SIZE;
 use crate::spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
 use crate::spec::pci::VIRTIO_VENDOR_ID;
@@ -23,6 +24,8 @@ use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
@@ -72,6 +75,48 @@ const BAR0_NOTIFY_SIZE: u16 = 4;
 const BAR0_ISR_OFFSET: u16 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
 const BAR0_ISR_SIZE: u16 = 4;
 const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
+
+/// Map a virtio device type to its PCI class/subclass.
+///
+/// The virtio spec does not require a particular class code — drivers bind on
+/// vendor/device ID — but reporting an accurate class lets the guest OS
+/// categorize the device correctly.
+fn virtio_class_code(device_id: VirtioDeviceType) -> (ClassCode, Subclass) {
+    match device_id {
+        VirtioDeviceType::NET => (
+            ClassCode::NETWORK_CONTROLLER,
+            Subclass::NETWORK_CONTROLLER_ETHERNET,
+        ),
+        VirtioDeviceType::BLK => (
+            ClassCode::MASS_STORAGE_CONTROLLER,
+            Subclass::MASS_STORAGE_CONTROLLER_SCSI,
+        ),
+        VirtioDeviceType::CONSOLE => (
+            ClassCode::SIMPLE_COMMUNICATION_CONTROLLER,
+            Subclass::SIMPLE_COMMUNICATION_CONTROLLER_OTHER,
+        ),
+        // These device types have no well-established class code; report a
+        // generic base system peripheral.
+        VirtioDeviceType::RNG
+        | VirtioDeviceType::P9
+        | VirtioDeviceType::VSOCK
+        | VirtioDeviceType::FS
+        | VirtioDeviceType::PMEM => (
+            ClassCode::BASE_SYSTEM_PERIPHERAL,
+            Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+        ),
+        _ => {
+            tracelimit::warn_ratelimited!(
+                device_id = device_id.0,
+                "unknown virtio device type; reporting generic class code"
+            );
+            (
+                ClassCode::BASE_SYSTEM_PERIPHERAL,
+                Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            )
+        }
+    }
+}
 
 /// PCI-specific transport state.
 #[derive(Inspect)]
@@ -156,15 +201,16 @@ impl VirtioPciDevice {
     ) -> io::Result<Self> {
         let traits = device.traits();
 
+        let (base_class, sub_class) = virtio_class_code(traits.device_id);
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
             device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NONE,
-            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
-            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
-            type0_sub_vendor_id: VIRTIO_VENDOR_ID,
-            type0_sub_system_id: 0x40,
+            base_class,
+            sub_class,
+            type0_sub_vendor_id: pci_core::microsoft::VENDOR_ID,
+            type0_sub_system_id: pci_core::microsoft::DEFAULT_SUBSYSTEM_ID,
         };
 
         let mut caps: Vec<Box<dyn PciCapability>> = vec![
@@ -736,12 +782,12 @@ impl MmioIntercept for VirtioPciDevice {
 }
 
 impl PciConfigSpace for VirtioPciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.pci.config_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.pci.config_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.pci.config_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.pci.config_space.write_byte_enabled(offset, value)
     }
 }
 
@@ -855,17 +901,17 @@ pub(crate) mod capabilities {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use pci_core::capabilities::PciCapability;
         use pci_core::capabilities::ReadOnlyCapability;
+        use pci_core::test_helpers::read_cap_u32;
 
         #[test]
         fn common_check() {
             let common =
                 ReadOnlyCapability::new("common", VirtioCapability::new(0x13, 2, 0, 0x100, 0x200));
-            assert_eq!(common.read_u32(0), 0x13100009);
-            assert_eq!(common.read_u32(4), 2);
-            assert_eq!(common.read_u32(8), 0x100);
-            assert_eq!(common.read_u32(12), 0x200);
+            assert_eq!(read_cap_u32(&common, 0), 0x13100009);
+            assert_eq!(read_cap_u32(&common, 4), 2);
+            assert_eq!(read_cap_u32(&common, 8), 0x100);
+            assert_eq!(read_cap_u32(&common, 12), 0x200);
         }
 
         #[test]
@@ -874,10 +920,10 @@ pub(crate) mod capabilities {
                 "notify",
                 VirtioNotifyCapability::new(0x123, 2, 0x100, 0x200),
             );
-            assert_eq!(notify.read_u32(0), 0x2140009);
-            assert_eq!(notify.read_u32(4), 2);
-            assert_eq!(notify.read_u32(8), 0x100);
-            assert_eq!(notify.read_u32(12), 0x200);
+            assert_eq!(read_cap_u32(&notify, 0), 0x2140009);
+            assert_eq!(read_cap_u32(&notify, 4), 2);
+            assert_eq!(read_cap_u32(&notify, 8), 0x100);
+            assert_eq!(read_cap_u32(&notify, 12), 0x200);
         }
     }
 }

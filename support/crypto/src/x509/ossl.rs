@@ -58,6 +58,29 @@ impl X509CertificateInner {
             .map_err(|e| err(e, "encoding certificate as DER"))
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        let mut parts = Vec::new();
+        for entry in self.0.issuer_name().entries() {
+            let oid = entry.object().to_string();
+            let value = entry
+                .data()
+                .as_utf8()
+                .map_err(|e| err(e, "decoding issuer name entry"))?
+                .to_string();
+            parts.push(format!("{oid}={value}"));
+        }
+        Ok(parts.join(","))
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        let bn = self
+            .0
+            .serial_number()
+            .to_bn()
+            .map_err(|e| err(e, "converting serial number"))?;
+        Ok(bn.to_vec())
+    }
+
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,

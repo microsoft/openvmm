@@ -5,19 +5,21 @@
 
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllOutput {
+    #[serde(rename = "vmfirmwareigvm.dll")]
     pub dll: PathBuf,
 }
+
+impl Artifact for VmfirmwareigvmDllOutput {}
 
 flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
-        pub igvm: ReadVar<IgvmOutput>,
+        pub igvm_bin: ReadVar<PathBuf>,
         /// (major, minor, patch, revision)
         pub dll_version: ReadVar<(u16, u16, u16, u16)>,
         pub internal_dll_name: String,
@@ -37,14 +39,14 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             arch,
-            igvm,
+            igvm_bin,
             internal_dll_name,
             dll_version,
             vmfirmwareigvm_dll,
         } = request;
 
         let extra_env = ctx.emit_rust_stepv("determine vmfirmwareigvm_dll env vars", |ctx| {
-            let igvm = igvm.claim(ctx);
+            let igvm_bin = igvm_bin.claim(ctx);
             let dll_version = dll_version.claim(ctx);
             move |rt| {
                 let mut extra_env = BTreeMap::new();
@@ -57,8 +59,7 @@ impl SimpleFlowNode for Node {
                         // rc.exe treats '\' in windows paths as escape sequences.
                         // there is likely a more robust solution to fix this, but
                         // a simple swap from '\' to '/' seems to work fine for now
-                        rt.read(igvm)
-                            .igvm_bin
+                        rt.read(igvm_bin)
                             .absolute()
                             .context("Failed to make igvm bin path absolute")?
                             .display()

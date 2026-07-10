@@ -43,12 +43,16 @@ pub struct DteDw0 {
     pub v: bool,
     /// Translation Valid — 1 = address translation active.
     pub tv: bool,
-    #[bits(5)]
+    #[bits(2)]
     _reserved1: u64,
-    /// Host Access/Dirty bit 1 (HAD[1]).
-    pub had1: bool,
-    #[bits(1)]
-    _reserved2: u64,
+    /// CXL memory attribute (bits 6:4). Controls CXL IO bit in ATS
+    /// completions. Not used in emulator.
+    #[bits(3)]
+    pub cxl_mem_attr: u8,
+    /// Host Access/Dirty (bits 8:7). Controls whether the IOMMU updates
+    /// the Access and Dirty bits in the host page table.
+    #[bits(2)]
+    pub had: u8,
     /// Paging mode / number of translation levels.
     /// 0 = disabled/pass-through, 1–6 = N-level page table, 7 = reserved.
     #[bits(3)]
@@ -101,6 +105,9 @@ pub struct DteDw1 {
     /// GCR3 table root pointer bits [30:15].
     #[bits(16)]
     pub gcr3_trp_30_15: u16,
+    /// IOTLB enable (bit 96). Controls IOMMU response to ATS requests.
+    /// Not used when IotlbSup=0.
+    pub i: bool,
     /// Suppress all events.
     pub se: bool,
     /// Suppress all page faults.
@@ -108,7 +115,9 @@ pub struct DteDw1 {
     /// Port I/O control.
     #[bits(2)]
     pub io_ctl: u8,
-    /// Cache disable.
+    /// IOTLB cache hint (bit 101). Not used when IotlbSup=0.
+    pub cache: bool,
+    /// Snoop disable.
     pub sd: bool,
     /// Exclusion range.
     pub ex: bool,
@@ -120,8 +129,6 @@ pub struct DteDw1 {
     /// GCR3 table root pointer bits [51:31].
     #[bits(21)]
     pub gcr3_trp_51_31: u32,
-    #[bits(2)]
-    _reserved: u64,
 }
 
 /// DTE DW2 (bits 191:128) — Interrupt Remapping.

@@ -82,6 +82,14 @@ impl<T: Client> Access<'_, T> {
         ipv6_src_addr: Ipv6Address,
     ) -> Result<(), DropReason> {
         let icmpv6_packet = Icmpv6Packet::new_unchecked(payload);
+        let msg_type = icmpv6_packet.msg_type();
+        tracing::trace!(
+            icmpv6_type = %msg_type,
+            ipv6_src_addr = %ipv6_src_addr,
+            eth_src_addr = %frame.src_addr,
+            eth_dst_addr = %frame.dst_addr,
+            "received NDP message"
+        );
         let ndp = NdiscRepr::parse(&icmpv6_packet)?;
 
         match ndp {
@@ -172,15 +180,24 @@ impl<T: Client> Access<'_, T> {
         dst_addr: Ipv6Address,
         eth_dst_addr: EthernetAddress,
     ) -> Result<(), DropReason> {
-        // Compute the network prefix from our configured IPv6 parameters
-        // This is the prefix that clients will use for SLAAC
-        let prefix = self
-            .compute_network_prefix(NETWORK_PREFIX_BASE, self.inner.state.params.prefix_len_ipv6);
+        let prefix_info = self.inner.state.params.advertise_routable_ipv6.then(|| {
+            // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information.
+            // We set the ADDRCONF flag to enable SLAAC. We intentionally omit ON_LINK
+            // so the guest treats global addresses as off-link and routes all traffic
+            // through the gateway rather than attempting on-link NDP resolution.
+            let prefix = self.compute_network_prefix(
+                NETWORK_PREFIX_BASE,
+                self.inner.state.params.prefix_len_ipv6,
+            );
+            NdiscPrefixInformation {
+                prefix_len: self.inner.state.params.prefix_len_ipv6,
+                prefix,
+                valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
+                preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
+                flags: NdiscPrefixInfoFlags::ADDRCONF,
+            }
+        });
 
-        // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information
-        // We set the ADDRCONF flag to enable SLAAC. We intentionally omit ON_LINK
-        // so the guest treats global addresses as off-link and routes all traffic
-        // through the gateway rather than attempting on-link NDP resolution.
         let ndp_repr = NdiscRepr::RouterAdvert {
             hop_limit: 255,
             flags: NdiscRouterFlags::empty(),
@@ -191,13 +208,7 @@ impl<T: Client> Access<'_, T> {
                 self.inner.state.params.gateway_mac_ipv6,
             )),
             mtu: None,
-            prefix_info: Some(NdiscPrefixInformation {
-                prefix_len: self.inner.state.params.prefix_len_ipv6,
-                prefix,
-                valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
-                preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
-                flags: NdiscPrefixInfoFlags::ADDRCONF,
-            }),
+            prefix_info,
         };
 
         let dns_servers = self.inner.state.params.filtered_ipv6_nameservers();
@@ -280,11 +291,25 @@ impl<T: Client> Access<'_, T> {
         // We learn the client's address here because consomme is the only other
         // entity on this virtual link, so DAD will always succeed.
         if ipv6_src_addr.is_unspecified() {
-            tracing::debug!(%target_addr, "learned client IPv6 address from DAD Neighbor Solicitation");
             if target_addr.is_unicast_link_local() {
+                tracing::trace!(
+                    client_ipv6 = %target_addr,
+                    "learned client link-local IPv6 address from DAD Neighbor Solicitation"
+                );
                 self.inner.state.params.client_ip_ipv6 = Some(target_addr);
             } else {
+                tracing::trace!(
+                    client_ipv6_routable = %target_addr,
+                    "learned client routable IPv6 address from DAD Neighbor Solicitation"
+                );
                 self.inner.state.params.client_ip_ipv6_routable = Some(target_addr);
+                self.inner
+                    .state
+                    .params
+                    .infer_client_link_local_from_routable(
+                        target_addr,
+                        "DAD Neighbor Solicitation",
+                    );
             }
             return Ok(());
         }

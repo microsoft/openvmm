@@ -3,7 +3,13 @@
 
 //! SHA-256 hashing.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 
 #[cfg(openssl)]
 mod ossl;
@@ -19,6 +25,16 @@ use rust as sys;
 mod symcrypt;
 #[cfg(symcrypt)]
 use symcrypt as sys;
+
+#[cfg(all(native, windows))]
+mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
 
 /// Compute the SHA-256 hash of `data`.
 pub fn sha_256(data: &[u8]) -> [u8; 32] {

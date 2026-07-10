@@ -8,6 +8,7 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::MAX_NSID;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
@@ -121,6 +122,50 @@ pub struct AdminState {
     poll_namespace_change: BTreeMap<u32, Task<()>>,
     #[inspect(skip)]
     confirm_namespace_change_fault: Option<Rpc<(), ()>>,
+    #[inspect(flatten)]
+    features: FeatureState,
+}
+
+/// Stored configuration for the mandatory Set/Get Features that the controller
+/// accepts and echoes back but does not otherwise act upon. Storing and echoing
+/// these values satisfies the NVMe Base 2.3 §3.1.3.6 (Figure 32) requirement
+/// that an I/O controller accept every mandatory feature.
+#[derive(Inspect)]
+struct FeatureState {
+    #[inspect(hex)]
+    arbitration: u32,
+    #[inspect(hex)]
+    power_management: u32,
+    #[inspect(hex)]
+    error_recovery: u32,
+    #[inspect(hex)]
+    interrupt_coalescing: u32,
+    /// Coalescing Disable bit per interrupt vector, indexed by interrupt vector.
+    #[inspect(iter_by_index)]
+    interrupt_vector_coalescing_disable: Vec<bool>,
+}
+
+impl FeatureState {
+    fn new(num_interrupt_vectors: usize) -> Self {
+        Self {
+            arbitration: 0,
+            power_management: 0,
+            error_recovery: 0,
+            interrupt_coalescing: 0,
+            interrupt_vector_coalescing_disable: vec![false; num_interrupt_vectors],
+        }
+    }
+}
+
+/// The Temperature Threshold value reported for the requested threshold type.
+///
+/// The emulator models no temperature sensors, so thresholds never trip and no
+/// state needs to be stored: Set Features is accepted and ignored, and Get
+/// Features always reports the reset defaults — an over-temperature threshold
+/// of the maximum (effectively disabled) and an under-temperature threshold of
+/// zero.
+fn default_temperature_threshold(thsel: u8) -> u16 {
+    if thsel == 0 { 0xffff } else { 0x0000 }
 }
 
 #[derive(Inspect)]
@@ -195,6 +240,7 @@ impl AdminState {
             send_changed_namespace,
             poll_namespace_change,
             confirm_namespace_change_fault: None,
+            features: FeatureState::new(handler.config.interrupts.len()),
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -362,10 +408,17 @@ enum Event {
     NamespaceChange(u32),
 }
 
-/// Error returned when adding a namespace with a conflicting ID.
+/// Error returned when a namespace cannot be added.
 #[derive(Debug, Error)]
-#[error("namespace id conflict for {0}")]
-pub struct NsidConflict(u32);
+pub enum AddNamespaceError {
+    /// A namespace with this ID already exists.
+    #[error("namespace id conflict for {0}")]
+    Conflict(u32),
+    /// The namespace ID is outside the valid range supported by the
+    /// subsystem (see the `NN` field of Identify Controller).
+    #[error("namespace id {0} is out of range (must be 1..={MAX_NSID})")]
+    OutOfRange(u32),
+}
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
@@ -382,14 +435,17 @@ impl AdminHandler {
         state: Option<&mut AdminState>,
         nsid: u32,
         disk: Disk,
-    ) -> Result<(), NsidConflict> {
+    ) -> Result<(), AddNamespaceError> {
+        if nsid == 0 || nsid > MAX_NSID {
+            return Err(AddNamespaceError::OutOfRange(nsid));
+        }
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
                 nsid,
                 disk,
             ))),
-            btree_map::Entry::Occupied(_) => return Err(NsidConflict(nsid)),
+            btree_map::Entry::Occupied(_) => return Err(AddNamespaceError::Conflict(nsid)),
         };
 
         if let Some(state) = state {
@@ -783,18 +839,41 @@ impl AdminHandler {
                 }
             }
             spec::Cns::NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    // Valid but inactive namespace: return a zero-filled
+                    // structure (the buffer is already zeroed).
+                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
+            }
+            spec::Cns::SPECIFIC_CONTROLLER_IO_COMMAND_SET => {
+                // CSI is in Command Dword 11, bits 31:24. Only the NVM command
+                // set (CSI 0h) is supported, and it defines no I/O Command Set
+                // specific Identify Controller data structure, so return a
+                // zero-filled structure per NVMe Base 2.3 section 5.2.13.2.6.
+                // Any other command set is unsupported.
+                let csi = (command.cdw11 >> 24) as u8;
+                if csi != 0 {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                // The buffer is already zero-filled; fall through to write it
+                // back to the host.
             }
             cns => {
                 tracelimit::warn_ratelimited!(?cns, "unsupported cns");
@@ -820,7 +899,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.namespaces.keys().copied().max().unwrap_or(0),
+            nn: MAX_NSID,
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
@@ -849,7 +928,13 @@ impl AdminHandler {
     ) -> Result<CommandResult, NvmeError> {
         let cdw10: spec::Cdw10SetFeatures = command.cdw10.into();
         let mut dw = [0; 2];
-        // Note that we don't support non-zero cdw10.save, since ONCS.save == 0.
+        // This controller does not support saving feature values across power
+        // cycles or resets (Identify Controller ONCS.SSFS is 0), so a request
+        // to save a feature value must be rejected rather than silently applied
+        // for the current power cycle only.
+        if cdw10.save() {
+            return Err(spec::Status::FEATURE_IDENTIFIER_NOT_SAVEABLE.into());
+        }
         match spec::Feature(cdw10.fid()) {
             spec::Feature::NUMBER_OF_QUEUES => {
                 if state.io_sqs.iter().any(|sq| sq.task.has_state())
@@ -878,6 +963,41 @@ impl AdminHandler {
                     );
                 }
             }
+            spec::Feature::ARBITRATION => {
+                state.features.arbitration = command.cdw11;
+            }
+            spec::Feature::POWER_MANAGEMENT => {
+                let cdw11 = spec::Cdw11FeaturePowerManagement::from(command.cdw11);
+                // Only power state 0 is supported (NPSS is 0 in the Identify
+                // Controller data structure, i.e. one power state).
+                if cdw11.ps() != 0 {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                state.features.power_management = command.cdw11;
+            }
+            spec::Feature::TEMPERATURE_THRESHOLD => {
+                let cdw11 = spec::Cdw11FeatureTemperatureThreshold::from(command.cdw11);
+                // Only over- and under-temperature thresholds are defined.
+                if cdw11.thsel() > 1 {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                // Accepted and ignored: the emulator models no temperature.
+            }
+            spec::Feature::ERROR_RECOVERY => {
+                state.features.error_recovery = command.cdw11;
+            }
+            spec::Feature::INTERRUPT_COALESCING => {
+                state.features.interrupt_coalescing = command.cdw11;
+            }
+            spec::Feature::INTERRUPT_VECTOR_CONFIG => {
+                let cdw11 = spec::Cdw11FeatureInterruptVectorConfig::from(command.cdw11);
+                let cd = state
+                    .features
+                    .interrupt_vector_coalescing_disable
+                    .get_mut(cdw11.iv() as usize)
+                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?;
+                *cd = cdw11.cd();
+            }
             feature => {
                 tracelimit::warn_ratelimited!(?feature, "unsupported feature");
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
@@ -894,7 +1014,12 @@ impl AdminHandler {
         let cdw10: spec::Cdw10GetFeatures = command.cdw10.into();
         let mut dw = [0; 2];
 
-        // Note that we don't support non-zero cdw10.sel, since ONCS.save == 0.
+        // Only the current value (Select 000b) is supported; the controller
+        // does not support default/saved/supported-capabilities selects
+        // (Identify Controller ONCS.SSFS is 0).
+        if cdw10.sel() != 0 {
+            return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+        }
         match spec::Feature(cdw10.fid()) {
             spec::Feature::NUMBER_OF_QUEUES => {
                 let num_cqs = state.io_cqs.len();
@@ -917,6 +1042,41 @@ impl AdminHandler {
                     .ok_or(spec::Status::INVALID_NAMESPACE_OR_FORMAT)?;
 
                 return namespace.get_feature(command).await;
+            }
+            spec::Feature::ARBITRATION => {
+                dw[0] = state.features.arbitration;
+            }
+            spec::Feature::POWER_MANAGEMENT => {
+                dw[0] = state.features.power_management;
+            }
+            spec::Feature::TEMPERATURE_THRESHOLD => {
+                let cdw11 = spec::Cdw11FeatureTemperatureThreshold::from(command.cdw11);
+                if cdw11.thsel() > 1 {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                dw[0] = spec::Cdw11FeatureTemperatureThreshold::new()
+                    .with_tmpth(default_temperature_threshold(cdw11.thsel()))
+                    .with_tmpsel(cdw11.tmpsel())
+                    .with_thsel(cdw11.thsel())
+                    .into();
+            }
+            spec::Feature::ERROR_RECOVERY => {
+                dw[0] = state.features.error_recovery;
+            }
+            spec::Feature::INTERRUPT_COALESCING => {
+                dw[0] = state.features.interrupt_coalescing;
+            }
+            spec::Feature::INTERRUPT_VECTOR_CONFIG => {
+                let cdw11 = spec::Cdw11FeatureInterruptVectorConfig::from(command.cdw11);
+                let cd = *state
+                    .features
+                    .interrupt_vector_coalescing_disable
+                    .get(cdw11.iv() as usize)
+                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?;
+                dw[0] = spec::Cdw11FeatureInterruptVectorConfig::new()
+                    .with_iv(cdw11.iv())
+                    .with_cd(cd)
+                    .into();
             }
             feature => {
                 tracelimit::warn_ratelimited!(?feature, "unsupported feature");
@@ -1143,6 +1303,24 @@ impl AdminHandler {
         let prp = PrpRange::parse(&self.config.mem, len, command.dptr)?;
 
         match spec::LogPageIdentifier(cdw10.lid()) {
+            spec::LogPageIdentifier::SUPPORTED_LOG_PAGES => {
+                // Figure 207: one 4-byte LID Supported and Effects entry per
+                // LID (0h..=FFh), 1024 bytes total. Mark each log page this
+                // controller supports with LSUPP set.
+                let mut page = [0u32; 256];
+                let supported = spec::LidSupportedAndEffects::new().with_lsupp(true);
+                for lid in [
+                    spec::LogPageIdentifier::SUPPORTED_LOG_PAGES,
+                    spec::LogPageIdentifier::ERROR_INFORMATION,
+                    spec::LogPageIdentifier::HEALTH_INFORMATION,
+                    spec::LogPageIdentifier::FIRMWARE_SLOT_INFORMATION,
+                    spec::LogPageIdentifier::CHANGED_NAMESPACE_LIST,
+                ] {
+                    page[lid.0 as usize] = supported.into();
+                }
+                let bytes = page.as_bytes();
+                prp.write(&self.config.mem, &bytes[..len.min(bytes.len())])?;
+            }
             spec::LogPageIdentifier::ERROR_INFORMATION => {
                 // Write empty log entries.
                 prp.zero(

@@ -82,19 +82,29 @@ windows = { workspace = true, features = [
 windows-result.workspace = true
 zerocopy.workspace = true
 
-# Used by the native RSA / X.509 backend to parse/encode PKCS#8 / PKCS#1
-# and X.509 certificates.
+# Used by the native backend to parse/encode data when no native support is available.
 [target.'cfg(target_os = "macos")'.dependencies]
+cms.workspace = true
 der.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
 signature = { workspace = true, features = ["alloc"] }
 x509-cert.workspace = true
 
-# Default to OpenSSL on Linux since there is no native backend available
-[target.'cfg(target_os = "linux")'.dependencies]
+# Default to OpenSSL on Linux since there is no native backend available,
+# except on musl targets where we use Symcrypt instead.
+[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
 openssl_kdf.workspace = true
 openssl.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+symcrypt = { workspace = true, features = ["sha1"] }
+cms.workspace = true
+der.workspace = true
+pkcs1.workspace = true
+pkcs8 = { workspace = true, features = ["alloc"] }
+signature = { workspace = true, features = ["alloc"] }
+x509-cert.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

@@ -202,7 +202,7 @@ fn install_windows_deps(
                 }
             }
         }
-    } else if installing && !auto_install && !features_to_enable.is_empty() {
+    } else if installing && !auto_install && hyperv {
         if powershell_builder::PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .finish()

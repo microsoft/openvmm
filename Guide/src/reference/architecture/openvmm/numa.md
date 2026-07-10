@@ -21,16 +21,25 @@ Every VM has a NUMA topology — even a single-node VM (which is what
 
 ### VP assignment
 
-By default, VPs are distributed across nodes by round-robin over
-sockets: `(vp_index / vps_per_socket) % num_nodes`. This matches
-QEMU's default and works well for symmetric topologies.
+By default, VPs are distributed across nodes by round-robin over sockets:
+`(vp_index / vps_per_socket) % num_cpu_nodes`, where `num_cpu_nodes` counts only
+nodes that participate in VP assignment (CPU-less nodes are skipped). This works
+well for symmetric topologies.
 
 For asymmetric cases — AMD sub-socket NUMA boundaries, ARM clusters,
 or any layout where the socket-based formula is wrong — VPs can be
 assigned explicitly per node using the `vps=` option.
 
 Explicit VP lists must be disjoint (no VP in two nodes), complete
-(every VP assigned to exactly one node), and in range.
+(every VP assigned to exactly one node), and in range. A non-empty
+explicit list cannot be mixed with nodes that use the default
+round-robin assignment.
+
+An empty list, `vps=[]`, declares a CPU-less node (for example, a
+memory-only node or a generic-initiator target). It claims no VPs and,
+unlike a non-empty list, may be combined with default round-robin
+nodes — so you can add a CPU-less node without having to spell out the
+VP set for every other node.
 
 ### Inter-node distances
 
@@ -93,6 +102,31 @@ On Linux guests, the topology is visible via `numactl --hardware`.
 On Windows guests, it appears in Task Manager and via the
 `GetLogicalProcessorInformationEx` API.
 
+## Device NUMA affinity
+
+PCIe root complexes and VPCI devices can optionally be assigned to a
+NUMA node so the guest OS sees correct device locality. When no node is
+specified, the ACPI `_PXM` object is omitted and the VPCI NUMA flag is
+not set — the guest treats the device as having no specific NUMA
+affinity and uses its default (current-node) allocation policy.
+
+For PCIe, each root complex can specify a `vnode` that is exposed via
+the ACPI `_PXM` object on the host bridge. Linux reads this to populate
+`/sys/bus/pci/devices/<BDF>/numa_node` for all devices under that root
+complex. Use `node=N` on `--pcie-root-complex`:
+
+```bash
+# Root complex on NUMA node 1
+openvmm --numa size=2G --numa size=2G \
+        --pcie-root-complex rc0,node=1 \
+        --pcie-root-port rc0:rp0 ...
+```
+
+For VPCI devices, the NUMA node can be set in the config (`vnode` field
+on `VpciDeviceConfig`) and is reported to the guest via the VPCI
+protocol's `BusRelations2` message. There is no CLI flag for VPCI
+device affinity yet — it is set programmatically.
+
 ## CLI usage
 
 The `--numa` flag replaces `--memory` for multi-node VMs. It is
@@ -124,8 +158,6 @@ reference.
 
 ## Limitations
 
-- **Device NUMA affinity** is not yet implemented. PCIe root complexes
-  and VPCI devices do not expose NUMA node assignments to the guest.
 - **Snapshot/restore** with multi-node topologies is not yet supported.
 - **Linux direct boot with devicetree** (aarch64) does not include
   NUMA information in the generated devicetree. The guest sees a flat

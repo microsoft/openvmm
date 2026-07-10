@@ -14,7 +14,8 @@ pub struct TestIgvmAgentRpcServerOutput {
     #[serde(rename = "test_igvm_agent_rpc_server.exe")]
     pub exe: PathBuf,
     #[serde(rename = "test_igvm_agent_rpc_server.pdb")]
-    pub pdb: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdb: Option<PathBuf>,
 }
 
 impl Artifact for TestIgvmAgentRpcServerOutput {}

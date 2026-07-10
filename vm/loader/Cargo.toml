@@ -23,6 +23,7 @@ bitfield-struct.workspace = true
 crc32fast.workspace = true
 object = { workspace = true, features = ["elf", "std", "read_core"] }
 open_enum.workspace = true
+static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

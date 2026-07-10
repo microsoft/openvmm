@@ -82,4 +82,12 @@ mod tests {
 
         assert_eq!(output, expected_result);
     }
+
+    #[test]
+    fn kdf_empty_key_errors() {
+        let key = [];
+        let context = [0u8; 32];
+        let result = kbkdf_hmac_sha256(&key, &context, b"VMGSKEY", 32);
+        assert!(result.is_err(), "expected error for empty key");
+    }
 }

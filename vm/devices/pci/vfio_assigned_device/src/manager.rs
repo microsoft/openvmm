@@ -31,22 +31,32 @@ struct VfioType1DmaTarget {
 }
 
 impl membacking::DmaTarget for VfioType1DmaTarget {
-    unsafe fn map_dma(
-        &self,
-        range: memory_range::MemoryRange,
-        host_va: Option<*const u8>,
-        _mappable: &membacking::Mappable,
-        _file_offset: u64,
-    ) -> anyhow::Result<()> {
-        let vaddr = host_va.expect("VFIO type1 requires host VA (registered with needs_va=true)");
+    unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
+        let vaddr = request.host_va;
+        let range = request.range;
         let _span = tracing::info_span!("vfio map", %range).entered();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
-        unsafe {
+        // host VA is backed and stable via eager mapping + VaMapper lifetime.
+        let result = unsafe {
             self.container
-                .map_dma(range.start(), vaddr, range.len())
+                .map_dma(range.start(), vaddr, range.len(), request.writable)
                 .context("VFIO DMA map failed")
+        };
+        if let Err(e) = &result {
+            if request.mapping_type == membacking::MappingType::Device {
+                // Device BAR memory may not be mappable into the IOMMU (e.g.,
+                // if the kernel cannot pin device MMIO pages). This is not
+                // fatal — it only means P2P DMA to this BAR won't work.
+                tracelimit::warn_ratelimited!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    %range,
+                    "failed to map device memory into VFIO container; \
+                     P2P DMA to this region will not work"
+                );
+                return Ok(());
+            }
         }
+        result
     }
 
     fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
@@ -420,13 +430,14 @@ impl VfioContainerManager {
             container: container.clone(),
         });
 
-        // Register as a DMA mapper — the region manager will create a
-        // VaMapper internally (since needs_va is true) and replay all
-        // existing active sub-mappings (guest RAM + any active device
-        // BARs) into this container's IOMMU.
+        // Register as a DMA mapper. This target programs the IOMMU by host VA,
+        // so it does not require a backing fd (needs_fd = false) and is
+        // compatible with private RAM. The region manager replays all existing
+        // active sub-mappings (guest RAM + any active device BARs) into this
+        // container's IOMMU.
         let dma_handle = self
             .dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register VFIO container with region manager")?;
 
@@ -467,23 +478,17 @@ struct IommufdDmaTarget {
 }
 
 impl membacking::DmaTarget for IommufdDmaTarget {
-    unsafe fn map_dma(
-        &self,
-        range: memory_range::MemoryRange,
-        host_va: Option<*const u8>,
-        _mappable: &membacking::Mappable,
-        _file_offset: u64,
-    ) -> anyhow::Result<()> {
-        let vaddr =
-            host_va.expect("iommufd IOAS map requires host VA (registered with needs_va=true)");
+    unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
+        let vaddr = request.host_va;
+        let range = request.range;
         let iova = range.start();
         let user_va = vaddr as u64;
         let length = range.len();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
-        unsafe {
+        // host VA is backed and stable via eager mapping + VaMapper lifetime.
+        let result = unsafe {
             self.ctx
-                .ioas_map(self.ioas_id, iova, user_va, length)
+                .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
                 .with_context(|| {
                     format!(
                         "iommufd IOAS DMA map failed: iova={iova:#x} user_va={user_va:#x} \
@@ -491,7 +496,22 @@ impl membacking::DmaTarget for IommufdDmaTarget {
                         self.ioas_id
                     )
                 })
+        };
+        if let Err(e) = &result {
+            if request.mapping_type == membacking::MappingType::Device {
+                // Device BAR memory may not be mappable into the IOMMU (e.g.,
+                // if the kernel cannot pin device MMIO pages). This is not
+                // fatal — it only means P2P DMA to this BAR won't work.
+                tracelimit::warn_ratelimited!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    %range,
+                    "failed to map device memory into iommufd IOAS; \
+                     P2P DMA to this region will not work"
+                );
+                return Ok(());
+            }
         }
+        result
     }
 
     fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
@@ -572,8 +592,10 @@ impl IoasManager {
             ctx: ctx.clone(),
             ioas_id,
         });
+        // This target programs the IOMMU by host VA, so it does not require a
+        // backing fd (needs_fd = false) and is compatible with private RAM.
         let dma_handle = dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register iommufd IOAS with region manager")?;
 

@@ -56,11 +56,10 @@ pub(super) fn self_signed_builder(
         "CN={common_name},O={organization},L={locality},ST={state},C={country}"
     ))?;
 
-    let modulus = key.modulus();
-    let exponent = key.public_exponent();
+    let components = key.to_components();
     let pkcs1_pub = pkcs1::RsaPublicKey {
-        modulus: der::asn1::UintRef::new(&modulus)?,
-        public_exponent: der::asn1::UintRef::new(&exponent)?,
+        modulus: der::asn1::UintRef::new(&components.modulus)?,
+        public_exponent: der::asn1::UintRef::new(&components.public_exponent)?,
     };
     let pkcs1_der = pkcs1_pub.to_der()?;
     let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {

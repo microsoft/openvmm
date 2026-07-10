@@ -198,7 +198,7 @@ impl FlowNode for Node {
 
             // The first run is the main workspace run with the base features.
             let mut runs: Vec<(String, NextestBuildParams)> =
-                vec![("unit-tests".into(), base_build_params.clone())];
+                vec![("base".into(), base_build_params.clone())];
 
             // crypto has non-additive features, so it gets its own runs to
             // ensure full coverage of different backends. Always test the
@@ -229,7 +229,7 @@ impl FlowNode for Node {
             }
             for (name, features) in crypto_feature_sets {
                 runs.push((
-                    format!("unit-tests crypto ({})", name),
+                    format!("crypto-{}", name),
                     NextestBuildParams {
                         packages: ReadVar::from_static(TestPackages::Crates {
                             crates: vec!["crypto".into()],
@@ -251,8 +251,9 @@ impl FlowNode for Node {
                     let test_results: Vec<_> = runs
                         .into_iter()
                         .map(|(friendly_name, build_params)| {
+                            let test_label = format!("{junit_test_label}-{friendly_name}");
                             let r = ctx.reqv(|v| crate::run_cargo_nextest_run::Request {
-                                friendly_name: friendly_name.clone(),
+                                friendly_name: test_label.clone(),
                                 run_kind:
                                     flowey_lib_common::run_cargo_nextest_run::NextestRunKind::BuildAndRun(
                                         build_params,
@@ -266,7 +267,7 @@ impl FlowNode for Node {
                                 pre_run_deps: pre_run_deps.clone(),
                                 results: v,
                             });
-                            (friendly_name, r)
+                            (test_label, r)
                         })
                         .collect();
 
@@ -274,11 +275,11 @@ impl FlowNode for Node {
                     // run's junit.xml gets uploaded with a distinct label.
                     let publish_dones: Vec<_> = test_results
                         .iter()
-                        .map(|(friendly_name, r)| {
+                        .map(|(test_label, r)| {
                             let junit_xml = r.clone().map(ctx, |t| t.junit_xml);
                             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
                                 junit_xml,
-                                test_label: format!("{junit_test_label}-{friendly_name}"),
+                                test_label: test_label.clone(),
                                 attachments: BTreeMap::new(),
                                 output_dir: artifact_dir.clone(),
                                 done: v,

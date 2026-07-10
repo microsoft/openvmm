@@ -14,6 +14,7 @@ openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
+initrd_cpio.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true
 diag_client.workspace = true
@@ -69,7 +70,6 @@ bitfield-struct.workspace = true
 blocking.workspace = true
 clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
-flate2.workspace = true
 fs-err.workspace = true
 fscommon.workspace = true
 futures.workspace = true

@@ -213,17 +213,13 @@ impl ProcessorVtlHv {
         }
         let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
 
-        if new_vp_assist_page_reg.enabled()
-            && (!self.vp_assist_page_reg.enabled()
-                || new_vp_assist_page_reg.gpa_page_number()
-                    != self.vp_assist_page_reg.gpa_page_number())
-        {
-            self.vp_assist_page
-                .remap(new_vp_assist_page_reg.gpa_page_number(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?
-        } else if !new_vp_assist_page_reg.enabled() {
-            self.vp_assist_page.unmap(prot_access);
-        }
+        self.vp_assist_page
+            .sync(
+                new_vp_assist_page_reg.enabled(),
+                new_vp_assist_page_reg.gpa_page_number(),
+                prot_access,
+            )
+            .map_err(|_| MsrError::InvalidAccess)?;
 
         self.vp_assist_page_reg = new_vp_assist_page_reg;
 

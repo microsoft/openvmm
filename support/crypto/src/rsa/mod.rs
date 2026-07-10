@@ -116,6 +116,15 @@ impl RsaKeyPair {
 #[repr(transparent)] // Needed for the transmute in deref.
 pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
+/// The public components of an RSA key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RsaPublicKeyComponents {
+    /// The RSA modulus as a big-endian byte vector.
+    pub modulus: Vec<u8>,
+    /// The RSA public exponent as a big-endian byte vector.
+    pub public_exponent: Vec<u8>,
+}
+
 impl RsaPublicKey {
     /// Construct an RSA public key from a big-endian modulus `n` and
     /// big-endian public exponent `e`.
@@ -164,14 +173,9 @@ impl RsaPublicKey {
         self.0.modulus_size()
     }
 
-    /// Returns the RSA modulus as a big-endian byte vector.
-    pub fn modulus(&self) -> Vec<u8> {
-        self.0.modulus()
-    }
-
-    /// Returns the RSA public exponent as a big-endian byte vector.
-    pub fn public_exponent(&self) -> Vec<u8> {
-        self.0.public_exponent()
+    /// Returns the RSA public components as big-endian byte vectors.
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
+        self.0.to_components()
     }
 }
 
@@ -242,8 +246,7 @@ mod tests {
         let key = RsaKeyPair::generate(2048).unwrap();
         let der = key.to_pkcs8_der().unwrap();
         let imported = RsaKeyPair::from_pkcs8_der(&der).unwrap();
-        assert_eq!(key.modulus(), imported.modulus());
-        assert_eq!(key.public_exponent(), imported.public_exponent());
+        assert_eq!(key.to_components(), imported.to_components());
 
         // Sign with the original and verify with the imported, to confirm
         // the private-key components survived the round-trip.

@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use super::test_helpers::TestNvmeMmioRegistration;
+use crate::AddNamespaceError;
 use crate::BAR0_LEN;
+use crate::MAX_NSID;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::PAGE_SIZE64;
@@ -13,6 +15,8 @@ use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
@@ -20,6 +24,7 @@ use guid::Guid;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::bus_range::AssignedBusRange;
+use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
@@ -35,11 +40,11 @@ fn instantiate_controller(
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, gm.clone(), &msi_conn);
     let controller = NvmeController::new(
         vm_task_driver,
-        gm.clone(),
-        msi_conn.target(),
+        &dma_target,
         &mut mmio_reg,
         NvmeControllerCaps {
             msix_count: 64,
@@ -113,24 +118,42 @@ pub async fn instantiate_and_build_admin_queue(
 ) -> NvmeController {
     let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller);
     // Set the BARs.
-    nvmec.pci_cfg_write(0x10, 0).unwrap();
-    nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
+    nvmec
+        .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+    nvmec
+        .pci_cfg_write(
+            0x20,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(BAR0_LEN as u32),
+        )
+        .unwrap();
 
     // Find the MSI-X cap struct.
     let mut cfg_dword = 0;
-    nvmec.pci_cfg_read(0x34, &mut cfg_dword).unwrap();
+    nvmec
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut cfg_dword),
+        )
+        .unwrap();
     cfg_dword &= 0xff;
     loop {
         // Read a cap struct header and pull out the fields.
         let mut cap_header = 0;
         nvmec
-            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
+            .pci_cfg_read(
+                cfg_dword as u16,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut cap_header),
+            )
             .unwrap();
         if cap_header & 0xff == 0x11 {
             // Read the table BIR and offset.
             let mut table_loc = 0;
             nvmec
-                .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
+                .pci_cfg_read(
+                    cfg_dword as u16 + 4,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut table_loc),
+                )
                 .unwrap();
             // Code in other places assumes that the MSI-X table is at the beginning
             // of BAR 4.  If this becomes a fluid concept, capture the values
@@ -139,7 +162,12 @@ pub async fn instantiate_and_build_admin_queue(
             assert_eq!(table_loc >> 3, 0);
 
             // Found MSI-X, enable it.
-            nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
+            nvmec
+                .pci_cfg_write(
+                    cfg_dword as u16,
+                    ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+                )
+                .unwrap();
             break;
         }
         // Isolate the ptr to the next cap struct.
@@ -152,7 +180,9 @@ pub async fn instantiate_and_build_admin_queue(
 
     // Turn on MMIO access by writing to the Command register in config space.  Enable
     // MMIO and DMA.
-    nvmec.pci_cfg_write(4, 6).unwrap();
+    nvmec
+        .pci_cfg_write(4, ByteEnabledDwordWrite::with_all_bytes_enabled(6))
+        .unwrap();
 
     // Set the ACQ base.
     let base = acq_buffer.range().gpns()[0] * PAGE_SIZE64;
@@ -748,4 +778,724 @@ async fn test_full_cq_does_not_leak_io_count(driver: DefaultDriver) {
         received, expected,
         "missing FLUSH completions — likely io_count leak throttled the SQ"
     );
+}
+
+/// Regression test for the Asynchronous Event Configuration feature
+/// (Set/Get Features FID 0Bh).
+///
+/// The NVMe Base specification lists this Feature as mandatory for I/O
+/// controllers (Base 2.0c section 3.1.2.1.1 / Base 2.3 section 3.1.3.6
+/// Figure 32). Initiators that strictly follow the spec may refuse to
+/// allocate any Asynchronous Event Request resources when the Set
+/// Features command for this Feature is rejected, which breaks
+/// downstream AEN delivery (including the changed-namespace AEN that
+/// drives namespace hot-add notification).
+///
+/// This test pins the contract: Set Features 0Bh must succeed and Get
+/// Features 0Bh must return the same value the host last wrote.
+#[async_test]
+async fn test_set_get_features_async_event_config(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // A non-trivial mask that exercises bits in both the low SMART/Health
+    // byte and the higher notice classes (including bit 8 — Attached
+    // Namespace Attribute Notices, which is the bit that gates the
+    // namespace-change AEN). Also flips a high opaque bit (bit 21, Lost
+    // Host Communication Notices) to prove the round-trip is byte-exact
+    // rather than masked to a subset.
+    const MASK: u32 = 0x0020_011F;
+
+    // ----- Set Features 0Bh -----
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(601);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = MASK;
+    write_command_to_queue(&gm, &admin_sq_buf, 0, &cmd);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let set_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 0);
+    assert_eq!(set_cqe.cid, 601);
+    assert_eq!(
+        set_cqe.status.status(),
+        spec::Status::SUCCESS.0,
+        "Set Features 0Bh must succeed (mandatory for I/O controllers)"
+    );
+
+    // Advance the admin CQ head past slot 0 so the worker can post the
+    // next completion into slot 1.
+    nvmec.write_bar0(cq_db(0), 1u32.as_bytes()).unwrap();
+
+    // ----- Get Features 0Bh -----
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::GET_FEATURES.0);
+    cmd.cdw0.set_cid(602);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10GetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    write_command_to_queue(&gm, &admin_sq_buf, 1, &cmd);
+    nvmec.write_bar0(0x1000, 2u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let get_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 1);
+    assert_eq!(get_cqe.cid, 602);
+    assert_eq!(get_cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(
+        get_cqe.dw0, MASK,
+        "Get Features 0Bh must echo back the previously configured mask byte-exactly"
+    );
+}
+
+/// Regression test for Asynchronous Event Configuration mask
+/// enforcement.
+///
+/// The Asynchronous Event Configuration feature (FID 0Bh) controls
+/// which classes of asynchronous event notification the controller
+/// is allowed to fire (NVMe Base 2.0c section 5.21.1.11 / Base 2.3
+/// section 5.2.26.1.5). Bit 8 ("Attached Namespace Attribute Notices")
+/// gates the changed-namespace AEN; per spec, "If this bit is cleared
+/// to '0', then the controller shall not send the Attached Namespace
+/// Attribute Changed asynchronous event to the host."
+///
+/// This test exercises both the negative path (mask cleared suppresses
+/// the queued namespace-change AEN) and the positive path (toggling
+/// the mask back on causes the previously-suppressed event to be
+/// delivered without needing a fresh trigger). It also confirms the
+/// emitted completion encodes the correct event type and log page
+/// identifier so a host that reads it knows to fetch the
+/// CHANGED_NAMESPACE_LIST log page.
+#[async_test]
+async fn test_async_event_config_masks_namespace_aen(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // -------------------------------------------------------------
+    // Step 1: Set the AEC mask to 0 (every notification class
+    // disabled, including bit 8 / Attached Namespace Attribute
+    // Notices).
+    // -------------------------------------------------------------
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(701);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = 0;
+    write_command_to_queue(&gm, &admin_sq_buf, 0, &cmd);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, 0);
+    assert_eq!(cqe.cid, 701);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    nvmec.write_bar0(cq_db(0), 1u32.as_bytes()).unwrap();
+
+    // -------------------------------------------------------------
+    // Step 2: Park an Asynchronous Event Request. With no AERs in
+    // flight, the controller has nothing to complete an AEN against
+    // even if the mask permitted firing, so this is required to make
+    // the negative assertion meaningful.
+    // -------------------------------------------------------------
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0
+        .set_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0);
+    cmd.cdw0.set_cid(702);
+    write_command_to_queue(&gm, &admin_sq_buf, 1, &cmd);
+    nvmec.write_bar0(0x1000, 2u32.as_bytes()).unwrap();
+    // No MSI is expected at this point - the AER simply parks.
+
+    // -------------------------------------------------------------
+    // Step 3: Trigger a namespace change. With the mask cleared the
+    // controller MUST NOT fire the corresponding AEN.
+    // -------------------------------------------------------------
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(2, disk).await.unwrap();
+
+    // Wait ~500ms watching for any MSI. None should fire.
+    let mut backoff = Backoff::new(&driver);
+    for _ in 0..50 {
+        if let Some(int) = int_controller.get_next_interrupt() {
+            panic!(
+                "unexpected AEN MSI while AEC mask=0: addr={:#x} data={:#x}",
+                int.0, int.1
+            );
+        }
+        backoff.back_off().await;
+    }
+
+    // -------------------------------------------------------------
+    // Step 4: Toggle the mask back on (just bit 8 / NAN). The
+    // namespace change from step 3 is still queued in
+    // state.changed_namespaces; the parked AER is still outstanding.
+    // The next loop iteration after the Set Features completes must
+    // observe the now-enabled mask and fire the AEN.
+    // -------------------------------------------------------------
+    let mask_on =
+        u32::from(spec::Cdw11FeatureAsyncEventConfig::new().with_namespace_attribute_notices(true));
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    cmd.cdw0.set_cid(703);
+    cmd.cdw10 =
+        u32::from(spec::Cdw10SetFeatures::new().with_fid(spec::Feature::ASYNC_EVENT_CONFIG.0));
+    cmd.cdw11 = mask_on;
+    write_command_to_queue(&gm, &admin_sq_buf, 2, &cmd);
+    nvmec.write_bar0(0x1000, 3u32.as_bytes()).unwrap();
+
+    // Set Features completion arrives in admin CQ slot 1.
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let set_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 1);
+    assert_eq!(set_cqe.cid, 703);
+    assert_eq!(set_cqe.status.status(), spec::Status::SUCCESS.0);
+    nvmec.write_bar0(cq_db(0), 2u32.as_bytes()).unwrap();
+
+    // The AEN completion (against the AER parked in step 2) arrives in
+    // admin CQ slot 2.
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let aen_cqe = read_completion_from_queue(&gm, &admin_cq_buf, 2);
+    assert_eq!(
+        aen_cqe.cid, 702,
+        "AEN completion must be posted against the parked AER's cid"
+    );
+    assert_eq!(aen_cqe.status.status(), spec::Status::SUCCESS.0);
+
+    let dw0 = spec::AsynchronousEventRequestDw0::from(aen_cqe.dw0);
+    assert_eq!(
+        dw0.event_type(),
+        spec::AsynchronousEventType::NOTICE.0,
+        "AEN event_type must be NOTICE"
+    );
+    assert_eq!(
+        dw0.log_page_identifier(),
+        spec::LogPageIdentifier::CHANGED_NAMESPACE_LIST.0,
+        "AEN log_page_identifier must point at CHANGED_NAMESPACE_LIST"
+    );
+}
+
+/// `add_namespace` validates the NSID against the subsystem's valid range
+/// (`1..=MAX_NSID`) and rejects duplicates. Verify each failure mode maps to
+/// the right `AddNamespaceError` variant and that the boundary NSIDs are
+/// accepted.
+#[async_test]
+async fn test_add_namespace_validation(driver: DefaultDriver) {
+    let gm = test_memory();
+    let nvmec = instantiate_controller(driver, &gm, None);
+    let client = nvmec.client();
+
+    // NSID 0 is reserved and must be rejected as out of range.
+    let err = client
+        .add_namespace(0, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AddNamespaceError::OutOfRange(0)),
+        "NSID 0 should be OutOfRange, got {err:?}"
+    );
+
+    // An NSID above the subsystem maximum must be rejected.
+    let err = client
+        .add_namespace(MAX_NSID + 1, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AddNamespaceError::OutOfRange(n) if n == MAX_NSID + 1),
+        "NSID above MAX_NSID should be OutOfRange, got {err:?}"
+    );
+
+    // The boundary values 1 and MAX_NSID are valid.
+    client
+        .add_namespace(1, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap();
+    client
+        .add_namespace(MAX_NSID, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    // Re-adding an existing NSID must be reported as a conflict.
+    let err = client
+        .add_namespace(1, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AddNamespaceError::Conflict(1)),
+        "duplicate NSID should be Conflict, got {err:?}"
+    );
+}
+
+/// Issue an IDENTIFY CONTROLLER command into admin slot `slot`, write the
+/// result to `data_gpa`, and return the reported `NN` (maximum valid NSID)
+/// field.
+async fn identify_controller_nn(
+    nvmec: &mut NvmeController,
+    gm: &GuestMemory,
+    asq: &PrpRange,
+    acq: &PrpRange,
+    int_controller: &TestPciInterruptController,
+    driver: DefaultDriver,
+    slot: u32,
+    data_gpa: u64,
+) -> u32 {
+    let mut entry = spec::Command::new_zeroed();
+    entry.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+    entry.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0));
+    entry.dptr[0] = data_gpa;
+
+    write_command_to_queue(gm, asq, slot as usize, &entry);
+    nvmec.write_bar0(0x1000, (slot + 1).as_bytes()).unwrap();
+    wait_for_msi(driver, int_controller, 1000, 0xfeed0000, 0x1111).await;
+
+    let cqe = read_completion_from_queue(gm, acq, slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+
+    gm.read_plain::<spec::IdentifyController>(data_gpa)
+        .unwrap()
+        .nn
+}
+
+/// The `NN` field of Identify Controller reports the fixed size of the NSID
+/// address space (`MAX_NSID`), independent of how many namespaces are
+/// actually present.
+#[async_test]
+async fn test_identify_reports_fixed_nn(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // No namespaces present: NN still reports the fixed subsystem maximum.
+    let nn = identify_controller_nn(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        0,
+        0x8000,
+    )
+    .await;
+    assert_eq!(nn, MAX_NSID, "NN must report MAX_NSID with no namespaces");
+
+    // Add a namespace; NN must remain MAX_NSID rather than tracking the
+    // highest present NSID.
+    nvmec
+        .client()
+        .add_namespace(1, ram_disk(1 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    let nn = identify_controller_nn(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        1,
+        0x9000,
+    )
+    .await;
+    assert_eq!(
+        nn, MAX_NSID,
+        "NN must remain MAX_NSID after adding a namespace"
+    );
+}
+
+// =============================================================================
+// Mandatory Set/Get Features compliance (NVMe Base 2.3 §3.1.3.6, Figure 32).
+//
+// An I/O controller must *accept* every mandatory feature and round-trip its
+// CDW11 rather than aborting with Invalid Field in Command. These tests submit
+// real admin Set/Get Features commands through the controller and verify the
+// stored value is echoed back.
+
+fn set_feature_command(fid: spec::Feature, cdw11: u32) -> spec::Command {
+    let mut command = spec::Command::new_zeroed();
+    command.cdw0.set_opcode(spec::AdminOpcode::SET_FEATURES.0);
+    command.cdw10 = spec::Cdw10SetFeatures::new().with_fid(fid.0).into();
+    command.cdw11 = cdw11;
+    command
+}
+
+fn get_feature_command(fid: spec::Feature, cdw11: u32) -> spec::Command {
+    let mut command = spec::Command::new_zeroed();
+    command.cdw0.set_opcode(spec::AdminOpcode::GET_FEATURES.0);
+    command.cdw10 = spec::Cdw10GetFeatures::new().with_fid(fid.0).into();
+    command.cdw11 = cdw11;
+    command
+}
+
+/// Submits a single admin command in slot `admin_slot` and returns its
+/// completion.
+async fn submit_admin_command(
+    nvmec: &mut NvmeController,
+    gm: &GuestMemory,
+    asq: &PrpRange,
+    acq: &PrpRange,
+    int_controller: &TestPciInterruptController,
+    driver: DefaultDriver,
+    admin_slot: u32,
+    command: &spec::Command,
+) -> spec::Completion {
+    write_command_to_queue(gm, asq, admin_slot as usize, command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver, int_controller, 1000, 0xfeed0000, 0x1111).await;
+    read_completion_from_queue(gm, acq, admin_slot as usize)
+}
+
+#[async_test]
+async fn test_mandatory_features_roundtrip(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let mut admin_slot = 0u32;
+
+    // Helper: submit a command, assert its status, and return the completion.
+    macro_rules! submit {
+        ($command:expr, $expected_status:expr) => {{
+            let cqe = submit_admin_command(
+                &mut nvmec,
+                &gm,
+                &asq,
+                &acq,
+                &int_controller,
+                driver.clone(),
+                admin_slot,
+                &$command,
+            )
+            .await;
+            assert_eq!(
+                cqe.status.status(),
+                spec::Status($expected_status).0,
+                "unexpected status for admin_slot {admin_slot}"
+            );
+            admin_slot += 1;
+            cqe
+        }};
+    }
+
+    // Features whose entire CDW11 round-trips verbatim.
+    for (fid, cdw11) in [
+        (spec::Feature::ARBITRATION, 0x0102_0304u32),
+        (
+            spec::Feature::ERROR_RECOVERY,
+            u32::from(
+                spec::Cdw11FeatureErrorRecovery::new()
+                    .with_tler(100)
+                    .with_dulbe(true),
+            ),
+        ),
+        (
+            spec::Feature::INTERRUPT_COALESCING,
+            u32::from(
+                spec::Cdw11FeatureInterruptCoalescing::new()
+                    .with_thr(8)
+                    .with_time(16),
+            ),
+        ),
+    ] {
+        submit!(set_feature_command(fid, cdw11), spec::Status::SUCCESS.0);
+        let cqe = submit!(get_feature_command(fid, 0), spec::Status::SUCCESS.0);
+        assert_eq!(cqe.dw0, cdw11, "feature {fid:?} did not round-trip");
+    }
+
+    // Power Management: PS 0 is accepted, PS != 0 is rejected.
+    let pm = u32::from(
+        spec::Cdw11FeaturePowerManagement::new()
+            .with_ps(0)
+            .with_wh(2),
+    );
+    submit!(
+        set_feature_command(spec::Feature::POWER_MANAGEMENT, pm),
+        spec::Status::SUCCESS.0
+    );
+    let cqe = submit!(
+        get_feature_command(spec::Feature::POWER_MANAGEMENT, 0),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(cqe.dw0, pm);
+    submit!(
+        set_feature_command(
+            spec::Feature::POWER_MANAGEMENT,
+            spec::Cdw11FeaturePowerManagement::new().with_ps(1).into(),
+        ),
+        spec::Status::INVALID_FIELD_IN_COMMAND.0
+    );
+
+    // Temperature Threshold: accepted but stateless — the emulator models no
+    // temperature sensors, so Set is ignored and Get reports the reset defaults.
+    submit!(
+        set_feature_command(
+            spec::Feature::TEMPERATURE_THRESHOLD,
+            spec::Cdw11FeatureTemperatureThreshold::new()
+                .with_tmpth(350)
+                .with_tmpsel(0)
+                .with_thsel(0)
+                .into(),
+        ),
+        spec::Status::SUCCESS.0
+    );
+    // Over-temperature threshold defaults to the maximum (effectively disabled).
+    let over = spec::Cdw11FeatureTemperatureThreshold::new().with_thsel(0);
+    let cqe = submit!(
+        get_feature_command(spec::Feature::TEMPERATURE_THRESHOLD, over.into()),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(
+        spec::Cdw11FeatureTemperatureThreshold::from(cqe.dw0).tmpth(),
+        0xffff
+    );
+    // Under-temperature threshold defaults to zero.
+    let under = spec::Cdw11FeatureTemperatureThreshold::new().with_thsel(1);
+    let cqe = submit!(
+        get_feature_command(spec::Feature::TEMPERATURE_THRESHOLD, under.into()),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(
+        spec::Cdw11FeatureTemperatureThreshold::from(cqe.dw0).tmpth(),
+        0x0000
+    );
+
+    // Interrupt Vector Configuration: valid vector accepted, unknown rejected.
+    let ivc = spec::Cdw11FeatureInterruptVectorConfig::new()
+        .with_iv(0)
+        .with_cd(true);
+    submit!(
+        set_feature_command(spec::Feature::INTERRUPT_VECTOR_CONFIG, ivc.into()),
+        spec::Status::SUCCESS.0
+    );
+    let cqe = submit!(
+        get_feature_command(
+            spec::Feature::INTERRUPT_VECTOR_CONFIG,
+            spec::Cdw11FeatureInterruptVectorConfig::new()
+                .with_iv(0)
+                .into(),
+        ),
+        spec::Status::SUCCESS.0
+    );
+    assert_eq!(cqe.dw0, u32::from(ivc));
+    submit!(
+        set_feature_command(
+            spec::Feature::INTERRUPT_VECTOR_CONFIG,
+            spec::Cdw11FeatureInterruptVectorConfig::new()
+                .with_iv(0xffff)
+                .into(),
+        ),
+        spec::Status::INVALID_FIELD_IN_COMMAND.0
+    );
+
+    // Save (Set) and non-current Select (Get) are unsupported because
+    // Identify Controller ONCS.SSFS is 0: they must be rejected rather than
+    // silently applied.
+    let mut save_cmd = set_feature_command(spec::Feature::ARBITRATION, 0);
+    save_cmd.cdw10 = spec::Cdw10SetFeatures::new()
+        .with_fid(spec::Feature::ARBITRATION.0)
+        .with_save(true)
+        .into();
+    submit!(save_cmd, spec::Status::FEATURE_IDENTIFIER_NOT_SAVEABLE.0);
+
+    let mut sel_cmd = get_feature_command(spec::Feature::ARBITRATION, 0);
+    sel_cmd.cdw10 = spec::Cdw10GetFeatures::new()
+        .with_fid(spec::Feature::ARBITRATION.0)
+        .with_sel(1)
+        .into();
+    // This is the last command submitted, so the `admin_slot` increment inside
+    // `submit!` is never read afterwards.
+    #[expect(unused_assignments, reason = "final submit! bumps admin_slot")]
+    {
+        submit!(sel_cmd, spec::Status::INVALID_FIELD_IN_COMMAND.0);
+    }
+}
+
+/// CNS 06h (I/O Command Set specific Identify Controller): the NVM command set
+/// (CSI 0h) defines no such data structure, so the controller must return a
+/// zero-filled 4096-byte structure (NVMe Base 2.3 §5.2.13.2.6). A request for
+/// an unsupported command set is rejected with Invalid Field in Command.
+#[async_test]
+async fn test_identify_io_command_set_specific_controller(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let data_gpa = 0x8000u64;
+    // Pre-fill the target with a non-zero pattern to prove the controller
+    // actually writes a zero-filled structure back.
+    gm.write_plain::<[u8; 4096]>(data_gpa, &[0xff; 4096])
+        .unwrap();
+
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+    cmd.cdw10 = spec::Cdw10Identify::new()
+        .with_cns(spec::Cns::SPECIFIC_CONTROLLER_IO_COMMAND_SET.0)
+        .into();
+    cmd.cdw11 = 0; // CSI 0h (NVM command set)
+    cmd.dptr[0] = data_gpa;
+
+    let cqe = submit_admin_command(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        0,
+        &cmd,
+    )
+    .await;
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    let data = gm.read_plain::<[u8; 4096]>(data_gpa).unwrap();
+    assert!(
+        data.iter().all(|&b| b == 0),
+        "CNS 06h must return a zero-filled structure"
+    );
+
+    // A request for a command set the controller does not support (CSI 1h) must
+    // be aborted with Invalid Field in Command.
+    cmd.cdw11 = 1 << 24;
+    let cqe = submit_admin_command(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        1,
+        &cmd,
+    )
+    .await;
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::INVALID_FIELD_IN_COMMAND.0
+    );
+}
+
+/// The Supported Log Pages log page (LID 00h) is mandatory for an NVMe 2.0 I/O
+/// controller. It must report an LSUPP bit for each supported log page (NVMe
+/// Base 2.3 §5.2.12.1.1, Figures 207/208).
+#[async_test]
+async fn test_get_supported_log_pages(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let data_gpa = 0x8000u64;
+    // Pre-fill so we can confirm unsupported LIDs are reported as zero.
+    gm.write_plain::<[u8; 1024]>(data_gpa, &[0xff; 1024])
+        .unwrap();
+
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::GET_LOG_PAGE.0);
+    // 1024 bytes = 256 dwords; NUMDL is a 0-based dword count.
+    cmd.cdw10 = spec::Cdw10GetLogPage::new()
+        .with_lid(spec::LogPageIdentifier::SUPPORTED_LOG_PAGES.0)
+        .with_numdl_z(255)
+        .into();
+    cmd.dptr[0] = data_gpa;
+
+    let cqe = submit_admin_command(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        0,
+        &cmd,
+    )
+    .await;
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+
+    let page = gm.read_plain::<[u32; 256]>(data_gpa).unwrap();
+    let supported = [0usize, 1, 2, 3, 4];
+    for (lid, entry) in page.iter().enumerate() {
+        let lsupp = spec::LidSupportedAndEffects::from(*entry).lsupp();
+        assert_eq!(
+            lsupp,
+            supported.contains(&lid),
+            "LID {lid:#x} LSUPP bit mismatch"
+        );
+    }
 }

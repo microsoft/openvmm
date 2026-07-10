@@ -99,6 +99,8 @@ pub use memory_manager::RamBackingRequest;
 pub use memory_manager::RamVisibility;
 pub use memory_manager::RamVisibilityControl;
 pub use memory_manager::SharedMemoryBacking;
+pub use region_manager::DmaMapRequest;
 pub use region_manager::DmaMapperClient;
 pub use region_manager::DmaMapperHandle;
 pub use region_manager::DmaTarget;
+pub use region_manager::MappingType;

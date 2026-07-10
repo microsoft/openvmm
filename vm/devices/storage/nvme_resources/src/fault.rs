@@ -337,7 +337,7 @@ pub struct CommandMatch {
 ///         .with_hardware_config_fault(
 ///             HardwareConfigFaultConfig::new()
 ///                 .with_vendor_id(0x1414)
-///                 .with_device_id(0x00a9),
+///                 .with_device_id(0xc03e),
 ///         )
 /// }
 /// ```

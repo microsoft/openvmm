@@ -141,14 +141,13 @@ pub async fn request_vmgs_encryption_keys(
         )
     })?;
 
-    let exponent = transfer_key.public_exponent();
-    let modulus = transfer_key.modulus();
+    let components = transfer_key.to_components();
     let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(
         tee_call.tee_type(),
-        &exponent,
-        &modulus,
+        &components.public_exponent,
+        &components.modulus,
         host_time,
         attestation_vm_config,
     );
