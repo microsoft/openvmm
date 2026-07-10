@@ -643,6 +643,25 @@ impl HvEnlightenmentInformation {
     }
 }
 
+/// The EAX result of the `HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES` (0x4000000A)
+/// cpuid leaf, describing the nested virtualization enlightenments the
+/// hypervisor offers to a nested (L1) hypervisor.
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvNestedVirtFeaturesEax {
+    pub enlightened_vmcs_version_low: u8,
+    pub enlightened_vmcs_version_high: u8,
+    _reserved16: bool,
+    pub nested_flush_virtual_hypercall: bool,
+    pub flush_guest_physical_hypercall: bool,
+    pub msr_bitmap: bool,
+    pub virtualization_exception: bool,
+    pub debug_ctl: bool,
+    pub enlightened_npt_tlb: bool,
+    #[bits(9)]
+    _reserved23: u32,
+}
+
 #[bitfield(u128)]
 pub struct HvHardwareFeatures {
     pub apic_overlay_assist_in_use: bool,

@@ -680,6 +680,7 @@ impl WhpProcessor<'_> {
             || cr8 >= priority as u64
             || pending_event.event_pending()
         {
+            // Not ready. Register a notification.
             let notifications = self.state.vtls[vtl].deliverability_notifications;
             if !notifications.interrupt_notification()
                 || (notifications.interrupt_priority() != 0
@@ -693,6 +694,7 @@ impl WhpProcessor<'_> {
                 );
             }
 
+            self.state.halted = false;
             return;
         }
 

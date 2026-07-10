@@ -20,6 +20,7 @@ use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
 use crate::vp_context_builder::vbs::VbsVpContext;
 use anyhow::Context;
+use crypto::sha_384::Sha384;
 use hvdef::Vtl;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
@@ -50,8 +51,6 @@ use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use range_map_vec::Entry;
 use range_map_vec::RangeMap;
-use sha2::Digest;
-use sha2::Sha384;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -176,7 +175,7 @@ pub trait IgvmLoaderRegister: VbsRegister {
     fn generate_measurement(
         isolation: LoaderIsolationType,
         initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &[IgvmDirectiveHeader],
+        directive_headers: &mut Vec<IgvmDirectiveHeader>,
         svn: u32,
         debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>>;
@@ -265,7 +264,7 @@ impl IgvmLoaderRegister for X86Register {
     fn generate_measurement(
         isolation: LoaderIsolationType,
         initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &[IgvmDirectiveHeader],
+        directive_headers: &mut Vec<IgvmDirectiveHeader>,
         svn: u32,
         debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>> {
@@ -326,7 +325,7 @@ impl IgvmLoaderRegister for Aarch64Register {
     fn generate_measurement(
         _isolation: LoaderIsolationType,
         _initialization_headers: &[IgvmInitializationHeader],
-        _directive_headers: &[IgvmDirectiveHeader],
+        _directive_headers: &mut Vec<IgvmDirectiveHeader>,
         _svn: u32,
         _debug_enabled: bool,
     ) -> anyhow::Result<Option<Measurement>> {
@@ -578,7 +577,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
         });
-        hasher.finalize().to_vec()
+        hasher.finish().to_vec()
     }
 
     /// Finalize the loader state, returning an IGVM file.
@@ -665,12 +664,13 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         // Generate the launch measurement for the isolation type being used.
         // The measurement is output for external signing.
+        let debug_enabled = self.confidential_debug();
         let doc = R::generate_measurement(
             self.isolation_type,
             &self.initialization_headers,
-            &self.directives,
+            &mut self.directives,
             guest_svn,
-            self.confidential_debug(),
+            debug_enabled,
         )?;
 
         // Display a report about the build igvm file's layout.
@@ -830,9 +830,26 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
 
-            // Data size must match SNP VMSA size.
-            if data.len() != size_of::<SevVmsa>() {
-                anyhow::bail!("data len {:x} does not match VMSA size", data.len());
+            // The VP context builder produces the architectural VMSA
+            // (`x86defs::snp::SevVmsa`, 1648 bytes); the igvm crate's `SevVmsa`
+            // is padded out to a full 4K page, so accept input in the range
+            // [architectural size, padded size] and zero-pad it to the padded
+            // size before reading. Anything smaller than the architectural size
+            // would be silently zero-extended into a malformed VMSA, so reject
+            // it.
+            if data.len() < size_of::<x86defs::snp::SevVmsa>() {
+                anyhow::bail!(
+                    "data len {:x} is smaller than the architectural VMSA size {:x}",
+                    data.len(),
+                    size_of::<x86defs::snp::SevVmsa>()
+                );
+            }
+            if data.len() > size_of::<SevVmsa>() {
+                anyhow::bail!(
+                    "data len {:x} exceeds VMSA size {:x}",
+                    data.len(),
+                    size_of::<SevVmsa>()
+                );
             }
 
             // Page count must be 1.
@@ -840,11 +857,16 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 anyhow::bail!("page count {page_count:x} for snp vmsa is not 1");
             }
 
+            let mut padded = vec![0u8; size_of::<SevVmsa>()];
+            padded[..data.len()].copy_from_slice(data);
+
             self.directives.push(IgvmDirectiveHeader::SnpVpContext {
                 gpa: page_base * PAGE_SIZE_4K,
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 vp_index: 0,
-                vmsa: Box::new(SevVmsa::read_from_bytes(data).expect("should be correct size")), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                vmsa: Box::new(
+                    SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size"),
+                ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             });
         } else {
             for page in page_base..page_base + page_count {

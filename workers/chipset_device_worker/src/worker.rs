@@ -18,6 +18,8 @@ use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device_resources::ErasedChipsetDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use mesh::MeshPayload;
@@ -290,22 +292,30 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                                 self.device.supports_pio().unwrap().io_write(address, &data);
                             self.handle_write_result(id, result);
                         }
-                        DeviceRequest::PciConfigRead(ReadRequest { id, address, size }) => {
+                        DeviceRequest::PciConfigRead(
+                            ReadRequest { id, address, size },
+                            byte_enable,
+                        ) => {
                             assert_eq!(size, 4);
-                            let mut data = 0;
+                            let mut data_u32 = 0;
+                            let mut value = ByteEnabledDwordRead::new(&mut data_u32, byte_enable);
                             let result = self
                                 .device
                                 .supports_pci()
                                 .unwrap()
-                                .pci_cfg_read(address, &mut data);
-                            self.handle_read_result(id, result, data.to_ne_bytes().to_vec());
+                                .pci_cfg_read(address, value.reborrow());
+                            self.handle_read_result(id, result, data_u32.to_ne_bytes().to_vec());
                         }
-                        DeviceRequest::PciConfigWrite(WriteRequest { id, address, data }) => {
+                        DeviceRequest::PciConfigWrite(
+                            WriteRequest { id, address, data },
+                            byte_enable,
+                        ) => {
+                            let value = ByteEnabledDwordWrite::new(data, byte_enable);
                             let result = self
                                 .device
                                 .supports_pci()
                                 .unwrap()
-                                .pci_cfg_write(address, data);
+                                .pci_cfg_write(address, value);
                             self.handle_write_result(id, result);
                         }
                         DeviceRequest::Save(rpc) => {

@@ -45,6 +45,7 @@ pub enum DeviceCommand {
     ReadConfig {
         offset: u16,
         len: u8,
+        completion: ConfigReadCompletion,
         deferred: DeferredRead,
     },
     /// Config register write at byte offset with raw data.
@@ -56,6 +57,19 @@ pub enum DeviceCommand {
     },
     /// Inspect the device state.
     Inspect(inspect::Deferred),
+}
+
+/// How a deferred config read completion should be sized and positioned.
+#[derive(Copy, Clone, Debug)]
+pub enum ConfigReadCompletion {
+    /// Complete exactly `len` bytes at their natural position — used when the
+    /// caller polls the deferred read with a `len`-sized buffer (direct MMIO).
+    Exact,
+    /// Complete a full 4-byte dword with the accessed `len` bytes left-aligned
+    /// into the low bytes — used by the `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data`
+    /// window, which the PCI config bus polls with a 4-byte dword buffer. Per
+    /// the virtio spec the accessed bytes occupy the first `cap.length` bytes.
+    LeftAlignedDword,
 }
 
 /// Parameters for the Enable command.
@@ -273,6 +287,7 @@ pub async fn run_device_task(
             DeviceCommand::ReadConfig {
                 offset,
                 len,
+                completion,
                 deferred,
             } => {
                 let start_word = offset & !3;
@@ -284,7 +299,15 @@ pub async fn run_device_task(
                     buf[i..i + 4].copy_from_slice(&val.to_ne_bytes());
                 }
                 let byte_off = (offset - start_word) as usize;
-                deferred.complete(&buf[byte_off..byte_off + len as usize]);
+                let data = &buf[byte_off..byte_off + len as usize];
+                match completion {
+                    ConfigReadCompletion::Exact => deferred.complete(data),
+                    ConfigReadCompletion::LeftAlignedDword => {
+                        let mut dword = [0u8; 4];
+                        dword[..len as usize].copy_from_slice(data);
+                        deferred.complete(&dword);
+                    }
+                }
             }
             DeviceCommand::WriteConfig {
                 offset,
@@ -326,11 +349,17 @@ pub async fn run_device_task(
 }
 
 /// Send a config read to the device task, returning a deferred IO token.
-pub fn defer_config_read(sender: &mesh::Sender<DeviceCommand>, offset: u16, len: u8) -> IoResult {
+pub fn defer_config_read(
+    sender: &mesh::Sender<DeviceCommand>,
+    offset: u16,
+    len: u8,
+    completion: ConfigReadCompletion,
+) -> IoResult {
     let (deferred, token) = defer_read();
     sender.send(DeviceCommand::ReadConfig {
         offset,
         len,
+        completion,
         deferred,
     });
     IoResult::Defer(token)

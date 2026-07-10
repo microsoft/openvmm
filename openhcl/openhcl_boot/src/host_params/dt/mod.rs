@@ -1023,7 +1023,7 @@ impl PartitionInfo {
                 // Check the host-provided command line for options for ourself,
                 // and pass it along to the kernel.
                 options.parse(&parsed.command_line);
-                write!(storage.cmdline, " {}", &parsed.command_line)
+                write!(storage.cmdline, " {}", parsed.command_line)
                     .map_err(|_| DtError::CommandLineSize)?;
             }
             CommandLinePolicy::APPEND_CHOSEN if !can_trust_host => {

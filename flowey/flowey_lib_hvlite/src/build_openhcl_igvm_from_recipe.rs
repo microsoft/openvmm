@@ -527,6 +527,9 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        /// Add the confidential debug flag to the measured OpenHCL command
+        /// line, enabling confidential diagnostics on CVM builds.
+        pub confidential_debug: bool,
 
         pub openhcl_igvm: WriteVar<OpenhclIgvmOutput>,
         pub openhcl_igvm_extras: WriteVar<OpenhclIgvmExtrasOutput>,
@@ -562,6 +565,7 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
         } = request;
@@ -909,6 +913,7 @@ impl SimpleFlowNode for Node {
             manifest,
             resources,
             disable_secure_avic,
+            confidential_debug,
             igvm: v,
         });
 

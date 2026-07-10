@@ -43,16 +43,15 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 /// Construct a zero page from the following parameters.
-/// TODO: support different acpi_base other than 0xe0000
-pub fn build_zero_page(
+fn build_zero_page(
     mem_layout: &MemoryLayout,
-    acpi_base: u64,
     acpi_len: usize,
-    cmdline_config: &CommandLineConfig<'_>,
+    smbios_struct_len: usize,
+    cmdline: &CString,
     initrd_base: u32,
     initrd_size: u32,
     bzimage_header: Option<&defs::setup_header>,
-) -> defs::boot_params {
+) -> Result<defs::boot_params, Error> {
     // Loader type 0xff = unregistered bootloader, used for both ELF and
     // bzImage paths since OpenVMM does not have a registered Linux
     // bootloader ID.
@@ -72,8 +71,8 @@ pub fn build_zero_page(
 
     // Set bootloader-owned fields regardless of kernel format.
     hdr.type_of_loader = LOADER_TYPE_UNREGISTERED;
-    hdr.cmd_line_ptr = cmdline_config.address.try_into().expect("must fit in u32");
-    hdr.cmdline_size = (cmdline_config.cmdline.as_bytes().len() as u64)
+    hdr.cmd_line_ptr = CMDLINE_BASE.try_into().expect("must fit in u32");
+    hdr.cmdline_size = (cmdline.as_bytes().len() as u64)
         .try_into()
         .expect("must fit in u32");
     hdr.ramdisk_image = initrd_base.into();
@@ -88,36 +87,69 @@ pub fn build_zero_page(
     let range = ram.next().expect("at least one ram range");
     assert_eq!(range.range.start(), 0);
     assert!(range.range.end() >= 0x100000);
-    // TODO: support better e820 building, for now acpi_base must be 0xe0000
-    assert_eq!(acpi_base, 0xe0000);
-    p.e820_map[0] = defs::e820entry {
-        addr: 0.into(),
-        size: 0xe0000.into(),
-        typ: defs::E820_RAM.into(),
-    };
-    let aligned_acpi_len = (acpi_len + 0xfff) & !0xfff;
-    p.e820_map[1] = defs::e820entry {
-        addr: 0xe0000.into(),
-        size: (aligned_acpi_len as u64).into(),
-        typ: defs::E820_ACPI.into(),
-    };
-    p.e820_map[2] = defs::e820entry {
-        addr: (0xe0000 + aligned_acpi_len as u64).into(),
-        size: (range.range.end() - 0xe0000 - aligned_acpi_len as u64).into(),
-        typ: defs::E820_RAM.into(),
-    };
-    let mut n = 3;
-    for range in ram {
-        p.e820_map[n] = defs::e820entry {
-            addr: range.range.start().into(),
-            size: range.range.len().into(),
-            typ: defs::E820_RAM.into(),
+
+    // x86 low-memory layout for direct boot:
+    //   [0, acpi_base)          RAM       boot metadata: GDT, zero page, cmdline,
+    //                                     identity-map page tables
+    //   [acpi_base, acpi_end)   ACPI      RSDT/XSDT and all ACPI tables
+    //   [acpi_end, smbios_end)  RESERVED  SMBIOS structure table, pointed to by
+    //                                     the _SM3_ anchor in the F-segment
+    //   [smbios_end, 0xe0000)   RAM
+    //   [0xe0000, 0x100000)     RESERVED  legacy BIOS region holding the RSDP at
+    //                                     0xe0000 (found by the kernel's legacy
+    //                                     scan) and the SMBIOS _SM3_ anchor at
+    //                                     0xf0000 (found by the kernel's DMI scan)
+    //   [0x100000, end)         RAM
+    //
+    // The RSDP lives at the fixed 0xe0000 and the tables it points to live in
+    // reclaimable ACPI memory below; the kernel discovers the RSDP via its
+    // legacy scan, so no `acpi_rsdp_addr` (Linux 5.0+) is required. The SMBIOS
+    // structure table sits just above the ACPI tables in its own reserved
+    // region so it can grow well past the 64 KiB F-segment.
+    const ONE_MB: u64 = 0x100000;
+    let acpi_base = ACPI_TABLES_BASE;
+    let aligned_acpi_len = align_up_to_page_size(acpi_len as u64);
+    let acpi_end = acpi_base + aligned_acpi_len;
+    let aligned_smbios_len = align_up_to_page_size(smbios_struct_len as u64);
+    let smbios_end = acpi_end + aligned_smbios_len;
+    if smbios_end > RSDP_BASE {
+        return Err(Error::LowTablesTooLarge(smbios_end, RSDP_BASE));
+    }
+
+    // Emit the e820 entries in ascending address order. Zero-length regions
+    // (e.g. the SMBIOS reserved region when no SMBIOS tables are present) are
+    // skipped, and the fixed-size map is bounds-checked so an over-long memory
+    // layout is reported rather than panicking.
+    let e820_cap = p.e820_map.len();
+    let mut n = 0;
+    let mut push = |addr: u64, size: u64, typ: u32| -> Result<(), Error> {
+        if size == 0 {
+            return Ok(());
+        }
+        let entry = p
+            .e820_map
+            .get_mut(n)
+            .ok_or(Error::TooManyMemoryRanges(e820_cap))?;
+        *entry = defs::e820entry {
+            addr: addr.into(),
+            size: size.into(),
+            typ: typ.into(),
         };
         n += 1;
+        Ok(())
+    };
+    push(0, acpi_base, defs::E820_RAM)?;
+    push(acpi_base, aligned_acpi_len, defs::E820_ACPI)?;
+    push(acpi_end, aligned_smbios_len, defs::E820_RESERVED)?;
+    push(smbios_end, RSDP_BASE - smbios_end, defs::E820_RAM)?;
+    push(RSDP_BASE, ONE_MB - RSDP_BASE, defs::E820_RESERVED)?;
+    push(ONE_MB, range.range.end() - ONE_MB, defs::E820_RAM)?;
+    for range in ram {
+        push(range.range.start(), range.range.len(), defs::E820_RAM)?;
     }
     p.e820_entries = n as u8;
 
-    p
+    Ok(p)
 }
 
 #[derive(Debug, Error)]
@@ -158,35 +190,80 @@ pub enum Error {
     ImportBzImage(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
+    #[error("kernel command line ({0} bytes) exceeds its {1:#x}-byte slot")]
+    CommandLineTooLong(usize, u64),
+    #[error("acpi and smbios tables end at {0:#x}, past the reserved region at {1:#x}")]
+    LowTablesTooLarge(u64, u64),
+    #[error("too many memory ranges to fit in the {0}-entry e820 map")]
+    TooManyMemoryRanges(usize),
+    #[error("acpi tables are empty")]
+    EmptyAcpiTables,
 }
 
-pub struct AcpiConfig<'a> {
-    pub rdsp_address: u64,
-    pub rdsp: &'a [u8],
-    pub tables_address: u64,
-    pub tables: &'a [u8],
+/// ACPI tables to place in guest memory: a one-page RSDP plus the tables it
+/// points to.
+///
+/// Produced by the caller-supplied builder passed to [`load_x86`] /
+/// [`load_config_x86`]. The builder is handed a nominal RSDP address `gpa` and
+/// must return `tables` that are self-consistent for placement at `gpa +
+/// 0x1000`; the loader then re-homes the RSDP to the fixed legacy-scan address.
+pub struct AcpiTables {
+    /// The RSDP. Given a whole page.
+    pub rsdp: Vec<u8>,
+    /// The remaining tables pointed to by the RSDP.
+    pub tables: Vec<u8>,
 }
 
-pub struct ZeroPageConfig<'a> {
-    /// The address to load the zero page at.
-    pub address: u64,
-    /// The memory layout used to build the e820 map.
-    pub mem_layout: &'a MemoryLayout,
-    /// The base address acpi tables are loaded at.
-    pub acpi_base_address: u64,
-    /// The overall size of acpi tables.
-    pub acpi_len: usize,
+// The loader owns the entire sub-1 MB x86 direct-boot memory map so that
+// callers supply only table *contents*, never addresses. The resulting e820
+// map (see `build_zero_page`) is:
+//
+//   [0, ACPI_TABLES_BASE)          RAM       GDT, zero page, cmdline, page tables
+//   [ACPI_TABLES_BASE, acpi_end)   ACPI      RSDT/XSDT and all ACPI tables
+//   [acpi_end, smbios_end)         RESERVED  SMBIOS structure table
+//   [smbios_end, RSDP_BASE)        RAM
+//   [RSDP_BASE, 0x100000)          RESERVED  RSDP (0xe0000) + _SM3_ anchor (0xf0000)
+//   [0x100000, end)                RAM       kernel and beyond
+const GDT_BASE: u64 = 0x1000;
+const ZERO_PAGE_BASE: u64 = 0x2000;
+const CMDLINE_BASE: u64 = 0x3000;
+const CR3_BASE: u64 = 0x4000;
+/// The identity-map page tables occupy `[CR3_BASE, CR3_BASE + PAGE_TABLE_MAX_BYTES)`;
+/// the boot metadata ends there.
+const LOW_METADATA_END: u64 = CR3_BASE + PAGE_TABLE_MAX_BYTES as u64;
+/// The ACPI builder is handed `LOW_METADATA_END` as a nominal RSDP page, so its
+/// tables live one page above.
+const ACPI_TABLES_BASE: u64 = LOW_METADATA_END + 0x1000;
+/// The RSDP is pinned at the fixed 0xe0000 so the kernel's legacy RSDP scan of
+/// `[0xe0000, 0x100000)` finds it, with no dependency on
+/// `boot_params.acpi_rsdp_addr` (Linux 5.0+).
+const RSDP_BASE: u64 = 0xe0000;
+/// The x86 kernel brute-force scans the F-segment `[0xf0000, 0x100000)` for the
+/// SMBIOS `_SM3_` DMI anchor, so the 24-byte entry point is pinned there. Its
+/// 64-bit structure-table pointer lets the (potentially large) structure table
+/// live in the low reserved area instead — see [`smbios_struct_table_base`].
+const SMBIOS_FSEGMENT_BASE: u64 = 0xf0000;
+/// The Linux x86 kernel loads at the conventional 1 MB mark.
+const KERNEL_BASE: u64 = 0x100000;
+
+/// The GPA of the SMBIOS structure table: immediately above the ACPI tables in
+/// the low reserved area. Only the `_SM3_` anchor stays in the F-segment; the
+/// structure table lives here, reachable via the anchor's 64-bit pointer, so it
+/// can grow well past the 64 KiB F-segment.
+fn smbios_struct_table_base(acpi_tables_len: usize) -> u64 {
+    ACPI_TABLES_BASE + align_up_to_page_size(acpi_tables_len as u64)
 }
 
-pub struct CommandLineConfig<'a> {
-    pub address: u64,
-    pub cmdline: &'a CString,
-}
-
-pub struct RegisterConfig {
-    pub gdt_address: u64,
-    pub page_table_address: u64,
-}
+// Compile-time check that the fixed low-memory layout constants are ordered and
+// non-overlapping. A violation here is a code bug, caught at build time.
+const _: () = {
+    assert!(GDT_BASE < ZERO_PAGE_BASE);
+    assert!(ZERO_PAGE_BASE < CMDLINE_BASE);
+    assert!(CMDLINE_BASE < CR3_BASE);
+    assert!(ACPI_TABLES_BASE < RSDP_BASE);
+    assert!(RSDP_BASE < SMBIOS_FSEGMENT_BASE);
+    assert!(SMBIOS_FSEGMENT_BASE < KERNEL_BASE);
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum InitrdAddressType {
@@ -413,32 +490,34 @@ fn load_bzimage(
     })
 }
 
-/// Load the configuration info and registers for the Linux kernel based on the provided LoadInfo.
+/// Import the boot metadata, ACPI/SMBIOS tables, zero page, and initial
+/// registers for a kernel already described by `load_info`.
 ///
-/// # Arguments
-/// * `importer` - The importer to use.
-/// * `load_info` - The kernel load info that contains information on where the kernel and initrd are.
-/// * `command_line` - The kernel command line.
-/// * `zero_page` - The kernel zero page.
-/// * `registers` - X86Register config.
-pub fn load_config(
+/// Internal helper shared by [`load_x86`] and [`load_config_x86`]. All guest
+/// addresses come from the module-level layout constants; callers supply only
+/// the table contents.
+fn import_config(
     importer: &mut impl ImageLoad<X86Register>,
     load_info: &LoadInfo,
-    command_line: CommandLineConfig<'_>,
-    zero_page: ZeroPageConfig<'_>,
-    acpi: AcpiConfig<'_>,
-    registers: RegisterConfig,
+    cmdline: &CString,
+    mem_layout: &MemoryLayout,
+    acpi: &AcpiTables,
+    smbios: Option<&crate::smbios::BuiltSmbios>,
 ) -> Result<(), Error> {
-    tracing::trace!(command_line.address);
     // Only import the cmdline if it actually contains something.
     // TODO: This should use the IGVM parameter instead?
-    let raw_cmdline = command_line.cmdline.as_bytes_with_nul();
+    let raw_cmdline = cmdline.as_bytes_with_nul();
+    if raw_cmdline.len() as u64 > CR3_BASE - CMDLINE_BASE {
+        return Err(Error::CommandLineTooLong(
+            raw_cmdline.len(),
+            CR3_BASE - CMDLINE_BASE,
+        ));
+    }
     if raw_cmdline.len() > 1 {
-        check_address_alignment(command_line.address)?;
         let cmdline_size_pages = align_up_to_page_size(raw_cmdline.len() as u64) / HV_PAGE_SIZE;
         importer
             .import_pages(
-                command_line.address / HV_PAGE_SIZE,
+                CMDLINE_BASE / HV_PAGE_SIZE,
                 cmdline_size_pages,
                 "linux-commandline",
                 BootPageAcceptance::Exclusive,
@@ -447,14 +526,12 @@ pub fn load_config(
             .map_err(Error::Importer)?;
     }
 
-    check_address_alignment(registers.gdt_address)?;
-    import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
-    check_address_alignment(registers.page_table_address)?;
+    import_default_gdt(importer, GDT_BASE / HV_PAGE_SIZE).map_err(Error::Importer)?;
     let mut page_table_work_buffer: Vec<PageTable> =
         vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
     let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
     let page_table_builder = IdentityMapBuilder::new(
-        registers.page_table_address,
+        CR3_BASE,
         IdentityMapSize::Size4Gb,
         page_table_work_buffer.as_mut_slice(),
         page_table.as_mut_slice(),
@@ -463,7 +540,7 @@ pub fn load_config(
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
         .import_pages(
-            registers.page_table_address / HV_PAGE_SIZE,
+            CR3_BASE / HV_PAGE_SIZE,
             page_table.len() as u64 / HV_PAGE_SIZE,
             "linux-pagetables",
             BootPageAcceptance::Exclusive,
@@ -471,42 +548,41 @@ pub fn load_config(
         )
         .map_err(Error::Importer)?;
 
-    // NOTE: A whole page is given to the RDSP for simplicity.
-    check_address_alignment(acpi.rdsp_address)?;
-    check_address_alignment(acpi.tables_address)?;
+    if acpi.tables.is_empty() {
+        return Err(Error::EmptyAcpiTables);
+    }
     let acpi_tables_size_pages = align_up_to_page_size(acpi.tables.len() as u64) / HV_PAGE_SIZE;
     importer
         .import_pages(
-            acpi.rdsp_address / HV_PAGE_SIZE,
+            RSDP_BASE / HV_PAGE_SIZE,
             1,
-            "linux-rdsp",
+            "linux-rsdp",
             BootPageAcceptance::Exclusive,
-            acpi.rdsp,
+            &acpi.rsdp,
         )
         .map_err(Error::Importer)?;
     importer
         .import_pages(
-            acpi.tables_address / HV_PAGE_SIZE,
+            ACPI_TABLES_BASE / HV_PAGE_SIZE,
             acpi_tables_size_pages,
             "linux-acpi-tables",
             BootPageAcceptance::Exclusive,
-            acpi.tables,
+            &acpi.tables,
         )
         .map_err(Error::Importer)?;
 
-    check_address_alignment(zero_page.address)?;
     let boot_params = build_zero_page(
-        zero_page.mem_layout,
-        zero_page.acpi_base_address,
-        zero_page.acpi_len,
-        &command_line,
+        mem_layout,
+        acpi.tables.len(),
+        smbios.map_or(0, |s| s.structure_table.len()),
+        cmdline,
         load_info.initrd.as_ref().map(|info| info.gpa).unwrap_or(0) as u32,
         load_info.initrd.as_ref().map(|info| info.size).unwrap_or(0) as u32,
         load_info.bzimage_setup_header.as_ref(),
-    );
+    )?;
     importer
         .import_pages(
-            zero_page.address / HV_PAGE_SIZE,
+            ZERO_PAGE_BASE / HV_PAGE_SIZE,
             1,
             "linux-zeropage",
             BootPageAcceptance::Exclusive,
@@ -522,7 +598,7 @@ pub fn load_config(
     };
 
     import_reg(X86Register::Cr0(x86defs::X64_CR0_PG | x86defs::X64_CR0_PE))?;
-    import_reg(X86Register::Cr3(registers.page_table_address))?;
+    import_reg(X86Register::Cr3(CR3_BASE))?;
     import_reg(X86Register::Cr4(x86defs::X64_CR4_PAE))?;
     import_reg(X86Register::Efer(
         x86defs::X64_EFER_SCE
@@ -534,7 +610,7 @@ pub fn load_config(
 
     // Set rip to entry point and rsi to zero page.
     import_reg(X86Register::Rip(load_info.kernel.entrypoint))?;
-    import_reg(X86Register::Rsi(zero_page.address))?;
+    import_reg(X86Register::Rsi(ZERO_PAGE_BASE))?;
 
     // No firmware will set MTRR values for the BSP.  Replicate what UEFI does here.
     // (enable MTRRs, default MTRR is uncached, and set lowest 640KB as WB)
@@ -542,52 +618,104 @@ pub fn load_config(
     import_reg(X86Register::MtrrFix64k00000(0x0606060606060606))?;
     import_reg(X86Register::MtrrFix16k80000(0x0606060606060606))?;
 
+    if let Some(smbios) = smbios {
+        // The `_SM3_` entry point (anchor) goes in the F-segment for the
+        // kernel's DMI scan; its 64-bit pointer targets the structure table in
+        // the low reserved area just above the ACPI tables.
+        let anchor_pages = align_up_to_page_size(smbios.entry_point.len() as u64) / HV_PAGE_SIZE;
+        importer
+            .import_pages(
+                SMBIOS_FSEGMENT_BASE / HV_PAGE_SIZE,
+                anchor_pages,
+                "linux-smbios-anchor",
+                BootPageAcceptance::Exclusive,
+                &smbios.entry_point,
+            )
+            .map_err(Error::Importer)?;
+
+        let table_base = smbios_struct_table_base(acpi.tables.len());
+        let table_pages = align_up_to_page_size(smbios.structure_table.len() as u64) / HV_PAGE_SIZE;
+        importer
+            .import_pages(
+                table_base / HV_PAGE_SIZE,
+                table_pages,
+                "linux-smbios-tables",
+                BootPageAcceptance::Exclusive,
+                &smbios.structure_table,
+            )
+            .map_err(Error::Importer)?;
+    }
+
     Ok(())
 }
 
-/// Load a Linux kernel into VTL0.
+/// Place the ACPI tables, SMBIOS tables, boot metadata, zero page, and initial
+/// registers for a Linux kernel that has *already* been loaded into guest
+/// memory (as described by `load_info`).
 ///
-/// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
-/// compressed bzImage. If a bzImage is detected, its protected-mode code
-/// is loaded directly into guest memory and the kernel's built-in
-/// decompressor handles the rest at boot time.
+/// The loader owns the entire sub-1 MB memory map; callers supply only
+/// contents, never addresses:
 ///
-/// # Arguments
+/// * `cmdline` - the kernel command line.
+/// * `mem_layout` - the guest memory layout, used to build the e820 map.
+/// * `build_acpi` - a builder handed the nominal RSDP address; it must return
+///   ACPI tables self-consistent for placement one page above that address.
+///   The loader re-homes the RSDP to the fixed 0xe0000 legacy-scan location.
+/// * `smbios` - an optional SMBIOS identity; when present the loader assembles
+///   the `_SM3_` entry point and structure table into the F-segment.
+pub fn load_config_x86(
+    importer: &mut impl ImageLoad<X86Register>,
+    load_info: &LoadInfo,
+    cmdline: &CString,
+    mem_layout: &MemoryLayout,
+    build_acpi: impl FnOnce(u64) -> AcpiTables,
+    smbios: Option<crate::smbios::SmbiosTables<'_>>,
+) -> Result<(), Error> {
+    // The builder lays out a nominal RSDP page at LOW_METADATA_END followed by
+    // the tables it points to; we keep only the tables (placed at
+    // ACPI_TABLES_BASE) and re-home the RSDP to the fixed scan location.
+    let acpi_tables = build_acpi(LOW_METADATA_END);
+
+    // Build the SMBIOS tables (if an identity was supplied) with the structure
+    // table addressed at its low-area home: the `_SM3_` anchor's 64-bit pointer
+    // references it there while the anchor itself lands in the F-segment for the
+    // kernel's DMI scan. See `smbios_struct_table_base` / `import_config`.
+    let smbios = smbios.map(|tables| {
+        crate::smbios::build(&tables, smbios_struct_table_base(acpi_tables.tables.len()))
+    });
+
+    import_config(
+        importer,
+        load_info,
+        cmdline,
+        mem_layout,
+        &acpi_tables,
+        smbios.as_ref(),
+    )
+}
+
+/// Load a Linux kernel into VTL0 and place all of its supporting structures.
 ///
-/// * `importer` - The importer to use.
-/// * `kernel_image` - Kernel image (uncompressed ELF or bzImage).
-/// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///   It cannot contain an entrypoint or program headers that refer to memory below this address.
-/// * `initrd` - The initrd config, optional.
-/// * `command_line` - The kernel command line.
-/// * `zero_page` - The kernel zero page.
-/// * `acpi` - The acpi config.
-/// * `registers` - X86Register config.
+/// Loads the kernel (uncompressed ELF or bzImage) and optional initrd at the
+/// conventional 1 MB address, then delegates to [`load_config_x86`] to place
+/// the ACPI/SMBIOS tables, boot metadata, zero page, and initial registers.
+/// See [`load_config_x86`] for the `build_acpi`/`smbios` contract.
 pub fn load_x86<F>(
     importer: &mut impl ImageLoad<X86Register>,
     kernel_image: &mut F,
-    kernel_minimum_start_address: u64,
     initrd: Option<InitrdConfig<'_>>,
-    command_line: CommandLineConfig<'_>,
-    zero_page: ZeroPageConfig<'_>,
-    acpi: AcpiConfig<'_>,
-    registers: RegisterConfig,
+    cmdline: &CString,
+    mem_layout: &MemoryLayout,
+    build_acpi: impl FnOnce(u64) -> AcpiTables,
+    smbios: Option<crate::smbios::SmbiosTables<'_>>,
 ) -> Result<LoadInfo, Error>
 where
     F: Read + Seek,
 {
-    let load_info =
-        load_kernel_and_initrd_x64(importer, kernel_image, kernel_minimum_start_address, initrd)?;
-
-    load_config(
-        importer,
-        &load_info,
-        command_line,
-        zero_page,
-        acpi,
-        registers,
+    let load_info = load_kernel_and_initrd_x64(importer, kernel_image, KERNEL_BASE, initrd)?;
+    load_config_x86(
+        importer, &load_info, cmdline, mem_layout, build_acpi, smbios,
     )?;
-
     Ok(load_info)
 }
 
@@ -865,4 +993,377 @@ pub fn set_direct_boot_registers_arm64(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::importer::IgvmParameterType;
+    use crate::importer::IsolationConfig;
+    use crate::importer::ParameterAreaIndex;
+    use crate::importer::StartupMemoryType;
+    use memory_range::MemoryRange;
+
+    const MB: u64 = 0x100000;
+    const GB: u64 = 0x4000_0000;
+
+    /// A guest memory layout with `ram_size` bytes of RAM and a 128 MB MMIO gap
+    /// below 4 GiB (matching a typical x86_64 config). RAM up to the gap forms
+    /// the first range `[0, min(ram_size, 4 GiB - 128 MB))`.
+    fn make_layout(ram_size: u64) -> MemoryLayout {
+        MemoryLayout::new(
+            ram_size,
+            &[MemoryRange::new(4 * GB - 128 * MB..4 * GB)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Asserts that `map[..entries]` exactly covers `[0, first_ram_end)` with no
+    /// gaps or overlaps and strictly ascending addresses, and that no entry is
+    /// empty. The first entry must start at 0 and the last must end precisely at
+    /// `first_ram_end`.
+    fn assert_contiguous(p: &defs::boot_params, first_ram_end: u64) {
+        let entries = p.e820_entries as usize;
+        assert!(entries > 0);
+        let mut expected_addr = 0u64;
+        for i in 0..entries {
+            let e = &p.e820_map[i];
+            assert_ne!(u64::from(e.size), 0, "entry {i} is empty");
+            assert_eq!(u64::from(e.addr), expected_addr, "gap/overlap at entry {i}");
+            expected_addr = u64::from(e.addr) + u64::from(e.size);
+        }
+        assert_eq!(
+            expected_addr, first_ram_end,
+            "map ends at {expected_addr:#x}, expected {first_ram_end:#x}"
+        );
+    }
+
+    #[test]
+    fn zero_page_layout_with_smbios() {
+        let acpi_len = 0x1800; // aligns up to 0x2000
+        let smbios_len = 0x100; // aligns up to 0x1000
+        let p = build_zero_page(
+            &make_layout(256 * MB),
+            acpi_len,
+            smbios_len,
+            &CString::new("root=/dev/sda").unwrap(),
+            0,
+            0,
+            None,
+        )
+        .unwrap();
+
+        let acpi_end = ACPI_TABLES_BASE + 0x2000;
+        let smbios_end = acpi_end + 0x1000;
+        let expected = [
+            (0, ACPI_TABLES_BASE, defs::E820_RAM),
+            (ACPI_TABLES_BASE, 0x2000, defs::E820_ACPI),
+            (acpi_end, 0x1000, defs::E820_RESERVED),
+            (smbios_end, RSDP_BASE - smbios_end, defs::E820_RAM),
+            (RSDP_BASE, 0x100000 - RSDP_BASE, defs::E820_RESERVED),
+            (0x100000, 256 * MB - 0x100000, defs::E820_RAM),
+        ];
+        assert_eq!(p.e820_entries as usize, expected.len());
+        for (i, (addr, size, typ)) in expected.iter().enumerate() {
+            let e = &p.e820_map[i];
+            assert_eq!(u64::from(e.addr), *addr, "entry {i} addr");
+            assert_eq!(u64::from(e.size), *size, "entry {i} size");
+            assert_eq!(u32::from(e.typ), *typ, "entry {i} type");
+        }
+        assert_contiguous(&p, 256 * MB);
+    }
+
+    #[test]
+    fn zero_page_skips_empty_smbios_region() {
+        // With no SMBIOS structure table, the reserved SMBIOS region collapses
+        // to zero length and must not appear as an empty e820 entry.
+        let p = build_zero_page(
+            &make_layout(256 * MB),
+            0x1800,
+            0,
+            &CString::new("").unwrap(),
+            0,
+            0,
+            None,
+        )
+        .unwrap();
+
+        let acpi_end = ACPI_TABLES_BASE + 0x2000;
+        let expected = [
+            (0, ACPI_TABLES_BASE, defs::E820_RAM),
+            (ACPI_TABLES_BASE, 0x2000, defs::E820_ACPI),
+            (acpi_end, RSDP_BASE - acpi_end, defs::E820_RAM),
+            (RSDP_BASE, 0x100000 - RSDP_BASE, defs::E820_RESERVED),
+            (0x100000, 256 * MB - 0x100000, defs::E820_RAM),
+        ];
+        assert_eq!(p.e820_entries as usize, expected.len());
+        for (i, (addr, size, typ)) in expected.iter().enumerate() {
+            let e = &p.e820_map[i];
+            assert_eq!(u64::from(e.addr), *addr, "entry {i} addr");
+            assert_eq!(u64::from(e.size), *size, "entry {i} size");
+            assert_eq!(u32::from(e.typ), *typ, "entry {i} type");
+        }
+        assert_contiguous(&p, 256 * MB);
+    }
+
+    #[test]
+    fn zero_page_multiple_ram_ranges() {
+        // 8 GiB of RAM splits around the 4 GiB MMIO gap into two ranges; the
+        // second appears after the six fixed low-memory entries.
+        let p = build_zero_page(
+            &make_layout(8 * GB),
+            0x1000,
+            0x1000,
+            &CString::new("").unwrap(),
+            0,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(p.e820_entries, 7);
+        let last = &p.e820_map[6];
+        assert_eq!(u64::from(last.addr), 4 * GB);
+        assert_eq!(u32::from(last.typ), defs::E820_RAM);
+        // The six fixed low-memory entries are contiguous from 0; the second
+        // RAM range sits above the 4 GiB MMIO gap, so contiguity legitimately
+        // breaks there.
+        let below_gap = &p.e820_map[5];
+        assert_eq!(
+            u64::from(below_gap.addr) + u64::from(below_gap.size),
+            4 * GB - 128 * MB
+        );
+    }
+
+    #[test]
+    fn zero_page_tables_too_large() {
+        // ACPI tables large enough to run past the RSDP reserved region.
+        let result = build_zero_page(
+            &make_layout(256 * MB),
+            (RSDP_BASE - ACPI_TABLES_BASE) as usize + 0x1000,
+            0,
+            &CString::new("").unwrap(),
+            0,
+            0,
+            None,
+        );
+        match result {
+            Err(Error::LowTablesTooLarge(..)) => {}
+            other => panic!("expected LowTablesTooLarge, got {:?}", other.err()),
+        }
+    }
+
+    /// An importer that records `import_pages` placements and accepts registers,
+    /// panicking on any other entry point (none of which the Linux config path
+    /// exercises).
+    #[derive(Default)]
+    struct RecordingImporter {
+        /// `(debug_tag, page_base, page_count)` for each imported region.
+        pages: Vec<(String, u64, u64)>,
+    }
+
+    impl RecordingImporter {
+        fn page_base(&self, tag: &str) -> Option<u64> {
+            self.pages
+                .iter()
+                .find(|(t, ..)| t == tag)
+                .map(|(_, base, _)| *base)
+        }
+    }
+
+    impl ImageLoad<X86Register> for RecordingImporter {
+        fn isolation_config(&self) -> IsolationConfig {
+            unimplemented!()
+        }
+        fn create_parameter_area(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!()
+        }
+        fn create_parameter_area_with_data(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+            _initial_data: &[u8],
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!()
+        }
+        fn import_parameter(
+            &mut self,
+            _parameter_area: ParameterAreaIndex,
+            _byte_offset: u32,
+            _parameter_type: IgvmParameterType,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn import_pages(
+            &mut self,
+            page_base: u64,
+            page_count: u64,
+            debug_tag: &str,
+            _acceptance: BootPageAcceptance,
+            _data: &[u8],
+        ) -> anyhow::Result<()> {
+            self.pages
+                .push((debug_tag.to_string(), page_base, page_count));
+            Ok(())
+        }
+        fn import_vp_register(&mut self, _register: X86Register) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn verify_startup_memory_available(
+            &mut self,
+            _page_base: u64,
+            _page_count: u64,
+            _memory_type: StartupMemoryType,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn relocation_region(
+            &mut self,
+            _gpa: u64,
+            _size_bytes: u64,
+            _relocation_alignment: u64,
+            _minimum_relocation_gpa: u64,
+            _maximum_relocation_gpa: u64,
+            _apply_rip_offset: bool,
+            _apply_gdtr_offset: bool,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn page_table_relocation(
+            &mut self,
+            _page_table_gpa: u64,
+            _size_pages: u64,
+            _used_pages: u64,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn set_imported_regions_config_page(&mut self, _page_base: u64) {
+            unimplemented!()
+        }
+    }
+
+    fn test_load_info() -> LoadInfo {
+        LoadInfo {
+            kernel: KernelInfo {
+                gpa: KERNEL_BASE,
+                size: 0x1000,
+                entrypoint: KERNEL_BASE,
+            },
+            initrd: None,
+            dtb: None,
+            bzimage_setup_header: None,
+        }
+    }
+
+    #[test]
+    fn import_config_places_tables_at_fixed_addresses() {
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: vec![0u8; 0x1800],
+        };
+        let smbios = crate::smbios::BuiltSmbios {
+            entry_point: vec![0u8; crate::smbios::ENTRY_POINT_SIZE],
+            structure_table: vec![0u8; 0x100],
+        };
+        let mut importer = RecordingImporter::default();
+        import_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("console=ttyS0").unwrap(),
+            &make_layout(256 * MB),
+            &acpi,
+            Some(&smbios),
+        )
+        .unwrap();
+
+        // The RSDP is re-homed to the fixed legacy-scan address, while the
+        // tables it points to stay at the loader's chosen base.
+        assert_eq!(
+            importer.page_base("linux-rsdp"),
+            Some(RSDP_BASE / HV_PAGE_SIZE)
+        );
+        assert_eq!(
+            importer.page_base("linux-acpi-tables"),
+            Some(ACPI_TABLES_BASE / HV_PAGE_SIZE)
+        );
+        // The SMBIOS anchor lands in the F-segment; the structure table sits
+        // just above the ACPI tables.
+        assert_eq!(
+            importer.page_base("linux-smbios-anchor"),
+            Some(SMBIOS_FSEGMENT_BASE / HV_PAGE_SIZE)
+        );
+        assert_eq!(
+            importer.page_base("linux-smbios-tables"),
+            Some(smbios_struct_table_base(acpi.tables.len()) / HV_PAGE_SIZE)
+        );
+        // Boot metadata at its fixed low-memory homes.
+        assert_eq!(
+            importer.page_base("linux-zeropage"),
+            Some(ZERO_PAGE_BASE / HV_PAGE_SIZE)
+        );
+        assert_eq!(
+            importer.page_base("linux-commandline"),
+            Some(CMDLINE_BASE / HV_PAGE_SIZE)
+        );
+        assert_eq!(
+            importer.page_base("linux-pagetables"),
+            Some(CR3_BASE / HV_PAGE_SIZE)
+        );
+    }
+
+    #[test]
+    fn import_config_rejects_oversized_command_line() {
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: vec![0u8; 0x1000],
+        };
+        // One byte too long once the NUL terminator is added.
+        let cmdline = CString::new(vec![b'a'; (CR3_BASE - CMDLINE_BASE) as usize]).unwrap();
+        let mut importer = RecordingImporter::default();
+        let err = import_config(
+            &mut importer,
+            &test_load_info(),
+            &cmdline,
+            &make_layout(256 * MB),
+            &acpi,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CommandLineTooLong(..)), "got {err:?}");
+        assert!(importer.pages.is_empty(), "importer used before the check");
+    }
+
+    #[test]
+    fn import_config_rejects_empty_acpi_tables() {
+        // Empty tables would import zero pages; the loader must reject them
+        // rather than feed page_count == 0 into the importer.
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: Vec::new(),
+        };
+        let mut importer = RecordingImporter::default();
+        let err = import_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &acpi,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EmptyAcpiTables), "got {err:?}");
+    }
 }

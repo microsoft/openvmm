@@ -102,6 +102,10 @@ impl TryFrom<FlowArch> for CommonArch {
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum CommonPlatform {
     WindowsMsvc,
+    /// Windows via the GNU (mingw-w64) toolchain. Used to cross-compile
+    /// Windows *guest* payloads (e.g. pipette) from a non-WSL Linux host,
+    /// where the MSVC toolchain / Windows SDK is unavailable.
+    WindowsGnu,
     LinuxGnu,
     LinuxMusl,
     MacOs,
@@ -134,6 +138,10 @@ impl CommonTriple {
         arch: CommonArch::X86_64,
         platform: CommonPlatform::WindowsMsvc,
     };
+    pub const X86_64_WINDOWS_GNU: Self = Self::Common {
+        arch: CommonArch::X86_64,
+        platform: CommonPlatform::WindowsGnu,
+    };
     pub const X86_64_LINUX_GNU: Self = Self::Common {
         arch: CommonArch::X86_64,
         platform: CommonPlatform::LinuxGnu,
@@ -145,6 +153,10 @@ impl CommonTriple {
     pub const AARCH64_WINDOWS_MSVC: Self = Self::Common {
         arch: CommonArch::Aarch64,
         platform: CommonPlatform::WindowsMsvc,
+    };
+    pub const AARCH64_WINDOWS_GNU: Self = Self::Common {
+        arch: CommonArch::Aarch64,
+        platform: CommonPlatform::WindowsGnu,
     };
     pub const AARCH64_LINUX_GNU: Self = Self::Common {
         arch: CommonArch::Aarch64,
@@ -191,6 +203,13 @@ impl CommonTriple {
                     vendor: target_lexicon::Vendor::Pc,
                     operating_system: target_lexicon::OperatingSystem::Windows,
                     environment: target_lexicon::Environment::Msvc,
+                    binary_format: target_lexicon::BinaryFormat::Coff,
+                },
+                CommonPlatform::WindowsGnu => target_lexicon::Triple {
+                    architecture: arch.as_arch(),
+                    vendor: target_lexicon::Vendor::Pc,
+                    operating_system: target_lexicon::OperatingSystem::Windows,
+                    environment: target_lexicon::Environment::Gnu,
                     binary_format: target_lexicon::BinaryFormat::Coff,
                 },
                 CommonPlatform::LinuxGnu => target_lexicon::Triple {

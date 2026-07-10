@@ -58,11 +58,13 @@ macro_rules! ensure_single_backend {
 pub mod aes_256_cbc;
 pub mod aes_256_gcm;
 pub mod aes_kwp;
+pub mod ecdsa;
 pub mod hmac_sha_256;
 pub mod kbkdf;
 pub mod pkcs7;
 pub mod rsa;
 pub mod sha_256;
+pub mod sha_384;
 pub mod x509;
 pub mod xts_aes_256;
 

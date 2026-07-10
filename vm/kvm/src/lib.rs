@@ -114,6 +114,10 @@ mod ioctl {
     ioctl_read!(kvm_arm_preferred_target, KVMIO, 0xaf, kvm_vcpu_init);
     ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, kvm_ioeventfd);
     ioctl_write_ptr!(kvm_set_guest_debug, KVMIO, 0x9b, kvm_guest_debug);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_x86_setup_mce, KVMIO, 0x9c, u64);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_read!(kvm_x86_get_mce_cap_supported, KVMIO, 0x9d, u64);
     ioctl_write_ptr!(
         kvm_set_memory_attributes,
         KVMIO,
@@ -324,6 +328,10 @@ pub enum Error {
     GetMsrs(#[source] nix::Error),
     #[error("SetMsrs")]
     SetMsrs(#[source] nix::Error),
+    #[error("SetupMce")]
+    SetupMce(#[source] nix::Error),
+    #[error("GetMceCapSupported")]
+    GetMceCapSupported(#[source] nix::Error),
     #[error("GetMpState")]
     GetMpState(#[source] nix::Error),
     #[error("SetMpState")]
@@ -413,6 +421,20 @@ impl Kvm {
         }
 
         Ok(supported_cpuid.entries[..supported_cpuid.cpuid.nent as usize].to_vec())
+    }
+
+    /// Returns the set of `IA32_MCG_CAP` capability bits that KVM supports
+    /// setting via [`Processor::setup_mce`] on this host (e.g. `MCG_CMCI_P`,
+    /// `MCG_LMCE_P` on Intel).
+    #[cfg(target_arch = "x86_64")]
+    pub fn supported_mce_cap(&self) -> Result<u64> {
+        let mut cap: u64 = 0;
+        // SAFETY: passing a valid pointer to a u64 for the ioctl to fill in.
+        unsafe {
+            ioctl::kvm_x86_get_mce_cap_supported(self.as_fd().as_raw_fd(), &mut cap)
+                .map_err(Error::GetMceCapSupported)?;
+        }
+        Ok(cap)
     }
 
     /// Returns the Hyper-V CPUID values that KVM supports for guest
@@ -1407,6 +1429,22 @@ impl<'a> Processor<'a> {
         unsafe {
             ioctl::kvm_set_msrs(self.get().vcpu.as_raw_fd(), &input.header)
                 .map_err(Error::SetMsrs)?;
+        }
+        Ok(())
+    }
+
+    /// Configures the vCPU's machine-check capability register
+    /// (`IA32_MCG_CAP`) via `KVM_X86_SETUP_MCE`.
+    ///
+    /// `mcg_cap` should only contain capability bits reported as supported by
+    /// [`Kvm::supported_mce_cap`] (plus the bank count in the low byte);
+    /// otherwise KVM returns `EINVAL`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn setup_mce(&self, mcg_cap: u64) -> Result<()> {
+        // SAFETY: passing a valid pointer to a u64 for the ioctl to read.
+        unsafe {
+            ioctl::kvm_x86_setup_mce(self.get().vcpu.as_raw_fd(), &mcg_cap)
+                .map_err(Error::SetupMce)?;
         }
         Ok(())
     }

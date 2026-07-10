@@ -117,11 +117,16 @@ pub mod hwid {
             NONE = 0x00,
 
             // Mass Storage Controller (Class code: 0x01)
+            MASS_STORAGE_CONTROLLER_SCSI = 0x00,
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY = 0x08,
 
             // Network Controller (Class code: 0x02)
             // Other values: 0x01 - 0x08, 0x80
             NETWORK_CONTROLLER_ETHERNET = 0x00,
+
+            // Simple Communication Controller (Class code: 0x07)
+            // Other values: 0x00 - 0x07
+            SIMPLE_COMMUNICATION_CONTROLLER_OTHER = 0x80,
 
             // Bridge (Class code: 0x06)
             // Other values: 0x02 - 0x0A

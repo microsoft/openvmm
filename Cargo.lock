@@ -326,9 +326,9 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitfield-struct"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be5a46ba01b60005ae2c51a36a29cfe134bcacae2dd5cedcd4615fbaad1494b"
+checksum = "d3ca019570363e800b05ad4fd890734f28ac7b72f563ad8a35079efb793616f8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -337,9 +337,9 @@ dependencies = [
 
 [[package]]
 name = "bitfield-struct"
-version = "0.11.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3ca019570363e800b05ad4fd890734f28ac7b72f563ad8a35079efb793616f8"
+checksum = "8769c4854c5ada2852ddf6fd09d15cf43d4c2aaeccb4de6432f5402f08a6003b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -624,7 +624,6 @@ dependencies = [
  "parking_lot",
  "range_map_vec",
  "tracing",
- "zerocopy",
 ]
 
 [[package]]
@@ -824,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "cmov"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cms"
@@ -3684,7 +3683,6 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
- "scsidisk_resources",
  "vm_resource",
 ]
 
@@ -3707,10 +3705,9 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67578b05ebcdfa1aa0fe13f77a13bdd7d87036128898a327f1bf8e7356cf09cd"
+source = "git+https://github.com/microsoft/igvm?rev=3d1a950116d624746bf3342e09ea0a3416d89dd3#3d1a950116d624746bf3342e09ea0a3416d89dd3"
 dependencies = [
- "bitfield-struct 0.10.1",
+ "bitfield-struct 0.12.1",
  "crc32fast",
  "hex",
  "igvm_defs",
@@ -3725,10 +3722,9 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eedd8c64460676101062f9f2ecdeb52d8f43e622da6a6c5bf5158f4ef08b0906"
+source = "git+https://github.com/microsoft/igvm?rev=3d1a950116d624746bf3342e09ea0a3416d89dd3#3d1a950116d624746bf3342e09ea0a3416d89dd3"
 dependencies = [
- "bitfield-struct 0.10.1",
+ "bitfield-struct 0.12.1",
  "open-enum",
  "static_assertions",
  "zerocopy",
@@ -3739,7 +3735,9 @@ name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
+ "crypto",
  "fs-err",
  "hex",
  "hvdef",
@@ -3752,10 +3750,10 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
  "vbs_defs",
  "x86defs",
  "zerocopy",
@@ -4214,6 +4212,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "static_assertions",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -5602,7 +5601,6 @@ dependencies = [
  "smmu",
  "sparse_mmap",
  "state_unit",
- "storvsp",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5725,6 +5723,7 @@ dependencies = [
  "storvsp_resources",
  "tempfile",
  "term",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
  "tracelimit",
@@ -7313,8 +7312,11 @@ dependencies = [
  "inspect_counters",
  "mesh",
  "open_enum",
+ "pal_async",
+ "parking_lot",
  "serial_16550_resources",
  "serial_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7339,6 +7341,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "test_with_tracing",
  "vm_resource",
 ]
 
@@ -7382,8 +7385,10 @@ dependencies = [
  "mesh",
  "open_enum",
  "pal_async",
+ "parking_lot",
  "serial_core",
  "serial_pl011_resources",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7573,6 +7578,7 @@ dependencies = [
  "minimal_rt_build",
  "tmk_core",
  "tmk_macros",
+ "tmk_protocol",
  "x86defs",
 ]
 
@@ -8172,6 +8178,7 @@ dependencies = [
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "zerocopy",
 ]
 
@@ -8754,7 +8761,6 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
- "gdma_defs",
  "get_helpers",
  "get_protocol",
  "getrandom 0.4.2",
@@ -8803,6 +8809,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",
@@ -9857,6 +9864,7 @@ dependencies = [
  "serial_core",
  "serial_debugcon_resources",
  "serial_pl011_resources",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
  "vmm_core_defs",

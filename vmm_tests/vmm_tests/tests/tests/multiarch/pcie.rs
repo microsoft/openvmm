@@ -1060,12 +1060,28 @@ async fn virtio_net_windows(
         "virtio-net NIC did not get a DHCP address (expected 10.0.0.2)"
     );
 
-    // Verify we can ping the gateway
-    let ping_output = cmd!(sh, "ping -n 1 10.0.0.1").read().await?;
-    tracing::info!(%ping_output, "ping output");
+    // Verify we can ping the gateway. The first ping immediately after the NIC
+    // gets its DHCP lease can time out while the guest network stack finishes
+    // coming up (e.g. resolving the gateway's ARP entry), so retry until we get
+    // a reply. `ping` exits non-zero when a request times out, so ignore the
+    // status and inspect the output instead of failing the command outright.
+    let mut pinged = false;
+    for attempt in 0..5 {
+        let ping_output = cmd!(sh, "ping -n 1 10.0.0.1")
+            .ignore_status()
+            .read()
+            .await?;
+        if ping_output.contains("Reply from 10.0.0.1") {
+            tracing::info!(attempt, %ping_output, "ping output");
+            pinged = true;
+            break;
+        }
+        tracing::debug!(attempt, %ping_output, "waiting for gateway to respond to ping...");
+        timer.sleep(Duration::from_secs(2)).await;
+    }
     assert!(
-        ping_output.contains("Reply from 10.0.0.1"),
-        "ping to consomme gateway failed: {ping_output}"
+        pinged,
+        "ping to consomme gateway failed (no reply from 10.0.0.1)"
     );
 
     agent.power_off().await?;
