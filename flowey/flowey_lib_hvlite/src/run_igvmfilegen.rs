@@ -27,6 +27,10 @@ flowey_request! {
         pub resources: ReadVar<BTreeMap<ResourceType, PathBuf>>,
         /// Whether to patch the manifest to set secure_avic to disabled
         pub disable_secure_avic: bool,
+        /// Whether to add the confidential debug flag to the measured OpenHCL
+        /// command line, enabling confidential diagnostics on CVM builds even
+        /// in release builds.
+        pub confidential_debug: bool,
         /// Output path of generated igvm file
         pub igvm: WriteVar<IgvmOutput>,
     }
@@ -45,6 +49,7 @@ impl SimpleFlowNode for Node {
             manifest,
             resources,
             disable_secure_avic,
+            confidential_debug,
             igvm,
         } = request;
 
@@ -79,6 +84,10 @@ impl SimpleFlowNode for Node {
 
                 if disable_secure_avic {
                     cmd = cmd.arg("--disable-secure-avic");
+                }
+
+                if confidential_debug {
+                    cmd = cmd.arg("--confidential-debug");
                 }
 
                 cmd.run()?;

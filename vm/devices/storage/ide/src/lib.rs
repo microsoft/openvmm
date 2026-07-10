@@ -44,6 +44,8 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
@@ -967,8 +969,8 @@ impl PortIoIntercept for IdeDevice {
 }
 
 impl PciConfigSpace for IdeDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = if offset < HEADER_TYPE_00_SIZE {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(if offset < HEADER_TYPE_00_SIZE {
             match HeaderType00(offset) {
                 HeaderType00::DEVICE_VENDOR => protocol::BX_PCI_ISA_BRIDGE_IDE_IDREG_VALUE,
                 HeaderType00::STATUS_COMMAND => self.bus_master_state.cmd_status_reg,
@@ -997,16 +999,16 @@ impl PciConfigSpace for IdeDevice {
                     return IoResult::Err(IoError::InvalidRegister);
                 }
             }
-        };
+        });
 
-        tracing::trace!(?offset, value, "ide pci config space read");
+        tracing::trace!(?offset, ?value, "ide pci config space read");
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         if offset < HEADER_TYPE_00_SIZE {
             let offset = HeaderType00(offset);
-            tracing::trace!(?offset, value, "ide pci config space write");
+            tracing::trace!(?offset, ?value, "ide pci config space write");
 
             const BUS_MASTER_IO_ENABLE_MASK: u32 = Command::new()
                 .with_pio_enabled(true)
@@ -1016,6 +1018,7 @@ impl PciConfigSpace for IdeDevice {
             match offset {
                 HeaderType00::STATUS_COMMAND => {
                     // Several bits are used to reset status bits when written as 1s.
+                    let value = value.merge(self.bus_master_state.cmd_status_reg);
                     self.bus_master_state.cmd_status_reg &= !(0x38000000 & value);
                     // Only allow writes to two bits (0 and 2). All other bits are read-only.
                     self.bus_master_state.cmd_status_reg &= !BUS_MASTER_IO_ENABLE_MASK;
@@ -1042,6 +1045,7 @@ impl PciConfigSpace for IdeDevice {
                 }
                 HeaderType00::BAR4 => {
                     // Only allow writes to bits 4 to 15
+                    let value = value.merge(self.bus_master_state.port_addr_reg);
                     self.bus_master_state.port_addr_reg =
                         (value & 0x0000FFF0) | DEFAULT_BUS_MASTER_PORT_ADDR_REG;
                 }
@@ -1049,14 +1053,18 @@ impl PciConfigSpace for IdeDevice {
             }
         } else {
             let offset = IdeConfigSpace(offset);
-            tracing::trace!(?offset, value, "ide pci config space write");
+            tracing::trace!(?offset, ?value, "ide pci config space write");
 
             match offset {
-                IdeConfigSpace::PRIMARY_TIMING_REG_ADDR => self.bus_master_state.timing_reg = value,
-                IdeConfigSpace::SECONDARY_TIMING_REG_ADDR => {
-                    self.bus_master_state.secondary_timing_reg = value
+                IdeConfigSpace::PRIMARY_TIMING_REG_ADDR => {
+                    value.merge_into(&mut self.bus_master_state.timing_reg)
                 }
-                IdeConfigSpace::UDMA_CTL_REG_ADDR => self.bus_master_state.dma_ctl_reg = value,
+                IdeConfigSpace::SECONDARY_TIMING_REG_ADDR => {
+                    value.merge_into(&mut self.bus_master_state.secondary_timing_reg)
+                }
+                IdeConfigSpace::UDMA_CTL_REG_ADDR => {
+                    value.merge_into(&mut self.bus_master_state.dma_ctl_reg)
+                }
                 _ => tracing::trace!(?offset, "undefined ide pci config space write"),
             }
         }

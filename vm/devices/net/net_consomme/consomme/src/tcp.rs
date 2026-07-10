@@ -714,18 +714,19 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
+        // Checksum is filled by `fill_checksum` below, after the payload is copied in.
         tcp.emit(
             &mut tcp_packet,
             &dst_ip_addr,
             &src_ip_addr,
-            &ChecksumCapabilities::default(),
+            &ChecksumCapabilities::ignored(),
         );
 
         // Copy payload into TCP packet
         if let Some(payload) = &payload {
             payload.copy_to_slice(tcp_packet.payload_mut());
         }
-        tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+        tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
         let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {
             SocketAddr::V4(_) => ChecksumState::TCP4,

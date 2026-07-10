@@ -90,7 +90,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
-        (firmware.quirks().hyperv, VmmQuirks::default())
+        (
+            firmware.quirks().hyperv,
+            VmmQuirks {
+                // Workaround for #3897
+                flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
+            },
+        )
     }
 
     fn default_servicing_flags() -> OpenHclServicingFlags {

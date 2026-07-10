@@ -198,6 +198,14 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             "windows_datacenter_core_2025_x64_prepped_snp_ak_pub_refresh",
             IgvmAttestTestConfig::StateRefresh,
         ),
+        (
+            "ubuntu_2504_server_x64_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
     ];
 
     for &(pattern, config) in KNOWN_TEST_CONFIGS {

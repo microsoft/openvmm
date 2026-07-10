@@ -181,6 +181,19 @@ pub struct SctlrEl1 {
     pub tidcp: bool,
 }
 
+/// aarch64 HPFAR_EL2
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct HpfarEl2 {
+    #[bits(4)]
+    pub res0: u8,
+    #[bits(44)]
+    pub fipa: u64,
+    #[bits(15)]
+    pub res1: u32,
+    pub ns: bool,
+}
+
 open_enum! {
     pub enum ExceptionClass: u8 {
         UNKNOWN = 0b000000,
@@ -322,7 +335,7 @@ open_enum! {
         /// Valid only for instruction fault.
         GRANULE_PROTECTION_FAULT_LEVEL2 = 0b100110,
         /// Valid only for instruction fault.
-        GRANULE_PROTECTION_FAULT_LEVE3 = 0b100111,
+        GRANULE_PROTECTION_FAULT_LEVEL3 = 0b100111,
         ADDRESS_SIZE_FAULT_LEVEL_NEG1 = 0b101001,
         TRANSLATION_FAULT_LEVEL_NEG1 = 0b101011,
         TLB_CONFLICT_ABORT = 0b110000,
@@ -945,6 +958,99 @@ impl Display for Vendor {
             f.pad("Arm")
         } else {
             write!(f, "{:#x}", self.0)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InstructionAbortReason {
+    AddressSizeFaultLevel0,
+    AddressSizeFaultLevel1,
+    AddressSizeFaultLevel2,
+    AddressSizeFaultLevel3,
+    TranslationFaultLevel0,
+    TranslationFaultLevel1,
+    TranslationFaultLevel2,
+    TranslationFaultLevel3,
+    AccessFlagFaultLevel0,
+    AccessFlagFaultLevel1,
+    AccessFlagFaultLevel2,
+    AccessFlagFaultLevel3,
+    PermissionFaultLevel0,
+    PermissionFaultLevel1,
+    PermissionFaultLevel2,
+    PermissionFaultLevel3,
+    SynchronousExternalAbort,
+    SyncTagCheckFault,
+    SynchronousExternalAbortOnTableWalkLevelNeg1,
+    SynchronousExternalAbortOnTableWalkLevel0,
+    SynchronousExternalAbortOnTableWalkLevel1,
+    SynchronousExternalAbortOnTableWalkLevel2,
+    SynchronousExternalAbortOnTableWalkLevel3,
+    EccParity,
+    EccParityOnTableWalkLevelNeg1,
+    EccParityOnTableWalkLevel0,
+    EccParityOnTableWalkLevel1,
+    EccParityOnTableWalkLevel2,
+    EccParityOnTableWalkLevel3,
+    GranuleProtectionFaultLevelNeg1,
+    GranuleProtectionFaultLevel0,
+    GranuleProtectionFaultLevel1,
+    GranuleProtectionFaultLevel2,
+    GranuleProtectionFaultLevel3,
+    AddressSizeFaultLevelNeg1,
+    TranslationFaultLevelNeg1,
+    TlbConflictAbort,
+    UnsupportedHardwareUpdateFault,
+    Unknown,
+}
+
+impl From<FaultStatusCode> for InstructionAbortReason {
+    fn from(value: FaultStatusCode) -> Self {
+        match value {
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL0 => Self::AddressSizeFaultLevel0,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL1 => Self::AddressSizeFaultLevel1,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL2 => Self::AddressSizeFaultLevel2,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL3 => Self::AddressSizeFaultLevel3,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL0 => Self::TranslationFaultLevel0,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL1 => Self::TranslationFaultLevel1,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL2 => Self::TranslationFaultLevel2,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL3 => Self::TranslationFaultLevel3,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL0 => Self::AccessFlagFaultLevel0,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL1 => Self::AccessFlagFaultLevel1,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL2 => Self::AccessFlagFaultLevel2,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL3 => Self::AccessFlagFaultLevel3,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL0 => Self::PermissionFaultLevel0,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL1 => Self::PermissionFaultLevel1,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL2 => Self::PermissionFaultLevel2,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL3 => Self::PermissionFaultLevel3,
+            FaultStatusCode::SYNCHRONOUS_EXTERNAL_ABORT => Self::SynchronousExternalAbort,
+            FaultStatusCode::SYNC_TAG_CHECK_FAULT => Self::SyncTagCheckFault,
+            FaultStatusCode::SEA_TTW_LEVEL_NEG1 => {
+                Self::SynchronousExternalAbortOnTableWalkLevelNeg1
+            }
+            FaultStatusCode::SEA_TTW_LEVEL0 => Self::SynchronousExternalAbortOnTableWalkLevel0,
+            FaultStatusCode::SEA_TTW_LEVEL1 => Self::SynchronousExternalAbortOnTableWalkLevel1,
+            FaultStatusCode::SEA_TTW_LEVEL2 => Self::SynchronousExternalAbortOnTableWalkLevel2,
+            FaultStatusCode::SEA_TTW_LEVEL3 => Self::SynchronousExternalAbortOnTableWalkLevel3,
+            FaultStatusCode::ECC_PARITY => Self::EccParity,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL_NEG1 => Self::EccParityOnTableWalkLevelNeg1,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL0 => Self::EccParityOnTableWalkLevel0,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL1 => Self::EccParityOnTableWalkLevel1,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL2 => Self::EccParityOnTableWalkLevel2,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL3 => Self::EccParityOnTableWalkLevel3,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL_NEG => {
+                Self::GranuleProtectionFaultLevelNeg1
+            }
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL0 => Self::GranuleProtectionFaultLevel0,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL1 => Self::GranuleProtectionFaultLevel1,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL2 => Self::GranuleProtectionFaultLevel2,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL3 => Self::GranuleProtectionFaultLevel3,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL_NEG1 => Self::AddressSizeFaultLevelNeg1,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL_NEG1 => Self::TranslationFaultLevelNeg1,
+            FaultStatusCode::TLB_CONFLICT_ABORT => Self::TlbConflictAbort,
+            FaultStatusCode::UNSUPPORTED_HW_UPDATE_FAULT => Self::UnsupportedHardwareUpdateFault,
+            _ => Self::Unknown,
         }
     }
 }

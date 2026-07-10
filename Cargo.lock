@@ -610,6 +610,7 @@ dependencies = [
  "mesh",
  "tdisp",
  "vmcore",
+ "zerocopy",
 ]
 
 [[package]]
@@ -623,7 +624,6 @@ dependencies = [
  "parking_lot",
  "range_map_vec",
  "tracing",
- "zerocopy",
 ]
 
 [[package]]
@@ -823,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "cmov"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cms"
@@ -3683,7 +3683,6 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
- "scsidisk_resources",
  "vm_resource",
 ]
 
@@ -3738,7 +3737,9 @@ name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
+ "crypto",
  "fs-err",
  "hex",
  "hvdef",
@@ -3755,6 +3756,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
  "vbs_defs",
  "x86defs",
  "zerocopy",
@@ -4213,6 +4215,7 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
+ "static_assertions",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",
@@ -5601,7 +5604,6 @@ dependencies = [
  "smmu",
  "sparse_mmap",
  "state_unit",
- "storvsp",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5724,6 +5726,7 @@ dependencies = [
  "storvsp_resources",
  "tempfile",
  "term",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
  "tracelimit",
@@ -6162,6 +6165,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "mesh",
+ "pci_core",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7311,8 +7315,11 @@ dependencies = [
  "inspect_counters",
  "mesh",
  "open_enum",
+ "pal_async",
+ "parking_lot",
  "serial_16550_resources",
  "serial_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7337,6 +7344,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "test_with_tracing",
  "vm_resource",
 ]
 
@@ -7380,8 +7388,10 @@ dependencies = [
  "mesh",
  "open_enum",
  "pal_async",
+ "parking_lot",
  "serial_core",
  "serial_pl011_resources",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7571,6 +7581,7 @@ dependencies = [
  "minimal_rt_build",
  "tmk_core",
  "tmk_macros",
+ "tmk_protocol",
  "x86defs",
 ]
 
@@ -8170,6 +8181,7 @@ dependencies = [
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "zerocopy",
 ]
 
@@ -8752,7 +8764,6 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
- "gdma_defs",
  "get_helpers",
  "get_protocol",
  "getrandom 0.4.2",
@@ -8801,6 +8812,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",
@@ -9484,6 +9496,7 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -9854,6 +9867,7 @@ dependencies = [
  "serial_core",
  "serial_debugcon_resources",
  "serial_pl011_resources",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
  "vmm_core_defs",

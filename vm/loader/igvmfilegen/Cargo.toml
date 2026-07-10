@@ -14,11 +14,14 @@ loader_defs.workspace = true
 hvdef.workspace = true
 
 memory_range.workspace = true
+underhill_confidentiality.workspace = true
 vbs_defs.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true
+base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, features = ["native", "vendored"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true

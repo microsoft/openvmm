@@ -22,7 +22,11 @@ use std::collections::BTreeMap;
 pub enum CargoBuildOutput {
     WindowsBin {
         exe: PathBuf,
-        pdb: PathBuf,
+        /// Path to the separate debug file (`.pdb`), if one was produced.
+        ///
+        /// `None` for GNU (mingw-w64) builds, which embed debug info in the
+        /// `.exe` rather than emitting a separate `.pdb`.
+        pdb: Option<PathBuf>,
     },
     ElfBin {
         bin: PathBuf,

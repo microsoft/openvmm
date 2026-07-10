@@ -249,12 +249,6 @@ struct LoadLinuxParams<'a> {
 /// Load Linux into VTL0.
 #[cfg(guest_arch = "x86_64")]
 fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
-    const GDT_BASE: u64 = 0x1000;
-    const CR3_BASE: u64 = 0x4000;
-    const ZERO_PAGE_BASE: u64 = 0x2000;
-    const CMDLINE_BASE: u64 = 0x3000;
-    const ACPI_BASE: u64 = 0xe0000;
-
     let LoadLinuxParams {
         gm,
         mem_layout,
@@ -267,11 +261,6 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         initrd,
         command_line,
     } = params;
-
-    let cmdline_config = loader::linux::CommandLineConfig {
-        address: CMDLINE_BASE,
-        cmdline: &command_line,
-    };
 
     let acpi_builder = AcpiTablesBuilder {
         processor_topology,
@@ -289,49 +278,6 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
             iommu: None,
         },
-    };
-
-    let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |dsdt| {
-        dsdt.add_apic();
-
-        // Add serial ports if enabled.
-        if platform_config.general.com1_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR1",
-                b"COM1",
-                1,
-                ComPort::Com1.io_port(),
-                ComPort::Com1.irq().into(),
-            );
-        }
-
-        if platform_config.general.com2_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR2",
-                b"COM2",
-                2,
-                ComPort::Com2.io_port(),
-                ComPort::Com2.irq().into(),
-            );
-        }
-
-        dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
-        // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false, None);
-        dsdt.add_rtc();
-    });
-    let acpi_len = acpi_tables.tables.len() + 0x1000;
-
-    let acpi_config = loader::linux::AcpiConfig {
-        rdsp_address: ACPI_BASE,
-        rdsp: &acpi_tables.rdsp,
-        tables_address: ACPI_BASE + 0x1000,
-        tables: &acpi_tables.tables,
-    };
-
-    let register_config = loader::linux::RegisterConfig {
-        gdt_address: GDT_BASE,
-        page_table_address: CR3_BASE,
     };
 
     let mut loader = vm_loader::Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);
@@ -357,13 +303,6 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         None
     };
 
-    let zero_page_config = loader::linux::ZeroPageConfig {
-        address: ZERO_PAGE_BASE,
-        mem_layout,
-        acpi_base_address: ACPI_BASE,
-        acpi_len,
-    };
-
     tracing::trace!(?initrd_info);
 
     // Accept the kernel range to detect overlaps.
@@ -387,13 +326,50 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         bzimage_setup_header: None,
     };
 
-    loader::linux::load_config(
+    // The loader owns the sub-1 MB layout; we supply only the command line and
+    // a builder that produces the ACPI tables at the loader's chosen address.
+    // OpenHCL's VTL0 direct boot exposes no SMBIOS identity.
+    loader::linux::load_config_x86(
         &mut loader,
         &load_info,
-        cmdline_config,
-        zero_page_config,
-        acpi_config,
-        register_config,
+        &command_line,
+        mem_layout,
+        |gpa| {
+            let acpi_tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                dsdt.add_apic();
+
+                // Add serial ports if enabled.
+                if platform_config.general.com1_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR1",
+                        b"COM1",
+                        1,
+                        ComPort::Com1.io_port(),
+                        ComPort::Com1.irq().into(),
+                    );
+                }
+
+                if platform_config.general.com2_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR2",
+                        b"COM2",
+                        2,
+                        ComPort::Com2.io_port(),
+                        ComPort::Com2.irq().into(),
+                    );
+                }
+
+                dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+                // TODO: change this once PCI is running in underhill
+                dsdt.add_vmbus(false, None);
+                dsdt.add_rtc();
+            });
+            loader::linux::AcpiTables {
+                rsdp: acpi_tables.rsdp,
+                tables: acpi_tables.tables,
+            }
+        },
+        None,
     )
     .map_err(Error::LinuxLoader)?;
 
