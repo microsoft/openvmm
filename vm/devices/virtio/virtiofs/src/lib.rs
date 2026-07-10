@@ -25,6 +25,7 @@ use file::VirtioFsFile;
 use fuse::protocol::*;
 use fuse::*;
 use inode::VirtioFsInode;
+use inode::VirtioFsVolume;
 pub use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -75,6 +76,19 @@ impl VirtioFsInner {
     }
 }
 
+fn build_volume(
+    root_path: impl AsRef<Path>,
+    mount_options: Option<&LxVolumeOptions>,
+) -> lx::Result<(lxutil::LxVolume, bool)> {
+    let readonly = mount_options.is_some_and(|options| options.is_readonly());
+    let volume = if let Some(mount_options) = mount_options {
+        mount_options.new_volume(root_path)
+    } else {
+        lxutil::LxVolume::new(root_path)
+    }?;
+    Ok((volume, readonly))
+}
+
 /// Implementation of the virtio-fs file system.
 #[derive(Clone)]
 pub struct VirtioFs {
@@ -103,7 +117,7 @@ impl Fuse for VirtioFs {
 
         // In aggregate mode, advertise submounts so the guest gives each child
         // root its own st_dev when crossing into it.
-        if self.submounts() && info.capable() & FUSE_SUBMOUNTS != 0 {
+        if self.initialize_submounts(info.capable() & FUSE_SUBMOUNTS != 0) {
             info.want |= FUSE_SUBMOUNTS;
         }
     }
@@ -113,11 +127,11 @@ impl Fuse for VirtioFs {
         // If a file handle is specified, get the attributes from the open file. This is faster on
         // Windows and works if the file was deleted. The synthetic root's directory handle has no
         // backing file, so fall through to the node-based branch for it.
-        let attr = if flags & FUSE_GETATTR_FH != 0 && fh != SYNTHETIC_ROOT_FH {
+        let attr = if flags & FUSE_GETATTR_FH != 0 && !self.is_synthetic_root_handle(node_id, fh) {
             let file = self.get_file(fh)?;
             file.get_attr()?
         } else if self.is_synthetic_root(node_id) {
-            Self::synthetic_root_attr()
+            self.synthetic_root_attr()
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_attr()?
@@ -138,11 +152,13 @@ impl Fuse for VirtioFs {
         // If a file handle is specified, get the attributes from the open file. This is faster on
         // Windows and works if the file was deleted. The synthetic root's directory handle has no
         // backing file, so fall through to the node-based branch for it.
-        let statx = if getattr_flags & FUSE_GETATTR_FH != 0 && fh != SYNTHETIC_ROOT_FH {
+        let statx = if getattr_flags & FUSE_GETATTR_FH != 0
+            && !self.is_synthetic_root_handle(node_id, fh)
+        {
             let file = self.get_file(fh)?;
             file.get_statx()?
         } else if self.is_synthetic_root(node_id) {
-            Self::synthetic_root_statx(mask)
+            self.synthetic_root_statx(mask)
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_statx()?
@@ -358,16 +374,16 @@ impl Fuse for VirtioFs {
         self.open(request, flags)
     }
 
-    fn read_dir(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
-        if arg.fh == SYNTHETIC_ROOT_FH {
+    fn read_dir(&self, request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
             return self.read_synthetic_root_dir(arg.offset, arg.size, false);
         }
         let file = self.get_file(arg.fh)?;
         file.read_dir(self, arg.offset, arg.size, false)
     }
 
-    fn read_dir_plus(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
-        if arg.fh == SYNTHETIC_ROOT_FH {
+    fn read_dir_plus(&self, request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
             return self.read_synthetic_root_dir(arg.offset, arg.size, true);
         }
         let file = self.get_file(arg.fh)?;
@@ -375,7 +391,7 @@ impl Fuse for VirtioFs {
     }
 
     fn release_dir(&self, request: &Request, arg: &fuse_release_in) -> lx::Result<()> {
-        if arg.fh == SYNTHETIC_ROOT_FH {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
             return Ok(());
         }
         self.release(request, arg)
@@ -498,6 +514,7 @@ impl Fuse for VirtioFs {
         // To get the file system ready for re-mount, clean out any open files and leaked inodes.
         self.inner.files.write().clear();
         self.inner.inodes.write().clear();
+        self.reset_submounts();
     }
 }
 
@@ -547,14 +564,10 @@ impl VirtioFs {
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
     ) -> lx::Result<Self> {
-        let readonly = mount_options.is_some_and(|o| o.is_readonly());
-        let volume = if let Some(mount_options) = mount_options {
-            mount_options.new_volume(root_path)
-        } else {
-            lxutil::LxVolume::new(root_path)
-        }?;
+        let (volume, readonly) = build_volume(root_path, mount_options)?;
         let mut inodes = InodeMap::new(volume.supports_stable_file_id(), false);
-        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), 0, readonly, PathBuf::new())?;
+        let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly, true));
+        let (root_inode, _) = VirtioFsInode::new(volume, PathBuf::new())?;
         assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
         Ok(Self {
             inner: Arc::new(VirtioFsInner {
@@ -569,17 +582,17 @@ impl VirtioFs {
     ///
     /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
     /// expose host folders as named children, each with its own read-only
-    /// setting. When `submounts` is set, each child is advertised with
-    /// `FUSE_ATTR_SUBMOUNT` so the guest kernel gives it a distinct `st_dev`
-    /// (only honored once `FUSE_SUBMOUNTS` is negotiated).
-    pub fn new_aggregate(submounts: bool) -> Self {
+    /// setting. During FUSE initialization, `FUSE_SUBMOUNTS` is negotiated so
+    /// the guest kernel can give each child a distinct `st_dev`; if unavailable,
+    /// guest inode numbers use the fallback volume namespace.
+    pub fn new_aggregate() -> Self {
         Self {
             inner: Arc::new(VirtioFsInner {
                 // Inode numbers are deduplicated per volume (see `InodeMap`), so
                 // enable the stable-id map and key it by `(volume_id, ino)`.
                 inodes: RwLock::new(InodeMap::new(true, true)),
                 files: RwLock::new(HandleMap::new()),
-                mode: VirtioFsMode::Aggregate(AggregateState::new(submounts)),
+                mode: VirtioFsMode::Aggregate(AggregateState::new()),
             }),
         }
     }

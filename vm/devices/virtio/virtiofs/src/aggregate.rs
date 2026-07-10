@@ -13,17 +13,18 @@
 use crate::ATTRIBUTE_TIMEOUT;
 use crate::ENTRY_TIMEOUT;
 use crate::VirtioFs;
-use crate::inode;
+use crate::build_volume;
+use crate::inode::MAX_AGGREGATE_VOLUMES;
 use crate::inode::VirtioFsInode;
+use crate::inode::VirtioFsVolume;
 use fuse::DirEntryWriter;
+use fuse::check_name;
 use fuse::protocol::*;
 use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use zerocopy::FromZeros;
 
 /// Reserved file handle returned by `open_dir` on the synthetic aggregate root.
@@ -34,64 +35,94 @@ use zerocopy::FromZeros;
 /// at 1 and only increments.
 pub(crate) const SYNTHETIC_ROOT_FH: u64 = u64::MAX;
 
-/// Linux `DT_DIR` directory-entry type, used for the synthetic root's children.
-const DT_DIR: u32 = 4;
-
 /// A single host folder exposed as a named child of the synthetic aggregate root.
 struct ChildEntry {
     /// Name of this child's directory under the synthetic root. Chosen by the
     /// caller; the guest bind-mounts `<aggregate-mount>/<name>` onto the user's
     /// target path.
     name: String,
-    volume: Arc<lxutil::LxVolume>,
-    /// Stable identifier disambiguating per-volume inode numbers.
-    volume_id: u32,
-    /// Whether this child volume is read-only. Per child, so shares under one
-    /// aggregate device may differ; forced on when the device is read-only.
-    readonly: bool,
+    volume: Arc<VirtioFsVolume>,
 }
 
 /// Registry of aggregated children for an aggregate-mode [`VirtioFs`].
-struct ChildRegistry {
+struct AggregateRegistry {
     entries: Vec<ChildEntry>,
     next_volume_id: u32,
+    /// Guest inode mapping selected during FUSE initialization.
+    inode_mode: Option<InodeMode>,
+    tearing_down: bool,
 }
 
-impl ChildRegistry {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InodeMode {
+    Namespaced,
+    Raw,
+}
+
+impl AggregateRegistry {
     fn new() -> Self {
         // Volume id 0 is reserved for a direct-mode single root, so aggregated
         // children start at 1.
         Self {
             entries: Vec::new(),
             next_volume_id: 1,
+            inode_mode: None,
+            tearing_down: false,
         }
+    }
+
+    fn initialize(&mut self, submounts: bool) {
+        let inode_mode = if submounts {
+            InodeMode::Raw
+        } else {
+            InodeMode::Namespaced
+        };
+        self.inode_mode = Some(inode_mode);
+        for child in &mut self.entries {
+            child.volume = Arc::new(child.volume.with_inode_mapping(submounts));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.inode_mode = None;
+        for child in &mut self.entries {
+            child.volume = Arc::new(child.volume.with_inode_mapping(false));
+        }
+    }
+
+    fn submounts_enabled(&self) -> bool {
+        self.inode_mode == Some(InodeMode::Raw)
+    }
+
+    fn fallback_inode_mapping(&self) -> bool {
+        self.inode_mode == Some(InodeMode::Namespaced)
+    }
+
+    fn check_can_add(&self) -> lx::Result<()> {
+        if self.tearing_down {
+            return Err(lx::Error::EAGAIN);
+        }
+        if self.fallback_inode_mapping() && self.next_volume_id > MAX_AGGREGATE_VOLUMES {
+            return Err(lx::Error::ENOSPC);
+        }
+        Ok(())
     }
 }
 
 /// State that only exists for an aggregate-mode [`VirtioFs`].
 ///
 /// When present, node 1 is a synthetic directory whose children are the entries
-/// in `children`; when absent (direct mode), node 1 is a real inode at a single
+/// in `registry`; when absent (direct mode), node 1 is a real inode at a single
 /// volume root (legacy single-share behavior).
 pub(crate) struct AggregateState {
-    /// Aggregated children exposed under the synthetic root.
-    children: RwLock<ChildRegistry>,
-    /// When true, children are advertised with `FUSE_ATTR_SUBMOUNT` so the
-    /// guest kernel gives each share its own `st_dev`. Only honored once
-    /// `FUSE_SUBMOUNTS` is negotiated.
-    submounts: bool,
-    /// Set once the owning device host begins tearing the aggregate down (see
-    /// [`VirtioFs::begin_teardown`]). After this, [`VirtioFs::add_child`] fails
-    /// fast with `EAGAIN` rather than appending a child to a doomed device.
-    tearing_down: AtomicBool,
+    /// Aggregated children and their lifecycle state.
+    registry: RwLock<AggregateRegistry>,
 }
 
 impl AggregateState {
-    pub(crate) fn new(submounts: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            children: RwLock::new(ChildRegistry::new()),
-            submounts,
-            tearing_down: AtomicBool::new(false),
+            registry: RwLock::new(AggregateRegistry::new()),
         }
     }
 }
@@ -111,6 +142,8 @@ impl VirtioFs {
     /// - `EAGAIN` if the device has begun tearing down (see
     ///   [`Self::begin_teardown`]).
     /// - `EEXIST` if a child with the same name already exists.
+    /// - `ENOSPC` if the fallback inode mapping is active and 64 children have
+    ///   already been allocated.
     pub fn add_child(
         &self,
         name: &str,
@@ -121,48 +154,34 @@ impl VirtioFs {
             return Err(lx::Error::EINVAL);
         };
 
-        // Reject names that are empty, reserved ("." / ".."), or contain
-        // characters invalid in a POSIX directory entry ('/' or '\0').
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains('/')
-            || name.contains('\0')
-        {
-            return Err(lx::Error::EINVAL);
-        }
-
-        // Each child carries its own read-only setting, so shares under one
-        // aggregate device may differ.
-        let readonly = mount_options.is_some_and(|o| o.is_readonly());
+        check_name(name.as_bytes())?;
 
         // Fast-fail before paying for volume construction if the device is
         // already tearing down. Re-checked under the lock below to close the
         // race with a concurrent `begin_teardown`.
-        if aggregate.tearing_down.load(Ordering::Acquire) {
-            return Err(lx::Error::EAGAIN);
+        {
+            aggregate.registry.read().check_can_add()?;
         }
 
-        let mut children = aggregate.children.write();
-        if aggregate.tearing_down.load(Ordering::Acquire) {
-            return Err(lx::Error::EAGAIN);
-        }
-        if children.entries.iter().any(|e| e.name == name) {
+        let (volume, readonly) = build_volume(root_path, mount_options)?;
+
+        let mut registry = aggregate.registry.write();
+        registry.check_can_add()?;
+        if registry.entries.iter().any(|e| e.name == name) {
             return Err(lx::Error::EEXIST);
         }
 
-        let volume = if let Some(mount_options) = mount_options {
-            mount_options.new_volume(root_path)
-        } else {
-            lxutil::LxVolume::new(root_path)
-        }?;
-        let volume_id = children.next_volume_id;
-        children.next_volume_id += 1;
-        children.entries.push(ChildEntry {
+        let volume_id = registry.next_volume_id;
+        registry.next_volume_id = volume_id.checked_add(1).ok_or(lx::Error::ENOSPC)?;
+        let use_raw_inodes = registry.submounts_enabled();
+        registry.entries.push(ChildEntry {
             name: name.to_string(),
-            volume: Arc::new(volume),
-            volume_id,
-            readonly,
+            volume: Arc::new(VirtioFsVolume::new(
+                volume,
+                volume_id,
+                readonly,
+                use_raw_inodes,
+            )),
         });
         Ok(())
     }
@@ -176,8 +195,7 @@ impl VirtioFs {
     /// dropped; this only stops further children from being added.
     pub fn begin_teardown(&self) {
         if let Some(aggregate) = self.inner.aggregate() {
-            let _children = aggregate.children.write();
-            aggregate.tearing_down.store(true, Ordering::Release);
+            aggregate.registry.write().tearing_down = true;
         }
     }
 
@@ -191,7 +209,7 @@ impl VirtioFs {
             return Err(lx::Error::EINVAL);
         };
 
-        let mut children = aggregate.children.write();
+        let mut children = aggregate.registry.write();
         let before = children.entries.len();
         children.entries.retain(|e| e.name != name);
         if children.entries.len() == before {
@@ -206,24 +224,49 @@ impl VirtioFs {
         self.inner.aggregate().is_some() && node_id == FUSE_ROOT_ID
     }
 
+    pub(crate) fn is_synthetic_root_handle(&self, node_id: u64, fh: u64) -> bool {
+        self.is_synthetic_root(node_id) && fh == SYNTHETIC_ROOT_FH
+    }
+
+    /// Finalize aggregate inode mapping after FUSE capability negotiation.
+    pub(crate) fn initialize_submounts(&self, capable: bool) -> bool {
+        let Some(aggregate) = self.inner.aggregate() else {
+            return false;
+        };
+        let mut registry = aggregate.registry.write();
+        registry.initialize(capable);
+        capable
+    }
+
+    /// Return the aggregate to its pre-initialization state for a remount.
+    pub(crate) fn reset_submounts(&self) {
+        let Some(aggregate) = self.inner.aggregate() else {
+            return;
+        };
+        let mut registry = aggregate.registry.write();
+        registry.reset();
+    }
+
     /// Whether aggregate children should be advertised with
     /// `FUSE_ATTR_SUBMOUNT`. Always false in direct mode.
     pub(crate) fn submounts(&self) -> bool {
-        self.inner.aggregate().is_some_and(|a| a.submounts)
+        self.inner
+            .aggregate()
+            .is_some_and(|aggregate| aggregate.registry.read().submounts_enabled())
     }
 
     /// Attributes of the synthetic aggregate root directory.
-    pub(crate) fn synthetic_root_attr() -> fuse_attr {
+    pub(crate) fn synthetic_root_attr(&self) -> fuse_attr {
         let mut attr = fuse_attr::new_zeroed();
         attr.ino = FUSE_ROOT_ID;
         attr.mode = lx::S_IFDIR | 0o555;
-        attr.nlink = 2;
+        attr.nlink = self.synthetic_root_nlink();
         attr.blksize = 512;
         attr
     }
 
     /// Extended attributes of the synthetic aggregate root directory.
-    pub(crate) fn synthetic_root_statx(mask: lx::StatExMask) -> fuse_statx {
+    pub(crate) fn synthetic_root_statx(&self, mask: lx::StatExMask) -> fuse_statx {
         let mut sx = fuse_statx::new_zeroed();
         let returned_mask = lx::StatExMask::new()
             .with_file_type(true)
@@ -233,10 +276,20 @@ impl VirtioFs {
             .into_bits();
         sx.mask = mask.into_bits() & returned_mask;
         sx.mode = (lx::S_IFDIR | 0o555) as u16;
-        sx.nlink = 2;
+        sx.nlink = self.synthetic_root_nlink();
         sx.ino = FUSE_ROOT_ID;
         sx.blksize = 512;
         sx
+    }
+
+    fn synthetic_root_nlink(&self) -> u32 {
+        let child_count = self
+            .inner
+            .aggregate()
+            .map_or(0, |aggregate| aggregate.registry.read().entries.len());
+        u32::try_from(child_count)
+            .unwrap_or(u32::MAX)
+            .saturating_add(2)
     }
 
     /// Looks up a named child of the synthetic root, returning an entry for the
@@ -246,17 +299,21 @@ impl VirtioFs {
             return Err(lx::Error::ENOENT);
         };
         let name_bytes = name.as_bytes();
-        let (volume, volume_id, readonly) = {
-            let children = aggregate.children.read();
+        let volume = {
+            let children = aggregate.registry.read();
             let entry = children
                 .entries
                 .iter()
                 .find(|e| e.name.as_bytes() == name_bytes)
                 .ok_or(lx::Error::ENOENT)?;
-            (Arc::clone(&entry.volume), entry.volume_id, entry.readonly)
+            Arc::clone(&entry.volume)
         };
 
-        let (inode, stat) = VirtioFsInode::new(volume, volume_id, readonly, PathBuf::new())?;
+        self.insert_child_root_entry(volume)
+    }
+
+    fn insert_child_root_entry(&self, volume: Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out> {
+        let (inode, stat) = VirtioFsInode::new(volume, PathBuf::new())?;
         let mut attr = inode.attr_from_stat(&stat);
         let (_, node_id) = self.insert_inode(inode);
         if self.submounts() {
@@ -290,28 +347,16 @@ impl VirtioFs {
                 1 => self.write_synthetic_dot(&mut buffer, "..", next, plus),
                 n => {
                     let child = {
-                        let children = aggregate.children.read();
-                        children.entries.get((n - 2) as usize).map(|e| {
-                            (
-                                e.name.clone(),
-                                Arc::clone(&e.volume),
-                                e.volume_id,
-                                e.readonly,
-                            )
-                        })
+                        let children = aggregate.registry.read();
+                        children
+                            .entries
+                            .get((n - 2) as usize)
+                            .map(|e| (e.name.clone(), Arc::clone(&e.volume)))
                     };
-                    let Some((name, volume, volume_id, readonly)) = child else {
+                    let Some((name, volume)) = child else {
                         break;
                     };
-                    self.write_child_entry(
-                        &mut buffer,
-                        &name,
-                        volume,
-                        volume_id,
-                        readonly,
-                        next,
-                        plus,
-                    )?
+                    self.write_child_entry(&mut buffer, &name, volume, next, plus)?
                 }
             };
             if !fit {
@@ -335,12 +380,10 @@ impl VirtioFs {
             if !buffer.check_dir_entry_plus(name) {
                 return false;
             }
-            let mut entry = fuse_entry_out::new_zeroed();
-            entry.attr.ino = FUSE_ROOT_ID;
-            entry.attr.mode = lx::S_IFDIR | 0o555;
+            let entry = fuse_entry_out::new_dot(FUSE_ROOT_ID, lx::S_IFDIR | 0o555);
             buffer.dir_entry_plus(name, next_off, entry)
         } else {
-            buffer.dir_entry(name, FUSE_ROOT_ID, next_off, DT_DIR)
+            buffer.dir_entry(name, FUSE_ROOT_ID, next_off, lx::DT_DIR as u32)
         }
     }
 
@@ -349,9 +392,7 @@ impl VirtioFs {
         &self,
         buffer: &mut Vec<u8>,
         name: &str,
-        volume: Arc<lxutil::LxVolume>,
-        volume_id: u32,
-        readonly: bool,
+        volume: Arc<VirtioFsVolume>,
         next_off: u64,
         plus: bool,
     ) -> lx::Result<bool> {
@@ -361,157 +402,22 @@ impl VirtioFs {
             }
             // readdirplus performs a lookup on each entry, incrementing its
             // lookup count, so create/insert the root inode here.
-            let (inode, stat) = VirtioFsInode::new(volume, volume_id, readonly, PathBuf::new())?;
-            let mut attr = inode.attr_from_stat(&stat);
-            let (_, node_id) = self.insert_inode(inode);
-            if self.submounts() {
-                attr.flags |= FUSE_ATTR_SUBMOUNT;
-            }
-            let entry = fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr);
+            let entry = self.insert_child_root_entry(volume)?;
             Ok(buffer.dir_entry_plus(name, next_off, entry))
         } else {
-            // Plain readdir: report the directory using the volume root's real
-            // inode number (namespaced to its volume), falling back to the
-            // volume id if it is inaccessible.
+            // Plain readdir: report the directory using the volume root's
+            // guest-visible inode number, falling back to the volume id if it
+            // is inaccessible.
             let raw = volume
                 .lstat(PathBuf::new())
                 .map(|s| s.inode_nr)
-                .unwrap_or(volume_id as lx::ino_t);
-            let ino = inode::namespace_ino(volume_id, raw);
-            Ok(buffer.dir_entry(name, ino, next_off, DT_DIR))
+                .unwrap_or(volume.id() as lx::ino_t);
+            let ino = volume.map_inode(raw)?;
+            Ok(buffer.dir_entry(name, ino, next_off, lx::DT_DIR as u32))
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::VirtioFs;
-    use crate::inode;
-    use lxutil::LxVolumeOptions;
-
-    #[test]
-    fn aggregate_child_registry() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let fs = VirtioFs::new_aggregate(true);
-
-        fs.add_child("share_a", a.path(), None).unwrap();
-        fs.add_child("share_b", b.path(), None).unwrap();
-
-        // Duplicate names are rejected.
-        assert_eq!(
-            fs.add_child("share_a", a.path(), None).unwrap_err(),
-            lx::Error::EEXIST
-        );
-
-        // Each child gets a distinct, non-zero volume id (0 is reserved for
-        // direct mode).
-        {
-            let aggregate = fs.inner.aggregate().unwrap();
-            let children = aggregate.children.read();
-            assert_eq!(children.entries.len(), 2);
-            assert_ne!(children.entries[0].volume_id, 0);
-            assert_ne!(children.entries[0].volume_id, children.entries[1].volume_id);
-        }
-
-        // Removal drops only the named child.
-        fs.remove_child("share_a").unwrap();
-        assert_eq!(fs.remove_child("share_a").unwrap_err(), lx::Error::ENOENT);
-        assert_eq!(
-            fs.inner.aggregate().unwrap().children.read().entries.len(),
-            1
-        );
-    }
-
-    #[test]
-    fn add_child_rejected_in_direct_mode() {
-        let a = tempfile::tempdir().unwrap();
-        let fs = VirtioFs::new(a.path(), None).unwrap();
-        assert_eq!(
-            fs.add_child("x", a.path(), None).unwrap_err(),
-            lx::Error::EINVAL
-        );
-        assert_eq!(fs.remove_child("x").unwrap_err(), lx::Error::EINVAL);
-    }
-
-    #[test]
-    fn synthetic_root_node_ids_start_after_root() {
-        // In aggregate mode the synthetic root occupies FUSE_ROOT_ID, so the
-        // first real inode inserted must be allocated a higher id.
-        let a = tempfile::tempdir().unwrap();
-        let fs = VirtioFs::new_aggregate(false);
-        fs.add_child("share", a.path(), None).unwrap();
-        let entry = fs
-            .lookup_synthetic_root(lx::LxStr::from_bytes(b"share"))
-            .unwrap();
-        assert!(entry.nodeid > fuse::protocol::FUSE_ROOT_ID);
-    }
-
-    #[test]
-    fn inode_namespacing_avoids_cross_volume_collisions() {
-        // Direct mode (volume id 0) is the identity transform.
-        assert_eq!(inode::namespace_ino(0, 42), 42);
-        assert_eq!(inode::namespace_ino(0, 0), 0);
-
-        // The same raw inode number on two different volumes maps to two
-        // different reported numbers, so siblings never alias.
-        let raw = 2; // e.g. the root inode of two freshly-formatted volumes
-        assert_ne!(
-            inode::namespace_ino(1, raw),
-            inode::namespace_ino(2, raw),
-            "sibling volumes must not collide"
-        );
-
-        // Within a single volume the transform is a bijection, so distinct
-        // files keep distinct inode numbers (preserving hard-link identity).
-        assert_ne!(inode::namespace_ino(1, 10), inode::namespace_ino(1, 11));
-    }
-
-    #[test]
-    fn add_child_allows_per_child_readonly() {
-        let a = tempfile::tempdir().unwrap();
-        let mut ro = LxVolumeOptions::default();
-        ro.readonly(true);
-        let mut rw = LxVolumeOptions::default();
-        rw.readonly(false);
-
-        // A writable aggregate lets each child pick its own readonly setting.
-        let fs = VirtioFs::new_aggregate(false);
-        fs.add_child("ro_child", a.path(), Some(&ro)).unwrap();
-        fs.add_child("rw_child", a.path(), Some(&rw)).unwrap();
-
-        let aggregate = fs.inner.aggregate().unwrap();
-        let children = aggregate.children.read();
-        let ro_entry = children
-            .entries
-            .iter()
-            .find(|e| e.name == "ro_child")
-            .unwrap();
-        let rw_entry = children
-            .entries
-            .iter()
-            .find(|e| e.name == "rw_child")
-            .unwrap();
-        assert!(ro_entry.readonly);
-        assert!(!rw_entry.readonly);
-    }
-
-    #[test]
-    fn add_child_rejected_after_teardown() {
-        let a = tempfile::tempdir().unwrap();
-        let fs = VirtioFs::new_aggregate(false);
-        fs.add_child("before", a.path(), None).unwrap();
-
-        fs.begin_teardown();
-
-        // Once tearing down, no further children can be added.
-        assert_eq!(
-            fs.add_child("after", a.path(), None).unwrap_err(),
-            lx::Error::EAGAIN
-        );
-        assert_eq!(
-            fs.inner.aggregate().unwrap().children.read().entries.len(),
-            1
-        );
-    }
-}
+#[path = "aggregate_tests.rs"]
+mod tests;

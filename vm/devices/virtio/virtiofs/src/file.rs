@@ -11,7 +11,6 @@ use fuse::protocol::fuse_statx;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use zerocopy::FromZeros;
 
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {
@@ -79,9 +78,9 @@ impl VirtioFsFile {
     ) -> lx::Result<Vec<u8>> {
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
-        // Report the directory's own inode number namespaced to its volume, so
-        // `.`/`..` agree with the number reported by lookup/getattr.
-        let self_inode_nr = self.inode.namespaced_inode_nr();
+        // Report the directory's guest-visible inode number so `.`/`..` agree
+        // with the number reported by lookup/getattr.
+        let self_inode_nr = self.inode.guest_inode_nr();
         let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
@@ -104,10 +103,7 @@ impl VirtioFsFile {
             // If readdirplus is being used, do a lookup on all items except the . and .. entries.
             if plus {
                 let fuse_entry = if entry.name == "." || entry.name == ".." {
-                    let mut e = fuse_entry_out::new_zeroed();
-                    e.attr.ino = self_inode_nr;
-                    e.attr.mode = (entry.file_type as u32) << 12;
-                    e
+                    fuse_entry_out::new_dot(self_inode_nr, (entry.file_type as u32) << 12)
                 } else {
                     if !buffer.check_dir_entry_plus(&entry.name) {
                         return Ok(false);
@@ -137,9 +133,9 @@ impl VirtioFsFile {
                         entry_count -= 1;
                         return Ok(true);
                     }
-                    // Children share this directory's volume, so namespace the
-                    // entry's inode number to match lookup/readdirplus.
-                    self.inode.namespaced_ino(entry.inode_nr)
+                    // Children share this directory's volume, so apply its
+                    // guest inode mapping to match lookup/readdirplus.
+                    self.inode.guest_ino(entry.inode_nr)?
                 };
 
                 Ok(buffer.dir_entry(
