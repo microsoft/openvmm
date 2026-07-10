@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! ECDSA cryptographic operations (key generation, signing, public key export).
+//! ECDSA cryptographic operations.
 
 #![cfg(any(openssl, symcrypt, all(native, windows)))]
 
@@ -44,7 +44,8 @@ impl EcdsaCurve {
     }
 }
 
-/// An ECDSA key pair (private + public key).
+/// An ECDSA private key (key pair).
+#[repr(transparent)] // Needed for the transmute in deref.
 pub struct EcdsaKeyPair(sys::EcdsaKeyPairInner);
 
 impl EcdsaKeyPair {
@@ -60,11 +61,17 @@ impl EcdsaKeyPair {
         let hash = hash_algorithm.hash(data);
         self.0.sign_prehash(&hash)
     }
+}
 
+/// An ECDSA public key.
+#[repr(transparent)] // Needed for the transmute in deref.
+pub struct EcdsaPublicKey(sys::EcdsaPublicKeyInner);
+
+impl EcdsaPublicKey {
     /// Hash `data` with `hash_algorithm` and verify `signature` against this
-    /// key pair's public key. The signature must be `r || s` in big-endian,
+    /// public key. The signature must be `r || s` in big-endian,
     /// each component `curve.key_size()` bytes (i.e. the format produced by
-    /// [`sign`](Self::sign)). Returns `Ok(true)` if the signature is valid,
+    /// [`EcdsaKeyPair::sign`]). Returns `Ok(true)` if the signature is valid,
     /// `Ok(false)` if it is invalid, or an error for other failures.
     pub fn verify(
         &self,
@@ -80,6 +87,17 @@ impl EcdsaKeyPair {
     /// `curve.key_size()` bytes.
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
         self.0.public_key_bytes()
+    }
+}
+
+impl std::ops::Deref for EcdsaKeyPair {
+    type Target = EcdsaPublicKey;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: EcdsaPublicKey is just a wrapper around EcdsaPublicKeyInner.
+        unsafe {
+            std::mem::transmute::<&sys::EcdsaPublicKeyInner, &EcdsaPublicKey>(self.0.as_pub())
+        }
     }
 }
 
@@ -166,19 +184,22 @@ mod tests {
     #[test]
     fn roundtrip_sign_verify() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        let public_key: &EcdsaPublicKey = &key;
         let message = b"roundtrip test message";
 
         let signature = key.sign(HashAlgorithm::Sha384, message).unwrap();
 
         // A valid signature over the original message verifies.
         assert!(
-            key.verify(HashAlgorithm::Sha384, message, &signature)
+            public_key
+                .verify(HashAlgorithm::Sha384, message, &signature)
                 .unwrap()
         );
 
         // A signature checked against a different message does not verify.
         assert!(
-            !key.verify(HashAlgorithm::Sha384, b"tampered message", &signature)
+            !public_key
+                .verify(HashAlgorithm::Sha384, b"tampered message", &signature)
                 .unwrap()
         );
 
@@ -186,7 +207,8 @@ mod tests {
         let mut bad_signature = signature.clone();
         *bad_signature.last_mut().unwrap() ^= 0x01;
         assert!(
-            !key.verify(HashAlgorithm::Sha384, message, &bad_signature)
+            !public_key
+                .verify(HashAlgorithm::Sha384, message, &bad_signature)
                 .unwrap()
         );
     }

@@ -10,6 +10,7 @@ fn err(e: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError(e, op))
 }
 
+#[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner {
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
     curve: EcdsaCurve,
@@ -53,6 +54,19 @@ impl EcdsaKeyPairInner {
         Ok(result)
     }
 
+    pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
+        // SAFETY: PKey<Private> can be safely treated as PKey<Public> for read-only operations.
+        unsafe { std::mem::transmute::<&EcdsaKeyPairInner, &EcdsaPublicKeyInner>(self) }
+    }
+}
+
+#[repr(C)] // Needed for the transmute in as_pub.
+pub struct EcdsaPublicKeyInner {
+    pkey: openssl::pkey::PKey<openssl::pkey::Public>,
+    curve: EcdsaCurve,
+}
+
+impl EcdsaPublicKeyInner {
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         let key_size = self.curve.key_size();
         // A signature must be exactly `r || s`, each `key_size` bytes. Any

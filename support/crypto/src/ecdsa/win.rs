@@ -37,6 +37,7 @@ fn alg_handle(curve: EcdsaCurve) -> Result<&'static AlgHandle, EcdsaError> {
     }
 }
 
+#[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner {
     handle: BCRYPT_KEY_HANDLE,
     curve: EcdsaCurve,
@@ -95,6 +96,20 @@ impl EcdsaKeyPairInner {
         Ok(signature)
     }
 
+    pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
+        // SAFETY: both types have the same layout, and a private key handle is
+        // valid for any public-key operation.
+        unsafe { std::mem::transmute::<&EcdsaKeyPairInner, &EcdsaPublicKeyInner>(self) }
+    }
+}
+
+#[repr(C)] // Needed for the transmute in as_pub.
+pub struct EcdsaPublicKeyInner {
+    handle: BCRYPT_KEY_HANDLE,
+    curve: EcdsaCurve,
+}
+
+impl EcdsaPublicKeyInner {
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         // A signature must be exactly `r || s`, each `curve.key_size()` bytes.
         if signature.len() != self.curve.key_size() * 2 {

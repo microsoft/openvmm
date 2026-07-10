@@ -10,6 +10,7 @@ fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError::SymCrypt(e, op))
 }
 
+#[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner {
     key: symcrypt::ecc::EcKey,
 }
@@ -29,6 +30,18 @@ impl EcdsaKeyPairInner {
         self.key.ecdsa_sign(hash).map_err(|e| err(e, "ECDSA sign"))
     }
 
+    pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
+        // SAFETY: EcdsaPublicKeyInner is just a wrapper around the same EcKey.
+        unsafe { std::mem::transmute::<&EcdsaKeyPairInner, &EcdsaPublicKeyInner>(self) }
+    }
+}
+
+#[repr(transparent)] // Needed for the transmute in as_pub.
+pub struct EcdsaPublicKeyInner {
+    key: symcrypt::ecc::EcKey,
+}
+
+impl EcdsaPublicKeyInner {
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         match self.key.ecdsa_verify(signature, hash) {
             Ok(()) => Ok(true),
