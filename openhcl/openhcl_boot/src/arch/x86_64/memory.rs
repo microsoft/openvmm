@@ -89,13 +89,13 @@ pub fn setup_vtl2_memory(
         )),
         _ => None,
     };
-
-    if shim_params.isolation_type == IsolationType::Snp {
-        log::info!(
-            "SNP cache coherency fixup required={}",
-            super::snp::cache_fixup_required()
-        );
-    }
+    let snp_cache_fixup_required = if shim_params.isolation_type == IsolationType::Snp {
+        let required = super::snp::cache_fixup_required(shim_params);
+        log::info!("SNP cache coherency fixup required={required}");
+        required
+    } else {
+        false
+    };
 
     // Make sure imported regions are in increasing order.
     let mut last_range_end = None;
@@ -110,7 +110,7 @@ pub fn setup_vtl2_memory(
         partition_info.vtl2_ram.iter().map(|e| e.range),
         shim_params.imported_regions().map(|(r, _)| r),
     ) {
-        accept_vtl2_memory(shim_params, &mut local_map, range);
+        accept_vtl2_memory(shim_params, &mut local_map, range, snp_cache_fixup_required);
     }
 
     let ram_buffer = if let Some(bounce_buffer) = shim_params.bounce_buffer {
@@ -121,7 +121,7 @@ pub fn setup_vtl2_memory(
             core::iter::once(bounce_buffer),
             partition_info.vtl2_ram.iter().map(|e| e.range),
         ) {
-            accept_vtl2_memory(shim_params, &mut local_map, range);
+            accept_vtl2_memory(shim_params, &mut local_map, range, snp_cache_fixup_required);
         }
 
         // SAFETY: The bounce buffer is trusted as it is obtained from measured
@@ -141,7 +141,13 @@ pub fn setup_vtl2_memory(
     // TODO: No VTL0 memory is currently marked as pending.
     for (imported_range, already_accepted) in shim_params.imported_regions() {
         if !already_accepted {
-            accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
+            accept_pending_vtl2_memory(
+                shim_params,
+                &mut local_map,
+                ram_buffer,
+                imported_range,
+                snp_cache_fixup_required,
+            );
         }
     }
 
@@ -244,6 +250,7 @@ fn accept_vtl2_memory(
     shim_params: &ShimParams,
     local_map: &mut Option<LocalMap<'_>>,
     range: MemoryRange,
+    snp_cache_fixup_required: bool,
 ) {
     match shim_params.isolation_type {
         IsolationType::Vbs => {
@@ -252,8 +259,13 @@ fn accept_vtl2_memory(
                 .expect("accepting vtl 2 memory must not fail");
         }
         IsolationType::Snp => {
-            super::snp::set_page_acceptance(local_map.as_mut().unwrap(), range, true)
-                .expect("accepting vtl 2 memory must not fail");
+            super::snp::set_page_acceptance(
+                local_map.as_mut().unwrap(),
+                range,
+                true,
+                snp_cache_fixup_required,
+            )
+            .expect("accepting vtl 2 memory must not fail");
         }
         IsolationType::Tdx => {
             super::tdx::accept_pages(range).expect("accepting vtl2 memory must not fail")
@@ -269,6 +281,7 @@ fn accept_pending_vtl2_memory(
     local_map: &mut Option<LocalMap<'_>>,
     ram_buffer: &mut [u8],
     range: MemoryRange,
+    snp_cache_fixup_required: bool,
 ) {
     let isolation_type = shim_params.isolation_type;
 
@@ -328,8 +341,13 @@ fn accept_pending_vtl2_memory(
                 // accept the pages.
                 match isolation_type {
                     IsolationType::Snp => {
-                        super::snp::set_page_acceptance(local_map, range, true)
-                            .expect("accepting vtl 2 memory must not fail");
+                        super::snp::set_page_acceptance(
+                            local_map,
+                            range,
+                            true,
+                            snp_cache_fixup_required,
+                        )
+                        .expect("accepting vtl 2 memory must not fail");
                     }
                     IsolationType::Tdx => {
                         super::tdx::accept_pages(range)

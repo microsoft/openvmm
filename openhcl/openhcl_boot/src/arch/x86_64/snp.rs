@@ -4,6 +4,7 @@
 //! SNP support for the bootshim.
 
 use super::address_space::LocalMap;
+use crate::ShimParams;
 use core::arch::asm;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
@@ -16,6 +17,7 @@ use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::ExtendedSevFeaturesEbx;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
+use x86defs::snp::HvPspCpuidPage;
 
 #[cfg(feature = "cvm_boot_log")]
 use {
@@ -30,11 +32,27 @@ use {
     x86defs::snp::SevExitCode, x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
 };
 
+fn cache_fixup_required_from_page(cpuid_page: &HvPspCpuidPage) -> bool {
+    let Some(leaves) = cpuid_page.cpuid_leaf_info.get(..cpuid_page.count as usize) else {
+        return true;
+    };
+
+    let Some(leaf) = leaves
+        .iter()
+        .find(|leaf| leaf.eax_in == CpuidFunction::ExtendedSevFeatures.0 && leaf.ecx_in == 0)
+    else {
+        return true;
+    };
+
+    !ExtendedSevFeaturesEbx::from(leaf.ebx_out).coherency_sfw_no()
+}
+
 /// Returns whether this processor requires the SNP cache coherency workaround.
 /// `COHERENCY_SFW_NO` indicates that the software workaround is not needed.
-pub(super) fn cache_fixup_required() -> bool {
-    let result = safe_intrinsics::cpuid(CpuidFunction::ExtendedSevFeatures.0, 0);
-    !ExtendedSevFeaturesEbx::from(result.ebx).coherency_sfw_no()
+pub(super) fn cache_fixup_required(shim_params: &ShimParams) -> bool {
+    // SAFETY: The CPUID page is imported by the PSP at this measured address.
+    let cpuid_page = unsafe { &*(shim_params.cpuid_start() as *const HvPspCpuidPage) };
+    cache_fixup_required_from_page(cpuid_page)
 }
 
 /// Touch a freshly (re)assigned page so the cache engine clears any stale
@@ -882,11 +900,12 @@ pub fn set_page_acceptance(
     local_map: &mut LocalMap<'_>,
     range: MemoryRange,
     validate: bool,
+    fixup_cache: bool,
 ) -> Result<(), AcceptGpaError> {
     let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / X64_PAGE_SIZE;
     let mut page_count = range.page_count_4k();
     let mut page_base = range.start_4k_gpn();
-    let fixup_cache = validate && cache_fixup_required();
+    let fixup_cache = validate && fixup_cache;
 
     while page_count != 0 {
         // Attempt to validate a large page.
@@ -966,5 +985,29 @@ impl minimal_rt::arch::IoAccess for SnpIoAccess {
     unsafe fn outb(&self, port: u16, data: u8) {
         // Best effort
         let _ = Ghcb::write_io_port(port, IoAccessSize::Byte, data as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zerocopy::FromZeros;
+
+    #[test]
+    fn cache_fixup_requirement_from_cpuid_page() {
+        let mut cpuid_page = HvPspCpuidPage::new_zeroed();
+        assert!(cache_fixup_required_from_page(&cpuid_page));
+
+        cpuid_page.count = 1;
+        cpuid_page.cpuid_leaf_info[0].eax_in = CpuidFunction::ExtendedSevFeatures.0;
+        assert!(cache_fixup_required_from_page(&cpuid_page));
+
+        cpuid_page.cpuid_leaf_info[0].ebx_out = ExtendedSevFeaturesEbx::new()
+            .with_coherency_sfw_no(true)
+            .into();
+        assert!(!cache_fixup_required_from_page(&cpuid_page));
+
+        cpuid_page.count = u32::MAX;
+        assert!(cache_fixup_required_from_page(&cpuid_page));
     }
 }
