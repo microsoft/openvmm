@@ -558,9 +558,6 @@ impl virt::Processor for MshvProcessor<'_> {
         let mut last_waker: Option<Waker> = None;
 
         loop {
-            vpinner.needs_yield.maybe_yield().await;
-            stop.check()?;
-
             // Ensure the waker is set so device threads can wake us.
             poll_fn(|cx| {
                 if !last_waker.as_ref().is_some_and(|w| cx.waker().will_wake(w)) {
@@ -581,6 +578,11 @@ impl virt::Processor for MshvProcessor<'_> {
                     self.flush_messages(pending_sints);
                 }
             }
+
+            // Check after all pre-run work to narrow the signal-to-run race.
+            // Closing it requires sticky cancellation support from MSHV.
+            vpinner.needs_yield.maybe_yield().await;
+            stop.check()?;
 
             match self.runner.run() {
                 Ok(exit) => {
