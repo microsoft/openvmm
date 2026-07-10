@@ -26,6 +26,8 @@ use smoltcp::wire::UdpRepr;
 
 pub const DHCP_SERVER: u16 = 67;
 pub const DHCP_CLIENT: u16 = 68;
+// RFC 1542 section 2.1 requires every BOOTP message to be at least 300 octets.
+const BOOTP_MIN_MESSAGE_LEN: usize = 300;
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn handle_dhcp(&mut self, payload: &[u8]) -> Result<(), DropReason> {
@@ -118,6 +120,7 @@ impl<T: Client> Access<'_, T> {
             src_port: DHCP_SERVER,
             dst_port: DHCP_CLIENT,
         };
+        let resp_dhcp_len = resp_dhcp.buffer_len().max(BOOTP_MIN_MESSAGE_LEN);
         // RFC 2131 section 4.1 requires consistent link- and network-layer
         // destinations. A DHCPNAK is always broadcast when no relay is involved.
         let (dst_hardware_address, dst_ip) = match (dhcp_req.broadcast, your_ip) {
@@ -128,7 +131,7 @@ impl<T: Client> Access<'_, T> {
             src_addr: self.inner.state.params.gateway_ip,
             dst_addr: dst_ip,
             next_header: IpProtocol::Udp,
-            payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
+            payload_len: resp_udp.header_len() + resp_dhcp_len,
             hop_limit: 64,
         };
         let resp_eth = EthernetRepr {
@@ -147,7 +150,7 @@ impl<T: Client> Access<'_, T> {
             &mut resp_udp_packet,
             &IpAddress::Ipv4(resp_ipv4.src_addr),
             &IpAddress::Ipv4(resp_ipv4.dst_addr),
-            resp_dhcp.buffer_len(),
+            resp_dhcp_len,
             |udp_payload| {
                 let mut resp_dhcp_packet = DhcpPacket::new_unchecked(udp_payload);
                 resp_dhcp.emit(&mut resp_dhcp_packet).unwrap();
@@ -159,7 +162,7 @@ impl<T: Client> Access<'_, T> {
             &resp_buffer[..resp_eth.buffer_len()
                 + resp_ipv4.buffer_len()
                 + resp_udp.header_len()
-                + resp_dhcp.buffer_len()],
+                + resp_dhcp_len],
             &ChecksumState::UDP4,
         );
         Ok(())
@@ -240,6 +243,7 @@ mod tests {
         server_ip: Ipv4Address,
         server_identifier: Option<Ipv4Address>,
         broadcast: bool,
+        dhcp_len: usize,
         checksum_state: ChecksumState,
     }
 
@@ -278,6 +282,7 @@ mod tests {
             server_ip: dhcp_repr.server_ip,
             server_identifier: dhcp_repr.server_identifier,
             broadcast: dhcp_repr.broadcast,
+            dhcp_len: udp.payload().len(),
             checksum_state: *checksum_state,
         }
     }
@@ -299,6 +304,13 @@ mod tests {
         assert_eq!(reply.ip_dst, Ipv4Address::BROADCAST);
         assert!(reply.broadcast);
         assert_udp4(reply.checksum_state);
+    }
+
+    #[pal_async::async_test]
+    async fn pads_bootp_reply_to_minimum_length(driver: DefaultDriver) {
+        let reply = reply(driver, DhcpMessageType::Discover, false, None);
+
+        assert_eq!(reply.dhcp_len, BOOTP_MIN_MESSAGE_LEN);
     }
 
     #[pal_async::async_test]
