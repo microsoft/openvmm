@@ -74,13 +74,11 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
 }
 
 /// Returns true if, with per-CPU sidecar overrides active, the sidecar node
-/// whose VPs are `base_vp..base_vp + size` has application processors but none
-/// are left for sidecar to start (every AP is kernel-started).
+/// whose VPs are `base_vp..base_vp + size` has no application processors left
+/// for sidecar to start (every AP is kernel-started).
 ///
 /// The first VP of a node is its base VP and is always kernel-started, so
-/// sidecar only ever starts the remaining VPs. A single-VP node therefore has
-/// no APs at all and is never considered empty; this predicate only reports
-/// `true` for nodes with at least two VPs.
+/// sidecar only ever starts the remaining VPs.
 fn sidecar_node_is_empty(
     overrides: &sidecar_defs::PerCpuState,
     base_vp: usize,
@@ -88,10 +86,6 @@ fn sidecar_node_is_empty(
 ) -> bool {
     // Without per-CPU overrides sidecar starts every non-base VP.
     if !overrides.per_cpu_state_specified {
-        return false;
-    }
-    // A single-VP node has no APs at all and is never empty.
-    if size == 1 {
         return false;
     }
     // Empty iff no non-base VP is left for sidecar to start.
