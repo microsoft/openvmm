@@ -356,6 +356,9 @@ impl VpContextBuilder for TdxHardwareContext {
         // Spin until the kernel requests this AP to continue in the mailbox
 
         let mailbox_spinloop = byte_offset;
+        // pause
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xF3, 0x90]);
+
         // mov eax, [mailbox_apic_id]
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
         relative_offset = (offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32)
