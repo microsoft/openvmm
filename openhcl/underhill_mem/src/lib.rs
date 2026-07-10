@@ -215,6 +215,26 @@ pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
     isolation: IsolationType,
+    snp_cache_fixup_required: bool,
+}
+
+fn query_snp_cache_fixup_required(isolation: IsolationType) -> bool {
+    if isolation != IsolationType::Snp {
+        return false;
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    {
+        !x86defs::cpuid::ExtendedSevFeaturesEbx::from(
+            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0, 0).ebx,
+        )
+        .coherency_sfw_no()
+    }
+
+    #[cfg(not(guest_arch = "x86_64"))]
+    {
+        true
+    }
 }
 
 impl MemoryAcceptor {
@@ -229,12 +249,19 @@ impl MemoryAcceptor {
             HypercallCode::HvCallModifyVtlProtectionMask,
         ]);
 
+        let snp_cache_fixup_required = query_snp_cache_fixup_required(isolation);
+
         // On boot, VTL 0 should have permissions.
         Ok(Self {
             mshv_hvcall,
             mshv_vtl,
             isolation,
+            snp_cache_fixup_required,
         })
+    }
+
+    fn snp_cache_fixup_required(&self) -> bool {
+        self.snp_cache_fixup_required
     }
 
     /// Accept pages for lower VTLs.
@@ -737,6 +764,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // them. For TDX, this is done by the TDX module. For mshv, this is
                 // done by the hypervisor.
                 if self.acceptor.isolation == IsolationType::Snp {
+                    if self.acceptor.snp_cache_fixup_required() {
+                        inner.encrypted.cache_fixup_range(range).expect("VTL 2 should have access to lower VTL memory immediately after page acceptance.");
+                    }
                     inner.encrypted.zero_range(range).expect("VTL 2 should have access to lower VTL memory, the page should be accepted, there should be no vtl protections yet.")
                 }
             }

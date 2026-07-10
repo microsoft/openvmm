@@ -431,8 +431,14 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             let _span =
                 tracing::info_span!("zeroing lower vtl memory for SNP", CVM_ALLOWED).entered();
 
-            tracing::debug!("zeroing lower vtl memory for SNP");
+            let cache_fixup_required = acceptor.as_ref().unwrap().snp_cache_fixup_required();
+            tracing::debug!(cache_fixup_required, "zeroing lower vtl memory for SNP");
             for range in validated_ranges {
+                if cache_fixup_required {
+                    vtl0_mapping.cache_fixup_range(range).expect(
+                        "private memory should be accessible immediately after page acceptance",
+                    );
+                }
                 vtl0_gm
                     .fill_at(range.start(), 0, range.len() as usize)
                     .expect("private memory should be valid at this stage");

@@ -8963,6 +8963,7 @@ dependencies = [
  "memory_range",
  "pal_async",
  "parking_lot",
+ "safe_intrinsics",
  "sparse_mmap",
  "thiserror 2.0.16",
  "tracelimit",

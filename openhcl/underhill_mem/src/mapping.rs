@@ -753,6 +753,24 @@ impl GuestMemoryMapping {
         self.mapping
             .fill_at(range.start() as usize, 0, range.len() as usize)
     }
+
+    /// Touch each newly assigned page before its first write to clear stale
+    /// cache state left by the previous SNP page assignment.
+    pub(crate) fn cache_fixup_range(
+        &self,
+        range: MemoryRange,
+    ) -> Result<(), sparse_mmap::SparseMappingError> {
+        assert!(range.start().is_multiple_of(PAGE_SIZE as u64));
+        assert!(range.end().is_multiple_of(PAGE_SIZE as u64));
+
+        for page_start in (range.start()..range.end()).step_by(PAGE_SIZE) {
+            let _: u8 = self.mapping.read_volatile(page_start as usize)?;
+            let _: u8 = self
+                .mapping
+                .read_volatile(page_start as usize + PAGE_SIZE - 1)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
