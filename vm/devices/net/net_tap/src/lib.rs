@@ -292,17 +292,19 @@ impl Queue for TapQueue {
                         continue;
                     }
                     let frame = &self.buffer[frame_start..read_len];
-                    let mut rx_meta = parse_vnet_hdr(&hdr, frame);
+                    let rx_meta = parse_vnet_hdr(&hdr, frame);
 
                     // Only report GSO/LRO metadata if the frontend supports it.
                     if rx_meta.gso_size > 0 {
-                        let lro_allowed = match rx_meta.l3_protocol {
-                            L3Protocol::Ipv4 => self.rx_offload_support.lro4,
-                            L3Protocol::Ipv6 => self.rx_offload_support.lro6,
-                            L3Protocol::Unknown => false,
-                        };
-                        if !lro_allowed {
-                            rx_meta.gso_size = 0;
+                        if !frontend_supports_gso(
+                            self.rx_offload_support,
+                            rx_meta.l3_protocol,
+                        ) {
+                            tracelimit::warn_ratelimited!(
+                                ?rx_meta.l3_protocol,
+                                "dropping rx GSO packet: frontend does not support LRO"
+                            );
+                            continue;
                         }
                     }
 
@@ -702,6 +704,17 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr, frame: &[u8]) -> RxMetadata {
     }
 }
 
+fn frontend_supports_gso(
+    support: net_backend::RxOffloadSupport,
+    protocol: L3Protocol,
+) -> bool {
+    match protocol {
+        L3Protocol::Ipv4 => support.lro4,
+        L3Protocol::Ipv6 => support.lro6,
+        L3Protocol::Unknown => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,6 +796,17 @@ mod tests {
     const ETH_IPV4: [u8; 14] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00];
     // Minimal 14-byte Ethernet header with IPv6 EtherType for use in tests.
     const ETH_IPV6: [u8; 14] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xDD];
+
+    #[test]
+    fn frontend_gso_support_matches_ip_version() {
+        let support = net_backend::RxOffloadSupport {
+            lro4: true,
+            lro6: false,
+        };
+        assert!(frontend_supports_gso(support, L3Protocol::Ipv4));
+        assert!(!frontend_supports_gso(support, L3Protocol::Ipv6));
+        assert!(!frontend_supports_gso(support, L3Protocol::Unknown));
+    }
 
     #[test]
     fn rx_metadata_from_vnet_hdr_valid() {

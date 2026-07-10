@@ -23,6 +23,12 @@ struct RxPacket {
     cap: u32,
 }
 
+fn gso_header_offsets(metadata: &RxMetadata) -> Option<(u16, u16)> {
+    let csum_start = (metadata.l2_len as u16).checked_add(metadata.l3_len)?;
+    let total_hdr = csum_start.checked_add(metadata.l4_len as u16)?;
+    (usize::from(total_hdr) <= metadata.len).then_some((csum_start, total_hdr))
+}
+
 /// Holds virtio buffers available for a network backend to send data to the client.
 #[derive(Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
@@ -200,12 +206,7 @@ impl BufferAccess for VirtioWorkPool {
                 L3Protocol::Ipv6 => self.guest_tso6,
                 L3Protocol::Unknown => false,
             };
-        let gso_header_offsets = (metadata.l2_len as u16)
-            .checked_add(metadata.l3_len)
-            .and_then(|csum_start| {
-                let total_hdr = csum_start.checked_add(metadata.l4_len as u16)?;
-                Some((csum_start, total_hdr))
-            });
+        let gso_header_offsets = gso_header_offsets(metadata);
         let (gso_type, gso_size, hdr_len, csum_start, csum_offset) = if metadata.gso_size > 0
             && metadata.l2_len > 0
             && metadata.l3_len > 0
@@ -235,8 +236,9 @@ impl BufferAccess for VirtioWorkPool {
                     l2_len = metadata.l2_len,
                     l3_len = metadata.l3_len,
                     l4_len = metadata.l4_len,
+                    packet_len = metadata.len,
                     ?gso_allowed,
-                    "cannot emit GSO metadata: missing header lengths or guest feature"
+                    "cannot emit GSO metadata: invalid header lengths or guest feature"
                 );
             }
             (0, 0, 0, 0, 0)
@@ -282,5 +284,28 @@ impl BufferAccess for VirtioWorkPool {
             packet.cap
         );
         packet.len = metadata.len as u32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gso_header_offsets_require_headers_to_fit_packet() {
+        let metadata = RxMetadata {
+            len: 54,
+            l2_len: 14,
+            l3_len: 20,
+            l4_len: 20,
+            ..Default::default()
+        };
+        assert_eq!(gso_header_offsets(&metadata), Some((34, 54)));
+
+        let truncated = RxMetadata {
+            len: 53,
+            ..metadata
+        };
+        assert_eq!(gso_header_offsets(&truncated), None);
     }
 }

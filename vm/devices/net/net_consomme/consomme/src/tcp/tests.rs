@@ -1865,7 +1865,7 @@ fn test_tcp_pseudo_header_seed_completes_to_valid_checksum() {
     let correct = {
         let mut pkt = TcpPacket::new_unchecked(&mut buf);
         let mut caps = ChecksumCapabilities::default();
-        caps.tcp = Checksum::None;
+        caps.tcp = smoltcp::phy::Checksum::None;
         tcp.emit(&mut pkt, &src_ip.into(), &dst_ip.into(), &caps);
         pkt.fill_checksum(&src_ip.into(), &dst_ip.into());
         let correct = pkt.checksum();
