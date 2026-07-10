@@ -135,7 +135,7 @@ Size suffixes accept K, M, G, and T, optionally followed by B.
 Options:
     size=<SIZE>              guest RAM size, default 1GB
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
     hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
     hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
@@ -165,7 +165,7 @@ Syntax: key=value[,key=value...]
 Options:
     size=<SIZE>              RAM for this node (required)
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
     hugepages=on|off         allocate RAM from hugetlb pages
     hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on

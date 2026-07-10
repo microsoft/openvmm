@@ -27,6 +27,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `shared=on|off` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
   * `prefetch=on|off` - pre-populate guest RAM mappings up front.
+    Only has an effect under WHP; a no-op on KVM/mshv.
   * `thp=on|off` - mark private guest RAM as Transparent Huge Page
     eligible (Linux only). Requires `shared=off`.
   * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages

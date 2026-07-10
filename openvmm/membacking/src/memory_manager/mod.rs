@@ -628,7 +628,7 @@ impl GuestMemoryBuilder {
                         .map(MapParams {
                             writable: true,
                             executable: true,
-                            prefetch: backing.prefetch && backing.mappable.is_some(),
+                            prefetch: backing.prefetch,
                         })
                         .await
                         .map_err(|error| MemoryBuildError::RamRegionEnable {

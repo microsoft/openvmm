@@ -60,14 +60,13 @@ not take a fault/exit the first time it touches each page. With prefetch off
 (the default), startup is fast and only the memory the guest actually touches
 is committed, but each first touch costs a fault.
 
-Two things limit where prefetch has any effect:
+Prefetch applies to both **shared** (file-backed) and **private** (anonymous)
+guest RAM.
 
-- It only applies to **shared** (file-backed) RAM. For private (anonymous)
-  memory the flag is ignored.
-- Only the **WHP** (Windows) backend implements it. On **KVM** and **mshv**,
-  `prefetch=on` is a no-op — those backends do not pre-populate their
-  second-stage page tables or pre-fault the host mapping, so guest RAM is
-  always faulted in on demand.
+One thing limits where it has any effect: only the **WHP** (Windows) backend
+implements it. On **KVM** and **mshv**, `prefetch=on` is a no-op — those
+backends do not pre-populate their second-stage page tables or pre-fault the
+host mapping, so guest RAM is always faulted in on demand.
 
 ## Huge pages
 
@@ -153,7 +152,7 @@ memory or explicit huge pages.
 | Option | Requires | Platform | Notes |
 |---|---|---|---|
 | `shared=off` (private) | — | all | No snapshots/passthrough; not with PCAT legacy RAM |
-| `prefetch=on` | shared memory | WHP only | Commits + populates SLAT up front; no-op on KVM/mshv |
+| `prefetch=on` | — | WHP only | Commits + populates SLAT up front; no-op on KVM/mshv |
 | `thp=on` | `shared=off` | Linux | Best-effort 2 MB pages |
 | `hugepages=on` | `shared=on` | Linux, Windows | Guaranteed; size/range must be huge-page aligned |
 | `hugepage_size=<SIZE>` | `hugepages=on` | Linux (any), Windows (2 MB only) | Default 2 MB |

@@ -542,6 +542,10 @@ impl Partition {
                 len,
                 &mut outn,
             ))?;
+            // Unlike `get_property`, it is fine for `outn` to be smaller than
+            // `len`: `counters` is zero-initialized, so if an older host fills
+            // in fewer counters than our struct defines, the trailing (unknown)
+            // counters simply read back as zero rather than garbage.
         }
         Ok(counters)
     }

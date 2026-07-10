@@ -232,10 +232,13 @@ async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 #[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
 async fn large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     const HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
+    const GIGAPAGE_SIZE: u64 = 1024 * 1024 * 1024;
+    // 1 GiB of guest RAM, an exact multiple of the 2 MB hugepage size.
+    const STARTUP_BYTES: u64 = 512 * HUGEPAGE_SIZE;
 
     let (vm, agent) = config
         .with_memory(MemoryConfig {
-            startup_bytes: 1024 * 1024 * 1024, // 1 GiB, a multiple of 2 MB
+            startup_bytes: STARTUP_BYTES,
             ..Default::default()
         })
         .modify_backend(|b| b.with_hugepages(None))
@@ -247,9 +250,13 @@ async fn large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
         read_slat_counters(&node).context("could not read WHP SLAT counters from inspect tree")?;
     tracing::info!(mapped_2m, mapped_1g, "WHP SLAT page counts");
 
+    // Count all large SLAT entries in units of 2 MB pages (each 1 GB entry
+    // covers 512 of them). With large-page backing every guest page should be
+    // mapped as a large page, so this must equal the total guest RAM / 2 MB.
+    let mapped_2m_equiv = mapped_2m + mapped_1g * (GIGAPAGE_SIZE / HUGEPAGE_SIZE);
     assert_eq!(
-        mapped_2m + mapped_1g * 512,
-        512,
+        mapped_2m_equiv,
+        STARTUP_BYTES / HUGEPAGE_SIZE,
         "expected large SLAT entries with large-page backing"
     );
 
@@ -262,9 +269,9 @@ async fn large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
 /// counters for VTL0. `linux_direct` is not an OpenHCL config, so only the
 /// VTL0 partition exists.
 #[cfg(windows)]
-const SLAT_INSPECT_PATH: &str = "partition/vtl0/memory/slat_pages";
+const SLAT_INSPECT_PATH: &str = "partition/vtl0/memory";
 
-/// Read the `(mapped_2m, mapped_1g)` counters from a `slat_pages` inspect node
+/// Read the `(mapped_2m, mapped_1g)` counters from the `memory` inspect node
 /// (as returned by inspecting [`SLAT_INSPECT_PATH`]).
 ///
 /// Fails if the node reports `"unavailable"` (the host does not support the WHP
@@ -278,10 +285,10 @@ fn read_slat_counters(node: &inspect::Node) -> anyhow::Result<(u64, u64)> {
     }
     let mapped_2m = json["mapped_2m"]
         .as_u64()
-        .context("slat_pages.mapped_2m missing or not an integer")?;
+        .context("memory.mapped_2m missing or not an integer")?;
     let mapped_1g = json["mapped_1g"]
         .as_u64()
-        .context("slat_pages.mapped_1g missing or not an integer")?;
+        .context("memory.mapped_1g missing or not an integer")?;
     Ok((mapped_2m, mapped_1g))
 }
 

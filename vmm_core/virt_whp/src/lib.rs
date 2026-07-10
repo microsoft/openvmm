@@ -153,22 +153,17 @@ struct VtlPartition {
 
 impl VtlPartition {
     /// Adds the WHP partition's SLAT (nested page table) mapping counters to
-    /// the inspection under `memory/slat_pages`, reporting how many guest pages
-    /// the hypervisor has mapped at 4 KB, 2 MB, and 1 GB granularity.
-    ///
-    /// Degrades gracefully to `slat_pages = "unavailable"` if the host platform
-    /// does not support the memory counter set.
+    /// the inspection under `memory`, reporting how many guest pages the
+    /// hypervisor has mapped at 4 KB, 2 MB, and 1 GB granularity.
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field(
             "memory",
             inspect::adhoc(|req| {
-                if let Some(counters) = self.whp.memory_counters() {
+                if let Ok(counters) = self.whp.memory_counters() {
                     req.respond()
                         .field("mapped_4k", counters.Mapped4KPageCount)
                         .field("mapped_2m", counters.Mapped2MPageCount)
                         .field("mapped_1g", counters.Mapped1GPageCount);
-                } else {
-                    req.ignore();
                 }
             }),
         );
