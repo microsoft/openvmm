@@ -82,6 +82,7 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
+            doorbells: doorbells.clone(),
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -208,6 +209,10 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
+    // Cleared on every controller reset so a stale shadow-doorbell mapping
+    // cannot outlive the reset and corrupt a rebooted guest's reused memory.
+    #[inspect(skip)]
+    doorbells: Arc<RwLock<DoorbellMemory>>,
 }
 
 enum CoordinatorRequest {
@@ -240,6 +245,11 @@ impl Coordinator {
                         state.drain().await;
                         self.admin.remove();
                     }
+                    // Drop any shadow-doorbell mapping installed by Doorbell
+                    // Buffer Config. Otherwise its guest-memory address survives
+                    // the reset and the controller writes shadow event_idx into a
+                    // page the rebooted guest has reused. See DoorbellMemory::reset.
+                    self.doorbells.write().reset();
                 } else {
                     pending().await
                 }

@@ -346,9 +346,12 @@ impl ChangeDeviceState for GenericPcieSwitch {
         // Reset the upstream port configuration space
         self.upstream_port.cfg_space.reset();
 
-        // Reset all downstream port configuration spaces
+        // Reset each downstream port via the port (not a bare cfg_space.reset),
+        // so presence detect is re-asserted for a still-connected device; a bare
+        // cfg_space.reset() would clear it and the guest's pciehp would evict a
+        // device attached behind the switch on reboot.
         for (_, _, downstream_port) in self.downstream_ports.iter_mut() {
-            downstream_port.port.cfg_space.reset();
+            downstream_port.port.reset();
         }
     }
 }
@@ -885,6 +888,60 @@ mod tests {
         assert!(port_numbers.contains(&0));
         assert!(port_numbers.contains(&1));
         assert!(port_numbers.contains(&2));
+    }
+
+    #[pal_async::async_test]
+    async fn test_reset_preserves_presence_detect_behind_switch() {
+        use crate::test_helpers::TestPcieEndpoint;
+        use chipset_device::io::IoResult;
+
+        let mut switch = build(switch_def(
+            "test-switch",
+            2,
+            true, // hotplug-capable downstream ports
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
+
+        // Presence Detect is bit 6 of the PCIe slot-status register (cap offset
+        // 0x18), i.e. bit 22 of the dword at config offset 0x58 on a downstream
+        // port.
+        fn presence(switch: &GenericPcieSwitch, idx: usize) -> u32 {
+            let mut v = 0u32;
+            assert!(matches!(
+                switch.downstream_ports[idx]
+                    .2
+                    .cfg_space()
+                    .read_u32(0x58, &mut v),
+                IoResult::Ok
+            ));
+            (v >> 22) & 0x1
+        }
+
+        // Connect a device to the first downstream port; presence asserts.
+        let devfn = switch.downstream_ports[0].0;
+        switch
+            .add_pcie_device(
+                devfn,
+                "downstream-dev",
+                Box::new(TestPcieEndpoint::new(
+                    |_, _| Some(IoResult::Ok),
+                    |_, _| Some(IoResult::Ok),
+                )),
+            )
+            .unwrap();
+        assert_eq!(presence(&switch, 0), 1, "presence asserted after connect");
+
+        // A guest reboot resets the switch; the connected device's link survives,
+        // so presence must remain set - otherwise the guest's pciehp evicts a
+        // device attached behind the switch on reboot (the same bug this fixes for
+        // root ports).
+        switch.reset().await;
+        assert_eq!(
+            presence(&switch, 0),
+            1,
+            "presence must survive switch reset while a device is connected"
+        );
     }
 
     #[test]
