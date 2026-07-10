@@ -86,7 +86,7 @@ fn sidecar_node_is_empty(
 ) -> bool {
     // Without per-CPU overrides sidecar starts every non-base VP.
     if !overrides.per_cpu_state_specified {
-        return false;
+        return size == 1;
     }
     // Empty iff no non-base VP is left for sidecar to start.
     !(1..size).any(|i| overrides.sidecar_starts_cpu[base_vp + i])
