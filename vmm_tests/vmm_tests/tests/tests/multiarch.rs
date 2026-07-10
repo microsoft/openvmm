@@ -217,6 +217,74 @@ async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     Ok(())
 }
 
+/// Verify that backing OpenVMM guest RAM with 2 MB large pages on Windows (WHP)
+/// actually produces 2 MB SLAT (nested page table) entries.
+///
+/// This boots a guest with `hugepages` enabled (a `SEC_LARGE_PAGES` section on
+/// Windows), touches guest RAM so the hypervisor faults in the SLAT, then reads
+/// the WHP partition memory counters through the OpenVMM inspect tree and
+/// asserts that all guest memory has been backed by 2 MB pages.
+///
+/// Requires the "Lock pages in memory" privilege (`SeLockMemoryPrivilege`) so
+/// that the large-page section allocation succeeds; the test fails (rather than
+/// skips) if large-page backing is unavailable, per design.
+#[cfg(windows)]
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
+async fn large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
+
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024, // 1 GiB, a multiple of 2 MB
+            ..Default::default()
+        })
+        .modify_backend(|b| b.with_hugepages(None))
+        .run()
+        .await?;
+
+    let node = vm.inspect_vmm(SLAT_INSPECT_PATH).await?;
+    let (mapped_2m, mapped_1g) =
+        read_slat_counters(&node).context("could not read WHP SLAT counters from inspect tree")?;
+    tracing::info!(mapped_2m, mapped_1g, "WHP SLAT page counts");
+
+    assert_eq!(
+        mapped_2m + mapped_1g * 512,
+        512,
+        "expected large SLAT entries with large-page backing"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// The inspect path to the WHP partition SLAT (nested page table) mapping
+/// counters for VTL0. `linux_direct` is not an OpenHCL config, so only the
+/// VTL0 partition exists.
+#[cfg(windows)]
+const SLAT_INSPECT_PATH: &str = "partition/vtl0/memory/slat_pages";
+
+/// Read the `(mapped_2m, mapped_1g)` counters from a `slat_pages` inspect node
+/// (as returned by inspecting [`SLAT_INSPECT_PATH`]).
+///
+/// Fails if the node reports `"unavailable"` (the host does not support the WHP
+/// memory counter set) or is missing the expected fields.
+#[cfg(windows)]
+fn read_slat_counters(node: &inspect::Node) -> anyhow::Result<(u64, u64)> {
+    let json: serde_json::Value = serde_json::from_str(&node.json().to_string())
+        .context("failed to parse inspect output as JSON")?;
+    if let Some(s) = json.as_str() {
+        anyhow::bail!("WHP memory counters unavailable: {s}");
+    }
+    let mapped_2m = json["mapped_2m"]
+        .as_u64()
+        .context("slat_pages.mapped_2m missing or not an integer")?;
+    let mapped_1g = json["mapped_1g"]
+        .as_u64()
+        .context("slat_pages.mapped_1g missing or not an integer")?;
+    Ok((mapped_2m, mapped_1g))
+}
+
 /// Basic boot test for images that require small amounts of ram, like alpine.
 #[vmm_test(
     openvmm_uefi_x64(vhd(alpine_3_23_x64)),

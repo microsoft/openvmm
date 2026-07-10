@@ -155,8 +155,8 @@ pub enum MemoryBuildError {
     /// Hugepage size is too large.
     #[error("hugepage size {0} is too large")]
     HugepageSizeTooLarge(MemorySize),
-    /// Hugepages are only supported on Linux.
-    #[error("hugepages are only supported on Linux")]
+    /// Hugepages are only supported on Linux and Windows.
+    #[error("hugepages are only supported on Linux and Windows")]
     HugepagesUnsupportedPlatform,
     /// Host NUMA node binding is only supported on Linux and Windows.
     #[error("host NUMA node binding is only supported on Linux and Windows")]
@@ -426,7 +426,7 @@ impl GuestMemoryBuilder {
                 return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
             }
             if req.hugepages {
-                if !cfg!(target_os = "linux") {
+                if !cfg!(any(target_os = "linux", target_os = "windows")) {
                     return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
                 }
                 if req.private_memory {
@@ -522,7 +522,13 @@ impl GuestMemoryBuilder {
             backings.push(RamBacking {
                 mappable: Some(mappable),
                 ranges: req.ranges,
-                prefetch: req.prefetch,
+                // On Windows, hugepage (SEC_LARGE_PAGES) backing only yields 2 MB
+                // SLAT entries when the SLAT is populated in >= 512-page batches;
+                // lazy per-page demand faults produce 4 KB entries. Prefetching
+                // populates each region up front in large contiguous batches, so
+                // force it on for hugepage-backed RAM. (Linux hugetlb faults the
+                // whole large page on first touch, so this is not needed there.)
+                prefetch: req.prefetch || (cfg!(windows) && req.hugepages),
                 transparent_hugepages: false,
                 host_numa_node: req.host_numa_node,
             });

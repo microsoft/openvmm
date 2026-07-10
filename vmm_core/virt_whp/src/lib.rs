@@ -128,6 +128,7 @@ struct WhpPartitionInner {
 }
 
 #[derive(Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 struct VtlPartition {
     #[inspect(skip)]
     whp: whp::Partition,
@@ -151,6 +152,28 @@ struct VtlPartition {
 }
 
 impl VtlPartition {
+    /// Adds the WHP partition's SLAT (nested page table) mapping counters to
+    /// the inspection under `memory/slat_pages`, reporting how many guest pages
+    /// the hypervisor has mapped at 4 KB, 2 MB, and 1 GB granularity.
+    ///
+    /// Degrades gracefully to `slat_pages = "unavailable"` if the host platform
+    /// does not support the memory counter set.
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field(
+            "memory",
+            inspect::adhoc(|req| {
+                if let Some(counters) = self.whp.memory_counters() {
+                    req.respond()
+                        .field("mapped_4k", counters.Mapped4KPageCount)
+                        .field("mapped_2m", counters.Mapped2MPageCount)
+                        .field("mapped_1g", counters.Mapped1GPageCount);
+                } else {
+                    req.ignore();
+                }
+            }),
+        );
+    }
+
     /// Query the default CPUID result for the given leaf/subleaf from VP0.
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {

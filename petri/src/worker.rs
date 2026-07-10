@@ -119,8 +119,8 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn inspect_all(&self) -> inspect::Node {
-        let mut inspection = inspect::inspect("", &self.handle);
+    pub(crate) async fn inspect(&self, path: &str) -> inspect::Node {
+        let mut inspection = inspect::inspect(path, &self.handle);
         inspection.resolve().await;
         inspection.results()
     }

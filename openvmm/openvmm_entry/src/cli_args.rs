@@ -137,8 +137,8 @@ Options:
     shared=on|off            use shared file-backed RAM, default on
     prefetch=on|off          pre-populate shared RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from Linux hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     file=<PATH>              use an existing file as guest RAM backing
 
 Examples:
@@ -1262,8 +1262,8 @@ impl Options {
             anyhow::bail!("transparent huge pages requires private memory mode");
         }
         if self.memory.hugepages {
-            if !cfg!(target_os = "linux") {
-                anyhow::bail!("hugepages are only supported on Linux");
+            if !cfg!(any(target_os = "linux", target_os = "windows")) {
+                anyhow::bail!("hugepages are only supported on Linux and Windows");
             }
             if self.private_memory() {
                 anyhow::bail!("hugepages conflict with private memory");

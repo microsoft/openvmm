@@ -1056,3 +1056,17 @@ pub struct WHV_ARM64_IC_PARAMETERS {
     pub Reserved: u32,
     pub GicV3Parameters: WHV_ARM64_IC_GIC_V3_PARAMETERS,
 }
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct WHV_PARTITION_COUNTER_SET(u32);
+
+pub const WHvPartitionCounterSetMemory: WHV_PARTITION_COUNTER_SET = WHV_PARTITION_COUNTER_SET(0);
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct WHV_PARTITION_MEMORY_COUNTERS {
+    pub Mapped4KPageCount: u64,
+    pub Mapped2MPageCount: u64,
+    pub Mapped1GPageCount: u64,
+}

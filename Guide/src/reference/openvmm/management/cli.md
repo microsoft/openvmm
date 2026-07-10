@@ -16,20 +16,25 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,shared=on,prefetch=off
   ```
 
+  The keys below select the guest RAM **memory backing**. For an explanation
+  of shared vs. private memory, prefetch, huge pages, and file-backed RAM —
+  and how to choose between them — see
+  [Memory Backing](../../architecture/openvmm/memory-backing.md).
+
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
   * `shared=on|off` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
+  * `prefetch=on|off` - pre-populate guest RAM mappings up front.
   * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
-  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
-    This is Linux-only, requires shared memory, and cannot be combined
-    with file-backed memory or PCAT/legacy x86 RAM splitting.
-  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
-    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
-    OpenVMM uses 2 MB pages.
+    eligible (Linux only). Requires `shared=off`.
+  * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages
+    (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
+    shared memory.
+  * `hugepage_size=<SIZE>` - request a specific large-page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; defaults to 2 MB. On
+    Windows only 2 MB is supported.
   * `file=<PATH>` - use an existing file as the guest RAM backing file.
     This is used by snapshots.
 

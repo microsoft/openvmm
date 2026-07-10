@@ -116,17 +116,8 @@ impl SparseMapping {
             ));
         }
 
-        let size_4k = 4096;
-        let size_2m = 0x200000;
-        let size_1g = 0x40000000;
-        let default_alignment = if len < size_2m {
-            size_4k
-        } else if len < size_1g {
-            size_2m
-        } else {
-            size_1g
-        };
-        let alignment = default_alignment.max(minimum_alignment);
+        let page_size = page_size();
+        let alignment = crate::reservation_alignment(len, minimum_alignment);
 
         let len = len
             .checked_add(alignment - 1)
@@ -140,7 +131,7 @@ impl SparseMapping {
 
         let alloc_len = len
             .checked_add(alignment)
-            .map(|temp| temp - size_4k)
+            .map(|temp| temp - page_size)
             .ok_or_else(|| {
                 Error::new(
                     io::ErrorKind::InvalidInput,
