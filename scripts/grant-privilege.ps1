@@ -61,7 +61,7 @@ public static class Lsa {
   [StructLayout(LayoutKind.Sequential)] struct LSA_OBJECT_ATTRIBUTES { public int Length; public IntPtr a,b,c; public int d; public IntPtr e; }
   [DllImport("advapi32.dll", SetLastError=true)] static extern uint LsaOpenPolicy(IntPtr s, ref LSA_OBJECT_ATTRIBUTES o, int a, out IntPtr h);
   [DllImport("advapi32.dll", SetLastError=true)] static extern uint LsaAddAccountRights(IntPtr h, byte[] sid, LSA_UNICODE_STRING[] r, int c);
-  [DllImport("advapi32.dll", SetLastError=true)] static extern uint LsaRemoveAccountRights(IntPtr h, byte[] sid, bool all, LSA_UNICODE_STRING[] r, int c);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern uint LsaRemoveAccountRights(IntPtr h, byte[] sid, [MarshalAs(UnmanagedType.U1)] bool all, LSA_UNICODE_STRING[] r, int c);
   [DllImport("advapi32.dll")] static extern uint LsaClose(IntPtr h);
   [DllImport("advapi32.dll")] static extern int LsaNtStatusToWinError(uint s);
   static IntPtr OpenPolicy() {
