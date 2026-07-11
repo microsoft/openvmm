@@ -638,6 +638,19 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn sharing(&self) -> Option<GuestMemorySharing> {
         None
     }
+
+    /// Returns whether this backing supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns).
+    ///
+    /// Locking requires a stable host mapping (see
+    /// [`mapping`](Self::mapping)), so the default returns whether a mapping
+    /// is present. Backings that translate each access on demand (e.g., memory
+    /// behind an emulated IOMMU) have no mapping and thus report `false`.
+    /// Callers that use locking as a zero-copy fast path should check this and
+    /// fall back to a copying path when it returns `false`.
+    fn supports_locking(&self) -> bool {
+        self.mapping().is_some()
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -1179,6 +1192,9 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
     allocated: bool,
+    /// Cached result of [`DynGuestMemoryAccess::supports_locking`], since it is
+    /// queried on hot zero-copy paths and never changes for a given backing.
+    supports_locking: bool,
     imp: T,
 }
 
@@ -1366,6 +1382,7 @@ impl GuestMemory {
 
     fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
+        let supports_locking = imp.supports_locking();
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1377,6 +1394,7 @@ impl GuestMemory {
                 },
                 regions,
                 allocated,
+                supports_locking,
             }),
         }
     }
@@ -1447,6 +1465,11 @@ impl GuestMemory {
         };
 
         imps.resize_with(region_count, || None);
+        // Locking is only supported if every backing region supports it.
+        let supports_locking = imps
+            .iter()
+            .flatten()
+            .all(GuestMemoryAccess::supports_locking);
         let imp = MultiRegionGuestMemoryAccess { imps, region_def };
 
         let inner = GuestMemoryInner {
@@ -1455,6 +1478,7 @@ impl GuestMemory {
             regions,
             imp,
             allocated: false,
+            supports_locking,
         };
 
         Ok(Self {
@@ -1605,6 +1629,16 @@ impl GuestMemory {
     /// file-based sharing. See [`GuestMemorySharing`].
     pub fn sharing(&self) -> Option<GuestMemorySharing> {
         self.inner.imp.sharing()
+    }
+
+    /// Returns whether this memory supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns) and [`lock_range`](Self::lock_range).
+    ///
+    /// Memory behind an emulated IOMMU has no stable host mapping and cannot
+    /// be locked; zero-copy callers should check this and fall back to a
+    /// copying path when it returns `false`.
+    pub fn supports_locking(&self) -> bool {
+        self.inner.supports_locking
     }
 
     /// Gets a pointer to the VA range for `gpa..gpa+len`.
