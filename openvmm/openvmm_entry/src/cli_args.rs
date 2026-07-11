@@ -167,8 +167,8 @@ Options:
     shared=on|off            use shared file-backed RAM, default on
     prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 

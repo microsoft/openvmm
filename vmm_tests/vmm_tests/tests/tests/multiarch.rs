@@ -221,9 +221,10 @@ async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 /// actually produces 2 MB SLAT (nested page table) entries.
 ///
 /// This boots a guest with `hugepages` enabled (a `SEC_LARGE_PAGES` section on
-/// Windows), touches guest RAM so the hypervisor faults in the SLAT, then reads
-/// the WHP partition memory counters through the OpenVMM inspect tree and
-/// asserts that all guest memory has been backed by 2 MB pages.
+/// Windows), which forces `prefetch` on so the guest RAM mappings are
+/// pre-populated in the SLAT at startup, then reads the WHP partition memory
+/// counters through the OpenVMM inspect tree and asserts that all guest memory
+/// has been backed by 2 MB pages.
 ///
 /// Requires the "Lock pages in memory" privilege (`SeLockMemoryPrivilege`) so
 /// that the large-page section allocation succeeds; the test fails (rather than
@@ -280,9 +281,6 @@ const SLAT_INSPECT_PATH: &str = "partition/vtl0/memory";
 fn read_slat_counters(node: &inspect::Node) -> anyhow::Result<(u64, u64)> {
     let json: serde_json::Value = serde_json::from_str(&node.json().to_string())
         .context("failed to parse inspect output as JSON")?;
-    if let Some(s) = json.as_str() {
-        anyhow::bail!("WHP memory counters unavailable: {s}");
-    }
     let mapped_2m = json["mapped_2m"]
         .as_u64()
         .context("memory.mapped_2m missing or not an integer")?;
