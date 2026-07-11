@@ -501,6 +501,13 @@ impl GuestMemoryBuilder {
                     let hugepage_size =
                         validate_hugepage_size(req.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
                     validate_hugepage_ram_alignment(size, &req.ranges, hugepage_size as u64)?;
+                    // TODO: on Windows, when this large-page (SEC_LARGE_PAGES)
+                    // section is later mapped into the guest VA, we should
+                    // really map it with MEM_LARGE_PAGES so the view itself
+                    // uses large pages. Released versions of Windows don't
+                    // support MEM_LARGE_PAGES together with the placeholder
+                    // reservations that sparse_mmap relies on, so we leave it
+                    // out for now.
                     sparse_mmap::alloc_shared_memory_hugetlb(
                         backing_size,
                         &name,
