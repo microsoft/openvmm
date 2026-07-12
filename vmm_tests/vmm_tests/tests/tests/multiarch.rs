@@ -251,14 +251,18 @@ async fn large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
         read_slat_counters(&node).context("could not read WHP SLAT counters from inspect tree")?;
     tracing::info!(mapped_2m, mapped_1g, "WHP SLAT page counts");
 
-    // Count all large SLAT entries in units of 2 MB pages (each 1 GB entry
-    // covers 512 of them). With large-page backing every guest page should be
-    // mapped as a large page, so this must equal the total guest RAM / 2 MB.
+    // Count large SLAT entries in units of 2 MB pages (each 1 GB entry covers
+    // 512). It won't exactly equal guest RAM / 2 MB: the guest places a few 4 KB
+    // hypervisor overlay pages (hypercall, SynIC, monitor, etc.) inside RAM,
+    // each demoting its containing 2 MB region to 4 KB entries. Allow a small
+    // tolerance; a real regression would drop the count by hundreds.
+    const MAX_OVERLAY_DEMOTIONS: u64 = 16;
+    let expected_2m = STARTUP_BYTES / HUGEPAGE_SIZE;
     let mapped_2m_equiv = mapped_2m + mapped_1g * (GIGAPAGE_SIZE / HUGEPAGE_SIZE);
-    assert_eq!(
-        mapped_2m_equiv,
-        STARTUP_BYTES / HUGEPAGE_SIZE,
-        "expected large SLAT entries with large-page backing"
+    tracing::info!(mapped_2m_equiv, expected_2m, "large-page SLAT coverage");
+    assert!(
+        mapped_2m_equiv >= expected_2m - MAX_OVERLAY_DEMOTIONS,
+        "large-page backing: got {mapped_2m_equiv} 2 MB pages, expected ~{expected_2m}"
     );
 
     agent.power_off().await?;
