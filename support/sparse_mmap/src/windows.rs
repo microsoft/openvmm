@@ -341,28 +341,30 @@ impl SparseMapping {
     /// for large-page backing) are requested explicitly via a
     /// `MEM_ADDRESS_REQUIREMENTS` extended parameter.
     pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
-        if !minimum_alignment.is_power_of_two() {
-            return Err(Error::new(
-                io::ErrorKind::InvalidInput,
-                "alignment must be a power of two",
-            ));
-        }
         trycopy::initialize_try_copy();
 
         // Pick a default alignment based on the mapping size so that larger
         // mappings land on large-page boundaries, matching the Linux backend.
-        let alignment = crate::reservation_alignment(len, minimum_alignment);
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
         Self::new_inner(None, None, len, alignment)
     }
 
     /// Reserves a sparse mapping range with the given address and size in a
     /// remote process.
+    ///
+    /// As with [`Self::new_with_minimum_alignment`], the range is aligned to
+    /// the larger of `minimum_alignment` and the largest system page size
+    /// that's smaller or equal to `len`, so that large mappings can back large
+    /// pages. When an explicit `address` is provided the caller controls
+    /// placement, so no additional alignment requirement is imposed.
     pub fn new_remote(
         process: Process,
         address: Option<*mut c_void>,
         len: usize,
+        minimum_alignment: usize,
     ) -> Result<Self, Error> {
-        Self::new_inner(Some(process), address, len, 1)
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
+        Self::new_inner(Some(process), address, len, alignment)
     }
 
     fn new_inner(
@@ -375,8 +377,11 @@ impl SparseMapping {
         // explicit address requirement; smaller alignments are satisfied
         // implicitly by the reservation base. This also keeps
         // MEM_ADDRESS_REQUIREMENTS.Alignment valid, since it must be zero or a
-        // power of two that is at least the allocation granularity.
-        let requirement = (alignment > ALLOCATION_GRANULARITY).then_some(alignment);
+        // power of two that is at least the allocation granularity. An address
+        // requirement is mutually exclusive with an explicit base address, so
+        // skip it when the caller chose the address.
+        let requirement =
+            (address.is_none() && alignment > ALLOCATION_GRANULARITY).then_some(alignment);
         unsafe {
             let mut requirements = Memory::MEM_ADDRESS_REQUIREMENTS {
                 LowestStartingAddress: null_mut(),
@@ -1097,7 +1102,7 @@ mod tests {
     fn test_remote() {
         let process = pal::windows::process::empty_process().unwrap();
         let shmem = alloc_shared_memory(0x100000, "test").unwrap();
-        let sparse = SparseMapping::new_remote(process.process, None, 0x100000).unwrap();
+        let sparse = SparseMapping::new_remote(process.process, None, 0x100000, 1).unwrap();
         sparse.map_file(0, 0x10000, &shmem, 0, true).unwrap();
 
         let process_addr = pal::windows::process::empty_process().unwrap();
@@ -1105,6 +1110,7 @@ mod tests {
             process_addr.process,
             Some(0x100000 as *mut std::ffi::c_void),
             0x100000,
+            1,
         )
         .unwrap();
         sparse_addr.map_file(0, 0x10000, &shmem, 0, true).unwrap();

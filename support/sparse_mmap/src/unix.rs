@@ -109,15 +109,9 @@ impl SparseMapping {
                 "length must be greater than 0",
             ));
         }
-        if !minimum_alignment.is_power_of_two() {
-            return Err(Error::new(
-                io::ErrorKind::InvalidInput,
-                "alignment must be a power of two",
-            ));
-        }
 
         let page_size = page_size();
-        let alignment = crate::reservation_alignment(len, minimum_alignment);
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
 
         let len = len
             .checked_add(alignment - 1)

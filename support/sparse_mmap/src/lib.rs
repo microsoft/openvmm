@@ -45,7 +45,15 @@ pub enum SparseMappingError {
 /// Larger mappings are aligned to large-page boundaries (2 MB, then 1 GB) so
 /// that they can back large pages without the caller having to ask. The result
 /// is always at least `minimum_alignment` and at least the system page size.
-fn reservation_alignment(len: usize, minimum_alignment: usize) -> usize {
+///
+/// Returns an error if `minimum_alignment` is not a power of two.
+fn reservation_alignment(len: usize, minimum_alignment: usize) -> std::io::Result<usize> {
+    if !minimum_alignment.is_power_of_two() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "alignment must be a power of two",
+        ));
+    }
     const SIZE_2M: usize = 0x200000;
     const SIZE_1G: usize = 0x40000000;
     let default_alignment = if len < SIZE_2M {
@@ -55,7 +63,7 @@ fn reservation_alignment(len: usize, minimum_alignment: usize) -> usize {
     } else {
         SIZE_1G
     };
-    default_alignment.max(minimum_alignment)
+    Ok(default_alignment.max(minimum_alignment))
 }
 
 impl SparseMapping {

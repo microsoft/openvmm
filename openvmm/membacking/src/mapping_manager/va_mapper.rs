@@ -437,6 +437,7 @@ impl VaMapper {
                     process.as_handle().try_clone_to_owned().unwrap().into(),
                     None,
                     len as usize,
+                    minimum_alignment.unwrap_or(1),
                 ),
             },
         }
