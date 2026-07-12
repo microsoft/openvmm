@@ -1192,7 +1192,7 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
     allocated: bool,
-    /// Cached result of [`DynGuestMemoryAccess::supports_locking`], since it is
+    /// Cached result of [`GuestMemoryAccess::supports_locking`], since it is
     /// queried on hot zero-copy paths and never changes for a given backing.
     supports_locking: bool,
     imp: T,
