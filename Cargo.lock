@@ -7495,6 +7495,7 @@ dependencies = [
  "minimal_rt",
  "minimal_rt_build",
  "sidecar_defs",
+ "spin",
  "x86defs",
  "zerocopy",
 ]

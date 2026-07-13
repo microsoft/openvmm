@@ -170,6 +170,7 @@ static mut VSM_CAPABILITIES: hvdef::HvRegisterVsmCapabilities =
     hvdef::HvRegisterVsmCapabilities::new();
 static AFTER_INIT: AtomicBool = AtomicBool::new(false);
 static ENABLE_LOG: AtomicBool = AtomicBool::new(false);
+static SERIAL: spin::Mutex<Serial<InstrIoAccess>> = spin::Mutex::new(Serial::new(InstrIoAccess));
 
 macro_rules! log {
     () => {};
@@ -188,13 +189,14 @@ use minimal_rt::arch::InstrIoAccess;
 
 fn log_fmt(args: core::fmt::Arguments<'_>) {
     if ENABLE_LOG.load(Acquire) {
+        let mut serial = SERIAL.lock();
         if AFTER_INIT.load(Acquire) {
             // SAFETY: `hv_vp_index` is not being concurrently modified.
             // TODO: improve how per-VP globals work.
             let vp_index = unsafe { &*addr_space::globals() }.hv_vp_index;
-            let _ = writeln!(Serial::new(InstrIoAccess), "sidecar#{vp_index}: {}", args);
+            let _ = writeln!(serial, "sidecar#{vp_index}: {}", args);
         } else {
-            let _ = writeln!(Serial::new(InstrIoAccess), "sidecar: {}", args);
+            let _ = writeln!(serial, "sidecar: {}", args);
         }
     }
 }
@@ -209,7 +211,8 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
     };
     minimal_rt::enlightened_panic::report(*b"SIDECARK", panic, stack_va_to_pa);
     if !AFTER_INIT.load(Acquire) {
-        let _ = writeln!(Serial::new(InstrIoAccess), "{panic}");
+        let mut serial = SERIAL.lock();
+        let _ = writeln!(serial, "{panic}");
     }
     minimal_rt::arch::fault();
 }
