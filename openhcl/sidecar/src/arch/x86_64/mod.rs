@@ -211,8 +211,13 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
     };
     minimal_rt::enlightened_panic::report(*b"SIDECARK", panic, stack_va_to_pa);
     if !AFTER_INIT.load(Acquire) {
-        let mut serial = SERIAL.lock();
-        let _ = writeln!(serial, "{panic}");
+        if let Some(mut serial) = SERIAL.try_lock() {
+            let _ = writeln!(serial, "{panic}");
+        } else {
+            // We may have panicked while holding the lock, so trying to acquire it may deadlock.
+            // Best effort, we can't guarantee no tearing but print the message anyways.
+            let _ = writeln!(Serial::new(InstrIoAccess), "{panic}");
+        }
     }
     minimal_rt::arch::fault();
 }
@@ -315,7 +320,6 @@ fn eoi() {
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
 extern "C" fn irq_handler() {
     eoi();
-    log!("irq");
 }
 
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
