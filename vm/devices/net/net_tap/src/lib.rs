@@ -296,10 +296,7 @@ impl Queue for TapQueue {
 
                     // Only report GSO/LRO metadata if the frontend supports it.
                     if rx_meta.gso_size > 0 {
-                        if !frontend_supports_gso(
-                            self.rx_offload_support,
-                            rx_meta.l3_protocol,
-                        ) {
+                        if !frontend_supports_gso(self.rx_offload_support, rx_meta.l3_protocol) {
                             tracelimit::warn_ratelimited!(
                                 ?rx_meta.l3_protocol,
                                 "dropping rx GSO packet: frontend does not support LRO"
@@ -704,10 +701,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr, frame: &[u8]) -> RxMetadata {
     }
 }
 
-fn frontend_supports_gso(
-    support: net_backend::RxOffloadSupport,
-    protocol: L3Protocol,
-) -> bool {
+fn frontend_supports_gso(support: net_backend::RxOffloadSupport, protocol: L3Protocol) -> bool {
     match protocol {
         L3Protocol::Ipv4 => support.lro4,
         L3Protocol::Ipv6 => support.lro6,
