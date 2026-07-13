@@ -1751,8 +1751,9 @@ impl IntoPipeline for CheckinGatesCli {
                 );
             }
 
+            let vmm_tests_run_job = vmm_tests_run_job.finish();
             if !label.contains("snp") {
-                all_jobs.push(vmm_tests_run_job.finish());
+                all_jobs.push(vmm_tests_run_job);
             }
         }
 
