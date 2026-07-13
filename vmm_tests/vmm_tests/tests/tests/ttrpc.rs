@@ -135,6 +135,14 @@ fn test_ttrpc_interface(
                 && r.add),
             "SCSI add should be advertised as a supported resource"
         );
+        assert!(
+            caps.supported_resources.iter().any(|r| r.resource
+                == vmservice::capabilities_vm_response::Resource::Vpci as i32
+                && r.add
+                && r.remove
+                && !r.update),
+            "vPCI add/remove should be advertised as supported"
+        );
         assert_eq!(
             caps.supported_guest_os,
             vec![vmservice::capabilities_vm_response::SupportedGuestOs::Linux as i32],

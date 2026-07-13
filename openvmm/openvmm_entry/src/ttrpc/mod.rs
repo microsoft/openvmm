@@ -886,6 +886,12 @@ impl VmService {
                     update: false,
                 },
                 SupportedResource {
+                    resource: Resource::Vpci as i32,
+                    add: true,
+                    remove: true,
+                    update: false,
+                },
+                SupportedResource {
                     resource: Resource::VmNic as i32,
                     add: true,
                     remove: true,
