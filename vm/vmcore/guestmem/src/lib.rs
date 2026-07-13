@@ -1331,6 +1331,12 @@ unsafe impl GuestMemoryAccess for Empty {
     fn max_address(&self) -> u64 {
         0
     }
+
+    fn supports_locking(&self) -> bool {
+        // This implementation trivially supports locking since there are no
+        // pages to lock.
+        true
+    }
 }
 
 #[derive(Debug, Error)]
@@ -2884,5 +2890,72 @@ mod tests {
         drop(gm2);
         assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
         gm.into_inner_buf().unwrap();
+    }
+
+    /// A backing whose locking support can be toggled, used to exercise
+    /// [`GuestMemory::supports_locking`] aggregation. Backed by a real mapping
+    /// so it can participate in single- and multi-region construction.
+    struct ToggleLockMapping {
+        mapping: SparseMapping,
+        lockable: bool,
+    }
+
+    impl ToggleLockMapping {
+        fn new(size: usize, lockable: bool) -> Self {
+            let mapping = SparseMapping::new(size).unwrap();
+            mapping.alloc(0, size).unwrap();
+            Self { mapping, lockable }
+        }
+    }
+
+    // SAFETY: the mapping is valid for the full range reported by `max_address`.
+    unsafe impl crate::GuestMemoryAccess for ToggleLockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            self.mapping.len() as u64
+        }
+
+        fn supports_locking(&self) -> bool {
+            self.lockable
+        }
+    }
+
+    #[test]
+    fn test_supports_locking() {
+        // A mapping-backed backing supports locking by default.
+        let gm = GuestMemory::allocate(0x10000);
+        assert!(gm.supports_locking());
+
+        // A backing with no stable host mapping (e.g. on-demand translation
+        // behind an emulated IOMMU) does not support locking.
+        let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
+        assert!(!gm.supports_locking());
+
+        // Multi-region: locking is supported only when every present backing
+        // supports it.
+        let gm = GuestMemory::new_multi_region(
+            "multi-lockable",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+            ],
+        )
+        .unwrap();
+        assert!(gm.supports_locking());
+
+        let gm = GuestMemory::new_multi_region(
+            "multi-mixed",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, false)),
+            ],
+        )
+        .unwrap();
+        assert!(!gm.supports_locking());
     }
 }
