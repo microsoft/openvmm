@@ -340,13 +340,22 @@ struct Vm {
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
-/// The VM's lifecycle state, as reported by `PropertiesVm`. The halt reason
-/// travels in the `Halted` variant so it can't disagree with the state.
 enum VmLifecycle {
     Uninitialized,
     Running,
     Paused,
     Halted(String),
+}
+
+impl From<&VmLifecycle> for vmservice::VmState {
+    fn from(lifecycle: &VmLifecycle) -> Self {
+        match lifecycle {
+            VmLifecycle::Uninitialized => vmservice::VmState::Uninitialized,
+            VmLifecycle::Running => vmservice::VmState::Running,
+            VmLifecycle::Paused => vmservice::VmState::Paused,
+            VmLifecycle::Halted(_) => vmservice::VmState::Halted,
+        }
+    }
 }
 
 struct VmService {
@@ -421,76 +430,34 @@ impl VmService {
             vmservice::Vm::PropertiesVm(_request, response) => {
                 response.send(Ok(self.build_properties()));
             }
-            request => {
-                let vm = match &self.vm {
-                    Some(vm) => vm.clone(),
-                    None => {
-                        request.fail(grpc_error(anyhow!("VM not created yet")));
-                        return HandleAction::None;
-                    }
-                };
-                match request {
-                    vmservice::Vm::PauseVm((), response) => {
-                        let r = self.pause_vm(&vm).await;
-                        // A halt takes precedence; don't overwrite it.
-                        if r.is_ok() && !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-                            self.lifecycle = VmLifecycle::Paused;
-                        }
-                        response.send(map_grpc(r));
-                    }
-                    vmservice::Vm::ResumeVm((), response) => {
-                        let r = self.resume_vm(&vm).await;
-                        if r.is_ok() && !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-                            self.lifecycle = VmLifecycle::Running;
-                        }
-                        response.send(map_grpc(r));
-                    }
-                    vmservice::Vm::WaitVm((), response) => {
-                        if self.wait_vm_response.is_some() {
-                            response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
-                        } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-                            // Guest already halted before WaitVm was called;
-                            // complete immediately.
-                            response.send(Ok(()));
-                        } else {
-                            self.wait_vm_response = Some((ctx.clone(), response));
-                        }
-                    }
-                    vmservice::Vm::ModifyResource(request, response) => {
-                        let r = self.modify_resource(&vm, request);
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::AddPcieDevice(request, response) => {
-                        let worker_rpc = vm.worker_rpc.clone();
-                        self.start_rpc(
-                            response,
-                            Ok(async move {
-                                let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-                                let resource =
-                                    build_pcie_device(device.context("missing device")?).await?;
-                                worker_rpc
-                                    .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
-                                    .await
-                                    .map_err(anyhow::Error::from)
-                            }),
-                        );
-                    }
-                    vmservice::Vm::RemovePcieDevice(request, response) => {
-                        let recv = vm
-                            .worker_rpc
-                            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
-                        self.start_rpc(
-                            response,
-                            Ok(async move { recv.await.map_err(anyhow::Error::from) }),
-                        );
-                    }
-
-                    vmservice::Vm::CreateVm(_, _)
-                    | vmservice::Vm::TeardownVm(_, _)
-                    | vmservice::Vm::Quit(_, _)
-                    | vmservice::Vm::CapabilitiesVm(_, _)
-                    | vmservice::Vm::PropertiesVm(_, _) => unreachable!(),
-                };
+            vmservice::Vm::PauseVm((), response) => {
+                response.send(map_grpc(self.pause_vm().await));
+            }
+            vmservice::Vm::ResumeVm((), response) => {
+                response.send(map_grpc(self.resume_vm().await));
+            }
+            vmservice::Vm::WaitVm((), response) => {
+                if self.vm.is_none() {
+                    response.send(Err(grpc_error(anyhow!("VM not created yet"))));
+                } else if self.wait_vm_response.is_some() {
+                    response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
+                } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                    response.send(Ok(()));
+                } else {
+                    self.wait_vm_response = Some((ctx.clone(), response));
+                }
+            }
+            vmservice::Vm::ModifyResource(request, response) => {
+                let r = self.modify_resource(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::AddPcieDevice(request, response) => {
+                let r = self.add_pcie_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemovePcieDevice(request, response) => {
+                let r = self.remove_pcie_device(request);
+                self.start_rpc(response, r);
             }
         }
         HandleAction::None
@@ -872,8 +839,6 @@ impl VmService {
             consomme_rpc,
             worker_rpc: send,
         }));
-        // Only now that the VM exists does it become observable as paused; if
-        // any step above failed, lifecycle stays Uninitialized.
         self.lifecycle = VmLifecycle::Paused;
         Ok(())
     }
@@ -894,19 +859,7 @@ impl VmService {
         Ok(())
     }
 
-    /// Map the internal lifecycle to the wire `VmState`.
-    fn current_state(&self) -> vmservice::VmState {
-        match &self.lifecycle {
-            VmLifecycle::Uninitialized => vmservice::VmState::Uninitialized,
-            VmLifecycle::Running => vmservice::VmState::Running,
-            VmLifecycle::Paused => vmservice::VmState::Paused,
-            VmLifecycle::Halted(_) => vmservice::VmState::Halted,
-        }
-    }
-
     fn build_properties(&self) -> vmservice::PropertiesVmResponse {
-        // Memory/processor stats require a worker query that isn't wired up
-        // yet; leave them unset rather than reporting fabricated zeros.
         let halt_reason = match &self.lifecycle {
             VmLifecycle::Halted(reason) => Some(reason.clone()),
             _ => None,
@@ -914,7 +867,7 @@ impl VmService {
         vmservice::PropertiesVmResponse {
             memory_stats: None,
             processor_stats: None,
-            state: self.current_state() as i32,
+            state: vmservice::VmState::from(&self.lifecycle) as i32,
             halt_reason,
         }
     }
@@ -924,7 +877,6 @@ impl VmService {
         use vmservice::capabilities_vm_response::SupportedGuestOs;
         use vmservice::capabilities_vm_response::SupportedResource;
 
-        // Advertise only what modify_resource() actually accepts.
         vmservice::CapabilitiesVmResponse {
             supported_resources: vec![
                 SupportedResource {
@@ -936,8 +888,6 @@ impl VmService {
                 SupportedResource {
                     resource: Resource::VmNic as i32,
                     add: true,
-                    // update/remove drive Consomme port bind/unbind in
-                    // modify_resource() (Consomme backend only).
                     remove: true,
                     update: true,
                 },
@@ -949,14 +899,30 @@ impl VmService {
         }
     }
 
-    fn pause_vm(&self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Pause, ());
-        async move { recv.await.map(drop).context("pause failed") }
+    async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Pause, ())
+            .await
+            .map(drop)
+            .context("pause failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Paused;
+        }
+        Ok(())
     }
 
-    fn resume_vm(&self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Resume, ());
-        async move { recv.await.map(drop).context("resume failed") }
+    async fn resume_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Resume, ())
+            .await
+            .map(drop)
+            .context("resume failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Running;
+        }
+        Ok(())
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) {
@@ -1002,12 +968,45 @@ impl VmService {
         }
     }
 
+    fn add_pcie_device(
+        &self,
+        request: vmservice::AddPcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        Ok(async move {
+            let vmservice::AddPcieDeviceRequest { port_name, device } = request;
+            let resource = build_pcie_device(device.context("missing device")?).await?;
+            worker_rpc
+                .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn remove_pcie_device(
+        &self,
+        request: vmservice::RemovePcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
     fn modify_resource(
-        &mut self,
-        vm: &Vm,
+        &self,
         request: vmservice::ModifyResourceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::modify_resource_request::Resource;
+        let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {
                 let scsi_path = storvsp_resources::ScsiPath {
