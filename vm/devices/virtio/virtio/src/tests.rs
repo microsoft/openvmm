@@ -1412,6 +1412,16 @@ impl VirtioPciTestDevice {
         test_mem: &Arc<VirtioTestMemoryAccess>,
         queue_work: Option<TestDeviceQueueWorkFn>,
     ) -> Self {
+        Self::new_with_register_length(driver, num_queues, test_mem, queue_work, 12)
+    }
+
+    fn new_with_register_length(
+        driver: &DefaultDriver,
+        num_queues: u16,
+        test_mem: &Arc<VirtioTestMemoryAccess>,
+        queue_work: Option<TestDeviceQueueWorkFn>,
+        device_register_length: u32,
+    ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
         let msi_conn = MsiConnection::new();
@@ -1426,7 +1436,7 @@ impl VirtioPciTestDevice {
                         .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                         .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
-                    device_register_length: 12,
+                    device_register_length,
                     ..Default::default()
                 },
                 queue_work,
@@ -1832,6 +1842,52 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(buf, 12);
     next_cap_offset = header[1] as u32;
     assert_eq!(next_cap_offset, 0);
+}
+
+#[async_test]
+async fn verify_pci_config_no_device_cfg(driver: DefaultDriver) {
+    // A virtio device with no device-specific config (device_register_length == 0)
+    // must not emit a DEVICE_CFG capability, since a zero-length virtio capability
+    // is rejected by drivers (e.g. Linux: "virtio_pci: bad capability len 0").
+    let mut pci_test_device = VirtioPciTestDevice::new_with_register_length(
+        &driver,
+        1,
+        &VirtioTestMemoryAccess::new(),
+        None,
+        0,
+    );
+
+    // Walk the PCI capability list and ensure no DEVICE_CFG virtio capability
+    // is present.
+    let mut next_cap_offset = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut next_cap_offset),
+        )
+        .unwrap();
+    assert_ne!(next_cap_offset, 0);
+
+    while next_cap_offset != 0 {
+        let mut header = 0;
+        pci_test_device
+            .pci_device
+            .pci_cfg_read(
+                next_cap_offset as u16,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+            )
+            .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 {
+            assert_ne!(
+                header[3],
+                VirtioPciCapType::DEVICE_CFG.0,
+                "DEVICE_CFG capability must not be emitted when device_register_length is 0"
+            );
+        }
+        next_cap_offset = header[1] as u32;
+    }
 }
 
 #[async_test]

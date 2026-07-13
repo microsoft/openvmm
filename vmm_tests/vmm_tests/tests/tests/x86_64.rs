@@ -393,17 +393,21 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// Boot with a virtio-rng device via virtio-mmio and verify the guest can read entropy.
+/// Boot with a virtio-rng device on a PCIe root port and verify the guest can
+/// read entropy.
 #[openvmm_test(linux_direct_x64)]
 async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    use openvmm_defs::config::VirtioBus;
+    use openvmm_defs::config::PcieDeviceConfig;
     use virtio_resources::rng::VirtioRngHandle;
 
     let (vm, agent) = config
         .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                c.virtio_devices
-                    .push((VirtioBus::Mmio, VirtioRngHandle.into_resource()));
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "s0rc0rp0".to_string(),
+                    resource: VirtioPciDeviceHandle(VirtioRngHandle.into_resource())
+                        .into_resource(),
+                });
             })
         })
         .run()

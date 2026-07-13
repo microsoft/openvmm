@@ -243,7 +243,16 @@ impl VirtioPciDevice {
                     BAR0_ISR_SIZE as u32,
                 ),
             )),
-            Box::new(ReadOnlyCapability::new(
+        ];
+
+        // Only advertise a device-specific config capability when the device
+        // actually has device-specific config registers. Per the virtio spec
+        // (v1.2 section 4.1.4.6), a VIRTIO_PCI_CAP_DEVICE_CFG capability is
+        // required only for device types that have a device-specific
+        // configuration; devices without one (e.g. the entropy device) must
+        // not advertise a zero-length capability.
+        if traits.device_register_length > 0 {
+            caps.push(Box::new(ReadOnlyCapability::new(
                 "virtio-pci-device",
                 VirtioCapability::new(
                     VirtioPciCapType::DEVICE_CFG.0,
@@ -252,8 +261,8 @@ impl VirtioPciDevice {
                     BAR0_DEVICE_CFG_OFFSET as u32,
                     traits.device_register_length,
                 ),
-            )),
-        ];
+            )));
+        }
 
         let mut bars = DeviceBars::new().bar0(
             BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
