@@ -12,6 +12,7 @@ use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
+use crate::mapping_manager::MemoryPolicy;
 use crate::mapping_manager::VaMapper;
 use crate::mapping_manager::VaMapperError;
 use crate::partition_mapper::PartitionMapper;
@@ -146,12 +147,6 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
-    /// THP requires private memory mode.
-    #[error("transparent huge pages requires private memory mode")]
-    ThpWithoutPrivateMemory,
-    /// THP is only supported on Linux.
-    #[error("transparent huge pages is only supported on Linux")]
-    ThpUnsupportedPlatform,
     /// Hugepage size is too large.
     #[error("hugepage size {0} is too large")]
     HugepageSizeTooLarge(MemorySize),
@@ -246,7 +241,13 @@ impl RamBackingRequest {
         self
     }
 
-    /// Enable Transparent Huge Pages (requires `private_memory`, Linux only).
+    /// Enable Transparent Huge Pages for guest RAM (Linux only, best-effort).
+    ///
+    /// Applies to both shared (memfd) and private (anonymous) backings. The
+    /// kernel treats `madvise(MADV_HUGEPAGE)` as advisory and may accept it
+    /// without allocating huge pages. Advice failures are logged but do not
+    /// fail the build. This has no effect on non-Linux hosts or explicit
+    /// hugetlb (`hugepages`) backings, which are already huge.
     pub fn transparent_hugepages(mut self, enable: bool) -> Self {
         self.transparent_hugepages = enable;
         self
@@ -413,14 +414,6 @@ impl GuestMemoryBuilder {
             if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
             }
-            if req.transparent_hugepages {
-                if !req.private_memory {
-                    return Err(MemoryBuildError::ThpWithoutPrivateMemory);
-                }
-                if !cfg!(target_os = "linux") {
-                    return Err(MemoryBuildError::ThpUnsupportedPlatform);
-                }
-            }
             if req.host_numa_node.is_some()
                 && cfg!(not(any(target_os = "linux", target_os = "windows")))
             {
@@ -541,7 +534,10 @@ impl GuestMemoryBuilder {
                 // force it on for hugepage-backed RAM. (Linux hugetlb faults the
                 // whole large page on first touch, so this is not needed there.)
                 prefetch: req.prefetch || (cfg!(windows) && req.hugepages),
-                transparent_hugepages: false,
+                // Transparent huge pages are advisory and best-effort; they
+                // apply to shmem (memfd) mappings on Linux. Explicit hugetlb
+                // backings are already huge, so suppress THP there.
+                transparent_hugepages: req.transparent_hugepages && !req.hugepages,
                 host_numa_node: req.host_numa_node,
             });
         }
@@ -619,16 +615,17 @@ impl GuestMemoryBuilder {
                             mappable: mappable.clone(),
                             file_offset,
                         },
-                        None => MappingBacking::Private {
-                            transparent_hugepages: backing.transparent_hugepages,
-                        },
+                        None => MappingBacking::Private,
                     };
                     region
                         .add_mapping(
                             MemoryRange::new(0..sub_range.len()),
                             backing_kind,
                             true,
-                            backing.host_numa_node,
+                            MemoryPolicy {
+                                numa_node: backing.host_numa_node,
+                                transparent_hugepages: backing.transparent_hugepages,
+                            },
                         )
                         .await
                         .map_err(|error| MemoryBuildError::RamMapping {

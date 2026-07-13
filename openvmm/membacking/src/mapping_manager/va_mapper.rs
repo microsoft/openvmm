@@ -32,6 +32,7 @@ use super::manager::MappingBacking;
 use super::manager::MappingError;
 use super::manager::MappingParams;
 use super::manager::MappingRequest;
+use super::manager::MemoryPolicy;
 use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
@@ -196,21 +197,12 @@ impl MapperTask {
 
     /// Establishes a mapping in the VA space, dispatching on how it is backed.
     fn map(&self, params: MappingParams) -> Result<(), MappingError> {
-        let MappingParams {
-            range,
-            backing,
-            writable,
-            numa_node,
-            ..
-        } = params;
-        match backing {
+        match &params.backing {
             MappingBacking::File {
                 mappable,
                 file_offset,
-            } => self.map_file(range, &mappable, file_offset, writable, numa_node),
-            MappingBacking::Private {
-                transparent_hugepages,
-            } => self.map_private(range, transparent_hugepages, numa_node),
+            } => self.map_file(&params, mappable, *file_offset),
+            MappingBacking::Private => self.map_private(&params),
         }
     }
 
@@ -218,12 +210,20 @@ impl MapperTask {
     /// supported.
     fn map_file(
         &self,
-        range: MemoryRange,
+        params: &MappingParams,
         mappable: &super::mappable::Mappable,
         file_offset: u64,
-        writable: bool,
-        numa_node: Option<u32>,
     ) -> Result<(), MappingError> {
+        let &MappingParams {
+            range,
+            writable,
+            policy:
+                MemoryPolicy {
+                    numa_node,
+                    transparent_hugepages,
+                },
+            ..
+        } = params;
         let map_result = cfg_select! {
             windows => {
                 self.inner.mapping.map_file_numa(
@@ -249,6 +249,28 @@ impl MapperTask {
         if let Err(e) = map_result {
             return Err(MappingError::new(range, e));
         }
+
+        // Mark shared (file-backed) RAM as THP-eligible. This is advisory:
+        // on Linux the kernel honors it for shmem/tmpfs (memfd) mappings
+        // according to `/sys/kernel/mm/transparent_hugepage/shmem_enabled`.
+        // The kernel may accept the advice without allocating huge pages;
+        // advice failures are logged but do not fail the mapping.
+        #[cfg(target_os = "linux")]
+        if transparent_hugepages {
+            if let Err(e) = self
+                .inner
+                .mapping
+                .madvise_hugepage(range.start() as usize, range.len() as usize)
+            {
+                tracing::warn!(
+                    error = &e as &dyn std::error::Error,
+                    %range,
+                    "failed to mark shared RAM as THP eligible"
+                );
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = transparent_hugepages;
 
         cfg_select! {
             target_os = "linux" => {
@@ -284,12 +306,16 @@ impl MapperTask {
     /// This replaces the reserved placeholder at `range` with committed
     /// anonymous pages, optionally bound to a host NUMA node and marked
     /// eligible for Transparent Huge Pages.
-    fn map_private(
-        &self,
-        range: MemoryRange,
-        transparent_hugepages: bool,
-        numa_node: Option<u32>,
-    ) -> Result<(), MappingError> {
+    fn map_private(&self, params: &MappingParams) -> Result<(), MappingError> {
+        let &MappingParams {
+            range,
+            policy:
+                MemoryPolicy {
+                    numa_node,
+                    transparent_hugepages,
+                },
+            ..
+        } = params;
         let offset = range.start() as usize;
         let len = range.len() as usize;
 

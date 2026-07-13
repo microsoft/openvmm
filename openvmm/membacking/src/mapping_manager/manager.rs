@@ -284,10 +284,7 @@ pub enum MappingBacking {
     /// `remove_mappings`) decommits and zeroes the pages, so a private region
     /// must not be transiently disabled and re-enabled — doing so would lose
     /// guest memory. The region manager asserts against this.
-    Private {
-        /// Whether the range is eligible for Transparent Huge Pages (Linux).
-        transparent_hugepages: bool,
-    },
+    Private,
 }
 
 impl MappingBacking {
@@ -295,7 +292,7 @@ impl MappingBacking {
     pub fn mappable(&self) -> Option<&Mappable> {
         match self {
             MappingBacking::File { mappable, .. } => Some(mappable),
-            MappingBacking::Private { .. } => None,
+            MappingBacking::Private => None,
         }
     }
 
@@ -303,9 +300,22 @@ impl MappingBacking {
     pub fn file_offset(&self) -> u64 {
         match self {
             MappingBacking::File { file_offset, .. } => *file_offset,
-            MappingBacking::Private { .. } => 0,
+            MappingBacking::Private => 0,
         }
     }
+}
+
+/// Host-memory policy for a mapping, applied to the mapped VA range after the
+/// backing is established. Independent of how the mapping is backed, so it
+/// lives here rather than on [`MappingBacking`].
+#[derive(Debug, Copy, Clone, Default, MeshPayload)]
+pub struct MemoryPolicy {
+    /// Host NUMA node to strictly bind the mapping to (Linux `mbind(MPOL_BIND)`,
+    /// Windows `MemExtendedParameterNumaNode`). `None` means OS default.
+    pub numa_node: Option<u32>,
+    /// Whether the range is advised as Transparent Huge Page eligible (Linux
+    /// `madvise(MADV_HUGEPAGE)`).
+    pub transparent_hugepages: bool,
 }
 
 /// The mapping parameters.
@@ -323,8 +333,8 @@ pub struct MappingParams {
     /// [`GuestMemorySharing`](guestmem::GuestMemorySharing) so that external
     /// consumers (vhost-user backends, etc.) can share the backing memory.
     pub mapping_type: MappingType,
-    /// Host NUMA node for this mapping. `None` means OS default placement.
-    pub numa_node: Option<u32>,
+    /// Host-memory policy (NUMA node binding, THP eligibility).
+    pub policy: MemoryPolicy,
 }
 
 /// Error from a failed VA mapping operation.
@@ -751,7 +761,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -765,7 +775,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -800,7 +810,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -826,7 +836,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Ram,
-            numa_node: None,
+            policy: MemoryPolicy::default(),
         };
         task.add_mapping(params.clone()).await.unwrap();
         (task, params)
@@ -902,7 +912,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::default(),
         };
 
         // The eager mapper needs to respond to the MapEager Rpc.
@@ -1017,7 +1027,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::default(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1137,7 +1147,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -1227,7 +1237,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::default(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1336,7 +1346,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::default(),
         })
         .await
         .unwrap();
@@ -1445,7 +1455,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -1495,7 +1505,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -1533,7 +1543,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();
@@ -1564,7 +1574,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::default(),
             })
             .await
             .unwrap();

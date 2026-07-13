@@ -338,8 +338,9 @@ message NodeMemoryConfig {
     bool prefetch              = 3;
     // Use private anonymous memory instead of shared file-backed memory.
     bool private_memory        = 4;
-    // Mark the memory transparent-hugepage eligible (requires private_memory).
-    bool transparent_hugepages = 5;
+    // Mark this node's RAM as transparent-hugepage eligible. Unset => enabled
+    // by default. Set to false to opt out.
+    optional bool transparent_hugepages = 5;
     // Allocate from explicit hugetlb pages.
     bool hugepages             = 6;
     // Hugetlb page size in bytes (requires hugepages). Absent => default.

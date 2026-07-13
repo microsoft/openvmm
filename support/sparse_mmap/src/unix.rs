@@ -368,7 +368,10 @@ impl SparseMapping {
     /// Marks a range as eligible for Transparent Huge Pages.
     ///
     /// This calls `madvise(MADV_HUGEPAGE)` so that khugepaged can collapse
-    /// small pages into huge pages. Only effective on anonymous mappings.
+    /// small pages into huge pages. It applies to anonymous mappings and to
+    /// file-backed mappings whose filesystem supports THP, such as shmem/tmpfs
+    /// mappings when enabled by the kernel's shmem THP policy. Success records
+    /// the advice but does not guarantee that huge pages will be allocated.
     #[cfg(target_os = "linux")]
     pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), Error> {
         let _ = self.validate_offset_len(offset, len)?;
