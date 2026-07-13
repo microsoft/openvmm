@@ -94,15 +94,11 @@ impl AggregateRegistry {
         self.inode_mode == Some(InodeMode::Raw)
     }
 
-    fn fallback_inode_mapping(&self) -> bool {
-        self.inode_mode == Some(InodeMode::Namespaced)
-    }
-
     fn check_can_add(&self) -> lx::Result<()> {
         if self.tearing_down {
             return Err(lx::Error::EAGAIN);
         }
-        if self.fallback_inode_mapping() && self.next_volume_id > MAX_AGGREGATE_VOLUMES {
+        if self.next_volume_id > MAX_AGGREGATE_VOLUMES {
             return Err(lx::Error::ENOSPC);
         }
         Ok(())
@@ -142,8 +138,7 @@ impl VirtioFs {
     /// - `EAGAIN` if the device has begun tearing down (see
     ///   [`Self::begin_teardown`]).
     /// - `EEXIST` if a child with the same name already exists.
-    /// - `ENOSPC` if the fallback inode mapping is active and 64 children have
-    ///   already been allocated.
+    /// - `ENOSPC` if 64 children have already been allocated.
     pub fn add_child(
         &self,
         name: &str,
@@ -406,8 +401,9 @@ impl VirtioFs {
             Ok(buffer.dir_entry_plus(name, next_off, entry))
         } else {
             // Plain readdir: report the directory using the volume root's
-            // guest-visible inode number, falling back to the volume id if it
-            // is inaccessible.
+            // guest-visible inode number. If the root cannot be queried, use
+            // the volume id as a stable surrogate; mapping errors still
+            // propagate because the inode cannot be represented correctly.
             let raw = volume
                 .lstat(PathBuf::new())
                 .map(|s| s.inode_nr)

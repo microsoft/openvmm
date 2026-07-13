@@ -15,9 +15,14 @@ use test_with_tracing::test;
 fn aggregate_child_registry() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
+    let mut readonly = LxVolumeOptions::default();
+    readonly.readonly(true);
     let fs = VirtioFs::new_aggregate();
 
-    fs.add_child("share_a", a.path(), None).unwrap();
+    assert_eq!(fs.synthetic_root_attr().nlink, 2);
+    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 2);
+
+    fs.add_child("share_a", a.path(), Some(&readonly)).unwrap();
     fs.add_child("share_b", b.path(), None).unwrap();
 
     // Duplicate names are rejected.
@@ -37,7 +42,11 @@ fn aggregate_child_registry() {
             children.entries[0].volume.id(),
             children.entries[1].volume.id()
         );
+        assert!(children.entries[0].volume.readonly());
+        assert!(!children.entries[1].volume.readonly());
     }
+    assert_eq!(fs.synthetic_root_attr().nlink, 4);
+    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 4);
 
     // Removal drops only the named child.
     fs.remove_child("share_a").unwrap();
@@ -46,12 +55,19 @@ fn aggregate_child_registry() {
         fs.inner.aggregate().unwrap().registry.read().entries.len(),
         1
     );
+    assert_eq!(fs.synthetic_root_attr().nlink, 3);
+    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 3);
 }
 
 #[test]
-fn add_child_rejected_in_direct_mode() {
+fn aggregate_operations_are_scoped_to_aggregate_mode() {
+    let aggregate = VirtioFs::new_aggregate();
+    assert!(aggregate.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
+    assert!(!aggregate.is_synthetic_root_handle(FUSE_ROOT_ID + 1, SYNTHETIC_ROOT_FH));
+
     let a = tempfile::tempdir().unwrap();
     let fs = VirtioFs::new(a.path(), None).unwrap();
+    assert!(!fs.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
     assert_eq!(
         fs.add_child("x", a.path(), None).unwrap_err(),
         lx::Error::EINVAL
@@ -134,36 +150,6 @@ fn submount_flag_requires_negotiation() {
 }
 
 #[test]
-fn synthetic_root_handle_is_scoped_to_root() {
-    let aggregate = VirtioFs::new_aggregate();
-    assert!(aggregate.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
-    assert!(!aggregate.is_synthetic_root_handle(FUSE_ROOT_ID + 1, SYNTHETIC_ROOT_FH));
-
-    let root = tempfile::tempdir().unwrap();
-    let direct = VirtioFs::new(root.path(), None).unwrap();
-    assert!(!direct.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
-}
-
-#[test]
-fn synthetic_root_link_count_includes_children() {
-    let first = tempfile::tempdir().unwrap();
-    let second = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
-
-    assert_eq!(fs.synthetic_root_attr().nlink, 2);
-    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 2);
-
-    fs.add_child("first", first.path(), None).unwrap();
-    fs.add_child("second", second.path(), None).unwrap();
-    assert_eq!(fs.synthetic_root_attr().nlink, 4);
-    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 4);
-
-    fs.remove_child("first").unwrap();
-    assert_eq!(fs.synthetic_root_attr().nlink, 3);
-    assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 3);
-}
-
-#[test]
 fn inode_namespacing_avoids_cross_volume_collisions() {
     // Direct mode (volume id 0) is the identity transform.
     assert_eq!(inode::namespace_ino(0, 42).unwrap(), 42);
@@ -196,56 +182,24 @@ fn inode_namespacing_avoids_cross_volume_collisions() {
 #[test]
 fn aggregate_volume_count_is_limited_to_namespace_capacity() {
     let root = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
-    assert!(!fs.initialize_submounts(false));
+    for submounts in [None, Some(false), Some(true)] {
+        let fs = VirtioFs::new_aggregate();
+        fs.inner
+            .aggregate()
+            .unwrap()
+            .registry
+            .write()
+            .next_volume_id = MAX_AGGREGATE_VOLUMES;
+        if let Some(capable) = submounts {
+            assert_eq!(fs.initialize_submounts(capable), capable);
+        }
 
-    for index in 0..MAX_AGGREGATE_VOLUMES {
-        fs.add_child(&format!("share_{index}"), root.path(), None)
-            .unwrap();
+        fs.add_child("last_available", root.path(), None).unwrap();
+        assert_eq!(
+            fs.add_child("one_too_many", root.path(), None),
+            Err(lx::Error::ENOSPC)
+        );
     }
-
-    assert_eq!(
-        fs.add_child("one_too_many", root.path(), None).unwrap_err(),
-        lx::Error::ENOSPC
-    );
-}
-
-#[test]
-fn aggregate_volume_count_is_not_limited_when_submounts_are_available() {
-    let root = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
-
-    fs.inner
-        .aggregate()
-        .unwrap()
-        .registry
-        .write()
-        .next_volume_id = MAX_AGGREGATE_VOLUMES + 1;
-    fs.add_child("pending", root.path(), None).unwrap();
-
-    assert!(fs.initialize_submounts(true));
-    fs.add_child("negotiated", root.path(), None).unwrap();
-
-    let aggregate = fs.inner.aggregate().unwrap();
-    let children = aggregate.registry.read();
-    assert_eq!(children.entries[0].volume.id(), MAX_AGGREGATE_VOLUMES + 1);
-    assert_eq!(children.entries[1].volume.id(), MAX_AGGREGATE_VOLUMES + 2);
-    assert_eq!(children.entries[0].volume.map_inode(42).unwrap(), 42);
-    assert_eq!(children.entries[1].volume.map_inode(42).unwrap(), 42);
-
-    let fallback = VirtioFs::new_aggregate();
-    fallback
-        .inner
-        .aggregate()
-        .unwrap()
-        .registry
-        .write()
-        .next_volume_id = MAX_AGGREGATE_VOLUMES + 1;
-    assert!(!fallback.initialize_submounts(false));
-    assert_eq!(
-        fallback.add_child("fallback", root.path(), None),
-        Err(lx::Error::ENOSPC)
-    );
 }
 
 #[test]
@@ -282,35 +236,6 @@ fn hard_link_rejects_cross_volume_target() {
         lx::Error::EXDEV
     );
     assert!(!second.path().join("link").exists());
-}
-
-#[test]
-fn add_child_allows_per_child_readonly() {
-    let a = tempfile::tempdir().unwrap();
-    let mut ro = LxVolumeOptions::default();
-    ro.readonly(true);
-    let mut rw = LxVolumeOptions::default();
-    rw.readonly(false);
-
-    // A writable aggregate lets each child pick its own readonly setting.
-    let fs = VirtioFs::new_aggregate();
-    fs.add_child("ro_child", a.path(), Some(&ro)).unwrap();
-    fs.add_child("rw_child", a.path(), Some(&rw)).unwrap();
-
-    let aggregate = fs.inner.aggregate().unwrap();
-    let children = aggregate.registry.read();
-    let ro_entry = children
-        .entries
-        .iter()
-        .find(|e| e.name == "ro_child")
-        .unwrap();
-    let rw_entry = children
-        .entries
-        .iter()
-        .find(|e| e.name == "rw_child")
-        .unwrap();
-    assert!(ro_entry.volume.readonly());
-    assert!(!rw_entry.volume.readonly());
 }
 
 #[test]
