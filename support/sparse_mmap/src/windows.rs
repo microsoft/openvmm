@@ -904,7 +904,7 @@ pub fn alloc_shared_memory_hugetlb(
     if large_page_minimum == 0 {
         return Err(Error::new(
             io::ErrorKind::Unsupported,
-            "large pages are not supported by this processor",
+            "large pages are not supported by this system",
         ));
     }
 
