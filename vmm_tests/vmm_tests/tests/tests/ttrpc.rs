@@ -135,9 +135,10 @@ fn test_ttrpc_interface(
                 && r.add),
             "SCSI add should be advertised as a supported resource"
         );
-        assert!(
-            !caps.supported_guest_os.is_empty(),
-            "expected at least one supported guest OS"
+        assert_eq!(
+            caps.supported_guest_os,
+            vec![vmservice::capabilities_vm_response::SupportedGuestOs::Linux as i32],
+            "only Linux direct boot is supported"
         );
 
         let props = query_props().await.unwrap();

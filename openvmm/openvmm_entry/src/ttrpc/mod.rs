@@ -892,10 +892,7 @@ impl VmService {
                     update: true,
                 },
             ],
-            supported_guest_os: vec![
-                SupportedGuestOs::Windows as i32,
-                SupportedGuestOs::Linux as i32,
-            ],
+            supported_guest_os: vec![SupportedGuestOs::Linux as i32],
         }
     }
 
