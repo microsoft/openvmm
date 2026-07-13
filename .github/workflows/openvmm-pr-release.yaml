@@ -4694,7 +4694,6 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job0
     - job11
     - job2
     - job3

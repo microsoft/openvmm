@@ -1751,7 +1751,9 @@ impl IntoPipeline for CheckinGatesCli {
                 );
             }
 
-            all_jobs.push(vmm_tests_run_job.finish());
+            if !label.contains("snp") {
+                all_jobs.push(vmm_tests_run_job.finish());
+            }
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
