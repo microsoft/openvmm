@@ -1245,6 +1245,12 @@ impl Options {
     }
 
     /// Validates combinations that span the new `--memory` parser and legacy aliases.
+    ///
+    /// Only checks that cannot be expressed elsewhere live here. Conflicts
+    /// within a single `--memory` string are enforced by the parser, and
+    /// semantic constraints (platform support, private-vs-shared, huge pages
+    /// vs. legacy RAM, etc.) are enforced by the membacking builder at VM
+    /// build time; those are not duplicated here.
     pub fn validate_memory_options(&self) -> anyhow::Result<()> {
         if self.memory.file.is_some() && self.deprecated_memory_backing_file.is_some() {
             anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
@@ -1254,26 +1260,6 @@ impl Options {
         }
         if self.memory.shared == Some(true) && self.deprecated_private_memory {
             anyhow::bail!("--memory shared=on conflicts with --private-memory");
-        }
-        if self.memory_backing_file().is_some() && self.private_memory() {
-            anyhow::bail!("file-backed memory conflicts with private memory");
-        }
-        if self.transparent_hugepages() && !self.private_memory() {
-            anyhow::bail!("transparent huge pages requires private memory mode");
-        }
-        if self.memory.hugepages {
-            if !cfg!(any(target_os = "linux", target_os = "windows")) {
-                anyhow::bail!("hugepages are only supported on Linux and Windows");
-            }
-            if self.private_memory() {
-                anyhow::bail!("hugepages conflict with private memory");
-            }
-            if self.memory_backing_file().is_some() || self.restore_snapshot.is_some() {
-                anyhow::bail!("hugepages conflict with file-backed memory");
-            }
-            if self.pcat {
-                anyhow::bail!("hugepages conflict with x86 legacy RAM splitting");
-            }
         }
         Ok(())
     }
@@ -5072,24 +5058,6 @@ mod tests {
     fn test_memory_options_reject_conflicting_legacy_aliases() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
             .unwrap();
-        assert!(opt.validate_memory_options().is_err());
-    }
-
-    #[test]
-    fn test_memory_options_reject_hugepage_legacy_conflicts() {
-        let opt =
-            Options::try_parse_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
-                .unwrap();
-        assert!(opt.validate_memory_options().is_err());
-
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--memory",
-            "hugepages=on",
-            "--memory-backing-file",
-            "/tmp/memory.bin",
-        ])
-        .unwrap();
         assert!(opt.validate_memory_options().is_err());
     }
 

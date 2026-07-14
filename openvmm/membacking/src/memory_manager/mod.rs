@@ -433,6 +433,9 @@ impl GuestMemoryBuilder {
                 if req.private_memory {
                     return Err(MemoryBuildError::HugepagesWithPrivateMemory);
                 }
+                if req.existing_mappable.is_some() {
+                    return Err(MemoryBuildError::HugepagesWithExistingBacking);
+                }
                 if self.x86_legacy_support {
                     return Err(MemoryBuildError::HugepagesWithLegacy);
                 }
@@ -885,6 +888,7 @@ impl RamVisibilityControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::async_test;
     use std::error::Error as _;
 
     /// Build a GuestMemoryManager with the given backing range groups,
@@ -906,6 +910,24 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    #[async_test]
+    async fn test_hugepages_with_existing_backing_rejected() {
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let mappable = sparse_mmap::alloc_shared_memory(SIZE as usize, "test").unwrap();
+        let backing = RamBackingRequest::new(vec![MemoryRange::new(0..SIZE)])
+            .hugepages(None)
+            .existing_mappable(mappable.into());
+        let err = GuestMemoryBuilder::new()
+            .add_backing(backing)
+            .build(SIZE)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MemoryBuildError::HugepagesWithExistingBacking
+        ));
     }
 
     #[test]

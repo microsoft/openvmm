@@ -43,7 +43,26 @@ use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::SystemServices::NUMA_NO_PREFERRED_NODE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+/// The system page size: the unit at which memory is committed and protection
+/// is applied.
+///
+/// `GetSystemInfo` reports the actual value, but every architecture Windows
+/// runs on (x86, x64, and ARM64) uses 4 KB pages, so we hardcode it rather than
+/// querying it at runtime.
 const PAGE_SIZE: usize = 4096;
+
+/// The Windows *allocation granularity*.
+///
+/// Windows has two distinct memory sizes. The page size (4 KB) is the unit at
+/// which memory is committed and protection is applied. The *allocation
+/// granularity* is the coarser unit — 64 KB — that the base address of every
+/// virtual-address *reservation* must be aligned to: `VirtualAlloc`,
+/// `VirtualAlloc2`, `MapViewOfFile3`, etc. round the base of a new reservation
+/// down to a multiple of this value. (This is separate from, and larger than,
+/// the page size; it exists mainly for historical Alpha/portability reasons.)
+///
+/// `GetSystemInfo` reports the actual value, but it is never larger than 64 KB,
+/// so we hardcode that rather than querying it at runtime.
 const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
@@ -1057,8 +1076,12 @@ fn with_lock_memory_privilege<R>(f: impl FnOnce() -> io::Result<R>) -> io::Resul
 
 #[cfg(test)]
 mod tests {
+    use super::GetLargePageMinimum;
+    use super::PAGE_SIZE;
     use super::SparseMapping;
     use super::alloc_shared_memory;
+    use super::alloc_shared_memory_hugetlb;
+    use std::io;
     use trycopy::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
@@ -1114,5 +1137,72 @@ mod tests {
         )
         .unwrap();
         sparse_addr.map_file(0, 0x10000, &shmem, 0, true).unwrap();
+    }
+
+    /// Rejects hugepage sizes and allocation sizes that are not the large-page
+    /// minimum before any privileged allocation is attempted, so this needs no
+    /// special privilege and runs in CI.
+    #[test]
+    fn test_large_page_rejects_bad_size() {
+        // SAFETY: no preconditions.
+        let large_page_minimum = unsafe { GetLargePageMinimum() };
+        if large_page_minimum == 0 {
+            // Large pages are unsupported on this system; nothing to validate.
+            return;
+        }
+
+        // A hugepage size other than the large-page minimum is rejected up
+        // front (before SeLockMemoryPrivilege is ever needed).
+        let err = alloc_shared_memory_hugetlb(
+            large_page_minimum,
+            "test",
+            Some(large_page_minimum * 2),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // A size that is not a multiple of the large-page minimum is likewise
+        // rejected up front.
+        let err = alloc_shared_memory_hugetlb(large_page_minimum + PAGE_SIZE, "test", None, None)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Exercises the actual large-page (`SEC_LARGE_PAGES`) allocation and
+    /// mapping path. This requires the "Lock pages in memory" user right
+    /// (`SeLockMemoryPrivilege`), which is not held by default, so it is
+    /// ignored. To run it manually, grant the privilege (see
+    /// `scripts/grant-privilege.ps1`), sign out and back in, then run:
+    ///
+    /// ```text
+    /// cargo test -p sparse_mmap -- --ignored large_page_alloc
+    /// ```
+    #[test]
+    #[ignore = "requires SeLockMemoryPrivilege; run manually"]
+    fn test_large_page_alloc_and_map() {
+        trycopy::initialize_try_copy();
+
+        // SAFETY: no preconditions.
+        let large_page_minimum = unsafe { GetLargePageMinimum() };
+        assert_ne!(large_page_minimum, 0, "large pages not supported");
+
+        let size = large_page_minimum;
+        let shmem = alloc_shared_memory_hugetlb(size, "test", Some(large_page_minimum), None)
+            .expect("large-page allocation failed (is SeLockMemoryPrivilege held?)");
+
+        let sparse = SparseMapping::new(size).unwrap();
+        sparse
+            .map_view_of_file(0, size, &shmem, 0, PAGE_READWRITE, None)
+            .unwrap();
+
+        // Round-trip values through the large-page-backed mapping.
+        let data: &mut [u32] =
+            unsafe { std::slice::from_raw_parts_mut(sparse.as_ptr().cast(), sparse.len() / 4) };
+        for (i, d) in data.iter_mut().enumerate() {
+            *d = i as u32;
+        }
+        assert_eq!(data[0], 0);
+        assert_eq!(data[size / 4 - 1], (size / 4 - 1) as u32);
     }
 }
