@@ -470,21 +470,19 @@ impl HardwareIsolatedBacking for SnpBacked {
         // timeout without re-arming the underlying timer.
         if this.backing.synic_timer_deadline.armed_ref_time == Some(next_ref_time) {
             if let Some(timeout) = this.backing.synic_timer_deadline.armed_timeout {
-                this.vmtime.set_timeout(timeout);
+                this.vmtime.set_timeout_if_before(timeout);
             }
             return;
         }
 
-        // A changed effective deadline must replace the existing local timeout.
-        // VmTimeGuestTimer uses set_timeout_if_before, so cancel first to avoid
-        // caching an older timeout under the new reference deadline.
-        this.vmtime.cancel_timeout();
-        this.shared
+        let timeout = this
+            .shared
             .guest_timer
-            .update_deadline(this, ref_time_now, next_ref_time);
+            .timeout(&this.vmtime, ref_time_now, next_ref_time);
 
         this.backing.synic_timer_deadline.armed_ref_time = Some(next_ref_time);
-        this.backing.synic_timer_deadline.armed_timeout = this.vmtime.get_timeout();
+        this.backing.synic_timer_deadline.armed_timeout = Some(timeout);
+        this.vmtime.set_timeout_if_before(timeout);
     }
 
     fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
