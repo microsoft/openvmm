@@ -359,7 +359,7 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12
 
 /// Paravisor measured config for vtl2.
 ///
-/// Followed in place by the optional [`ProductPolicy`] body at
+/// Followed in place by the optional `ProductPolicy` body at
 /// [`PRODUCT_POLICY_INLINE_OFFSET`]; `product_policy_size == 0` (the
 /// pre-feature zero-filled tail) means absent.
 #[repr(C)]
@@ -372,7 +372,7 @@ pub struct ParavisorMeasuredVtl2Config {
     pub vtom_offset_bit: u8,
     /// Padding.
     pub padding: [u8; 7],
-    /// Byte length of the inline [`ProductPolicy`] body, or `0` if
+    /// Byte length of the inline `ProductPolicy` body, or `0` if
     /// absent.
     pub product_policy_size: u32,
     /// Reserved; must be zero.
@@ -384,11 +384,11 @@ impl ParavisorMeasuredVtl2Config {
     pub const MAGIC: u64 = 0x4F48434C56544C32;
 }
 
-/// Byte offset of the inline [`ProductPolicy`] body within the
+/// Byte offset of the inline `ProductPolicy` body within the
 /// measured VTL2 config region.
 pub const PRODUCT_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl2Config>();
 
-/// Maximum byte size of an inline [`ProductPolicy`] body.
+/// Maximum byte size of an inline `ProductPolicy` body.
 pub const PRODUCT_POLICY_MAX_SIZE_BYTES: usize =
     (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
         - PRODUCT_POLICY_INLINE_OFFSET;
