@@ -1373,6 +1373,18 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
+        {
+            use disk_backend::shared_disk::SharedDiskResolver;
+            use disk_backend_resources::SharedDiskHandle;
+            use disk_backend_resources::SharedDiskRefHandle;
+            use vm_resource::kind::DiskHandleKind;
+
+            let shared_disk = SharedDiskResolver::new();
+            resolver
+                .add_async_resolver::<DiskHandleKind, _, SharedDiskHandle, _>(shared_disk.clone());
+            resolver.add_async_resolver::<DiskHandleKind, _, SharedDiskRefHandle, _>(shared_disk);
+        }
+
         resolver.add_async_resolver(
             chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
                 OpenVmmRemoteDynamicResolvers {},
@@ -1787,10 +1799,6 @@ impl InitializedVm {
             }
         });
 
-        // OpenVMM routes the IDE controller through the chipset resource resolver
-        // (HyperVIdeDeviceHandle / HyperVIdeResolver), not via deps_hyperv_ide.
-        let deps_hyperv_ide: Option<dev::HyperVIdeDeps> = None;
-
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
@@ -1799,7 +1807,6 @@ impl InitializedVm {
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_framebuffer,
-                deps_hyperv_ide,
                 deps_hyperv_vga,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,

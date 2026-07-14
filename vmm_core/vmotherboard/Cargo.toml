@@ -26,7 +26,6 @@ vm_resource.workspace = true
 chipset_legacy.workspace = true
 chipset.workspace = true
 chipset_resources.workspace = true
-ide.workspace = true
 firmware_pcat.workspace = true
 framebuffer.workspace = true
 floppy = { optional = true, workspace = true }

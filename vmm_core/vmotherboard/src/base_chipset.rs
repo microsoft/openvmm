@@ -242,7 +242,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
             deps_hyperv_framebuffer,
-            deps_hyperv_ide,
             deps_hyperv_vga,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
@@ -405,32 +404,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             } else {
                 return Err(BaseChipsetBuilderError::NoDmaForFloppy);
             }
-        }
-
-        if let Some(options::dev::HyperVIdeDeps {
-            attached_to,
-            primary_channel_drives,
-            secondary_channel_drives,
-        }) = deps_hyperv_ide
-        {
-            builder
-                .arc_mutex_device("ide")
-                .on_pci_bus(attached_to)
-                .try_add(|services| {
-                    // hard-coded to iRQ lines 14 and 15, as per PIIX4 spec
-                    let primary_channel_line_interrupt =
-                        services.new_line(IRQ_LINE_SET, "ide1", 14);
-                    let secondary_channel_line_interrupt =
-                        services.new_line(IRQ_LINE_SET, "ide2", 15);
-                    ide::IdeDevice::new(
-                        foundation.untrusted_dma_memory.clone(),
-                        &mut services.register_pio(),
-                        primary_channel_drives,
-                        secondary_channel_drives,
-                        primary_channel_line_interrupt,
-                        secondary_channel_line_interrupt,
-                    )
-                })?;
         }
 
         if let Some(options::dev::GenericCmosRtcDeps {
@@ -1023,7 +996,6 @@ pub mod options {
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
@@ -1078,19 +1050,6 @@ pub mod options {
                 $(#[$m])*
                 pub struct $root_deps $($rest)*
             };
-        }
-
-        /// Hyper-V IDE controller (fixed pci address: 0:7.1)
-        // TODO: this device needs to be broken down further, into a PIIX4 IDE
-        // device (without the Hyper-V enlightenments), and then a Generic IDE
-        // device (without any of the PIIX4 bus mastering stuff).
-        pub struct HyperVIdeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Drives attached to the primary IDE channel
-            pub primary_channel_drives: [Option<ide::DriveMedia>; 2],
-            /// Drives attached to the secondary IDE channel
-            pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
 
         /// Generic dual 8237A ISA DMA controllers

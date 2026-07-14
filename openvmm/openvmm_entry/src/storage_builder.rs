@@ -8,6 +8,8 @@ use crate::cli_args::DiskCliKind;
 use crate::cli_args::UnderhillDiskSource;
 use crate::disk_open;
 use anyhow::Context;
+use disk_backend_resources::SharedDiskHandle;
+use disk_backend_resources::SharedDiskRefHandle;
 use guid::Guid;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -338,20 +340,9 @@ impl StorageBuilder {
         let disk = disk_open(kind, read_only || is_dvd).await?;
         let location = match target {
             DiskLocation::Ide(channel, device) => {
-                let guest_media = if is_dvd {
-                    GuestMedia::Dvd(
-                        SimpleScsiDvdHandle {
-                            media: Some(disk),
-                            requests: None,
-                        }
-                        .into_resource(),
-                    )
-                } else {
-                    GuestMedia::Disk {
-                        disk_type: disk,
-                        read_only,
-                    }
-                };
+                if vtl != DeviceVtl::Vtl0 {
+                    anyhow::bail!("ide only supported for VTL0");
+                }
 
                 let check = |c: u8, d: u8| {
                     channel.unwrap_or(c) == c
@@ -367,22 +358,43 @@ impl StorageBuilder {
                     .find(|&(c, d)| check(c, d))
                     .context("no free ide slots")?;
 
-                if vtl != DeviceVtl::Vtl0 {
-                    anyhow::bail!("ide only supported for VTL0");
-                }
+                // A hard disk is exposed as both an emulated IDE drive and a
+                // storvsp accelerator channel, which must share a single open
+                // backing store (some backends allow only one open). The IDE
+                // drive resolves the carrier; the accelerator resolves a
+                // reference to the same disk.
+                let (guest_media, storvsp_scsi_disk) = if is_dvd {
+                    let guest_media = GuestMedia::Dvd(
+                        SimpleScsiDvdHandle {
+                            media: Some(disk),
+                            requests: None,
+                        }
+                        .into_resource(),
+                    );
+                    (guest_media, None)
+                } else {
+                    // The IDE path uniquely identifies this disk within the VM, so use it
+                    // as the shared-disk key that pairs the emulated IDE carrier with its
+                    // storvsp accelerator reference.
+                    let key = (u64::from(channel) << 1) | u64::from(device);
 
-                let storvsp_scsi_disk = if !is_dvd {
-                    let storvsp_disk = disk_open(kind, read_only).await?;
-                    Some(
+                    let guest_media = GuestMedia::Disk {
+                        disk_type: SharedDiskHandle { key, inner: disk }.into_resource(),
+                        read_only,
+                    };
+
+                    // OpenVMM has no CLI surface for per-disk SCSI parameters, so
+                    // they are left as Default here.
+                    let storvsp_scsi_disk = Some(
                         SimpleScsiDiskHandle {
-                            disk: storvsp_disk,
+                            disk: SharedDiskRefHandle { key }.into_resource(),
                             read_only,
                             parameters: Default::default(),
                         }
                         .into_resource(),
-                    )
-                } else {
-                    None
+                    );
+
+                    (guest_media, storvsp_scsi_disk)
                 };
 
                 self.vtl0_ide_entries.push(IdeEntry {

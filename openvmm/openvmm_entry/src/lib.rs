@@ -1131,8 +1131,7 @@ async fn vm_config_from_command_line(
             BaseChipsetType::UnenlightenedLinuxDirect
         },
         arch,
-    )
-    .with_ide_as_chipset_resource();
+    );
 
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();

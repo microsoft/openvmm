@@ -10,12 +10,14 @@ rust-version.workspace = true
 scsi_buffers.workspace = true
 vmcore.workspace = true
 
+disk_backend_resources.workspace = true
 guestmem.workspace = true
 vm_resource.workspace = true
 inspect = { workspace = true, features = ["std"] }
 
 async-trait.workspace = true
 futures.workspace = true
+parking_lot.workspace = true
 stackfuture.workspace = true
 thiserror.workspace = true
 

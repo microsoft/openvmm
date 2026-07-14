@@ -166,8 +166,7 @@ impl PetriVmConfigOpenVmm {
                 MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                 MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
             },
-        )
-        .with_ide_as_chipset_resource();
+        );
 
         let mut load_mode = setup.load_firmware()?;
 
@@ -573,7 +572,6 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        // Add the IDE device handle if there are any IDE disks.
         if !ide_disks.is_empty() {
             use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
             use chipset_resources::ide::HYPERV_IDE_BDF;
@@ -1303,11 +1301,8 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
     handle
 }
 
-/// Convert the generic IDE configuration to OpenVMM IDE device disks and
-/// storvsp IDE accelerator handles.
-///
-/// Returns the IDE device disk configs (for HyperVIdeDeviceHandle) and
-/// storvsp IDE accelerator VMBus device handles (hard disks only).
+/// Convert the generic IDE configuration to OpenVMM IDE device disk configs
+/// and storvsp IDE accelerator handles (only hard disks get an accelerator).
 async fn ide_controllers_to_openvmm(
     ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
 ) -> anyhow::Result<(
