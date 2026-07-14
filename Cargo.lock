@@ -9151,6 +9151,7 @@ dependencies = [
  "mesh",
  "nix 0.30.1",
  "pal_async",
+ "parking_lot",
  "pci_core",
  "pci_resources",
  "test_with_tracing",

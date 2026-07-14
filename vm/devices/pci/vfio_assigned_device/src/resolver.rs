@@ -93,7 +93,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
         let device = VfioAssignedPciDevice::new(
             binding,
             pci_id,
-            input.driver_source,
             input.register_mmio,
             input.dma_target.msi_target(),
             memory_mapper,

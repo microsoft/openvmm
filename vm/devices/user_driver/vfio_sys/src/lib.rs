@@ -129,6 +129,61 @@ mod ioctl {
         request_code_none!(VFIO_TYPE, VFIO_BASE + 14),
         vfio_iommu_type1_dma_unmap
     );
+    // VFIO_DEVICE_FEATURE - _IO(VFIO_TYPE, VFIO_BASE + 17). The GET direction
+    // for the dmabuf feature returns a new dmabuf fd as the ioctl return
+    // value.
+    nix::ioctl_write_ptr_bad!(
+        vfio_device_feature_dma_buf,
+        request_code_none!(VFIO_TYPE, VFIO_BASE + 17),
+        super::VfioDeviceFeatureDmaBuf
+    );
+}
+
+/// `VFIO_DEVICE_FEATURE` direction/probe flags (`include/uapi/linux/vfio.h`).
+const VFIO_DEVICE_FEATURE_GET: u32 = 1 << 16;
+const VFIO_DEVICE_FEATURE_PROBE: u32 = 1 << 18;
+/// Feature index for exporting a device-region dmabuf for peer-to-peer DMA.
+const VFIO_DEVICE_FEATURE_DMA_BUF: u32 = 11;
+
+/// Combined `struct vfio_device_feature` header and
+/// `struct vfio_device_feature_dma_buf` payload with a single
+/// `struct vfio_region_dma_range`.
+///
+/// The kernel dmabuf-to-iommufd interconnect currently supports only
+/// `nr_ranges == 1`, so a fixed single-range struct suffices (one dmabuf per
+/// contiguous BAR area). Layout must match `include/uapi/linux/vfio.h`
+/// exactly.
+#[repr(C)]
+struct VfioDeviceFeatureDmaBuf {
+    // `struct vfio_device_feature`
+    argsz: u32,
+    flags: u32,
+    // `struct vfio_device_feature_dma_buf`
+    region_index: u32,
+    open_flags: u32,
+    dma_buf_flags: u32,
+    nr_ranges: u32,
+    // `struct vfio_region_dma_range dma_ranges[1]`
+    range_offset: u64,
+    range_length: u64,
+}
+
+/// Returns the `(st_dev, st_ino)` identity of a file descriptor.
+///
+/// Used to key device BAR areas by their intrinsic identity (the VFIO cdev
+/// inode plus a BAR-region file offset) rather than by a guest-controlled
+/// address.
+pub fn fd_identity(fd: BorrowedFd<'_>) -> std::io::Result<(u64, u64)> {
+    // SAFETY: `fstat` fully initializes the buffer on success; the fd is
+    // valid for the duration of the call.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    // SAFETY: `fd` is a valid file descriptor and `stat` points to a valid,
+    // correctly sized `libc::stat`.
+    let ret = unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((stat.st_dev as u64, stat.st_ino as u64))
 }
 
 pub struct Container {
@@ -570,7 +625,20 @@ impl Device {
         }
 
         if flags.mmap() {
-            Ok(vec![MemoryRange::new(0..info.size)])
+            // The kernel can report a mmappable region whose size is not a
+            // multiple of the page size — e.g. a sub-page MMIO BAR that recent
+            // vfio-pci exposes for direct mapping. `MemoryRange` requires
+            // page-aligned bounds, and a sub-page region cannot be safely
+            // direct-mapped into guest GPA at page granularity anyway, so align
+            // the size down to the host page size and skip the region entirely
+            // if nothing remains (it stays trap-and-emulate).
+            let page_mask = host_page_size() - 1;
+            let aligned_size = info.size & !page_mask;
+            if aligned_size == 0 {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![MemoryRange::new(0..aligned_size)])
+            }
         } else {
             Ok(Vec::new())
         }
@@ -615,6 +683,69 @@ impl Device {
             return Err(std::io::Error::last_os_error()).context("failed to map region");
         }
         Ok(MappedRegion { addr, len })
+    }
+
+    /// Returns whether the device supports exporting a region as a dmabuf for
+    /// peer-to-peer DMA (`VFIO_DEVICE_FEATURE_DMA_BUF`).
+    ///
+    /// `Ok(false)` means the feature is unavailable and the caller should fall
+    /// back to host-VA mapping. An unexpected probe failure is returned as an
+    /// error.
+    pub fn supports_dma_buf(&self) -> anyhow::Result<bool> {
+        let feature = VfioDeviceFeatureDmaBuf {
+            argsz: size_of::<VfioDeviceFeatureDmaBuf>() as u32,
+            flags: VFIO_DEVICE_FEATURE_PROBE
+                | VFIO_DEVICE_FEATURE_GET
+                | VFIO_DEVICE_FEATURE_DMA_BUF,
+            region_index: 0,
+            open_flags: 0,
+            dma_buf_flags: 0,
+            nr_ranges: 0,
+            range_offset: 0,
+            range_length: 0,
+        };
+        // SAFETY: the fd is valid and the struct is correctly sized. With the
+        // PROBE flag the kernel only reports support and does not export.
+        match unsafe { ioctl::vfio_device_feature_dma_buf(self.file.as_raw_fd(), &feature) } {
+            Ok(_) => Ok(true),
+            // The feature is not available on this kernel or device.
+            Err(nix::errno::Errno::ENOTTY | nix::errno::Errno::EOPNOTSUPP) => Ok(false),
+            Err(e) => Err(e).context("VFIO_DEVICE_FEATURE_DMA_BUF probe failed"),
+        }
+    }
+
+    /// Exports a single page-aligned range of a device region (BAR) as a
+    /// dmabuf for peer-to-peer DMA via iommufd (`VFIO_DEVICE_FEATURE_DMA_BUF`).
+    ///
+    /// `region_index` is the VFIO region (BAR) index. `offset` and `length`
+    /// are BAR-relative and must be page-aligned. The kernel interconnect
+    /// currently supports only a single range per dmabuf, so this exports
+    /// exactly one range. Returns an owned dmabuf fd.
+    pub fn export_dma_buf(
+        &self,
+        region_index: u32,
+        offset: u64,
+        length: u64,
+    ) -> anyhow::Result<OwnedFd> {
+        let feature = VfioDeviceFeatureDmaBuf {
+            argsz: size_of::<VfioDeviceFeatureDmaBuf>() as u32,
+            flags: VFIO_DEVICE_FEATURE_GET | VFIO_DEVICE_FEATURE_DMA_BUF,
+            region_index,
+            open_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+            dma_buf_flags: 0,
+            nr_ranges: 1,
+            range_offset: offset,
+            range_length: length,
+        };
+        // SAFETY: the fd is valid and the struct is correctly sized and
+        // constructed. On GET the kernel returns a freshly-opened dmabuf fd as
+        // the ioctl return value.
+        let fd = unsafe {
+            ioctl::vfio_device_feature_dma_buf(self.file.as_raw_fd(), &feature)
+                .context("VFIO_DEVICE_FEATURE_DMA_BUF export failed")?
+        };
+        // SAFETY: the kernel returned a new, owned dmabuf fd.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
     pub fn map_msix<I>(&self, start: u32, eventfd: I) -> anyhow::Result<()>

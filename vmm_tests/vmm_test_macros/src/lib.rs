@@ -921,7 +921,7 @@ pub fn vmm_test(
 /// last; both are enforced.
 ///
 /// example: #[vmm_test_with(noagent, configs(linux_direct_x64, ...))]
-/// example: #[vmm_test_with(openvmm, requires(test_disk_vfio), configs(linux_direct_aarch64))]
+/// example: #[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
 /// example: #[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 #[proc_macro_attribute]
 pub fn vmm_test_with(

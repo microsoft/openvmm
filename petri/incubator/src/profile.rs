@@ -61,6 +61,43 @@ impl Arch {
 pub enum DeviceConfig {
     /// A virtio-blk disk device.
     VirtioBlk(VirtioBlkDeviceConfig),
+    /// A QEMU `edu` device — a simple PCI device with a register-programmed
+    /// DMA engine. Used as a P2P DMA *initiator* in device-assignment tests.
+    Edu(EduDeviceConfig),
+    /// A QEMU `ivshmem-plain` device — a PCI device whose BAR2 is a
+    /// prefetchable, RAM-backed memory window. Used as a P2P DMA *target*
+    /// (peer BAR) in device-assignment tests.
+    IvshmemPlain(IvshmemPlainDeviceConfig),
+}
+
+impl DeviceConfig {
+    /// The device's name, used in env var names (e.g. `test-disk` →
+    /// `INCUBATOR_VFIO_BDF_TEST_DISK`).
+    pub fn name(&self) -> &str {
+        match self {
+            DeviceConfig::VirtioBlk(cfg) => &cfg.name,
+            DeviceConfig::Edu(cfg) => &cfg.name,
+            DeviceConfig::IvshmemPlain(cfg) => &cfg.name,
+        }
+    }
+
+    /// Whether the device should be bound to vfio-pci after boot so it can be
+    /// assigned into the L2 guest.
+    pub fn vfio(&self) -> bool {
+        match self {
+            DeviceConfig::VirtioBlk(cfg) => cfg.vfio,
+            DeviceConfig::Edu(cfg) => cfg.vfio,
+            DeviceConfig::IvshmemPlain(cfg) => cfg.vfio,
+        }
+    }
+
+    /// The capability this device advertises once provisioned, derived from
+    /// its name with `-` replaced by `_` so it is a valid `requires(...)`
+    /// identifier (e.g. `edu-initiator` → `edu_initiator`). Tests gate on this
+    /// via `requires(...)`.
+    pub fn capability(&self) -> String {
+        self.name().replace('-', "_")
+    }
 }
 
 /// Configuration for a virtio-blk device added to the incubator.
@@ -75,12 +112,39 @@ pub struct VirtioBlkDeviceConfig {
     /// for passthrough into the L2 guest.
     #[serde(default)]
     pub vfio: bool,
-    /// Capability advertised once this device has been successfully
-    /// provisioned. Tests declare a matching `requires(...)` so they only run
-    /// where the device is available. The capability is added to
-    /// `PETRI_CAPABILITIES` alongside the device's BDF env var.
+}
+
+/// Configuration for a QEMU `edu` device added to the incubator.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EduDeviceConfig {
+    /// Name for this device (used in env var names, e.g., "edu-initiator" →
+    /// `INCUBATOR_VFIO_BDF_EDU_INITIATOR`).
+    pub name: String,
+    /// Optional `dma_mask` for the edu DMA engine (e.g. "0xffffffffffff").
+    /// The edu default is 28 bits, which clamps DMA addresses to the low
+    /// 256 MiB — too small for aarch64 guest physical addresses, so P2P tests
+    /// must widen it. Accepts decimal or `0x`-prefixed hex.
     #[serde(default)]
-    pub provides: Option<String>,
+    pub dma_mask: Option<String>,
+    /// If true, bind the device to vfio-pci after boot, making it available
+    /// for passthrough into the L2 guest.
+    #[serde(default)]
+    pub vfio: bool,
+}
+
+/// Configuration for a QEMU `ivshmem-plain` device added to the incubator.
+#[derive(Debug, Deserialize)]
+pub struct IvshmemPlainDeviceConfig {
+    /// Name for this device (used in env var names, e.g., "ivshmem-target" →
+    /// `INCUBATOR_VFIO_BDF_IVSHMEM_TARGET`).
+    pub name: String,
+    /// Size of the RAM-backed shared-memory BAR2 (e.g., "4M").
+    pub size: String,
+    /// If true, bind the device to vfio-pci after boot, making it available
+    /// for passthrough into the L2 guest.
+    #[serde(default)]
+    pub vfio: bool,
 }
 
 /// QEMU TCG configuration parsed from the profile.
