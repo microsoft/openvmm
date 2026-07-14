@@ -21,12 +21,6 @@ use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
 petri::test!(test_ttrpc_interface, |resolver| {
-    // Only supported on x86_64 for now.
-    if petri_artifacts_common::tags::MachineArch::host()
-        != petri_artifacts_common::tags::MachineArch::X86_64
-    {
-        return None;
-    }
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
@@ -43,6 +37,13 @@ fn test_ttrpc_interface(
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
+
+    // The serial console device differs by architecture: x86 exposes a 16550
+    // UART as `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
+    let console = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    };
 
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
@@ -360,7 +361,7 @@ fn test_ttrpc_interface(
                                     kernel_path: kernel_path.get().to_string_lossy().to_string(),
                                     initrd_path: initrd_path.get().to_string_lossy().to_string(),
                                     kernel_cmdline: format!(
-                                        "console=ttyS0 rdinit=/bin/busybox panic=-1 -- {guest_command}"
+                                        "console={console} rdinit=/bin/busybox panic=-1 -- {guest_command}"
                                     ),
                                 },
                             )),

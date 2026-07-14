@@ -564,9 +564,14 @@ impl VmService {
             })?);
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let arch = vm_manifest_builder::MachineArch::Aarch64;
+        #[cfg(guest_arch = "x86_64")]
+        let arch = vm_manifest_builder::MachineArch::X86_64;
+
         let chipset_builder = VmManifestBuilder::new(
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            vm_manifest_builder::MachineArch::X86_64,
+            arch,
         )
         .with_serial(ports);
         let layout_config = chipset_builder.layout_config();
