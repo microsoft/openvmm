@@ -88,7 +88,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -277,8 +277,8 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "OpenVMM VBS boot is intermittently unreliable in CI", openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -299,7 +299,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 /// Basic boot test with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -323,12 +323,19 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
 #[vmm_test_with(
     requires(vpci),
     configs(
-        // TODO: virt_whp is missing VPCI LPI interrupt support, used by Windows (but not Linux)
-        // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        ignore(
+            reason = "virt_whp lacks VPCI LPI interrupt support (Windows)",
+            openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+        ),
         openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-        // TODO: Linux image is missing VPCI driver in its initrd
-        // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-        // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+        ),
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
+        )
     )
 )]
 async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -345,12 +352,19 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 #[vmm_test_with(
     requires(vpci),
     configs(
-        // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
-        // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-        // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        ignore(
+            reason = "WHP lacks ARM64 VTL2 support",
+            openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+        ),
+        ignore(
+            reason = "WHP lacks ARM64 VTL2 support",
+            openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+        ),
         openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-        // TODO: Linux image is missing VPCI driver in its initrd
-        // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+        )
     )
 )]
 async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -366,18 +380,17 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
 }
 
 /// Validate we can reboot a VM and reconnect to pipette.
-// TODO: Reenable openvmm guests that use the framebuffer once #74 is fixed.
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
-    // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_pcat_x64(vhd(ubuntu_2504_server_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -385,7 +398,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))
@@ -515,10 +528,22 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
         openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
         openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
         openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-        // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-        // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-        // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-        // hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        ignore(
+            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
+            hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+        ),
+        ignore(
+            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
+            hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+        ),
+        ignore(
+            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
+            hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+        ),
+        ignore(
+            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
+            hyperv_uefi_x64(vhd(ubuntu_2504_server_x64))
+        ),
         hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
         hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
         hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),

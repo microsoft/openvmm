@@ -413,7 +413,10 @@ async fn pcie_hotplug(
 /// 2. Enumerates PCI devices visible to the guest
 /// 3. Pulses save/restore (pause → save → restore → resume)
 /// 4. Re-enumerates PCI devices and verifies they match
-#[openvmm_test(unstable_linux_direct_x64)]
+#[openvmm_test(unstable(
+    reason = "PCIe save/restore test is flaky on linux-direct in CI; root cause unknown",
+    linux_direct_x64
+))]
 async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (mut vm, agent) = config

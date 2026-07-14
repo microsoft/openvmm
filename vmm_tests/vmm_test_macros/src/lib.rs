@@ -28,7 +28,10 @@ struct Config {
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
-    unstable: bool,
+    /// If unstable, the reason why.
+    unstable: Option<String>,
+    /// If ignored, the reason why (compile-time documentation only).
+    ignored: Option<String>,
 }
 
 struct ResolvedConfig {
@@ -36,7 +39,8 @@ struct ResolvedConfig {
     firmware: Firmware,
     arch: MachineArch,
     extra_deps: Vec<Path>,
-    unstable: bool,
+    unstable: Option<String>,
+    ignored: Option<String>,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
 }
@@ -102,7 +106,8 @@ struct Args {
 struct ArgsWithOverrides {
     args: Args,
     vmm: Option<Vmm>,
-    unstable: bool,
+    unstable: Option<String>,
+    ignored: Option<String>,
     with_vtl0_pipette: bool,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
@@ -317,6 +322,18 @@ impl Parse for ArgsWithOverrides {
                         Vmm::HyperV
                     });
                 }
+                "unstable" | "ignore" => {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    let reason = parse_reason(&inner)?;
+                    if !inner.is_empty() {
+                        return Err(inner.error(
+                            "whole-list `ignore`/`unstable` takes only `reason = \"...\"`; \
+                             wrap an individual config to scope it",
+                        ));
+                    }
+                    overrides.set_flag_reason(&ident, reason)?;
+                }
                 _ => overrides.apply_ident(&ident)?,
             }
 
@@ -336,7 +353,8 @@ impl Parse for ArgsWithOverrides {
 
 struct ParsedOverrides {
     vmm: Option<Vmm>,
-    unstable: Option<bool>,
+    unstable: Option<String>,
+    ignored: Option<String>,
     with_vtl0_pipette: Option<bool>,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
@@ -347,6 +365,7 @@ impl ParsedOverrides {
         Self {
             vmm: None,
             unstable: None,
+            ignored: None,
             with_vtl0_pipette: None,
             requires_host_vendor: None,
             requires_capabilities: Vec::new(),
@@ -357,12 +376,6 @@ impl ParsedOverrides {
         let ident_string = ident.to_string();
         let conflict_err = || Err(Error::new(ident.span(), "conflicting override"));
         match ident_string.as_str() {
-            "unstable" => {
-                if self.unstable.is_some() {
-                    return conflict_err();
-                }
-                self.unstable = Some(true);
-            }
             "noagent" => {
                 if self.with_vtl0_pipette.is_some() {
                     return conflict_err();
@@ -386,6 +399,19 @@ impl ParsedOverrides {
         Ok(())
     }
 
+    fn set_flag_reason(&mut self, ident: &Ident, reason: String) -> syn::Result<()> {
+        let slot = match ident.to_string().as_str() {
+            "unstable" => &mut self.unstable,
+            "ignore" => &mut self.ignored,
+            _ => unreachable!(),
+        };
+        if slot.is_some() {
+            return Err(Error::new(ident.span(), "conflicting override"));
+        }
+        *slot = Some(reason);
+        Ok(())
+    }
+
     fn add_capability(&mut self, span: Span, capability: &'static str) -> syn::Result<()> {
         if self.requires_capabilities.contains(&capability) {
             return Err(Error::new(span, "duplicate required capability"));
@@ -399,7 +425,8 @@ impl ParsedOverrides {
             args,
             vmm: self.vmm,
             with_vtl0_pipette: self.with_vtl0_pipette.unwrap_or(true),
-            unstable: self.unstable.unwrap_or(false),
+            unstable: self.unstable,
+            ignored: self.ignored,
             requires_host_vendor: self.requires_host_vendor,
             requires_capabilities: self.requires_capabilities,
         }
@@ -438,6 +465,7 @@ impl ArgsWithOverrides {
             args: Args { configs },
             vmm,
             unstable,
+            ignored,
             with_vtl0_pipette,
             requires_host_vendor,
             requires_capabilities,
@@ -460,7 +488,11 @@ impl ArgsWithOverrides {
                 firmware: config.firmware,
                 arch: config.arch,
                 extra_deps: config.extra_deps,
-                unstable: config.unstable || unstable,
+                // A per-config wrapper reason wins over the whole-list override.
+                // A config may carry both `unstable` and `ignored`; `ignore`
+                // dominates at runtime (the test is skipped).
+                unstable: config.unstable.or_else(|| unstable.clone()),
+                ignored: config.ignored.or_else(|| ignored.clone()),
                 requires_host_vendor,
                 requires_capabilities: requires_capabilities.clone(),
             });
@@ -512,18 +544,43 @@ impl Parse for Config {
         let word = input.parse::<Ident>()?;
         let word_string = word.to_string();
 
-        let (unstable, remainder) = if let Some(remainder) = word_string.strip_prefix("unstable_") {
-            (true, remainder)
-        } else {
-            (false, word_string.as_str())
-        };
+        // Per-config `ignore(reason = "...", <config>)` /
+        // `unstable(reason = "...", <config>)` wrappers.
+        if word_string == "ignore" || word_string == "unstable" {
+            let inner;
+            syn::parenthesized!(inner in input);
+            let reason = parse_reason(&inner)?;
+            inner.parse::<Token![,]>().map_err(|_| {
+                Error::new(
+                    word.span(),
+                    "per-config `ignore`/`unstable` requires a config, e.g. \
+                     `ignore(reason = \"...\", linux_direct_x64)`",
+                )
+            })?;
+            let mut config = inner.parse::<Config>()?;
+            if !inner.is_empty() {
+                return Err(inner.error("expected a single config after the reason"));
+            }
+            if config.unstable.is_some() || config.ignored.is_some() {
+                return Err(Error::new(
+                    word.span(),
+                    "cannot nest `ignore`/`unstable` wrappers",
+                ));
+            }
+            if word_string == "ignore" {
+                config.ignored = Some(reason);
+            } else {
+                config.unstable = Some(reason);
+            }
+            return Ok(config);
+        }
 
-        let (vmm, remainder) = if let Some(remainder) = remainder.strip_prefix("hyperv_") {
+        let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
             (Some(Vmm::HyperV), remainder)
-        } else if let Some(remainder) = remainder.strip_prefix("openvmm_") {
+        } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
             (Some(Vmm::OpenVmm), remainder)
         } else {
-            (None, remainder)
+            (None, word_string.as_str())
         };
 
         let (arch, firmware) = match remainder {
@@ -572,7 +629,8 @@ impl Parse for Config {
             arch,
             span: input.span(),
             extra_deps,
-            unstable,
+            unstable: None,
+            ignored: None,
         })
     }
 }
@@ -815,10 +873,24 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
     Ok(deps.into_iter().collect())
 }
 
+/// Parses a mandatory `reason = "..."` argument, returning the reason string.
+fn parse_reason(input: ParseStream<'_>) -> syn::Result<String> {
+    let ident = input.parse::<Ident>()?;
+    if ident != "reason" {
+        return Err(Error::new(ident.span(), "expected `reason = \"...\"`"));
+    }
+    input.parse::<Token![=]>()?;
+    let reason = input.parse::<syn::LitStr>()?;
+    Ok(reason.value())
+}
+
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
-/// All options can be prefixed with "unstable_" to denote that this should
-/// not block PRs if it fails.
+/// An individual config can be marked unstable (runs, but failures don't block
+/// PRs) or ignored (skipped by default, like a libtest `#[ignore]` test) by
+/// wrapping it in `unstable(reason = "...", <config>)` or
+/// `ignore(reason = "...", <config>)`. The `reason` is mandatory. Use
+/// `vmm_test_with` to apply either to the whole list of configs.
 ///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
@@ -883,7 +955,8 @@ pub fn vmm_test(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: None,
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: true,
         requires_host_vendor: None,
         requires_capabilities: Vec::new(),
@@ -903,13 +976,18 @@ pub fn vmm_test(
 /// ```
 ///
 /// The available attributes are:
-/// - unstable: all variants of this test are unstable
+/// - unstable(reason = "..."): all variants are unstable (failures don't block PRs)
+/// - ignore(reason = "..."): all variants are ignored (skipped by default)
 /// - noagent: don't use pipette in vtl0 for this test
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
 /// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
 /// - requires(...): required capabilities (see below)
+///
+/// `unstable` and `ignore` can also be applied to a single config by wrapping
+/// it: `unstable(reason = "...", <config>)` / `ignore(reason = "...", <config>)`.
+/// A per-config wrapper cannot itself be nested inside another.
 ///
 /// `requires(...)` lists capabilities the test needs. Petri auto-detects some
 /// capabilities, such as `vpci`, and execution environments can advertise
@@ -945,7 +1023,8 @@ pub fn openvmm_test(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: Some(Vmm::OpenVmm),
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: true,
         requires_host_vendor: None,
         requires_capabilities: Vec::new(),
@@ -966,7 +1045,8 @@ pub fn openvmm_test_no_agent(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: Some(Vmm::OpenVmm),
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: false,
         requires_host_vendor: None,
         requires_capabilities: Vec::new(),
@@ -1036,7 +1116,15 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
-        let unstable = config.unstable.to_token_stream();
+        let unstable = match &config.unstable {
+            Some(reason) => quote!(.unstable(#reason)),
+            None => quote!(),
+        };
+        let ignore = if config.ignored.is_some() {
+            quote!(.ignore())
+        } else {
+            quote!()
+        };
 
         let test = quote! {
             #cfg_conditions
@@ -1055,10 +1143,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                         #original_name(#original_args).await
                     })
                 },
-                Some(#requirements),
-                #unstable,
-                #remote_access,
-            ).into(),
+            )
+            .requirements(#requirements)
+            .remote_access(#remote_access)
+            #unstable
+            #ignore
+            .into(),
         };
 
         tests.extend(test);
