@@ -135,10 +135,10 @@ Size suffixes accept K, M, G, and T, optionally followed by B.
 Options:
     size=<SIZE>              guest RAM size, default 1GB
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from Linux hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     file=<PATH>              use an existing file as guest RAM backing
 
 Examples:
@@ -165,10 +165,10 @@ Syntax: key=value[,key=value...]
 Options:
     size=<SIZE>              RAM for this node (required)
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
@@ -574,21 +574,34 @@ options:
     #[clap(long, value_name = "RC_NAME")]
     pub smmu: Vec<String>,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    ///
+    /// Prefix the binding with `debugger-mode:` to run this COM port in
+    /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
+    /// `--com1 debugger-mode:listen=<path>` or
+    /// `--com1 debugger-mode:listen=tcp:<ip>:<port>`. In debugger mode OpenVMM
+    /// keeps this port's backend drained and may drop bytes instead of applying
+    /// backpressure, so the KD transport does not deadlock across guest
+    /// resets/reboots (KD recovers dropped bytes via its own retransmission).
+    /// Debugger mode is independent per COM port.
     #[clap(long, value_name = "SERIAL")]
-    pub com1: Option<SerialConfigCli>,
+    pub com1: Option<ComSerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com2: Option<SerialConfigCli>,
+    pub com2: Option<ComSerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com3: Option<SerialConfigCli>,
+    pub com3: Option<ComSerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
-    pub com4: Option<SerialConfigCli>,
+    pub com4: Option<ComSerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
@@ -854,25 +867,22 @@ flags:
     /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires
-    ///                          user_mode_apic=false and host WHP
-    ///                          support)
-    ///
-    /// KVM parameters (x86_64 guests only):
-    ///   nested_virt          - expose VMX/SVM to the guest so it can run
-    ///                          its own hypervisor (requires host KVM
-    ///                          nested-virt support)
     ///
     /// Examples:
     ///   --hypervisor whp
     ///   --hypervisor whp:user_mode_apic
     ///   --hypervisor whp:user_mode_apic,no_enlightenments
-    ///   --hypervisor whp:nested_virt
     ///   --hypervisor kvm
-    ///   --hypervisor kvm:nested_virt
     #[clap(long)]
     pub hypervisor: Option<String>,
+
+    /// expose hardware virtualization (VMX/SVM) to the guest so it can run its
+    /// own hypervisor.
+    ///
+    /// Only supported on x86_64, and only by backends that support nested
+    /// virtualization (currently WHP and KVM). Requires host support.
+    #[clap(long)]
+    pub nested_virt: bool,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///
@@ -1248,6 +1258,12 @@ impl Options {
     }
 
     /// Validates combinations that span the new `--memory` parser and legacy aliases.
+    ///
+    /// Only checks that cannot be expressed elsewhere live here. Conflicts
+    /// within a single `--memory` string are enforced by the parser, and
+    /// semantic constraints (platform support, private-vs-shared, huge pages
+    /// vs. legacy RAM, etc.) are enforced by the membacking builder at VM
+    /// build time; those are not duplicated here.
     pub fn validate_memory_options(&self) -> anyhow::Result<()> {
         if self.memory.file.is_some() && self.deprecated_memory_backing_file.is_some() {
             anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
@@ -1257,26 +1273,6 @@ impl Options {
         }
         if self.memory.shared == Some(true) && self.deprecated_private_memory {
             anyhow::bail!("--memory shared=on conflicts with --private-memory");
-        }
-        if self.memory_backing_file().is_some() && self.private_memory() {
-            anyhow::bail!("file-backed memory conflicts with private memory");
-        }
-        if self.transparent_hugepages() && !self.private_memory() {
-            anyhow::bail!("transparent huge pages requires private memory mode");
-        }
-        if self.memory.hugepages {
-            if !cfg!(target_os = "linux") {
-                anyhow::bail!("hugepages are only supported on Linux");
-            }
-            if self.private_memory() {
-                anyhow::bail!("hugepages conflict with private memory");
-            }
-            if self.memory_backing_file().is_some() || self.restore_snapshot.is_some() {
-                anyhow::bail!("hugepages conflict with file-backed memory");
-            }
-            if self.pcat {
-                anyhow::bail!("hugepages conflict with x86 legacy RAM splitting");
-            }
         }
         Ok(())
     }
@@ -2507,6 +2503,33 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
+/// A COM port binding, optionally prefixed with `debugger-mode:` to run the
+/// port in debugger mode for WinDbg / KD-over-serial.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComSerialConfigCli {
+    /// Whether this COM port runs in debugger mode (for WinDbg / KD-over-serial).
+    pub debugger_mode: bool,
+    /// The serial backend for this COM port.
+    pub backend: SerialConfigCli,
+}
+
+impl FromStr for ComSerialConfigCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.strip_prefix("debugger-mode:") {
+            Some(rest) => Ok(Self {
+                debugger_mode: true,
+                backend: rest.parse()?,
+            }),
+            None => Ok(Self {
+                debugger_mode: false,
+                backend: s.parse()?,
+            }),
+        }
+    }
+}
+
 /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
@@ -3723,6 +3746,7 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+    use test_with_tracing::test;
 
     #[test]
     fn test_parse_file_opts() {
@@ -5064,6 +5088,49 @@ mod tests {
     }
 
     #[test]
+    fn test_serial_debugger_mode_option_parsed() {
+        // No COM port configured: no debugger mode.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.com1.is_none());
+
+        // A plain backend is not in debugger mode.
+        let opt = Options::try_parse_from(["openvmm", "--com1", "none"]).unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(!com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::None);
+
+        // The `debugger-mode:` prefix enables debugger mode for just that port,
+        // and the remainder still parses as the backend.
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=/tmp/kd",
+            "--com2",
+            "none",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(com1.backend, SerialConfigCli::Pipe("/tmp/kd".into()));
+        // Other ports remain independent (not in debugger mode).
+        assert!(!opt.com2.unwrap().debugger_mode);
+
+        // The prefix must not eat colons in the backend (e.g. a tcp address).
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--com1",
+            "debugger-mode:listen=tcp:127.0.0.1:5555",
+        ])
+        .unwrap();
+        let com1 = opt.com1.unwrap();
+        assert!(com1.debugger_mode);
+        assert_eq!(
+            com1.backend,
+            SerialConfigCli::Tcp("127.0.0.1:5555".parse().unwrap())
+        );
+    }
+
+    #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
         opt.validate_memory_options().unwrap();
@@ -5075,24 +5142,6 @@ mod tests {
     fn test_memory_options_reject_conflicting_legacy_aliases() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
             .unwrap();
-        assert!(opt.validate_memory_options().is_err());
-    }
-
-    #[test]
-    fn test_memory_options_reject_hugepage_legacy_conflicts() {
-        let opt =
-            Options::try_parse_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
-                .unwrap();
-        assert!(opt.validate_memory_options().is_err());
-
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--memory",
-            "hugepages=on",
-            "--memory-backing-file",
-            "/tmp/memory.bin",
-        ])
-        .unwrap();
         assert!(opt.validate_memory_options().is_err());
     }
 

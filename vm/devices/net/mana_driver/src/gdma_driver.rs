@@ -1351,7 +1351,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         if self.eq_id_msix.insert(eq_id, msix).is_some() {
             panic!(
                 "duplicate eq id {}, [id, msix] {:?}",
-                eq_id, &self.eq_id_msix
+                eq_id, self.eq_id_msix
             );
         }
         interrupt

@@ -88,7 +88,9 @@ impl PetriVmConfigOpenVmm {
 
         let log_env = match host_log_levels {
             None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
-                ("OPENVMM_LOG".into(), "debug".into()),
+                // Quiet down `hyper_util`'s connection-pool debug spam that
+                // `disk_blob` triggers on every HTTP range request.
+                ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
                 ("OPENVMM_SHOW_SPANS".into(), "true".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),

@@ -6,6 +6,7 @@
 
 use super::DEVICE_PRIORITY;
 use crate::mapping_manager::Mappable;
+use crate::mapping_manager::MappingBacking;
 use crate::region_manager::MapParams;
 use crate::region_manager::RegionHandle;
 use crate::region_manager::RegionManagerClient;
@@ -113,8 +114,10 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         if let Some(handle) = &state.handle {
             if let Err(e) = block_on(handle.add_mapping(
                 new_mapping.range,
-                new_mapping.mappable.clone(),
-                new_mapping.file_offset,
+                MappingBacking::File {
+                    mappable: new_mapping.mappable.clone(),
+                    file_offset: new_mapping.file_offset,
+                },
                 new_mapping.writable,
                 None,
             )) {
@@ -170,8 +173,10 @@ impl MappableGuestMemory for DeviceMemoryControl {
                 handle
                     .add_mapping(
                         mapping.range,
-                        mapping.mappable.clone(),
-                        mapping.file_offset,
+                        MappingBacking::File {
+                            mappable: mapping.mappable.clone(),
+                            file_offset: mapping.file_offset,
+                        },
                         mapping.writable,
                         None,
                     )

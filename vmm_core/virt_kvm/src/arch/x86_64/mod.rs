@@ -99,8 +99,6 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
-    /// Enable nested virtualization (VMX/SVM) for the guest.
-    pub nested_virt: bool,
 }
 
 impl Kvm {
@@ -108,17 +106,13 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
-            nested_virt: false,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self {
-            kvm,
-            nested_virt: false,
-        })
+        Ok(Self { kvm })
     }
 }
 
@@ -141,6 +135,10 @@ impl virt::Hypervisor for Kvm {
         virt::PlatformInfo {}
     }
 
+    fn recognizes_nested_virt(&self) -> bool {
+        true
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -149,8 +147,14 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let nested_virt = self.nested_virt;
+        let nested_virt = config.nested_virt;
         let supported_cpuid = self.kvm.supported_cpuid()?;
+
+        // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
+        // offset 0x2F0) when the guest's IA32_MCG_CAP advertises MCG_CMCI_P.
+        // Query which MCE capability bits this host allows us to set so that
+        // bind() can advertise CMCI to the guest where supported (Intel).
+        let supported_mce_cap = self.kvm.supported_mce_cap()?;
 
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
@@ -268,7 +272,7 @@ impl virt::Hypervisor for Kvm {
             // nested virtualization features leaf (0x4000000A), but only
             // expose it when nested virtualization is enabled.
             let kvm_hv_cpuid = self.kvm.supported_hv_cpuid()?;
-            let nested_leaf = if self.nested_virt {
+            let nested_leaf = if nested_virt {
                 kvm_hv_cpuid
                     .iter()
                     .find(|e| e.function == HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES)
@@ -359,7 +363,8 @@ impl virt::Hypervisor for Kvm {
             vm,
             config,
             cpuid: cpuid_entries,
-            nested_virt: self.nested_virt,
+            nested_virt,
+            supported_mce_cap,
         })
     }
 }
@@ -370,6 +375,9 @@ pub struct KvmProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
+    /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
+    /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
+    supported_mce_cap: u64,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -484,6 +492,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
+            mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
         });
 
@@ -739,6 +748,21 @@ impl virt::BindProcessor for KvmProcessorBinder {
                         .with_vmx_enabled_outside_smx(ecx.vmx()),
                 ),
             )])?;
+        }
+
+        // Advertise CMCI support (MCG_CMCI_P) in the guest's IA32_MCG_CAP when
+        // the host permits it. KVM's in-kernel LAPIC only exposes the CMCI LVT
+        // register (APIC offset 0x2F0) when MCG_CMCI_P is set, yet KVM defaults
+        // MCG_CAP with it clear; without it, a guest that programs the CMCI LVT
+        // via an x2APIC MSR takes a #GP. Preserve the default bank count and
+        // other capability bits.
+        if self.partition.mce_cmci_supported {
+            let mut mcg_cap = [0u64];
+            kvm.get_msrs(&[x86defs::X86X_MSR_MCG_CAP], &mut mcg_cap)?;
+            let cap = x86defs::McgCap::from(mcg_cap[0]);
+            if !cap.cmci_p() {
+                kvm.setup_mce(cap.with_cmci_p(true).into())?;
+            }
         }
 
         // Set per-VP CPUID entries, fixing up APIC ID fields.

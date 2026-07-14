@@ -22,7 +22,8 @@ pub enum VmgstoolOutput {
         #[serde(rename = "vmgstool.exe")]
         exe: PathBuf,
         #[serde(rename = "vmgstool.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+pci_core.workspace = true
 vmcore.workspace = true
 
 inspect.workspace = true

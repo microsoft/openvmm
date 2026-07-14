@@ -109,24 +109,9 @@ impl SparseMapping {
                 "length must be greater than 0",
             ));
         }
-        if !minimum_alignment.is_power_of_two() {
-            return Err(Error::new(
-                io::ErrorKind::InvalidInput,
-                "alignment must be a power of two",
-            ));
-        }
 
-        let size_4k = 4096;
-        let size_2m = 0x200000;
-        let size_1g = 0x40000000;
-        let default_alignment = if len < size_2m {
-            size_4k
-        } else if len < size_1g {
-            size_2m
-        } else {
-            size_1g
-        };
-        let alignment = default_alignment.max(minimum_alignment);
+        let page_size = page_size();
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
 
         let len = len
             .checked_add(alignment - 1)
@@ -140,7 +125,7 @@ impl SparseMapping {
 
         let alloc_len = len
             .checked_add(alignment)
-            .map(|temp| temp - size_4k)
+            .map(|temp| temp - page_size)
             .ok_or_else(|| {
                 Error::new(
                     io::ErrorKind::InvalidInput,
@@ -534,6 +519,7 @@ pub fn alloc_shared_memory_hugetlb(
     size: usize,
     name: &str,
     hugepage_size: Option<usize>,
+    _numa_node: Option<u32>,
 ) -> io::Result<OwnedFd> {
     const MFD_HUGE_SHIFT: libc::c_uint = 26;
 
@@ -569,6 +555,7 @@ pub fn alloc_shared_memory_hugetlb(
     _size: usize,
     _name: &str,
     _hugepage_size: Option<usize>,
+    _numa_node: Option<u32>,
 ) -> io::Result<OwnedFd> {
     Err(Error::new(
         io::ErrorKind::Unsupported,

@@ -23,6 +23,8 @@ use self::spec::RxFifoInterruptTrigger;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredRead;
+use chipset_device::io::deferred::defer_read;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -31,6 +33,8 @@ use futures::AsyncWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use pal_async::timer::Instant;
+use pal_async::timer::PolledTimer;
 use serial_16550_resources::MmioOrIoPort;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
@@ -41,6 +45,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::task::ready;
+use std::time::Duration;
 use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
@@ -70,8 +75,44 @@ pub struct Serial16550 {
     rx_waker: Option<Waker>,
     #[inspect(skip)]
     tx_waker: Option<Waker>,
+    #[inspect(skip)]
+    poll_waker: Option<Waker>,
+    #[inspect(skip)]
+    debugger_poll: Option<DebuggerPollThrottle>,
     stats: SerialStats,
 }
+
+/// State for the debugger-mode guest poll throttle.
+///
+/// When a COM port is in debugger mode, a kernel debugger (KD) typically busy-
+/// polls the port's status register while waiting for data, generating a storm
+/// of register-read intercepts (and thus host CPU). Once the guest has read an
+/// empty RX FIFO [`DEBUGGER_EMPTY_POLL_THRESHOLD`] times in a row, subsequent
+/// such reads are deferred (via [`IoResult::Defer`]) for [`DEBUGGER_POLL_DELAY`]
+/// before completing, throttling the poll loop. The intercept always completes
+/// with the same value it would have returned; only its timing changes, and a
+/// deferred read completes early the instant real data arrives so debugger
+/// latency is unaffected. Only ever `Some` when the port is in debugger mode.
+struct DebuggerPollThrottle {
+    timer: PolledTimer,
+    /// Number of consecutive reads that observed an empty RX FIFO on a
+    /// poll register.
+    empty_streak: u32,
+    /// A read that has been deferred and is waiting to be completed.
+    pending: Option<PendingPollRead>,
+}
+
+struct PendingPollRead {
+    deferred: DeferredRead,
+    register: Register,
+    len: usize,
+    deadline: Instant,
+}
+
+/// Consecutive empty-FIFO poll reads before the throttle engages.
+const DEBUGGER_EMPTY_POLL_THRESHOLD: u32 = 8;
+/// How long each throttled poll read is deferred once the throttle engages.
+const DEBUGGER_POLL_DELAY: Duration = Duration::from_millis(4);
 
 #[derive(Inspect, Default)]
 struct SerialStats {
@@ -129,6 +170,7 @@ impl Serial16550 {
         interrupt: LineInterrupt,
         io: Box<dyn SerialIo>,
         wait_for_rts: bool,
+        debugger_poll_timer: Option<PolledTimer>,
     ) -> Result<Self, ConfigurationError> {
         let width = 8 * register_width as u64;
         let (base_addr, io_region, mmio_region) = match base {
@@ -166,6 +208,12 @@ impl Serial16550 {
             io,
             rx_waker: None,
             tx_waker: None,
+            poll_waker: None,
+            debugger_poll: debugger_poll_timer.map(|timer| DebuggerPollThrottle {
+                timer,
+                empty_streak: 0,
+                pending: None,
+            }),
             stats: Default::default(),
         };
         if this.io.is_connected() {
@@ -307,6 +355,14 @@ impl Serial16550 {
             return IoResult::Err(IoError::UnalignedAccess);
         };
         let dlab = self.state.lcr.dlab();
+
+        // In debugger mode, throttle a guest that is busy-polling an empty RX
+        // FIFO by deferring the read for a short while. See
+        // [`DebuggerPollThrottle`].
+        if let Some(token) = self.maybe_defer_debugger_poll(register, dlab, data.len()) {
+            return IoResult::Defer(token);
+        }
+
         data.fill(0);
         data[0] = match register {
             Register::RHR if !dlab => self.state.read_rhr(),
@@ -347,6 +403,108 @@ impl Serial16550 {
         self.sync();
         IoResult::Ok
     }
+
+    /// If the port is in debugger mode and the guest is repeatedly polling an
+    /// empty RX FIFO, defers this read for a short while and returns the token
+    /// to defer the intercept. Returns `None` (read normally) otherwise.
+    ///
+    /// The registers a KD stub polls while waiting for data are the LSR (to
+    /// check the data-ready bit) and, for some stubs, the RHR directly.
+    fn maybe_defer_debugger_poll(
+        &mut self,
+        register: Register,
+        dlab: bool,
+        len: usize,
+    ) -> Option<chipset_device::io::deferred::DeferredToken> {
+        let is_poll_read =
+            matches!(register, Register::LSR) || (matches!(register, Register::RHR) && !dlab);
+        let rx_empty = self.state.rx_buffer.is_empty();
+
+        let dp = self.debugger_poll.as_mut()?;
+        if !is_poll_read {
+            return None;
+        }
+        // The deferred-read mechanism packs its result into a `u64` (see
+        // `DeferredRead::complete`), so it only supports accesses up to 8 bytes.
+        // Let any wider (guest-controlled) access take the normal synchronous
+        // read path rather than deferring and panicking on completion.
+        if len > size_of::<u64>() {
+            return None;
+        }
+        if !rx_empty {
+            // The guest is making progress; reset the streak.
+            dp.empty_streak = 0;
+            return None;
+        }
+        // Only one deferred read may be outstanding (the guest vCPU is blocked
+        // on it and cannot issue another).
+        if dp.pending.is_some() {
+            return None;
+        }
+        dp.empty_streak = dp.empty_streak.saturating_add(1);
+        if dp.empty_streak <= DEBUGGER_EMPTY_POLL_THRESHOLD {
+            return None;
+        }
+
+        let (deferred, token) = defer_read();
+        dp.pending = Some(PendingPollRead {
+            deferred,
+            register,
+            len,
+            deadline: Instant::now() + DEBUGGER_POLL_DELAY,
+        });
+        // Ensure `poll_device` runs to arm the timer and later complete the read.
+        if let Some(waker) = self.poll_waker.take() {
+            waker.wake();
+        }
+        Some(token)
+    }
+
+    /// Completes a deferred debugger-mode poll read once its delay has elapsed,
+    /// or immediately if RX data has arrived in the meantime (so debugger
+    /// latency is unaffected).
+    fn complete_debugger_poll(&mut self, cx: &mut Context<'_>) {
+        let Some((register, len, deadline)) = self
+            .debugger_poll
+            .as_ref()
+            .and_then(|dp| dp.pending.as_ref())
+            .map(|p| (p.register, p.len, p.deadline))
+        else {
+            return;
+        };
+
+        let data_ready = !self.state.rx_buffer.is_empty();
+        let timer_expired = if data_ready {
+            false
+        } else {
+            self.debugger_poll
+                .as_mut()
+                .unwrap()
+                .timer
+                .poll_until(cx, deadline)
+                .is_ready()
+        };
+
+        if !data_ready && !timer_expired {
+            return;
+        }
+
+        // Compute the value now, so a read that completes because data arrived
+        // reflects that data.
+        let value = match register {
+            Register::LSR => self.state.read_lsr(),
+            Register::RHR => self.state.read_rhr(),
+            _ => 0,
+        };
+        let dp = self.debugger_poll.as_mut().unwrap();
+        let pending = dp.pending.take().unwrap();
+        if data_ready {
+            dp.empty_streak = 0;
+        }
+        let mut bytes = [0u8; 8];
+        bytes[0] = value;
+        pending.deferred.complete(&bytes[..len]);
+    }
 }
 
 impl ChangeDeviceState for Serial16550 {
@@ -377,8 +535,10 @@ impl ChipsetDevice for Serial16550 {
 
 impl PollDevice for Serial16550 {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
+        self.poll_waker = Some(cx.waker().clone());
         let _ = self.poll_tx(cx);
         let _ = self.poll_rx(cx);
+        self.complete_debugger_poll(cx);
         self.sync();
     }
 }
@@ -865,5 +1025,386 @@ mod save_restore {
             self.sync();
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::poll_fn;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use serial_core::debugger::DebuggerRelay;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::sync::Arc;
+    use std::task::Waker;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineInterrupt;
+
+    struct MockBackend {
+        state: Arc<Mutex<MockState>>,
+    }
+
+    #[derive(Clone)]
+    struct MockHandle {
+        state: Arc<Mutex<MockState>>,
+    }
+
+    struct MockState {
+        rx: VecDeque<u8>,
+        written: Vec<u8>,
+        write_stalled: bool,
+        read_waker: Option<Waker>,
+        write_waker: Option<Waker>,
+        wait_waker: Option<Waker>,
+    }
+
+    impl MockBackend {
+        fn new() -> (Self, MockHandle) {
+            let state = Arc::new(Mutex::new(MockState {
+                rx: VecDeque::new(),
+                written: Vec::new(),
+                write_stalled: false,
+                read_waker: None,
+                write_waker: None,
+                wait_waker: None,
+            }));
+            (
+                Self {
+                    state: state.clone(),
+                },
+                MockHandle { state },
+            )
+        }
+    }
+
+    impl InspectMut for MockBackend {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl SerialIo for MockBackend {
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn poll_connect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_disconnect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncRead for MockBackend {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut state = self.state.lock();
+            if state.rx.is_empty() {
+                state.read_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            let n = buf.len().min(state.rx.len());
+            for (dst, src) in buf.iter_mut().zip(state.rx.drain(..n)) {
+                *dst = src;
+            }
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl AsyncWrite for MockBackend {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut state = self.state.lock();
+            if state.write_stalled {
+                state.write_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            state.written.extend_from_slice(buf);
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl MockHandle {
+        fn inject_rx(&self, data: &[u8]) {
+            let mut state = self.state.lock();
+            state.rx.extend(data);
+            if let Some(waker) = state.read_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = state.wait_waker.take() {
+                waker.wake();
+            }
+        }
+
+        fn set_write_stalled(&self, stalled: bool) {
+            let mut state = self.state.lock();
+            state.write_stalled = stalled;
+            if let Some(waker) = state.write_waker.take() {
+                waker.wake();
+            }
+        }
+
+        async fn wait_until(&self, mut predicate: impl FnMut(&MockState) -> bool) {
+            poll_fn(|cx| {
+                let mut state = self.state.lock();
+                if predicate(&state) {
+                    Poll::Ready(())
+                } else {
+                    state.wait_waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }
+
+    fn new_debugger_serial(driver: DefaultDriver, backend: MockBackend) -> Serial16550 {
+        Serial16550::new(
+            "com1".to_string(),
+            MmioOrIoPort::IoPort(0x3f8),
+            1,
+            LineInterrupt::detached(),
+            Box::new(DebuggerRelay::new(driver, "com1", Box::new(backend))),
+            false,
+            None,
+        )
+        .unwrap()
+    }
+
+    async fn poll_serial(serial: &mut Serial16550) {
+        poll_fn(|cx| {
+            serial.poll_device(cx);
+            Poll::Ready(())
+        })
+        .await
+    }
+
+    fn read_reg(serial: &mut Serial16550, register: Register) -> u8 {
+        let mut data = [0];
+        serial.read(register.0.into(), &mut data).unwrap();
+        data[0]
+    }
+
+    fn write_reg(serial: &mut Serial16550, register: Register, value: u8) {
+        serial.write(register.0.into(), &[value]).unwrap();
+    }
+
+    fn new_throttle_serial(driver: DefaultDriver, backend: MockBackend) -> Serial16550 {
+        Serial16550::new(
+            "com1".to_string(),
+            MmioOrIoPort::IoPort(0x3f8),
+            1,
+            LineInterrupt::detached(),
+            Box::new(backend),
+            false,
+            Some(PolledTimer::new(&driver)),
+        )
+        .unwrap()
+    }
+
+    /// Drives `poll_device` until the deferred read completes, returning the
+    /// bytes delivered to the guest.
+    async fn complete_deferred(
+        serial: &mut Serial16550,
+        mut token: chipset_device::io::deferred::DeferredToken,
+        len: usize,
+    ) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        poll_fn(|cx| {
+            serial.poll_device(cx);
+            token.poll_read(cx, &mut buf)
+        })
+        .await
+        .unwrap();
+        buf
+    }
+
+    /// After the guest polls an empty RX FIFO enough times, a debugger-mode port
+    /// defers the read (rather than completing it immediately), throttling the
+    /// poll loop. The deferred intercept still completes with the correct value.
+    #[async_test]
+    async fn debugger_poll_throttle_defers_repeated_empty_polls(driver: DefaultDriver) {
+        let (backend, _handle) = MockBackend::new();
+        let mut serial = new_throttle_serial(driver, backend);
+
+        // The first reads of the empty FIFO are answered immediately.
+        for _ in 0..DEBUGGER_EMPTY_POLL_THRESHOLD {
+            let lsr = read_reg(&mut serial, Register::LSR);
+            assert_eq!(lsr & 0x01, 0, "no data should be ready");
+        }
+
+        // The next poll of the still-empty FIFO is throttled: the read is
+        // deferred instead of answered synchronously.
+        let mut data = [0u8; 1];
+        let token = match serial.read(Register::LSR.0.into(), &mut data) {
+            IoResult::Defer(token) => token,
+            other => panic!("expected deferred read, got {other:?}"),
+        };
+
+        // But it still completes, with the (still empty) LSR value.
+        let out = complete_deferred(&mut serial, token, 1).await;
+        assert_eq!(out[0] & 0x01, 0, "still no data ready");
+    }
+
+    /// A guest-controlled read wider than the deferred-read mechanism supports
+    /// (which packs its result into a `u64`) must not be deferred, even once the
+    /// throttle threshold has been reached. Otherwise completing it would panic.
+    #[async_test]
+    async fn debugger_poll_throttle_ignores_oversized_reads(driver: DefaultDriver) {
+        let (backend, _handle) = MockBackend::new();
+        let mut serial = new_throttle_serial(driver, backend);
+
+        // Reach the throttle threshold with normal 1-byte polls.
+        for _ in 0..DEBUGGER_EMPTY_POLL_THRESHOLD {
+            read_reg(&mut serial, Register::LSR);
+        }
+
+        // A wider-than-8-byte access is answered synchronously rather than
+        // deferred, so it does not reach the u64-packed completion path.
+        let mut data = [0u8; 16];
+        match serial.read(Register::LSR.0.into(), &mut data) {
+            IoResult::Ok => {}
+            other => panic!("expected synchronous read for oversized access, got {other:?}"),
+        }
+    }
+
+    /// A deferred debugger-mode poll completes early (without waiting out the
+    /// full delay) as soon as real data arrives, so debugger latency is not hurt.
+    #[async_test]
+    async fn debugger_poll_throttle_completes_early_when_data_arrives(driver: DefaultDriver) {
+        let (backend, handle) = MockBackend::new();
+        let mut serial = new_throttle_serial(driver, backend);
+
+        for _ in 0..DEBUGGER_EMPTY_POLL_THRESHOLD {
+            read_reg(&mut serial, Register::LSR);
+        }
+        let mut data = [0u8; 1];
+        let token = match serial.read(Register::LSR.0.into(), &mut data) {
+            IoResult::Defer(token) => token,
+            other => panic!("expected deferred read, got {other:?}"),
+        };
+
+        // Data arrives while the poll is deferred.
+        handle.inject_rx(b"K");
+
+        // The deferred LSR read completes reporting data-ready...
+        let out = complete_deferred(&mut serial, token, 1).await;
+        assert_ne!(out[0] & 0x01, 0, "LSR should report data ready");
+        // ...and the byte is now readable by the guest.
+        poll_serial(&mut serial).await;
+        assert_eq!(read_reg(&mut serial, Register::RHR), b'K');
+    }
+
+    /// Without debugger mode (no throttle timer), reads are never deferred, no
+    /// matter how many times the guest polls an empty FIFO.
+    #[test]
+    fn debugger_poll_throttle_disabled_without_debugger_mode() {
+        let (backend, _handle) = MockBackend::new();
+        let mut serial = Serial16550::new(
+            "com1".to_string(),
+            MmioOrIoPort::IoPort(0x3f8),
+            1,
+            LineInterrupt::detached(),
+            Box::new(backend),
+            false,
+            None,
+        )
+        .unwrap();
+
+        for _ in 0..(DEBUGGER_EMPTY_POLL_THRESHOLD + 4) {
+            let mut data = [0u8; 1];
+            assert!(
+                matches!(serial.read(Register::LSR.0.into(), &mut data), IoResult::Ok),
+                "reads must never be deferred without debugger mode"
+            );
+        }
+    }
+
+    #[async_test]
+    async fn debugger_relay_rx_does_not_report_overrun(driver: DefaultDriver) {
+        let (backend, handle) = MockBackend::new();
+        let mut serial = new_debugger_serial(driver, backend);
+        // Burst larger than the relay's RX ring so the relay must drop overflow.
+        let burst: Vec<_> = (0..(20 * 1024)).map(|x| (x % 251) as u8).collect();
+
+        handle.inject_rx(&burst);
+        // The relay's pump drains the whole burst independently of the guest.
+        handle.wait_until(|state| state.rx.is_empty()).await;
+
+        // Drain everything the guest can see.
+        let mut delivered = Vec::new();
+        for _ in 0..1024 {
+            poll_serial(&mut serial).await;
+            let mut progressed = false;
+            loop {
+                let lsr = read_reg(&mut serial, Register::LSR);
+                if lsr & 0x01 == 0 {
+                    break;
+                }
+                // Overrun must never be visible to the guest.
+                assert_eq!(lsr & 0x02, 0, "debugger relay overflow must not set OE");
+                delivered.push(read_reg(&mut serial, Register::RHR));
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        // The guest saw data, but strictly fewer bytes than were injected: the
+        // relay dropped the overflow before it ever reached the emulator.
+        assert!(!delivered.is_empty(), "guest should see data");
+        assert!(
+            delivered.len() < burst.len(),
+            "relay must have dropped overflow bytes (got {} of {})",
+            delivered.len(),
+            burst.len()
+        );
+        // The delivered bytes are the earliest ones, in order (drop-newest).
+        assert_eq!(delivered, burst[..delivered.len()]);
+    }
+
+    #[async_test]
+    async fn debugger_relay_tx_stalled_backend_reports_thr_empty(driver: DefaultDriver) {
+        let (backend, handle) = MockBackend::new();
+        handle.set_write_stalled(true);
+        let mut serial = new_debugger_serial(driver, backend);
+
+        for byte in b"windbg" {
+            write_reg(&mut serial, Register::THR, *byte);
+        }
+        poll_serial(&mut serial).await;
+
+        let lsr = read_reg(&mut serial, Register::LSR);
+        assert_ne!(lsr & 0x20, 0, "THR should be empty with debugger relay");
+        assert_ne!(lsr & 0x40, 0, "TSR should be empty with debugger relay");
     }
 }

@@ -437,6 +437,17 @@ pub mod runtime_claims {
         pub signer: String,
     }
 
+    /// Supported hardware sealing policy
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
+    pub enum HardwareSealingPolicy {
+        #[serde(rename = "none")]
+        None,
+        #[serde(rename = "hash")]
+        Hash,
+        #[serde(rename = "signer")]
+        Signer,
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -454,7 +465,16 @@ pub mod runtime_claims {
         pub secure_boot: bool,
         /// Whether the TPM is enabled
         pub tpm_enabled: bool,
-        /// Whether the TPM states is persisted
+        /// Whether the VM is in stateful mode (i.e. attestation is not
+        /// suppressed).
+        ///
+        /// NOTE: This is a legacy field. Its name (`tpm-persisted` on the wire)
+        /// predates stateless + hardware sealing and does NOT describe whether
+        /// TPM state is actually persisted to the VMGS at runtime — that broader
+        /// decision is made by the VMM (see `no_persistent_secrets` in
+        /// `underhill_core`). The name and value semantics are kept unchanged to
+        /// preserve the attestation runtime-claims contract and the
+        /// hardware-derived key KDF input.
         pub tpm_persisted: bool,
         /// Whether certain vPCI devices are allowed through the device filter
         pub filtered_vpci_devices_allowed: bool,
@@ -464,6 +484,8 @@ pub mod runtime_claims {
         /// VMGS provenance data
         #[serde(skip_serializing_if = "Option::is_none")]
         pub vmgs_provisioner: Option<VmgsProvisioner>,
+        /// Hardware sealing policy
+        pub hardware_sealing_policy: HardwareSealingPolicy,
     }
 
     impl Default for AttestationVmConfig {
@@ -479,6 +501,7 @@ pub mod runtime_claims {
                 filtered_vpci_devices_allowed: false,
                 vm_unique_id: String::new(),
                 vmgs_provisioner: None,
+                hardware_sealing_policy: HardwareSealingPolicy::None,
             }
         }
     }

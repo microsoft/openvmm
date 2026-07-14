@@ -75,11 +75,20 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
-/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+/// Base address of the guest-visible GIC v2m MSI frame (exposed via the MADT
+/// and used by the software v2m SETSPI decoder for emulated devices). This is
+/// OpenVMM-emulated MMIO (one 4 KiB page), not shadowed by the hypervisor, so
+/// it stays at the conventional address.
 pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// Base address of the GIC v2m MSI doorbell used for passthrough on the
+/// MSHV root/arm64 backend. Registered with the hypervisor as
+/// GITS_TRANSLATER_BASE_ADDRESS.
+/// The hypervisor shadows a ~64 KiB region at this base,
+/// so it uses the Hyper-V convention address 0xEFF6_8000.
+pub const DEFAULT_GIC_V2M_DOORBELL_BASE: u64 = 0xEFF6_8000;
 
 /// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
 /// below the v2m frame address, and not overlap other devices.
@@ -486,6 +495,11 @@ pub struct HypervisorConfig {
     pub with_hv: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor. A backend that does not recognize this request
+    /// rejects it rather than silently ignoring it (see
+    /// `virt::Hypervisor::recognizes_nested_virt`).
+    pub nested_virt: bool,
 }
 
 #[derive(Debug, MeshPayload)]

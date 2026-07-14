@@ -1121,7 +1121,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tracing::warn!("Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, collecting diagnostics.");
                 let mut timeout_tasks = Vec::new();
                 if let Some(inspector) = vmm_inspector {
-                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect_all().await })) );
+                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect("").await })) );
                 }
                 if let Some(openhcl_diag_handler) = openhcl_diag_handler {
                     timeout_tasks.push(inspect_task("openhcl", &driver, Box::pin(async move { openhcl_diag_handler.inspect("", None, None).await })));
@@ -1535,6 +1535,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Set the hardware sealing policy for the VM's TPM.
+    pub fn with_hardware_sealing_policy(mut self, policy: PetriHardwareSealingPolicy) -> Self {
+        self.config
+            .tpm
+            .as_mut()
+            .expect("hardware sealing policy requires a TPM")
+            .hardware_sealing_policy = policy;
+        self
+    }
+
     /// Add custom VTL 2 settings.
     // TODO: At some point we want to replace uses of this with nicer with_disk,
     // with_nic, etc. methods.
@@ -1780,6 +1790,26 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.inspect_openhcl("", None, None).await.map(|_| ())
     }
 
+    /// Invoke Inspect on the running VMM process itself (e.g. OpenVMM),
+    /// returning the inspect tree rooted at `path` (pass `""` for the whole
+    /// tree).
+    ///
+    /// Only backends that expose an inspect interface (currently OpenVMM)
+    /// support this; other backends return an error.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to verify that components are working as you
+    /// expect, not to assert on output that some other tool depends on.
+    pub async fn inspect_vmm(&self, path: &str) -> anyhow::Result<inspect::Node> {
+        use anyhow::Context;
+
+        let inspector = self
+            .runtime
+            .inspector()
+            .context("this VMM backend does not support inspect")?;
+        inspector.inspect(path).await
+    }
+
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
@@ -1867,7 +1897,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                     if let Some(inspector) = self.runtime.inspector() {
                         save_inspect(
                             "vmm",
-                            Box::pin(async move { inspector.inspect_all().await }),
+                            Box::pin(async move { inspector.inspect("").await }),
                             &self.resources.log_source,
                         )
                         .await;
@@ -2143,15 +2173,16 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
 /// Interface for getting information about the state of the VM
 #[async_trait]
 pub trait PetriVmInspector: Send + Sync + 'static {
-    /// Get information about the state of the VM
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node>;
+    /// Get information about the state of the VM at the given inspect `path`.
+    /// Pass `""` to inspect the entire tree.
+    async fn inspect(&self, path: &str) -> anyhow::Result<inspect::Node>;
 }
 
 /// Use this for the associated type if not supported
 pub struct NoPetriVmInspector;
 #[async_trait]
 impl PetriVmInspector for NoPetriVmInspector {
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
+    async fn inspect(&self, _path: &str) -> anyhow::Result<inspect::Node> {
         unreachable!()
     }
 }
@@ -2421,14 +2452,32 @@ impl Default for OpenHclConfig {
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
+    /// Hardware sealing policy for sealed secrets
+    pub hardware_sealing_policy: PetriHardwareSealingPolicy,
 }
 
 impl Default for TpmConfig {
     fn default() -> Self {
         Self {
             no_persistent_secrets: true,
+            hardware_sealing_policy: PetriHardwareSealingPolicy::Default,
         }
     }
+}
+
+/// Hardware sealing policy used by the test infrastructure.
+///
+/// Maps to Hyper-V `Set-GuestStateEncryptionPolicy` values and
+/// underhill's `HardwareSealingPolicy`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PetriHardwareSealingPolicy {
+    /// No explicit policy — the backend picks its default.
+    #[default]
+    Default,
+    /// Derive the hardware sealing key from measurement hash.
+    HashPolicy,
+    /// Derive the hardware sealing key from signer information.
+    SignerPolicy,
 }
 
 /// Firmware to load into the test VM.

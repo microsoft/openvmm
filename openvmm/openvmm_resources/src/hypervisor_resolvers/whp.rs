@@ -20,7 +20,6 @@ impl vm_resource::ResolveResource<HypervisorKind, WhpHandle> for WhpResolver {
         Ok(ResolvedHypervisorBackend::new(virt_whp::Whp {
             user_mode_apic: resource.user_mode_apic,
             offload_enlightenments: resource.offload_enlightenments,
-            nested_virt: resource.nested_virt,
         }))
     }
 }

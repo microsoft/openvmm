@@ -5,7 +5,9 @@
 
 #![cfg(windows)]
 
+use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
+use Memory::GetLargePageMinimum;
 use Memory::MEM_COMMIT;
 use Memory::MEM_DECOMMIT;
 use Memory::MEM_RELEASE;
@@ -20,6 +22,8 @@ use Memory::PAGE_NOACCESS;
 use Memory::PAGE_READONLY;
 use Memory::PAGE_READWRITE;
 use Memory::PAGE_WRITECOPY;
+use Memory::SEC_COMMIT;
+use Memory::SEC_LARGE_PAGES;
 use Memory::SECTION_MAP_READ;
 use Memory::SECTION_MAP_WRITE;
 use Memory::UnmapViewOfFile2;
@@ -36,9 +40,29 @@ use std::ptr::null;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::System::Memory;
+use windows_sys::Win32::System::SystemServices::NUMA_NO_PREFERRED_NODE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+/// The system page size: the unit at which memory is committed and protection
+/// is applied.
+///
+/// `GetSystemInfo` reports the actual value, but every architecture Windows
+/// runs on (x86, x64, and ARM64) uses 4 KB pages, so we hardcode it rather than
+/// querying it at runtime.
 const PAGE_SIZE: usize = 4096;
+
+/// The Windows *allocation granularity*.
+///
+/// Windows has two distinct memory sizes. The page size (4 KB) is the unit at
+/// which memory is committed and protection is applied. The *allocation
+/// granularity* is the coarser unit — 64 KB — that the base address of every
+/// virtual-address *reservation* must be aligned to: `VirtualAlloc`,
+/// `VirtualAlloc2`, `MapViewOfFile3`, etc. round the base of a new reservation
+/// down to a multiple of this value. (This is separate from, and larger than,
+/// the page size; it exists mainly for historical Alpha/portability reasons.)
+///
+/// `GetSystemInfo` reports the actual value, but it is never larger than 64 KB,
+/// so we hardcode that rather than querying it at runtime.
 const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
@@ -319,47 +343,82 @@ impl MappingList {
 
 impl SparseMapping {
     /// Reserves a sparse mapping range with the given size.
+    ///
+    /// The range will be aligned to the largest system page size that's smaller
+    /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
-        trycopy::initialize_try_copy();
-        Self::new_inner(None, None, len)
+        Self::new_with_minimum_alignment(len, 1)
     }
 
     /// Reserves a sparse mapping range with at least the requested alignment.
     ///
-    /// Windows virtual address reservations are aligned to the system
-    /// allocation granularity.
+    /// The range will be aligned to the larger of `minimum_alignment` and the
+    /// largest system page size that's smaller or equal to `len`.
+    ///
+    /// Alignments up to the Windows allocation granularity (64 KB) are
+    /// satisfied implicitly by the reservation. Larger alignments (e.g. 2 MB
+    /// for large-page backing) are requested explicitly via a
+    /// `MEM_ADDRESS_REQUIREMENTS` extended parameter.
     pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
-        if !minimum_alignment.is_power_of_two() {
-            return Err(Error::new(
-                io::ErrorKind::InvalidInput,
-                "alignment must be a power of two",
-            ));
-        }
-        if minimum_alignment > ALLOCATION_GRANULARITY {
-            return Err(Error::new(
-                io::ErrorKind::Unsupported,
-                "sparse mapping alignment greater than the Windows allocation granularity is not supported",
-            ));
-        }
-        Self::new(len)
+        trycopy::initialize_try_copy();
+
+        // Pick a default alignment based on the mapping size so that larger
+        // mappings land on large-page boundaries, matching the Linux backend.
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
+        Self::new_inner(None, None, len, alignment)
     }
 
     /// Reserves a sparse mapping range with the given address and size in a
     /// remote process.
+    ///
+    /// As with [`Self::new_with_minimum_alignment`], the range is aligned to
+    /// the larger of `minimum_alignment` and the largest system page size
+    /// that's smaller or equal to `len`, so that large mappings can back large
+    /// pages. When an explicit `address` is provided the caller controls
+    /// placement, so no additional alignment requirement is imposed.
     pub fn new_remote(
         process: Process,
         address: Option<*mut c_void>,
         len: usize,
+        minimum_alignment: usize,
     ) -> Result<Self, Error> {
-        Self::new_inner(Some(process), address, len)
+        let alignment = crate::reservation_alignment(len, minimum_alignment)?;
+        Self::new_inner(Some(process), address, len, alignment)
     }
 
     fn new_inner(
         process: Option<Process>,
         address: Option<*mut c_void>,
         len: usize,
+        alignment: usize,
     ) -> Result<Self, Error> {
+        // Only alignments larger than the allocation granularity need an
+        // explicit address requirement; smaller alignments are satisfied
+        // implicitly by the reservation base. This also keeps
+        // MEM_ADDRESS_REQUIREMENTS.Alignment valid, since it must be zero or a
+        // power of two that is at least the allocation granularity. An address
+        // requirement is mutually exclusive with an explicit base address, so
+        // skip it when the caller chose the address.
+        let requirement =
+            (address.is_none() && alignment > ALLOCATION_GRANULARITY).then_some(alignment);
         unsafe {
+            let mut requirements = Memory::MEM_ADDRESS_REQUIREMENTS {
+                LowestStartingAddress: null_mut(),
+                HighestEndingAddress: null_mut(),
+                Alignment: requirement.unwrap_or(0),
+            };
+            let mut param = Memory::MEM_EXTENDED_PARAMETER::default();
+            param.Anonymous1._bitfield =
+                Memory::MemExtendedParameterAddressRequirements as u64 & 0xff;
+            param.Anonymous2.Pointer = std::ptr::from_mut(&mut requirements).cast();
+            let mut params = [param];
+            let extended_parameters: &mut [Memory::MEM_EXTENDED_PARAMETER] =
+                if requirement.is_some() {
+                    params.as_mut_slice()
+                } else {
+                    &mut []
+                };
+
             // Allocate a placeholder reservation to reserve a virtual address
             // range. This will be split up and recombined as mappings come and
             // go.
@@ -369,7 +428,7 @@ impl SparseMapping {
                 len,
                 MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
                 PAGE_NOACCESS,
-                &mut [],
+                extended_parameters,
             )?;
             Ok(Self {
                 address,
@@ -843,21 +902,186 @@ pub fn alloc_shared_memory(size: usize, _name: &str) -> io::Result<OwnedHandle> 
 }
 
 /// Allocates a hugetlb mappable shared memory object of `size` bytes.
+///
+/// On Windows this creates a large-page section (`SEC_LARGE_PAGES`). Only the
+/// large-page minimum size reported by `GetLargePageMinimum` (2 MB on x64) is
+/// supported; any other `hugepage_size` is rejected. The physical memory is
+/// allocated and pinned immediately, so allocation fails (rather than falling
+/// back to small pages) if sufficient contiguous physical memory is
+/// unavailable. Requires `SeLockMemoryPrivilege` (the "Lock pages in memory"
+/// user right), which is enabled on a thread-scoped impersonation token only
+/// for the duration of the section-creation call, so the process token is left
+/// unchanged.
 pub fn alloc_shared_memory_hugetlb(
-    _size: usize,
+    size: usize,
     _name: &str,
-    _hugepage_size: Option<usize>,
+    hugepage_size: Option<usize>,
+    numa_node: Option<u32>,
 ) -> io::Result<OwnedHandle> {
-    Err(Error::new(
-        io::ErrorKind::Unsupported,
-        "hugetlb shared memory is only supported on Linux",
-    ))
+    // SAFETY: no preconditions.
+    let large_page_minimum = unsafe { GetLargePageMinimum() };
+    if large_page_minimum == 0 {
+        return Err(Error::new(
+            io::ErrorKind::Unsupported,
+            "large pages are not supported by this system",
+        ));
+    }
+
+    if let Some(hugepage_size) = hugepage_size {
+        if hugepage_size != large_page_minimum {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unsupported hugepage size {hugepage_size:#x}; Windows large-page sections only support the large-page minimum ({large_page_minimum:#x})"
+                ),
+            ));
+        }
+    }
+
+    if !size.is_multiple_of(large_page_minimum) {
+        return Err(Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "large-page allocation size {size:#x} is not a multiple of the large-page minimum ({large_page_minimum:#x})"
+            ),
+        ));
+    }
+
+    // The physical pages backing a SEC_LARGE_PAGES section are allocated and
+    // pinned at creation time, so SeLockMemoryPrivilege must be enabled for the
+    // CreateFileMapping call. Scope it to this thread (via an impersonation
+    // token) so the privilege is not left enabled process-wide, which would
+    // race with concurrent large-page allocations on other threads.
+    with_lock_memory_privilege(|| {
+        // SAFETY: calling according to API
+        let h = unsafe {
+            CreateFileMappingNumaW(
+                INVALID_HANDLE_VALUE,
+                null_mut(),
+                PAGE_READWRITE | SEC_COMMIT | SEC_LARGE_PAGES,
+                (size >> 32) as u32,
+                size as u32,
+                null(),
+                numa_node.unwrap_or(NUMA_NO_PREFERRED_NODE),
+            )
+        } as RawHandle;
+        if h.is_null() {
+            return Err(Error::last_os_error());
+        }
+        // SAFETY: `h` is a freshly created, owned section handle.
+        Ok(unsafe { OwnedHandle::from_raw_handle(h) })
+    })
+}
+
+/// Runs `f` with `SeLockMemoryPrivilege` ("Lock pages in memory") enabled on a
+/// thread-scoped impersonation token, then reverts the thread to its normal
+/// security context.
+///
+/// The privilege is enabled on a private per-thread copy of the process token
+/// rather than on the process token itself, so it is never left enabled
+/// process-wide -- which would broaden the enabled window unnecessarily and
+/// race with concurrent large-page allocations on other threads.
+///
+/// Fails loudly if the privilege is not held, rather than silently allowing the
+/// large-page allocation in `f` to fail with a less actionable error.
+fn with_lock_memory_privilege<R>(f: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+    use windows_sys::Wdk::System::SystemServices::SE_LOCK_MEMORY_PRIVILEGE;
+    use windows_sys::Win32::Foundation::ERROR_NOT_ALL_ASSIGNED;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Foundation::LUID;
+    use windows_sys::Win32::Security::AdjustTokenPrivileges;
+    use windows_sys::Win32::Security::ImpersonateSelf;
+    use windows_sys::Win32::Security::LUID_AND_ATTRIBUTES;
+    use windows_sys::Win32::Security::RevertToSelf;
+    use windows_sys::Win32::Security::SE_PRIVILEGE_ENABLED;
+    use windows_sys::Win32::Security::SecurityImpersonation;
+    use windows_sys::Win32::Security::TOKEN_ADJUST_PRIVILEGES;
+    use windows_sys::Win32::Security::TOKEN_PRIVILEGES;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::Threading::OpenThreadToken;
+
+    /// Reverts the calling thread to its process security context on drop, so
+    /// the impersonation token is removed even if `f` panics or an early return
+    /// occurs after impersonation is established.
+    struct RevertToSelfGuard;
+    impl Drop for RevertToSelfGuard {
+        fn drop(&mut self) {
+            // SAFETY: no preconditions.
+            if unsafe { RevertToSelf() } == 0 {
+                panic!(
+                    "failed to revert thread impersonation: {}",
+                    Error::last_os_error()
+                );
+            }
+        }
+    }
+
+    // Give the current thread an impersonation token copied from the process
+    // token, so that the privilege change below is scoped to this thread.
+    // SAFETY: calling per API contract.
+    if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
+        return Err(Error::last_os_error());
+    }
+    let _revert = RevertToSelfGuard;
+
+    // Open this thread's impersonation token for privilege adjustment.
+    // SAFETY: calling per API contract; the returned token handle is owned and
+    // closed on drop.
+    let token = unsafe {
+        let mut token = null_mut();
+        if OpenThreadToken(
+            GetCurrentThread(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            // Open using this thread's (impersonation) context.
+            0,
+            &mut token,
+        ) == 0
+        {
+            return Err(Error::last_os_error());
+        }
+        OwnedHandle::from_raw_handle(token as RawHandle)
+    };
+
+    let tkp = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: LUID {
+                LowPart: SE_LOCK_MEMORY_PRIVILEGE as u32,
+                HighPart: 0,
+            },
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+
+    // SAFETY: calling per API contract with an initialized privileges struct.
+    let r =
+        unsafe { AdjustTokenPrivileges(token.as_raw_handle(), 0, &tkp, 0, null_mut(), null_mut()) };
+    if r == 0 {
+        return Err(Error::last_os_error());
+    }
+
+    // AdjustTokenPrivileges returns success even when the token does not hold
+    // the requested privilege; the failure is reported via GetLastError.
+    // SAFETY: no preconditions; no intervening calls clobber the last error.
+    if unsafe { GetLastError() } == ERROR_NOT_ALL_ASSIGNED {
+        return Err(Error::new(
+            io::ErrorKind::PermissionDenied,
+            "SeLockMemoryPrivilege is not held",
+        ));
+    }
+
+    f()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::GetLargePageMinimum;
+    use super::PAGE_SIZE;
     use super::SparseMapping;
     use super::alloc_shared_memory;
+    use super::alloc_shared_memory_hugetlb;
+    use std::io;
     use trycopy::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
@@ -901,7 +1125,7 @@ mod tests {
     fn test_remote() {
         let process = pal::windows::process::empty_process().unwrap();
         let shmem = alloc_shared_memory(0x100000, "test").unwrap();
-        let sparse = SparseMapping::new_remote(process.process, None, 0x100000).unwrap();
+        let sparse = SparseMapping::new_remote(process.process, None, 0x100000, 1).unwrap();
         sparse.map_file(0, 0x10000, &shmem, 0, true).unwrap();
 
         let process_addr = pal::windows::process::empty_process().unwrap();
@@ -909,8 +1133,76 @@ mod tests {
             process_addr.process,
             Some(0x100000 as *mut std::ffi::c_void),
             0x100000,
+            1,
         )
         .unwrap();
         sparse_addr.map_file(0, 0x10000, &shmem, 0, true).unwrap();
+    }
+
+    /// Rejects hugepage sizes and allocation sizes that are not the large-page
+    /// minimum before any privileged allocation is attempted, so this needs no
+    /// special privilege and runs in CI.
+    #[test]
+    fn test_large_page_rejects_bad_size() {
+        // SAFETY: no preconditions.
+        let large_page_minimum = unsafe { GetLargePageMinimum() };
+        if large_page_minimum == 0 {
+            // Large pages are unsupported on this system; nothing to validate.
+            return;
+        }
+
+        // A hugepage size other than the large-page minimum is rejected up
+        // front (before SeLockMemoryPrivilege is ever needed).
+        let err = alloc_shared_memory_hugetlb(
+            large_page_minimum,
+            "test",
+            Some(large_page_minimum * 2),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // A size that is not a multiple of the large-page minimum is likewise
+        // rejected up front.
+        let err = alloc_shared_memory_hugetlb(large_page_minimum + PAGE_SIZE, "test", None, None)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Exercises the actual large-page (`SEC_LARGE_PAGES`) allocation and
+    /// mapping path. This requires the "Lock pages in memory" user right
+    /// (`SeLockMemoryPrivilege`), which is not held by default, so it is
+    /// ignored. To run it manually, grant the privilege (see
+    /// `scripts/grant-privilege.ps1`), sign out and back in, then run:
+    ///
+    /// ```text
+    /// cargo test -p sparse_mmap -- --ignored large_page_alloc
+    /// ```
+    #[test]
+    #[ignore = "requires SeLockMemoryPrivilege; run manually"]
+    fn test_large_page_alloc_and_map() {
+        trycopy::initialize_try_copy();
+
+        // SAFETY: no preconditions.
+        let large_page_minimum = unsafe { GetLargePageMinimum() };
+        assert_ne!(large_page_minimum, 0, "large pages not supported");
+
+        let size = large_page_minimum;
+        let shmem = alloc_shared_memory_hugetlb(size, "test", Some(large_page_minimum), None)
+            .expect("large-page allocation failed (is SeLockMemoryPrivilege held?)");
+
+        let sparse = SparseMapping::new(size).unwrap();
+        sparse
+            .map_view_of_file(0, size, &shmem, 0, PAGE_READWRITE, None)
+            .unwrap();
+
+        // Round-trip values through the large-page-backed mapping.
+        let data: &mut [u32] =
+            unsafe { std::slice::from_raw_parts_mut(sparse.as_ptr().cast(), sparse.len() / 4) };
+        for (i, d) in data.iter_mut().enumerate() {
+            *d = i as u32;
+        }
+        assert_eq!(data[0], 0);
+        assert_eq!(data[size / 4 - 1], (size / 4 - 1) as u32);
     }
 }

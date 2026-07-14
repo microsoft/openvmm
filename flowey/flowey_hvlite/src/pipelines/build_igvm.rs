@@ -138,6 +138,16 @@ pub struct BuildIgvmCliCustomizations {
     /// `product_policy` cargo feature when building openvmm_hcl.
     #[clap(long)]
     pub enable_product_policy: bool,
+    /// Enable confidential diagnostics by adding `OPENHCL_CONFIDENTIAL_DEBUG=1`
+    /// to the measured OpenHCL command line. This disables the diagnostic
+    /// filtering that CVM release builds otherwise apply, so
+    /// diagnostics remain available
+    ///
+    /// WARNING: This is security-sensitive. OpenHCL uses this flag to decide
+    /// whether it can trust host-provided boot options for isolated guests.
+    /// Only enable this flag if you understand the security implications.
+    #[clap(long)]
+    pub confidential_debug: bool,
 
     /// Path to custom openvmm_hcl binary, none means openhcl will be built.
     #[clap(long)]
@@ -310,6 +320,7 @@ impl IntoPipeline for BuildIgvmCli {
                     with_mi_secure,
                     disable_secure_avic,
                     enable_product_policy,
+                    confidential_debug,
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
@@ -446,6 +457,7 @@ impl IntoPipeline for BuildIgvmCli {
                 with_mi_secure,
                 disable_secure_avic,
                 enable_product_policy,
+                confidential_debug,
                 override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                     KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                     KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,

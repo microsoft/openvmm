@@ -34,6 +34,7 @@ pub struct Customizations {
     pub custom_sidecar: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
+    pub confidential_debug: bool,
     pub disable_secure_avic: bool,
     pub enable_product_policy: bool,
     pub override_arch: Option<CommonArch>,
@@ -97,6 +98,7 @@ impl SimpleFlowNode for Node {
             override_kernel_pkg,
             override_openvmm_hcl_feature,
             override_max_trace_level,
+            confidential_debug,
             disable_secure_avic,
             enable_product_policy,
             with_debuginfo,
@@ -257,6 +259,7 @@ impl SimpleFlowNode for Node {
             custom_target: None,
             extra_features: BTreeSet::new(),
             disable_secure_avic,
+            confidential_debug,
             openhcl_igvm: write_openhcl_igvm,
             openhcl_igvm_extras: write_openhcl_igvm_extras,
         });

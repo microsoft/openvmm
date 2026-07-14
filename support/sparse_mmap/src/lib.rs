@@ -40,6 +40,32 @@ pub enum SparseMappingError {
     Memory(trycopy::MemoryError),
 }
 
+/// Computes the reservation alignment for a mapping of `len` bytes.
+///
+/// Larger mappings are aligned to large-page boundaries (2 MB, then 1 GB) so
+/// that they can back large pages without the caller having to ask. The result
+/// is always at least `minimum_alignment` and at least the system page size.
+///
+/// Returns an error if `minimum_alignment` is not a power of two.
+fn reservation_alignment(len: usize, minimum_alignment: usize) -> std::io::Result<usize> {
+    if !minimum_alignment.is_power_of_two() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "alignment must be a power of two",
+        ));
+    }
+    const SIZE_2M: usize = 0x200000;
+    const SIZE_1G: usize = 0x40000000;
+    let default_alignment = if len < SIZE_2M {
+        SparseMapping::page_size()
+    } else if len < SIZE_1G {
+        SIZE_2M
+    } else {
+        SIZE_1G
+    };
+    Ok(default_alignment.max(minimum_alignment))
+}
+
 impl SparseMapping {
     /// Gets the supported page size for sparse mappings.
     pub fn page_size() -> usize {
@@ -212,23 +238,29 @@ mod tests {
                 .unwrap();
         assert_eq!(mapping.as_ptr() as usize % alignment, 0);
 
+        // Alignments larger than the allocation granularity are honored on
+        // both platforms.
         let alignment = 0x200000;
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                .unwrap();
+        assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+    }
 
-        #[cfg(unix)]
-        {
-            let mapping =
-                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
-                    .unwrap();
-            assert_eq!(mapping.as_ptr() as usize % alignment, 0);
-        }
+    #[test]
+    fn test_sparse_mapping_default_alignment() {
+        // A small mapping only needs page alignment.
+        let mapping = SparseMapping::new(SparseMapping::page_size()).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % SparseMapping::page_size(), 0);
 
-        #[cfg(windows)]
-        {
-            let error =
-                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
-                    .unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        }
+        // Mappings of at least 2 MB are aligned to a 2 MB boundary so that they
+        // can back large pages.
+        let mapping = SparseMapping::new(0x200000).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % 0x200000, 0);
+
+        // Mappings of at least 1 GB are aligned to a 1 GB boundary.
+        let mapping = SparseMapping::new(0x40000000).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % 0x40000000, 0);
     }
 
     #[test]

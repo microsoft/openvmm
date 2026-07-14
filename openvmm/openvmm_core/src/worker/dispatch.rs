@@ -23,6 +23,11 @@ use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
+use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
@@ -94,7 +99,6 @@ use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
@@ -104,7 +108,6 @@ use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-use storvsp::ScsiControllerDisk;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -152,7 +155,6 @@ use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
-use vmm_core::vmbus_unit::offer_channel_unit;
 use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core_defs::HaltReason;
 use vmotherboard::BaseChipsetBuilder;
@@ -682,6 +684,7 @@ fn build_aarch64_topology(
     let gic_msi = if let Some(count) = v2m_spi_count {
         GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+            doorbell_base: openvmm_defs::config::DEFAULT_GIC_V2M_DOORBELL_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
@@ -735,7 +738,6 @@ struct LoadedVmInner {
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
-    _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
@@ -1050,6 +1052,13 @@ impl InitializedVm {
             }
         }
 
+        // A backend must explicitly recognize an optional feature; requesting
+        // one it does not recognize fails here rather than being silently
+        // ignored during partition creation.
+        if cfg.hypervisor.nested_virt && !hypervisor.recognizes_nested_virt() {
+            anyhow::bail!("the selected hypervisor does not support nested virtualization");
+        }
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1060,6 +1069,7 @@ impl InitializedVm {
                     .with_isolation
                     .map(|typ| typ.into())
                     .unwrap_or(virt::IsolationType::None),
+                nested_virt: cfg.hypervisor.nested_virt,
             })
             .context("failed to create the prototype partition")?;
 
@@ -1625,7 +1635,6 @@ impl InitializedVm {
         let mut pci_legacy_interrupts = Vec::new();
 
         let mut ide_drives = [[None, None], [None, None]];
-        let mut storvsp_ide_disks = Vec::new();
         if cfg.chipset.with_hyperv_ide {
             pci_legacy_interrupts.push(((7, None), 14));
             pci_legacy_interrupts.push(((7, None), 15));
@@ -1650,20 +1659,17 @@ impl InitializedVm {
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
                     } => {
+                        // This builds only the emulated IDE drive. The storvsp IDE accelerator
+                        // counterpart (which carries any per-disk SCSI parameters via
+                        // SimpleScsiDiskHandle) is offered separately as a VMBus device; the two
+                        // paths are not yet unified.
                         let disk =
                             open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                                 .await
                                 .context("failed to open IDE disk")?;
 
-                        // Only disks get accelerator channels. DVDs dont.
-                        let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        )));
-                        storvsp_ide_disks.push((path, scsi_disk));
-                        ide::DriveMedia::hard_disk(disk.clone())
+                        ide::DriveMedia::hard_disk(disk)
                     }
                 };
 
@@ -1958,7 +1964,6 @@ impl InitializedVm {
             }
         };
 
-        let mut scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
         let mut vmbus_proxy = None;
@@ -2618,28 +2623,6 @@ impl InitializedVm {
 
         // Synthetic devices
         {
-            // Arbitrary default
-            const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
-            if let Some(vmbus) = &vmbus_server {
-                for (path, scsi_disk) in storvsp_ide_disks {
-                    scsi_devices.push(
-                        offer_channel_unit(
-                            &driver_source.simple(),
-                            &state_units,
-                            vmbus,
-                            storvsp::StorageDevice::build_ide(
-                                &driver_source,
-                                path.channel,
-                                path.drive,
-                                scsi_disk,
-                                DEFAULT_IO_QUEUE_DEPTH,
-                            ),
-                        )
-                        .await?,
-                    );
-                }
-            }
-
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(
@@ -2956,7 +2939,6 @@ impl InitializedVm {
                 partition,
                 chipset_devices: devices,
                 _vmtime: vmtime,
-                _scsi_devices: scsi_devices,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,
@@ -3168,8 +3150,8 @@ impl LoadedVmInner {
                             })
                         };
 
-                        super::vm_loaders::linux::AcpiTables {
-                            rdsp: tables.rdsp,
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
                             tables: tables.tables,
                         }
                     })?;
@@ -4150,11 +4132,7 @@ struct WeakMutexPciBusDevice(
 );
 
 impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
-    fn pci_cfg_read(
-        &mut self,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4164,7 +4142,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4176,35 +4154,31 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_read_with_routing(access_type, address, value),
         )
     }
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_write_with_routing(access_type, address, value),
         )
     }
 }

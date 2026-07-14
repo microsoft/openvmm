@@ -109,12 +109,27 @@ build for a different platform. The supported targets are:
 and run Windows VMM tests directly from your WSL2 shell. This requires the
 cross-compilation environment to be set up first.
 
-Then target Windows as usual. The output directory **must** be on the Windows
-filesystem (e.g., `/mnt/d/...`):
+Then target Windows as usual:
+
+```bash
+cargo xflowey vmm-tests-run --target windows-x64
+```
+
+Most tests work with the default output directory (on the WSL filesystem),
+because their disk images are either streamed on demand or opened as plain
+files (fixed VHD1, VMGS, ISO), which work fine over the `\\wsl$` path. You only
+need to override `--dir` to a Windows filesystem path (a DrvFs mount like
+`/mnt/d/...`) when the selected tests use disk images that require a Windows
+filesystem — namely **Hyper-V tests** (their VHDs are attached to a real
+Hyper-V VM) or tests using **VHDX / dynamic VHD1** images (opened via the
+Windows virtual-disk mount API):
 
 ```bash
 cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
 ```
+
+`vmm-tests-run` detects this automatically and will tell you if `--dir` is
+required for your selection.
 
 For full cross-compilation setup instructions, see
 [Cross Compiling for Windows](../getting_started/cross_compile.md).

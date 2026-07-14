@@ -5,14 +5,13 @@
 
 use super::SHA_256_OUTPUT_SIZE_BYTES;
 use crate::file_loader::DEFAULT_COMPATIBILITY_MASK;
+use crypto::sha_256::Sha256;
 use igvm::IgvmDirectiveHeader;
 use igvm_defs::IgvmPageDataType;
 use igvm_defs::PAGE_SIZE_4K;
 use igvm_defs::VbsDigestAlgorithm;
 use igvm_defs::VbsSigningAlgorithm;
 use igvm_defs::VbsVpContextRegister;
-use sha2::Digest;
-use sha2::Sha256;
 use std::collections::HashMap;
 use thiserror::Error;
 use vbs_defs::BootMeasurementType;
@@ -255,7 +254,7 @@ impl VbsDigestor {
         for chunk in chunks {
             hasher.update(chunk);
         }
-        self.digest = hasher.finalize().into();
+        self.digest = hasher.finish();
         Ok(())
     }
 

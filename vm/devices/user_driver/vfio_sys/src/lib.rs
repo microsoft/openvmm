@@ -622,49 +622,61 @@ impl Device {
         I: IntoIterator,
         I::Item: AsFd,
     {
-        const MAX_MSIX_VECTORS: usize = 256;
+        // Collect the eventfds up front so we know how many MSI-X vectors to
+        // bind; holding the borrowed fds keeps them open for the ioctl.
+        let fds: Vec<_> = eventfd.into_iter().collect();
 
+        // VFIO_DEVICE_SET_IRQS takes a vfio_irq_set header immediately followed
+        // by a variable-length array of eventfd file descriptors (one per
+        // vector). Build it with a HeaderVec so the header and the fd tail are
+        // laid out contiguously and the vector count is bounded only by what
+        // the device and kernel accept.
+        // vfio_irq_set itself is not Copy (it ends in an incomplete-array
+        // member), so it cannot be a HeaderVec head; VfioIrqSetHeader mirrors
+        // its fixed 20-byte prefix and the i32 tail supplies the fd array.
         #[repr(C)]
-        struct VfioIrqSetWithArray {
-            header: vfio_irq_set,
-            fd: [i32; MAX_MSIX_VECTORS],
+        #[derive(Copy, Clone)]
+        struct VfioIrqSetHeader {
+            argsz: u32,
+            flags: u32,
+            index: u32,
+            start: u32,
+            count: u32,
         }
-        let mut param = VfioIrqSetWithArray {
-            header: vfio_irq_set {
-                argsz: size_of::<VfioIrqSetWithArray>() as u32,
+        const _: () = assert!(
+            size_of::<VfioIrqSetHeader>() == size_of::<vfio_irq_set>(),
+            "VfioIrqSetHeader must match the fixed prefix of vfio_irq_set"
+        );
+
+        let mut param = HeaderVec::<VfioIrqSetHeader, i32, 0>::with_capacity(
+            VfioIrqSetHeader {
+                argsz: 0, // set below, once the fd tail length is known
                 flags: VFIO_IRQ_SET_ACTION_TRIGGER,
                 index: VFIO_PCI_MSIX_IRQ_INDEX,
                 start,
                 count: 0,
-                // data is a zero-sized array, the real data is fd.
-                data: Default::default(),
             },
-            fd: [-1; MAX_MSIX_VECTORS],
-        };
-
-        let fds: Vec<_> = eventfd.into_iter().collect();
-        anyhow::ensure!(
-            fds.len() <= MAX_MSIX_VECTORS,
-            "MSI-X vector count {} exceeds maximum {MAX_MSIX_VECTORS}",
-            fds.len()
+            fds.len(),
         );
-
-        let mut count = 0u32;
-        for (x, y) in fds.iter().zip(&mut param.fd) {
-            *y = x.as_fd().as_raw_fd();
-            count += 1;
+        for fd in &fds {
+            param.push_tail(fd.as_fd().as_raw_fd());
         }
-        param.header.count = count;
 
-        if param.header.count == 0 {
-            param.header.flags |= VFIO_IRQ_SET_DATA_NONE;
+        // argsz spans the header plus the contiguous fd tail.
+        let argsz = param.total_byte_len() as u32;
+        param.head.argsz = argsz;
+        param.head.count = fds.len() as u32;
+        if fds.is_empty() {
+            param.head.flags |= VFIO_IRQ_SET_DATA_NONE;
         } else {
-            param.header.flags |= VFIO_IRQ_SET_DATA_EVENTFD;
+            param.head.flags |= VFIO_IRQ_SET_DATA_EVENTFD;
         }
 
-        // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
+        // SAFETY: The file descriptor is valid. HeaderVec lays out the header
+        // and fd tail contiguously exactly as vfio_irq_set expects, and argsz
+        // spans the whole buffer, so the pointer is valid for the ioctl read.
         unsafe {
-            ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &param.header)
+            ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), param.as_ptr().cast())
                 .context("failed to set msi-x trigger")?;
         }
         Ok(())

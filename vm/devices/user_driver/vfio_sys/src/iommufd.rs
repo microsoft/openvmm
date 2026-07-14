@@ -4,101 +4,106 @@
 //! Bindings for the Linux iommufd subsystem (`/dev/iommu`).
 //!
 //! Provides safe wrappers around `IOMMU_IOAS_ALLOC`, `IOMMU_IOAS_MAP`,
-//! `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls, which together support
-//! identity DMA mapping via an IOAS.
+//! `IOMMU_IOAS_MAP_FILE`, `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls,
+//! which together support identity DMA mapping via an IOAS.
 
 use anyhow::Context as _;
 use std::fs;
 use std::os::unix::prelude::*;
 
-/// iommufd ioctl type character (';' = 0x3B).
-const IOMMUFD_TYPE: u8 = b';';
-
-/// Base command number for iommufd ioctls.
-const IOMMUFD_CMD_BASE: u8 = 0x80;
-
-// Command numbers (IOMMUFD_CMD_BASE + offset).
-const IOMMUFD_CMD_DESTROY: u8 = IOMMUFD_CMD_BASE;
-const IOMMUFD_CMD_IOAS_ALLOC: u8 = IOMMUFD_CMD_BASE + 1;
-const IOMMUFD_CMD_IOAS_MAP: u8 = IOMMUFD_CMD_BASE + 5;
-const IOMMUFD_CMD_IOAS_UNMAP: u8 = IOMMUFD_CMD_BASE + 6;
-
-/// Flags for `IOMMU_IOAS_MAP`.
-pub const IOMMU_IOAS_MAP_FIXED_IOVA: u32 = 1 << 0;
-pub const IOMMU_IOAS_MAP_WRITEABLE: u32 = 1 << 1;
-pub const IOMMU_IOAS_MAP_READABLE: u32 = 1 << 2;
-
 mod ioctl {
     use nix::request_code_none;
+
+    /// iommufd ioctl type character (';' = 0x3B).
+    const IOMMUFD_TYPE: u8 = b';';
+
+    /// Base command number for iommufd ioctls.
+    const IOMMUFD_CMD_BASE: u8 = 0x80;
+
+    // Command numbers (IOMMUFD_CMD_BASE + offset).
+    const IOMMUFD_CMD_DESTROY: u8 = IOMMUFD_CMD_BASE;
+    const IOMMUFD_CMD_IOAS_ALLOC: u8 = IOMMUFD_CMD_BASE + 1;
+    const IOMMUFD_CMD_IOAS_MAP: u8 = IOMMUFD_CMD_BASE + 5;
+    const IOMMUFD_CMD_IOAS_UNMAP: u8 = IOMMUFD_CMD_BASE + 6;
+    const IOMMUFD_CMD_IOAS_MAP_FILE: u8 = IOMMUFD_CMD_BASE + 15;
+
+    /// Flags for `IOMMU_IOAS_MAP`.
+    pub(super) const IOMMU_IOAS_MAP_FIXED_IOVA: u32 = 1 << 0;
+    pub(super) const IOMMU_IOAS_MAP_WRITEABLE: u32 = 1 << 1;
+    pub(super) const IOMMU_IOAS_MAP_READABLE: u32 = 1 << 2;
 
     // IOMMUFD ioctls use _IO (no direction, just type + nr).
     // The kernel defines them as _IO(IOMMUFD_TYPE, cmd_nr).
     nix::ioctl_readwrite_bad!(
         iommu_destroy,
-        request_code_none!(
-            super::IOMMUFD_TYPE as u32,
-            super::IOMMUFD_CMD_DESTROY as u32
-        ),
-        super::IommuDestroy
+        request_code_none!(IOMMUFD_TYPE as u32, IOMMUFD_CMD_DESTROY as u32),
+        IommuDestroy
     );
     nix::ioctl_readwrite_bad!(
         iommu_ioas_alloc,
-        request_code_none!(
-            super::IOMMUFD_TYPE as u32,
-            super::IOMMUFD_CMD_IOAS_ALLOC as u32
-        ),
-        super::IommuIoasAlloc
+        request_code_none!(IOMMUFD_TYPE as u32, IOMMUFD_CMD_IOAS_ALLOC as u32),
+        IommuIoasAlloc
     );
     nix::ioctl_readwrite_bad!(
         iommu_ioas_map,
-        request_code_none!(
-            super::IOMMUFD_TYPE as u32,
-            super::IOMMUFD_CMD_IOAS_MAP as u32
-        ),
-        super::IommuIoasMap
+        request_code_none!(IOMMUFD_TYPE as u32, IOMMUFD_CMD_IOAS_MAP as u32),
+        IommuIoasMap
+    );
+    nix::ioctl_readwrite_bad!(
+        iommu_ioas_map_file,
+        request_code_none!(IOMMUFD_TYPE as u32, IOMMUFD_CMD_IOAS_MAP_FILE as u32),
+        IommuIoasMapFile
     );
     nix::ioctl_readwrite_bad!(
         iommu_ioas_unmap,
-        request_code_none!(
-            super::IOMMUFD_TYPE as u32,
-            super::IOMMUFD_CMD_IOAS_UNMAP as u32
-        ),
-        super::IommuIoasUnmap
+        request_code_none!(IOMMUFD_TYPE as u32, IOMMUFD_CMD_IOAS_UNMAP as u32),
+        IommuIoasUnmap
     );
-}
 
-// Kernel ABI structs — must match `include/uapi/linux/iommufd.h` exactly.
+    // Kernel ABI structs — must match `include/uapi/linux/iommufd.h` exactly.
 
-#[repr(C)]
-pub struct IommuDestroy {
-    pub size: u32,
-    pub id: u32,
-}
+    #[repr(C)]
+    pub(super) struct IommuDestroy {
+        pub(super) size: u32,
+        pub(super) id: u32,
+    }
 
-#[repr(C)]
-pub struct IommuIoasAlloc {
-    pub size: u32,
-    pub flags: u32,
-    pub out_ioas_id: u32,
-}
+    #[repr(C)]
+    pub(super) struct IommuIoasAlloc {
+        pub(super) size: u32,
+        pub(super) flags: u32,
+        pub(super) out_ioas_id: u32,
+    }
 
-#[repr(C)]
-pub struct IommuIoasMap {
-    pub size: u32,
-    pub flags: u32,
-    pub ioas_id: u32,
-    pub __reserved: u32,
-    pub user_va: u64,
-    pub length: u64,
-    pub iova: u64,
-}
+    #[repr(C)]
+    pub(super) struct IommuIoasMap {
+        pub(super) size: u32,
+        pub(super) flags: u32,
+        pub(super) ioas_id: u32,
+        pub(super) __reserved: u32,
+        pub(super) user_va: u64,
+        pub(super) length: u64,
+        pub(super) iova: u64,
+    }
 
-#[repr(C)]
-pub struct IommuIoasUnmap {
-    pub size: u32,
-    pub ioas_id: u32,
-    pub iova: u64,
-    pub length: u64,
+    #[repr(C)]
+    pub(super) struct IommuIoasMapFile {
+        pub(super) size: u32,
+        pub(super) flags: u32,
+        pub(super) ioas_id: u32,
+        pub(super) fd: i32,
+        pub(super) start: u64,
+        pub(super) length: u64,
+        pub(super) iova: u64,
+    }
+
+    #[repr(C)]
+    pub(super) struct IommuIoasUnmap {
+        pub(super) size: u32,
+        pub(super) ioas_id: u32,
+        pub(super) iova: u64,
+        pub(super) length: u64,
+    }
 }
 
 /// An open iommufd file descriptor (`/dev/iommu`).
@@ -129,8 +134,8 @@ impl IommufdCtx {
     ///
     /// Returns the kernel-assigned IOAS object ID.
     pub fn ioas_alloc(&self) -> anyhow::Result<u32> {
-        let mut cmd = IommuIoasAlloc {
-            size: size_of::<IommuIoasAlloc>() as u32,
+        let mut cmd = ioctl::IommuIoasAlloc {
+            size: size_of::<ioctl::IommuIoasAlloc>() as u32,
             flags: 0,
             out_ioas_id: 0,
         };
@@ -159,12 +164,12 @@ impl IommufdCtx {
         length: u64,
         writable: bool,
     ) -> anyhow::Result<()> {
-        let mut flags = IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_READABLE;
+        let mut flags = ioctl::IOMMU_IOAS_MAP_FIXED_IOVA | ioctl::IOMMU_IOAS_MAP_READABLE;
         if writable {
-            flags |= IOMMU_IOAS_MAP_WRITEABLE;
+            flags |= ioctl::IOMMU_IOAS_MAP_WRITEABLE;
         }
-        let mut cmd = IommuIoasMap {
-            size: size_of::<IommuIoasMap>() as u32,
+        let mut cmd = ioctl::IommuIoasMap {
+            size: size_of::<ioctl::IommuIoasMap>() as u32,
             flags,
             ioas_id,
             __reserved: 0,
@@ -181,12 +186,51 @@ impl IommufdCtx {
         Ok(())
     }
 
+    /// Map a file/memfd range into an IOAS at a fixed IOVA via
+    /// `IOMMU_IOAS_MAP_FILE`.
+    ///
+    /// Unlike [`Self::ioas_map`], the kernel pins the backing folios directly
+    /// from `fd`, so no host VA is required. `start` is the byte offset within
+    /// the file; like [`Self::ioas_map`], both `start` and `length` must be
+    /// page-aligned. Requires a kernel with `IOMMU_IOAS_MAP_FILE` (Linux
+    /// 6.13+).
+    pub fn ioas_map_file(
+        &self,
+        ioas_id: u32,
+        iova: u64,
+        fd: RawFd,
+        start: u64,
+        length: u64,
+        writable: bool,
+    ) -> anyhow::Result<()> {
+        let mut flags = ioctl::IOMMU_IOAS_MAP_FIXED_IOVA | ioctl::IOMMU_IOAS_MAP_READABLE;
+        if writable {
+            flags |= ioctl::IOMMU_IOAS_MAP_WRITEABLE;
+        }
+        let mut cmd = ioctl::IommuIoasMapFile {
+            size: size_of::<ioctl::IommuIoasMapFile>() as u32,
+            flags,
+            ioas_id,
+            fd,
+            start,
+            length,
+            iova,
+        };
+        // SAFETY: the iommufd fd is valid and the struct is correctly sized and
+        // constructed. `fd` is only read during the ioctl.
+        unsafe {
+            ioctl::iommu_ioas_map_file(self.file.as_raw_fd(), &mut cmd)
+                .context("IOMMU_IOAS_MAP_FILE failed")?;
+        }
+        Ok(())
+    }
+
     /// Unmap an IOVA range from an IOAS.
     ///
     /// Returns the number of bytes actually unmapped.
     pub fn ioas_unmap(&self, ioas_id: u32, iova: u64, length: u64) -> anyhow::Result<u64> {
-        let mut cmd = IommuIoasUnmap {
-            size: size_of::<IommuIoasUnmap>() as u32,
+        let mut cmd = ioctl::IommuIoasUnmap {
+            size: size_of::<ioctl::IommuIoasUnmap>() as u32,
             ioas_id,
             iova,
             length,
@@ -201,8 +245,8 @@ impl IommufdCtx {
 
     /// Destroy an iommufd object by its ID.
     pub fn destroy(&self, id: u32) -> anyhow::Result<()> {
-        let mut cmd = IommuDestroy {
-            size: size_of::<IommuDestroy>() as u32,
+        let mut cmd = ioctl::IommuDestroy {
+            size: size_of::<ioctl::IommuDestroy>() as u32,
             id,
         };
         // SAFETY: fd is valid, struct correctly constructed.

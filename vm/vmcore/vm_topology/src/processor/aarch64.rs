@@ -88,9 +88,14 @@ pub struct Aarch64PlatformConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 pub struct GicV2mInfo {
-    /// Physical base address of the v2m MSI frame.
+    /// Physical base address of the guest-visible v2m MSI frame.
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub frame_base: u64,
+    /// Physical base address of the v2m MSI doorbell registered with the
+    /// hypervisor for PCI passthrough (GITS translater base). May differ from
+    /// `frame_base`; consumed only by the MSHV root/arm64 backend.
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub doorbell_base: u64,
     /// First GIC interrupt ID in the SPI range owned by this frame.
     pub spi_base: u32,
     /// Number of SPIs owned by this frame.
