@@ -648,6 +648,10 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// behind an emulated IOMMU) have no mapping and thus report `false`.
     /// Callers that use locking as a zero-copy fast path should check this and
     /// fall back to a copying path when it returns `false`.
+    ///
+    /// This is authoritative: when it returns `false`, the corresponding
+    /// [`GuestMemory`] locking APIs fail without invoking
+    /// [`lock_gpns`](Self::lock_gpns).
     fn supports_locking(&self) -> bool {
         self.mapping().is_some()
     }
@@ -1642,7 +1646,9 @@ impl GuestMemory {
     ///
     /// Memory behind an emulated IOMMU has no stable host mapping and cannot
     /// be locked; zero-copy callers should check this and fall back to a
-    /// copying path when it returns `false`.
+    /// copying path when it returns `false`. This is authoritative: when it
+    /// returns `false`, [`lock_gpns`](Self::lock_gpns) and
+    /// [`lock_range`](Self::lock_range) fail with a `NotLockable` error.
     pub fn supports_locking(&self) -> bool {
         self.inner.supports_locking
     }
@@ -2044,6 +2050,10 @@ impl GuestMemory {
         gpns: &[u64],
     ) -> Result<LockedPages, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             let mut pages = Vec::with_capacity(gpns.len());
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
@@ -2221,6 +2231,10 @@ impl GuestMemory {
     ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
                 self.probe_page_for_lock(true, gpa)?;
@@ -2929,10 +2943,13 @@ mod tests {
         let gm = GuestMemory::allocate(0x10000);
         assert!(gm.supports_locking());
 
-        // A backing with no stable host mapping (e.g. on-demand translation
-        // behind an emulated IOMMU) does not support locking.
+        // A backing that reports no locking support (e.g. on-demand
+        // translation behind an emulated IOMMU) does not support locking, and
+        // `supports_locking` is authoritative: locking fails without touching
+        // the backing's `lock_gpns`.
         let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
         assert!(!gm.supports_locking());
+        assert!(gm.lock_gpns(false, &[0]).is_err());
 
         // Multi-region: locking is supported only when every present backing
         // supports it.
