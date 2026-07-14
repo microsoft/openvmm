@@ -511,16 +511,31 @@ impl DmaBufRegistry {
         );
     }
 
-    /// Look up the dmabuf fd registered for a mapping's intrinsic identity.
-    fn lookup(&self, st_dev: u64, st_ino: u64, file_offset: u64) -> Option<RawFd> {
-        self.entries
-            .lock()
-            .get(&DmaBufKey {
-                st_dev,
-                st_ino,
-                file_offset,
-            })
-            .map(|fd| fd.as_raw_fd())
+    /// Look up the dmabuf fd registered for a mapping's intrinsic identity and,
+    /// while still holding the registry lock, invoke `f` with the raw fd.
+    ///
+    /// Holding the lock across `f` is what makes handing out a bare [`RawFd`]
+    /// sound: [`Self::deregister_device`] (which drops the owning [`OwnedFd`],
+    /// closing it) also takes this lock, so it cannot run — and the fd cannot
+    /// be closed — for the duration of `f`. Callers therefore pass the ioctl
+    /// that consumes the fd (e.g. `ioas_map_file`) as `f`.
+    ///
+    /// Returns `None` (without calling `f`) if no dmabuf is registered for the
+    /// key, in which case the caller falls back to the host-VA mapping path.
+    fn with_lookup<R>(
+        &self,
+        st_dev: u64,
+        st_ino: u64,
+        file_offset: u64,
+        f: impl FnOnce(RawFd) -> R,
+    ) -> Option<R> {
+        let entries = self.entries.lock();
+        let fd = entries.get(&DmaBufKey {
+            st_dev,
+            st_ino,
+            file_offset,
+        })?;
+        Some(f(fd.as_raw_fd()))
     }
 
     /// Remove (and close) all dmabufs registered for a device's cdev inode.
@@ -559,32 +574,46 @@ impl membacking::DmaTarget for IommufdDmaTarget {
         // intrinsic identity (cdev inode + file offset). Everything else
         // (private/anonymous RAM, or a BAR without an exported dmabuf) uses the
         // host VA path.
-        let backing = match request.mapping_type {
-            membacking::MappingType::Ram => request
-                .mappable
-                .map(|mappable| (mappable.as_fd().as_raw_fd(), request.file_offset)),
+        //
+        // `by_file` is `None` when there is no fd to map by file, meaning the
+        // host-VA fallback below is used.
+        let by_file = match request.mapping_type {
+            membacking::MappingType::Ram => request.mappable.map(|mappable| {
+                self.ctx.ioas_map_file(
+                    self.ioas_id,
+                    iova,
+                    mappable.as_fd().as_raw_fd(),
+                    request.file_offset,
+                    length,
+                    request.writable,
+                )
+            }),
             membacking::MappingType::Device => match request.mappable {
                 Some(mappable) => {
                     let (st_dev, st_ino) = vfio_sys::fd_identity(mappable.as_fd())
                         .context("failed to stat VFIO cdev for dmabuf lookup")?;
-                    // The dmabuf covers exactly this BAR area starting at its
-                    // own byte 0, so map from offset 0.
+                    // Perform the `ioas_map_file` while the registry lock is
+                    // held (inside `with_lookup`), so the dmabuf fd cannot be
+                    // deregistered/closed between lookup and use. The dmabuf
+                    // covers exactly this BAR area starting at its own byte 0,
+                    // so map from offset 0.
                     self.dmabuf_registry
-                        .lookup(st_dev, st_ino, request.file_offset)
-                        .map(|fd| (fd, 0))
+                        .with_lookup(st_dev, st_ino, request.file_offset, |fd| {
+                            self.ctx.ioas_map_file(
+                                self.ioas_id,
+                                iova,
+                                fd,
+                                0,
+                                length,
+                                request.writable,
+                            )
+                        })
                 }
                 None => None,
             },
         };
-        let result = match backing {
-            Some((fd, file_offset)) => self.ctx.ioas_map_file(
-                self.ioas_id,
-                iova,
-                fd,
-                file_offset,
-                length,
-                request.writable,
-            ),
+        let result = match by_file {
+            Some(r) => r,
             // SAFETY: The caller (DmaMapper in membacking) guarantees that the
             // host VA is backed and stable via eager mapping + VaMapper
             // lifetime, satisfying the safety contract of `ioas_map`.
