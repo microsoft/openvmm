@@ -3107,7 +3107,7 @@ impl LoadedVmInner {
         }
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
-        let (mut regs, initial_page_vis) = match &self.load_mode {
+        let (mut regs, initial_page_imports) = match &self.load_mode {
             LoadMode::None => return Ok(()),
             #[cfg(guest_arch = "x86_64")]
             &LoadMode::Linux {
@@ -3359,9 +3359,9 @@ impl LoadedVmInner {
         // imported as a page, not registers, along with revisiting other
         // isolation architectures and backends.
         if self.hypervisor_cfg.with_isolation.is_some() {
-            tracing::debug!(?initial_page_vis, "initial_page_imports");
+            tracing::debug!(?initial_page_imports);
             self.partition_unit
-                .accept_initial_pages(initial_page_vis)
+                .accept_initial_pages(initial_page_imports)
                 .await
                 .context("failed to finalize initial page imports")?;
         }

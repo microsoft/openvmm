@@ -88,14 +88,18 @@ impl<R> Loader<'_, R> {
         tag: &str,
         acceptance: BootPageAcceptance,
     ) -> anyhow::Result<()> {
-        let page_end = page_base + page_count - 1;
+        anyhow::ensure!(page_count != 0, "{tag} has an empty page range");
+        let page_end_exclusive = page_base
+            .checked_add(page_count)
+            .ok_or_else(|| anyhow::anyhow!("{tag} page range overflows"))?;
+        let page_end = page_end_exclusive - 1;
         match self.page_imports.entry(page_base..=page_end) {
             Entry::Overlapping(entry) => {
                 let (overlap_start, overlap_end, ref overlap_info) = *entry.get();
                 Err(anyhow::anyhow!(
                     "{} at {} ({:?}) overlaps {} at {}",
                     tag,
-                    MemoryRange::from_4k_gpn_range(page_base..page_end + 1),
+                    MemoryRange::from_4k_gpn_range(page_base..page_end_exclusive),
                     acceptance,
                     overlap_info.tag,
                     MemoryRange::from_4k_gpn_range(overlap_start..overlap_end + 1),
@@ -381,5 +385,22 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("duplicate register import"));
+    }
+
+    #[test]
+    fn invalid_page_import_ranges_return_errors() {
+        let gm = GuestMemory::allocate(0x10000);
+        let mem_layout = test_memory_layout();
+        let mut loader = Loader::<X86Register>::new(gm, &mem_layout, Vtl::Vtl0);
+
+        let err = loader
+            .accept_new_range(1, 0, "empty", BootPageAcceptance::Exclusive)
+            .unwrap_err();
+        assert!(err.to_string().contains("empty page range"));
+
+        let err = loader
+            .accept_new_range(u64::MAX, 2, "overflow", BootPageAcceptance::Exclusive)
+            .unwrap_err();
+        assert!(err.to_string().contains("page range overflows"));
     }
 }
