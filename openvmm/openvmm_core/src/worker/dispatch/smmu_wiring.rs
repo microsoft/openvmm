@@ -11,7 +11,6 @@
 
 use chipset_device_resources::IRQ_LINE_SET;
 use guestmem::GuestMemory;
-use std::collections::HashMap;
 use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
@@ -62,7 +61,6 @@ pub(super) struct SmmuDevicesResult {
 pub(super) fn setup_smmu(
     root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
     resolved_smmu_resources: &[ResolvedSmmuResources],
-    pcie_rc_name_to_idx: &HashMap<String, usize>,
     pcie_host_bridges: &[PcieHostBridge],
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
@@ -75,12 +73,10 @@ pub(super) fn setup_smmu(
     // Iterate RCs with SMMU enabled, zipping with resolved MMIO+SPI resources.
     let smmu_rcs = root_complexes
         .iter()
-        .filter(|rc| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::Smmu)));
+        .enumerate()
+        .filter(|(_, rc)| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::Smmu)));
 
-    for (idx, rc) in smmu_rcs.enumerate() {
-        let rc_pos = pcie_rc_name_to_idx[rc.name.as_str()];
-
-        let smmu = &resolved_smmu_resources[idx];
+    for ((rc_pos, rc), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);

@@ -10,8 +10,8 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::VpAssignment;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
@@ -339,8 +339,9 @@ async fn pcie_device_numa_affinity(
                         size: 1024 * 1024 * 1024,
                     },
                     cxl: None,
-                    ports: vec![PcieRootPortConfig {
+                    ports: vec![PciePortConfig {
                         name: "rp0".to_string(),
+                        devfn: None,
                         hotplug: false,
                         acs_capabilities_supported: None,
                         cxl: false,

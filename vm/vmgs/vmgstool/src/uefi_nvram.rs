@@ -275,7 +275,7 @@ fn print_nvram_entry(
                                 "      - Signature Owner: {} Data: ",
                                 sig.header.signature_owner
                             );
-                            write!(out, "{}", &prefix)?;
+                            write!(out, "{}", prefix)?;
                             print_hex_compact(
                                 out,
                                 sig.data.0.deref(),
@@ -289,7 +289,7 @@ fn print_nvram_entry(
                             "  - [X509] Signature Owner: {} Data: ",
                             sig.header.signature_owner
                         );
-                        write!(out, "{}", &prefix)?;
+                        write!(out, "{}", prefix)?;
                         print_hex_compact(
                             out,
                             sig.data.0.deref(),
@@ -399,7 +399,7 @@ async fn vmgs_file_remove_boot_entries(
         let boot_option = boot_order::EfiLoadOption::parse(&boot_option_bytes)
             .map_err(uefi_nvram_specvars::ParseError::BootOrder)?;
 
-        println!("{i}: {}: {:x?}", &name, boot_option);
+        println!("{i}: {}: {:x?}", name, boot_option);
 
         if !dry_run {
             if !nvram_storage

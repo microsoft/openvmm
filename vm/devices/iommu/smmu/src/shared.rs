@@ -509,6 +509,7 @@ impl SmmuSharedState {
 /// One `SmmuTranslator` is shared by all PCI devices behind the same SMMU.
 /// The requester ID (RID / BDF) is passed at each translation call and
 /// combined with the `stream_id_base` to form the SMMU stream ID.
+#[derive(Clone)]
 pub struct SmmuTranslator {
     shared: Arc<SmmuSharedState>,
     /// Offset into the SMMU's stream table for this root complex.

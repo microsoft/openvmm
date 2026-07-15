@@ -216,8 +216,9 @@ pub struct SevNpfInfo {
     pub rmp_size_mismatch: bool,
     pub vmpl_violation: bool,
     pub npt_supervisor_shadow_stack: bool,
-    #[bits(26)]
-    rsvd38_63: u64,
+    #[bits(25)]
+    rsvd38_62: u64,
+    pub not_restartable: bool,
 }
 
 /// SEV secure AVIC control register
@@ -968,6 +969,7 @@ open_enum::open_enum! {
         AVIC_NOACCEL = 0x402,
         VMGEXIT = 0x403,
         PAGE_NOT_VALIDATED = 0x404,
+        NOT_RESTARTABLE = 0x406,
 
         // SEV-ES software-defined exit codes
         SNP_GUEST_REQUEST = 0x80000011,

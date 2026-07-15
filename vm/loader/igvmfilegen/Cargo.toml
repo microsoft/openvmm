@@ -10,15 +10,19 @@ rust-version.workspace = true
 igvmfilegen_config.workspace = true
 loader.workspace = true
 loader_defs.workspace = true
+product_policy.workspace = true
 
 hvdef.workspace = true
 
 memory_range.workspace = true
+underhill_confidentiality.workspace = true
 vbs_defs.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true
+base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, features = ["native", "vendored"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true
@@ -26,7 +30,6 @@ igvm_defs.workspace = true
 range_map_vec.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
-sha2.workspace = true
 thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true

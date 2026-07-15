@@ -34,7 +34,9 @@ pub struct Customizations {
     pub custom_sidecar: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
+    pub confidential_debug: bool,
     pub disable_secure_avic: bool,
+    pub enable_product_policy: bool,
     pub override_arch: Option<CommonArch>,
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
@@ -96,7 +98,9 @@ impl SimpleFlowNode for Node {
             override_kernel_pkg,
             override_openvmm_hcl_feature,
             override_max_trace_level,
+            confidential_debug,
             disable_secure_avic,
+            enable_product_policy,
             with_debuginfo,
             with_mi_secure,
             with_perf_tools,
@@ -189,6 +193,10 @@ impl SimpleFlowNode for Node {
                 openvmm_hcl_features.insert(OpenvmmHclFeature::MiSecure);
             }
 
+            if enable_product_policy {
+                openvmm_hcl_features.insert(OpenvmmHclFeature::ProductPolicy);
+            }
+
             if let Some(arch) = override_arch {
                 *target = match arch {
                     CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,
@@ -251,6 +259,7 @@ impl SimpleFlowNode for Node {
             custom_target: None,
             extra_features: BTreeSet::new(),
             disable_secure_avic,
+            confidential_debug,
             openhcl_igvm: write_openhcl_igvm,
             openhcl_igvm_extras: write_openhcl_igvm_extras,
         });
@@ -303,9 +312,15 @@ impl SimpleFlowNode for Node {
                     igvm_vbs_json,
                 }) = openhcl_igvm.endorsements()
                 {
-                    fs_err::copy(igvm_tdx_json, output_dir.join("openhcl-tdx.json"))?;
-                    fs_err::copy(igvm_snp_json, output_dir.join("openhcl-snp.json"))?;
-                    fs_err::copy(igvm_vbs_json, output_dir.join("openhcl-vbs.json"))?;
+                    if let Some(igvm_tdx_json) = igvm_tdx_json {
+                        fs_err::copy(igvm_tdx_json, output_dir.join("openhcl-tdx.json"))?;
+                    }
+                    if let Some(igvm_snp_json) = igvm_snp_json {
+                        fs_err::copy(igvm_snp_json, output_dir.join("openhcl-snp.json"))?;
+                    }
+                    if let Some(igvm_vbs_json) = igvm_vbs_json {
+                        fs_err::copy(igvm_vbs_json, output_dir.join("openhcl-vbs.json"))?;
+                    }
                 }
                 for e in fs_err::read_dir(output_dir)? {
                     let e = e?;

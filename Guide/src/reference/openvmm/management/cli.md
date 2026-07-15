@@ -16,20 +16,26 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,shared=on,prefetch=off
   ```
 
+  The keys below select the guest RAM **memory backing**. For an explanation
+  of shared vs. private memory, prefetch, huge pages, and file-backed RAM —
+  and how to choose between them — see
+  [Memory Backing](../../architecture/openvmm/memory-backing.md).
+
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
   * `shared=on|off` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
+  * `prefetch=on|off` - pre-populate guest RAM mappings up front.
+    Only has an effect under WHP; a no-op on KVM/mshv.
   * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
-  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
-    This is Linux-only, requires shared memory, and cannot be combined
-    with file-backed memory or PCAT/legacy x86 RAM splitting.
-  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
-    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
-    OpenVMM uses 2 MB pages.
+    eligible (Linux only). Requires `shared=off`.
+  * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages
+    (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
+    shared memory.
+  * `hugepage_size=<SIZE>` - request a specific large-page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; defaults to 2 MB. On
+    Windows only 2 MB is supported.
   * `file=<PATH>` - use an existing file as the guest RAM backing file.
     This is used by snapshots.
 
@@ -58,29 +64,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
-    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
-    virt). The host must expose virtualization extensions to the VM
-    running OpenVMM.
-
-  KVM accepts the following parameters (x86_64 guests only):
-  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor. Off by default: when enabled, a Windows guest detects
-    nested virtualization support and turns on Virtual Secure Mode (VSM),
-    which hurts performance and breaks boot while VMBus devices are in use.
-    The host must support KVM nested virtualization; the backend validates
-    this and fails early if it does not.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
-  --hypervisor whp:nested_virt
   --hypervisor kvm
-  --hypervisor kvm:nested_virt
   ```
+* `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
+  can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
+  and only by backends that support nested virtualization (currently WHP and
+  KVM); requesting it with a backend that does not support it fails early. The
+  host must expose virtualization extensions to the VM running OpenVMM. When
+  enabled, a guest may detect nested virtualization and turn on features such
+  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
+  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  `--hypervisor whp:user_mode_apic`.
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
@@ -180,6 +180,15 @@ as well as the generated CLI help (via `cargo run -- --help`).
 Serial devices can be configured to appear as different devices inside the guest:
 
 * `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--com1 debugger-mode:<BACKEND>`: Prefix any COM port binding with
+  `debugger-mode:` to run that port in debugger mode for WinDbg kernel
+  debugging over serial (KD), e.g. `--com1 debugger-mode:listen=<PATH>` or
+  `--com1 debugger-mode:listen=tcp:<IP>:<PORT>`. In this mode OpenVMM keeps that
+  port's backend drained and may drop bytes instead of applying backpressure, so
+  the KD transport does not deadlock across guest resets or reboots; KD recovers
+  dropped bytes with its own retransmission. Debugger mode is chosen
+  independently per COM port, so one port can talk to WinDbg while another
+  behaves normally.
 * `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
   `/dev/hvc0` inside the guest).
 
@@ -283,6 +292,11 @@ name:
 --pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
 ```
 
+- `addr=<dev>[.<fn>]`: places the root port at a fixed device/function on
+  its bus. `dev` is 0-31 and the optional `fn` is 0-7 (both decimal or
+  `0x`-prefixed hex). When omitted, the port is assigned the lowest
+  available devfn. Ports are assigned in order, so an explicit `addr` that
+  collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
@@ -412,3 +426,36 @@ software IOVA→GPA translation for DMA and MSI addresses.
 
 VFIO devices cannot currently be placed behind an SMMU-covered root
 complex because iommufd nested translation is not yet available.
+
+### AMD IOMMU (x86_64 only)
+
+`--amd-iommu <RC_NAME>` enables an emulated AMD-Vi IOMMU for the named
+root complex. The flag is repeatable — use one `--amd-iommu` per root
+complex that should have an IOMMU. Devices behind a covered root complex
+get software IOVA→GPA translation for DMA and interrupt remapping.
+
+```sh
+# Enable AMD IOMMU on root complex rc0
+--amd-iommu rc0
+```
+
+Mutually exclusive with `--intel-vtd` within the same VM (only one x86
+IOMMU type can be active).
+
+### Intel VT-d (x86_64 only)
+
+`--intel-vtd <RC_NAME>` enables an emulated Intel VT-d IOMMU for the
+named root complex. The flag is repeatable — use one `--intel-vtd` per
+root complex that should have an IOMMU. The guest discovers VT-d units
+via the ACPI DMAR table (not PCI config space).
+
+```sh
+# Enable Intel VT-d on root complex rc0
+--intel-vtd rc0
+
+# Multiple root complexes
+--intel-vtd rc0 --intel-vtd rc1
+```
+
+Mutually exclusive with `--amd-iommu` within the same VM (only one x86
+IOMMU type can be active).

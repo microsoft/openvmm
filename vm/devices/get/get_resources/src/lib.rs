@@ -302,5 +302,13 @@ pub mod ged {
         /// unsealing using the hardware key protector saved on the
         /// previous successful boot.  The VM should boot normally.
         KeyReleaseFailure,
+        /// Config for testing a host/agent-requested TPM state refresh.
+        ///
+        /// The agent's GSP RPC reports `state_refresh_request`, which
+        /// drives `refresh_tpm_seeds` in OpenHCL and causes the vTPM
+        /// seeds (and therefore the AK) to be regenerated on the next
+        /// boot.  AK cert requests are served so the guest has a valid
+        /// AK to read across boots.
+        StateRefresh,
     }
 }

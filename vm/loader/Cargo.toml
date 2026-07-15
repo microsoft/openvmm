@@ -10,6 +10,7 @@ rust-version.workspace = true
 aarch64defs.workspace = true
 igvm.workspace = true
 loader_defs.workspace = true
+product_policy.workspace = true
 memory_range.workspace = true
 page_table = {workspace = true, features = ["tracing"] }
 hvdef.workspace = true
@@ -23,6 +24,7 @@ bitfield-struct.workspace = true
 crc32fast.workspace = true
 object = { workspace = true, features = ["elf", "std", "read_core"] }
 open_enum.workspace = true
+static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

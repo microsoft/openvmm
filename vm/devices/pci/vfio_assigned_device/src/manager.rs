@@ -32,9 +32,7 @@ struct VfioType1DmaTarget {
 
 impl membacking::DmaTarget for VfioType1DmaTarget {
     unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
-        let vaddr = request
-            .host_va
-            .expect("VFIO type1 requires host VA (registered with needs_va=true)");
+        let vaddr = request.host_va;
         let range = request.range;
         let _span = tracing::info_span!("vfio map", %range).entered();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
@@ -432,13 +430,14 @@ impl VfioContainerManager {
             container: container.clone(),
         });
 
-        // Register as a DMA mapper — the region manager will create a
-        // VaMapper internally (since needs_va is true) and replay all
-        // existing active sub-mappings (guest RAM + any active device
-        // BARs) into this container's IOMMU.
+        // Register as a DMA mapper. This target programs the IOMMU by host VA,
+        // so it does not require a backing fd (needs_fd = false) and is
+        // compatible with private RAM. The region manager replays all existing
+        // active sub-mappings (guest RAM + any active device BARs) into this
+        // container's IOMMU.
         let dma_handle = self
             .dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register VFIO container with region manager")?;
 
@@ -480,26 +479,41 @@ struct IommufdDmaTarget {
 
 impl membacking::DmaTarget for IommufdDmaTarget {
     unsafe fn map_dma(&self, request: membacking::DmaMapRequest<'_>) -> anyhow::Result<()> {
-        let vaddr = request
-            .host_va
-            .expect("iommufd IOAS map requires host VA (registered with needs_va=true)");
+        let vaddr = request.host_va;
         let range = request.range;
         let iova = range.start();
         let user_va = vaddr as u64;
         let length = range.len();
-        // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via eager mapping + VaMapper lifetime.
-        let result = unsafe {
-            self.ctx
-                .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
-                .with_context(|| {
-                    format!(
-                        "iommufd IOAS DMA map failed: iova={iova:#x} user_va={user_va:#x} \
-                         length={length:#x} ioas_id={}",
-                        self.ioas_id
-                    )
-                })
+        // Prefer map-by-file for guest RAM: it is memfd-backed, so the kernel
+        // can pin the folios directly (no host VA pinning). Device BAR memory
+        // is backed by the VFIO cdev fd, which is neither a memfd nor (yet) a
+        // dmabuf, so map-by-file would misinterpret it — keep those on the VA
+        // path. Private/anonymous RAM has no backing fd and also uses the VA
+        // path.
+        let backing = match request.mapping_type {
+            membacking::MappingType::Ram => request
+                .mappable
+                .map(|mappable| (mappable.as_fd().as_raw_fd(), request.file_offset)),
+            membacking::MappingType::Device => None,
         };
+        let result = match backing {
+            Some((fd, file_offset)) => self.ctx.ioas_map_file(
+                self.ioas_id,
+                iova,
+                fd,
+                file_offset,
+                length,
+                request.writable,
+            ),
+            // SAFETY: The caller (DmaMapper in membacking) guarantees that the
+            // host VA is backed and stable via eager mapping + VaMapper
+            // lifetime, satisfying the safety contract of `ioas_map`.
+            None => unsafe {
+                self.ctx
+                    .ioas_map(self.ioas_id, iova, user_va, length, request.writable)
+            },
+        }
+        .with_context(|| format!("failed to map {range} into iommufd IOAS"));
         if let Err(e) = &result {
             if request.mapping_type == membacking::MappingType::Device {
                 // Device BAR memory may not be mappable into the IOMMU (e.g.,
@@ -595,8 +609,10 @@ impl IoasManager {
             ctx: ctx.clone(),
             ioas_id,
         });
+        // This target programs the IOMMU by host VA, so it does not require a
+        // backing fd (needs_fd = false) and is compatible with private RAM.
         let dma_handle = dma_mapper_client
-            .add_dma_mapper(dma_target, true)
+            .add_dma_mapper(dma_target, false)
             .await
             .context("failed to register iommufd IOAS with region manager")?;
 

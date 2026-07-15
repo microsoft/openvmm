@@ -110,7 +110,7 @@ fn translate_absolute_target(
 
     let (_, name) = name.split_at(2);
     let name = name.replace('\\', "/");
-    let target = format!("{}{}{}", &state.options.symlink_root, drive_letter, name);
+    let target = format!("{}{}{}", state.options.symlink_root, drive_letter, name);
 
     Ok(target.into())
 }

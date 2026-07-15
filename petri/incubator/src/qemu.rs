@@ -3,6 +3,7 @@
 
 //! QEMU process management.
 
+use crate::GUEST_SHARE_ROOT;
 use crate::profile::DeviceConfig;
 use crate::profile::QemuTcgConfig;
 use anyhow::Context;
@@ -13,7 +14,6 @@ use pal_async::process::PolledChild;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -132,50 +132,73 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
 /// Sets up the environment, mounts the virtio-9p share, brings up networking,
 /// and launches pipette in TCP mode. Pipette then waits for the host to
 /// connect and send commands.
-fn build_init_script() -> String {
+fn build_init_script(guest_pipette_path: &str) -> String {
+    let guest_pipette_path = shell_single_quote(guest_pipette_path);
+    let guest_share_root = shell_single_quote(GUEST_SHARE_ROOT);
+
     // QEMU user-mode networking defaults: guest is 10.0.2.15/24,
     // gateway 10.0.2.2, DNS forwarder at 10.0.2.3.
-    "\
+    format!(
+        "\
         #!/bin/sh\n\
         /bin/busybox --install /bin 2>/dev/null\n\
         mount -t devtmpfs none /dev\n\
         mount -t proc none /proc\n\
         mount -t sysfs none /sys\n\
-        mkdir -p /dev/pts /share /root /tmp /etc\n\
+        mkdir -p /dev/pts {guest_share_root} /root /tmp /etc\n\
         mount -t devpts devpts /dev/pts\n\
-        mount -t 9p -o trans=virtio,version=9p2000.L hostshare /share\n\
+        mount -t 9p -o trans=virtio,version=9p2000.L hostshare {guest_share_root}\n\
         ip link set eth0 up\n\
         ip addr add 10.0.2.15/24 dev eth0\n\
         ip route add default via 10.0.2.2\n\
         echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n\
-        export VMM_TESTS_CONTENT_DIR=/share\n\
         export HOME=/root\n\
-        cd /share\n\
-        exec /share/pipette --transport tcp\n"
-        .to_string()
+        cd {guest_share_root}\n\
+        exec {guest_pipette_path} --transport tcp\n"
+    )
+}
+
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Prepare the boot initrd by injecting the init script into the base initrd.
 ///
 /// Reads the gzip-compressed base initrd, injects the `rdinit` script (see
-/// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], writes the patched initrd
-/// into `share_dir`, and returns its path.
-pub fn prepare_initrd(base_initrd: &Path, share_dir: &Path) -> anyhow::Result<PathBuf> {
+/// [`build_init_script`]) under [`INIT_SCRIPT_NAME`], and writes the patched
+/// initrd to a uniquely-named temporary file under `scratch_dir`. The returned
+/// [`tempfile::TempPath`] deletes the file when dropped, so the caller must
+/// keep it alive for as long as QEMU needs to read the initrd.
+///
+/// A unique temp file (rather than a fixed name) is required because multiple
+/// incubator processes run concurrently under nextest and share the same
+/// output directory; a fixed path would race.
+pub fn prepare_initrd(
+    base_initrd: &Path,
+    scratch_dir: &Path,
+    guest_pipette_path: &str,
+) -> anyhow::Result<tempfile::TempPath> {
     let initrd_data = std::fs::read(base_initrd).context("failed to read initrd")?;
 
     let patched_initrd = initrd_cpio::inject_into_initrd(
         &initrd_data,
         INIT_SCRIPT_NAME,
-        build_init_script().as_bytes(),
+        build_init_script(guest_pipette_path).as_bytes(),
         0o100755, // regular file, rwxr-xr-x
     )
     .context("failed to inject init script into initrd")?;
 
-    let patched_initrd_path = share_dir.join(".incubator-initrd.gz");
-    std::fs::write(&patched_initrd_path, &patched_initrd)
+    std::fs::create_dir_all(scratch_dir).context("failed to create incubator output dir")?;
+    let mut patched_initrd_file = tempfile::Builder::new()
+        .prefix(".incubator-initrd")
+        .suffix(".gz")
+        .tempfile_in(scratch_dir)
+        .context("failed to create patched initrd temp file")?;
+    patched_initrd_file
+        .write_all(&patched_initrd)
         .context("failed to write patched initrd")?;
 
-    Ok(patched_initrd_path)
+    Ok(patched_initrd_file.into_temp_path())
 }
 
 /// Wait for pipette to signal readiness via the serial console relay
@@ -302,12 +325,15 @@ pub fn child_pipe_to_file(pipe: impl Into<std::os::windows::io::OwnedHandle>) ->
 /// it to vfio-pci.
 ///
 /// Returns a map of environment variables to set for the guest command,
-/// e.g., `INCUBATOR_VFIO_BDF_TEST_DISK=0000:01:00.0`.
+/// e.g., `INCUBATOR_VFIO_BDF_TEST_DISK=0000:01:00.0`. If any provisioned
+/// device declares a `provides` capability, the returned map also includes
+/// `PETRI_CAPABILITIES` listing those capabilities (comma-separated).
 pub async fn setup_vfio_devices(
     client: &pipette_client::PipetteClient,
     devices: &[DeviceConfig],
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
+    let mut capabilities = Vec::new();
 
     // Collect (device_index, config) for devices that need VFIO binding.
     let vfio_devices: Vec<_> = devices
@@ -396,6 +422,28 @@ pub async fn setup_vfio_devices(
         );
         tracing::info!(%env_name, %bdf, "VFIO device ready");
         env.insert(env_name, bdf);
+
+        // Advertise the capability this device provides, now that it has been
+        // successfully provisioned. Tests gate on this via
+        // `requires(...)`.
+        if let Some(capability) = &cfg.provides {
+            capabilities.push(capability.clone());
+        }
+    }
+
+    // Advertise all provisioned capabilities to the guest command via
+    // PETRI_CAPABILITIES (comma-separated), which petri's requirement
+    // evaluation reads. Augment any capabilities already present in the
+    // incubator's environment rather than overwriting them, so that
+    // host-provided capabilities are preserved.
+    if !capabilities.is_empty() {
+        let mut value = capabilities.join(",");
+        if let Ok(existing) = std::env::var("PETRI_CAPABILITIES") {
+            if !existing.is_empty() {
+                value = format!("{existing},{value}");
+            }
+        }
+        env.insert("PETRI_CAPABILITIES".to_string(), value);
     }
 
     Ok(env)

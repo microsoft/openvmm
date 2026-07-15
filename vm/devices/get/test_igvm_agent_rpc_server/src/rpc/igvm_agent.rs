@@ -16,8 +16,10 @@
 //! names short (≤ 15 chars) so the distinctive part is never truncated.
 
 use get_resources::ged::IgvmAttestTestConfig;
+use guid::Guid;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use test_igvm_agent_lib::Error;
 use test_igvm_agent_lib::IgvmAgentTestSetting;
@@ -40,8 +42,20 @@ struct AgentRegistry {
     /// Default setting (from CLI `--test_config`), applied to VMs that
     /// don't match any hardcoded pattern.
     default_setting: Option<IgvmAgentTestSetting>,
-    /// Live per-VM agents, lazily created on first request.
-    agents: HashMap<String, TestIgvmAgent>,
+    /// Live per-VM agents, lazily created on first request. Each agent has its
+    /// own lock so request processing for unrelated VMs can run concurrently.
+    agents: HashMap<String, Arc<Mutex<TestIgvmAgent>>>,
+    /// Maps a VM's `VmId` GUID to its resolved test config.
+    ///
+    /// The two RPC entry points receive different `VmName` values: the IGVM
+    /// attest path (`RpcIGVmAttest`) gets the descriptive Hyper-V VM name
+    /// (which [`resolve_test_config`] matches against), while the GSP path
+    /// (`RpcVmGspRequest`) only gets the VM's runtime GUID. Both paths do,
+    /// however, share the same `VmId`. The attest path runs first on every
+    /// boot (OpenHCL performs key release before requesting GSP data), so it
+    /// records the resolved config here keyed by `VmId`, allowing the GSP
+    /// path to recover it.
+    vm_id_settings: HashMap<Guid, IgvmAgentTestSetting>,
 }
 
 static REGISTRY: OnceLock<Mutex<AgentRegistry>> = OnceLock::new();
@@ -51,6 +65,7 @@ fn registry() -> &'static Mutex<AgentRegistry> {
         Mutex::new(AgentRegistry {
             default_setting: None,
             agents: HashMap::new(),
+            vm_id_settings: HashMap::new(),
         })
     })
 }
@@ -161,6 +176,38 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_pub_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
     ];
 
     for &(pattern, config) in KNOWN_TEST_CONFIGS {
@@ -180,33 +227,84 @@ pub fn install_default_plan(setting: &IgvmAgentTestSetting) {
     reg.default_setting = Some(setting.clone());
 }
 
+/// Whether the resolved test config for the VM with the given `vm_id` requests
+/// that the GSP RPC report `state_refresh_request`.
+///
+/// The GSP RPC (`RpcVmGspRequest`) only receives the VM's runtime GUID, not the
+/// descriptive Hyper-V name that [`resolve_test_config`] matches against. It
+/// therefore looks up the config recorded by the IGVM attest path (keyed by
+/// `VmId`), falling back to the default setting (from CLI `--test-config`).
+/// Returns `false` (the original behavior, raising `RPC_S_SERVER_UNAVAILABLE`)
+/// unless the config is [`IgvmAttestTestConfig::StateRefresh`].
+pub fn gsp_state_refresh_requested(vm_id: &Guid) -> bool {
+    let reg = registry().lock();
+    let setting = reg
+        .vm_id_settings
+        .get(vm_id)
+        .cloned()
+        .or_else(|| reg.default_setting.clone());
+
+    matches!(
+        setting,
+        Some(IgvmAgentTestSetting::TestConfig(
+            IgvmAttestTestConfig::StateRefresh
+        ))
+    )
+}
+
 /// Process an attestation request payload for the given VM.
 ///
 /// On first contact the VM's agent is created and configured:
 /// 1. If the VM name matches a hardcoded pattern, that config is used.
 /// 2. Otherwise the default plan (if any) is installed.
-pub fn process_igvm_attest(vm_name: &str, report: &[u8]) -> TestAgentResult<Vec<u8>> {
-    let mut reg = registry().lock();
+///
+/// The resolved config is also recorded keyed by `vm_id` so the GSP RPC path
+/// (which only sees the VM's runtime GUID, not the descriptive name) can
+/// recover it later in the same boot.
+pub fn process_igvm_attest(
+    vm_id: Option<Guid>,
+    vm_name: &str,
+    report: &[u8],
+) -> TestAgentResult<Vec<u8>> {
+    let agent = {
+        let mut reg = registry().lock();
 
-    // Clone the default setting before entering the entry API so the
-    // borrow checker is happy.
-    let default_setting = reg.default_setting.clone();
+        // Clone the default setting before entering the entry API so the
+        // borrow checker is happy.
+        let default_setting = reg.default_setting.clone();
 
-    let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
-        let mut agent = TestIgvmAgent::new(vm_name);
-        if let Some(setting) = resolve_test_config(vm_name) {
-            agent.install_plan_from_setting(&setting);
-        } else if let Some(ref default) = default_setting {
-            agent.install_plan_from_setting(default);
+        // Record the resolved config keyed by `vm_id` for the GSP RPC path.
+        if let Some(vm_id) = vm_id {
+            if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone())
+            {
+                reg.vm_id_settings.insert(vm_id, setting);
+            }
         }
-        tracing::info!(vm_name, "created per-VM test agent");
-        agent
-    });
 
-    let (payload, expected_len) = agent.handle_request(report).map_err(|err| match err {
-        Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
-        _ => TestAgentFacadeError::AgentFailure,
-    })?;
+        reg.agents
+            .entry(vm_name.to_owned())
+            .or_insert_with(|| {
+                let mut agent = TestIgvmAgent::new(vm_name);
+                if let Some(setting) = resolve_test_config(vm_name) {
+                    agent.install_plan_from_setting(&setting);
+                } else if let Some(ref default) = default_setting {
+                    agent.install_plan_from_setting(default);
+                }
+                tracing::info!(vm_name, "created per-VM test agent");
+                Arc::new(Mutex::new(agent))
+            })
+            .clone()
+    };
+
+    // Key generation and response encryption can be expensive. Keep them
+    // outside the registry lock while preserving request order for this VM.
+    let (payload, expected_len) = agent
+        .lock()
+        .handle_request(report)
+        .map_err(|err| match err {
+            Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
+            _ => TestAgentFacadeError::AgentFailure,
+        })?;
     if payload.len() != expected_len as usize {
         return Err(TestAgentFacadeError::InvalidRequest);
     }

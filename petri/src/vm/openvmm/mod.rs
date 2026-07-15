@@ -101,7 +101,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         (
             firmware.quirks().openvmm,
             VmmQuirks {
-                // Workaround for #1684
+                // Workaround for #3897
                 flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
             },
         )

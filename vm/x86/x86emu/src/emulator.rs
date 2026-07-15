@@ -1364,7 +1364,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 Exception::DEBUG,
                 None,
                 ExceptionCause::DebugTrap,
-            ))?;
+            )
+            .into());
         }
 
         Ok(())

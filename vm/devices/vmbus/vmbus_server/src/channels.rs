@@ -2070,14 +2070,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ..
             } => {
                 channel.state = ChannelState::Closed;
-                if matches!(self.inner.state, ConnectionState::Connected { .. }) {
-                    let channel_id = channel.info.expect("assigned").channel_id;
-                    self.send_close_reserved_channel_response(
-                        channel_id,
-                        offer_id,
-                        reserved_state.target,
-                    );
-                } else {
+                let channel_id = channel.info.expect("assigned").channel_id;
+                // Always send the close response to the reserved channel's
+                // requested target, even while disconnected/ing. Reserved
+                // channels are independent of the connection state.
+                self.send_close_reserved_channel_response(
+                    channel_id,
+                    offer_id,
+                    reserved_state.target,
+                );
+
+                if !matches!(self.inner.state, ConnectionState::Connected { .. }) {
+                    // Re-borrow the channel after the &mut self call above.
+                    let channel = &mut self.inner.channels[offer_id];
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
                     if Self::client_release_channel(

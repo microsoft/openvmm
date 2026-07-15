@@ -75,11 +75,20 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
-/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+/// Base address of the guest-visible GIC v2m MSI frame (exposed via the MADT
+/// and used by the software v2m SETSPI decoder for emulated devices). This is
+/// OpenVMM-emulated MMIO (one 4 KiB page), not shadowed by the hypervisor, so
+/// it stays at the conventional address.
 pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// Base address of the GIC v2m MSI doorbell used for passthrough on the
+/// MSHV root/arm64 backend. Registered with the hypervisor as
+/// GITS_TRANSLATER_BASE_ADDRESS.
+/// The hypervisor shadows a ~64 KiB region at this base,
+/// so it uses the Hyper-V convention address 0xEFF6_8000.
+pub const DEFAULT_GIC_V2M_DOORBELL_BASE: u64 = 0xEFF6_8000;
 
 /// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
 /// below the v2m frame address, and not overlap other devices.
@@ -217,7 +226,7 @@ pub struct PcieRootComplexConfig {
     pub end_bus: u8,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
-    pub ports: Vec<PcieRootPortConfig>,
+    pub ports: Vec<PciePortConfig>,
     /// Optional CXL configuration for root-complex CXL mode.
     pub cxl: Option<RootComplexCxlConfig>,
     /// Optional IOMMU for this root complex.
@@ -231,15 +240,26 @@ pub struct PcieRootComplexConfig {
     pub preserve_bars: bool,
 }
 
+/// Configuration for a single PCIe port — either a root-complex root port or a
+/// switch downstream port.
 #[derive(Debug, MeshPayload)]
-pub struct PcieRootPortConfig {
-    /// Root-port name used for topology wiring and lookup.
+pub struct PciePortConfig {
+    /// Port name used for topology wiring and lookup.
     pub name: String,
-    /// Enables PCIe hotplug capabilities for this root port.
+    /// The device/function (`device << 3 | function`) to place this port at on
+    /// its bus.
+    ///
+    /// When `None`, the port is assigned the lowest available devfn. Ports are
+    /// assigned in order, so an explicit devfn that collides with a
+    /// previously-assigned port (including one assigned automatically) is an
+    /// error. Honored for both root-complex root ports and switch downstream
+    /// ports.
+    pub devfn: Option<u8>,
+    /// Enables PCIe hotplug capabilities for this port.
     pub hotplug: bool,
-    /// Optional ACS capability bitmask to expose on this root port.
+    /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
-    /// Marks this root port as CXL-capable.
+    /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
@@ -249,10 +269,9 @@ pub struct PcieRootPortConfig {
 #[derive(Debug, MeshPayload)]
 pub struct PcieSwitchConfig {
     pub name: String,
-    pub num_downstream_ports: u8,
     pub parent_port: String,
-    pub hotplug: bool,
-    pub acs_capabilities_supported: Option<u16>,
+    /// The downstream ports of this switch.
+    pub ports: Vec<PciePortConfig>,
 }
 
 /// Declares that the device directly behind a named PCIe port (a root port or
@@ -354,6 +373,8 @@ pub enum PcieIommuConfig {
     AmdVi,
     /// Arm SMMUv3 for aarch64 guests.
     Smmu,
+    /// Intel VT-d for x86_64 guests.
+    IntelVtd,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -474,6 +495,11 @@ pub struct HypervisorConfig {
     pub with_hv: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor. A backend that does not recognize this request
+    /// rejects it rather than silently ignoring it (see
+    /// `virt::Hypervisor::recognizes_nested_virt`).
+    pub nested_virt: bool,
 }
 
 #[derive(Debug, MeshPayload)]

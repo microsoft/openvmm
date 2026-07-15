@@ -80,12 +80,27 @@ pub enum OpenhclIgvmOutput {
 pub enum OpenhclIgvmEndorsements {
     X64 {
         #[serde(rename = "openhcl-tdx.json")]
-        igvm_tdx_json: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_tdx_json: Option<PathBuf>,
         #[serde(rename = "openhcl-snp.json")]
-        igvm_snp_json: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_json: Option<PathBuf>,
         #[serde(rename = "openhcl-vbs.json")]
-        igvm_vbs_json: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_vbs_json: Option<PathBuf>,
     },
+}
+
+impl OpenhclIgvmEndorsements {
+    fn is_complete(&self) -> bool {
+        match self {
+            OpenhclIgvmEndorsements::X64 {
+                igvm_tdx_json,
+                igvm_snp_json,
+                igvm_vbs_json,
+            } => igvm_tdx_json.is_some() && igvm_snp_json.is_some() && igvm_vbs_json.is_some(),
+        }
+    }
 }
 
 impl Artifact for OpenhclIgvmOutput {}
@@ -140,19 +155,16 @@ impl OpenhclIgvmOutput {
             igvm_snp_json,
             igvm_vbs_json,
         } = igvm;
-        let mut endorsements = match (igvm_tdx_json, igvm_snp_json, igvm_vbs_json) {
-            (Some(igvm_tdx_json), Some(igvm_snp_json), Some(igvm_vbs_json)) => {
+        let mut endorsements =
+            if igvm_tdx_json.is_some() || igvm_snp_json.is_some() || igvm_vbs_json.is_some() {
                 Some(OpenhclIgvmEndorsements::X64 {
                     igvm_tdx_json,
                     igvm_snp_json,
                     igvm_vbs_json,
                 })
-            }
-            (None, None, None) => None,
-            _ => {
-                panic!("incomplete endorsements")
-            }
-        };
+            } else {
+                None
+            };
         match recipe {
             None => OpenhclIgvmOutput::LocalOnlyCustom {
                 igvm_bin,
@@ -170,11 +182,17 @@ impl OpenhclIgvmOutput {
                     }
                     OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
                         igvm_bin,
-                        endorsements: endorsements.take().expect("missing endorsements"),
+                        endorsements: endorsements
+                            .take()
+                            .filter(OpenhclIgvmEndorsements::is_complete)
+                            .expect("missing endorsements"),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
-                        endorsements: endorsements.take().expect("missing endorsements"),
+                        endorsements: endorsements
+                            .take()
+                            .filter(OpenhclIgvmEndorsements::is_complete)
+                            .expect("missing endorsements"),
                     },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
@@ -509,6 +527,9 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        /// Add the confidential debug flag to the measured OpenHCL command
+        /// line, enabling confidential diagnostics on CVM builds.
+        pub confidential_debug: bool,
 
         pub openhcl_igvm: WriteVar<OpenhclIgvmOutput>,
         pub openhcl_igvm_extras: WriteVar<OpenhclIgvmExtrasOutput>,
@@ -544,6 +565,7 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
         } = request;
@@ -891,6 +913,7 @@ impl SimpleFlowNode for Node {
             manifest,
             resources,
             disable_secure_avic,
+            confidential_debug,
             igvm: v,
         });
 

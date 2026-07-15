@@ -4,6 +4,9 @@
 mod amd_iommu_wiring;
 mod dump;
 mod ecam_config_access;
+mod intel_vtd_wiring;
+mod ioapic_iommu_wiring;
+mod pcie_topology;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -13,16 +16,21 @@ use crate::partition::HvlitePartition;
 use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use crate::worker::memory_layout::MemoryLayoutInput;
+use crate::worker::memory_layout::ResolvedIommuRanges;
 use crate::worker::memory_layout::ResolvedPcieRootComplexRanges;
 use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
+use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
 use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
@@ -65,8 +73,8 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
@@ -88,13 +96,9 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
-use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
-use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
-use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
@@ -104,7 +108,6 @@ use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-use storvsp::ScsiControllerDisk;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -152,7 +155,6 @@ use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
-use vmm_core::vmbus_unit::offer_channel_unit;
 use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core_defs::HaltReason;
 use vmotherboard::BaseChipsetBuilder;
@@ -408,6 +410,43 @@ impl Worker for VmWorker {
     }
 }
 
+/// Resolved per-instance IOMMU resources for the VM, keyed by IOMMU type.
+///
+/// A VM has at most one IOMMU type, so the resolved resources are stored as a
+/// single enum rather than three mutually-exclusive fields.
+enum ResolvedIommu {
+    /// No IOMMU is configured.
+    None,
+    /// Arm SMMUv3 resources, one per instance.
+    #[cfg(guest_arch = "aarch64")]
+    Smmu(Vec<smmu_wiring::ResolvedSmmuResources>),
+    /// AMD IOMMU resources, one per instance.
+    #[cfg(guest_arch = "x86_64")]
+    AmdVi(Vec<amd_iommu_wiring::ResolvedIommuResources>),
+    /// Intel VT-d resources, one per unit.
+    #[cfg(guest_arch = "x86_64")]
+    IntelVtd(Vec<intel_vtd_wiring::ResolvedVtdResources>),
+}
+
+/// Instantiated IOMMU devices for the VM, keyed by IOMMU type.
+///
+/// A VM has at most one IOMMU type, so the setup results (ACPI configs plus
+/// per-RC shared state) are held as a single enum rather than as separate
+/// mutually-exclusive fields.
+enum IommuDevices {
+    /// No IOMMU is configured.
+    None,
+    /// Arm SMMUv3 devices.
+    #[cfg(guest_arch = "aarch64")]
+    Smmu(smmu_wiring::SmmuDevicesResult),
+    /// AMD IOMMU devices.
+    #[cfg(guest_arch = "x86_64")]
+    AmdVi(amd_iommu_wiring::IommuDevicesResult),
+    /// Intel VT-d devices.
+    #[cfg(guest_arch = "x86_64")]
+    IntelVtd(intel_vtd_wiring::VtdDevicesResult),
+}
+
 /// A VM that has been initialized but not yet loaded (i.e. the saved state is
 /// not yet available).
 pub(crate) struct InitializedVm {
@@ -423,10 +462,7 @@ pub(crate) struct InitializedVm {
     virtio_mmio_region: MemoryRange,
     chipset_mmio: ChipsetMmioRanges,
     vtl2_framebuffer_gpa_base: Option<u64>,
-    #[cfg(guest_arch = "aarch64")]
-    resolved_smmu_resources: Vec<smmu_wiring::ResolvedSmmuResources>,
-    #[cfg(guest_arch = "x86_64")]
-    resolved_iommu_resources: Vec<amd_iommu_wiring::ResolvedIommuResources>,
+    resolved_iommu: ResolvedIommu,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -648,6 +684,7 @@ fn build_aarch64_topology(
     let gic_msi = if let Some(count) = v2m_spi_count {
         GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+            doorbell_base: openvmm_defs::config::DEFAULT_GIC_V2M_DOORBELL_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
@@ -701,7 +738,6 @@ struct LoadedVmInner {
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
-    _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
@@ -754,9 +790,14 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     chipset: Arc<vmotherboard::Chipset>,
-    /// Pre-built AMD IOMMU ACPI configs (one per root complex).
+    /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
+    /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
+    iommu_devices: IommuDevices,
+    /// IOAPIC PCIe Requester ID when x86 IOMMU interrupt remapping is active.
+    /// For AMD this is threaded into IVRS at firmware-load time; for Intel
+    /// the matching DMAR device scope is carried by the per-unit ACPI config.
     #[cfg(guest_arch = "x86_64")]
-    amd_iommu_acpi_configs: Vec<vmm_core::acpi_builder::AmdIommuAcpiConfig>,
+    ioapic_iommu_rid: Option<u16>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
     /// Sources for SRAT generic-initiator entries, one per
@@ -764,22 +805,46 @@ struct LoadedVmInner {
     /// Each holds the port's live bus-range handle, read at ACPI-build time
     /// (after PCI resource assignment) to derive the device bus.
     generic_initiator_sources: Vec<GenericInitiatorSource>,
-    /// SMMU configurations, one per instance.
-    #[cfg(guest_arch = "aarch64")]
-    smmu_configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
-    /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
-    /// `None` for root complexes without an SMMU.
-    #[cfg(guest_arch = "aarch64")]
-    smmu_shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
-    /// Per-RC AMD IOMMU shared state, indexed parallel to `pcie_host_bridges`.
-    /// `None` for root complexes without an AMD IOMMU.
-    #[cfg(guest_arch = "x86_64")]
-    amd_iommu_shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>>,
     pcie_hotplug_devices: Vec<(
         String,
         vmotherboard::DynamicDeviceUnit,
         Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
     )>,
+}
+
+/// Helper to determine the x86 IOMMU shared state for a given root complex.
+///
+/// At most one of AMD IOMMU and Intel VT-d will be active (they are mutually
+/// exclusive). Returns `None` when no IOMMU covers `rc_idx`.
+#[cfg(guest_arch = "x86_64")]
+fn x86_iommu_for_rc(
+    iommu_devices: &IommuDevices,
+    rc_idx: usize,
+) -> Option<pcie_wiring::X86IommuSharedState<'_>> {
+    match iommu_devices {
+        IommuDevices::AmdVi(devices) => devices
+            .shared_states
+            .get(rc_idx)
+            .and_then(|s| s.as_ref())
+            .map(pcie_wiring::X86IommuSharedState::AmdVi),
+        IommuDevices::IntelVtd(devices) => devices
+            .shared_states
+            .get(rc_idx)
+            .and_then(|s| s.as_ref())
+            .map(pcie_wiring::X86IommuSharedState::IntelVtd),
+        IommuDevices::None => None,
+    }
+}
+
+/// Helper to determine the SMMU shared state for a given root complex.
+///
+/// Returns `None` when no SMMU covers `rc_idx`.
+#[cfg(guest_arch = "aarch64")]
+fn smmu_for_rc(iommu_devices: &IommuDevices, rc_idx: usize) -> Option<&Arc<smmu::SmmuSharedState>> {
+    match iommu_devices {
+        IommuDevices::Smmu(devices) => devices.shared_states.get(rc_idx).and_then(|s| s.as_ref()),
+        IommuDevices::None => None,
+    }
 }
 
 fn convert_vtl2_config(
@@ -851,34 +916,6 @@ fn convert_vtl2_config(
     };
 
     Ok(Some(config))
-}
-
-/// Builds root-port PCIe settings from manifest flags.
-///
-/// When CXL is enabled, emit a default Flex Bus capability advertising both
-/// cache and memory support.
-fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
-    PciePortSettings {
-        acs_capabilities_supported: rp_cfg
-            .acs_capabilities_supported
-            .unwrap_or(DEFAULT_ACS_CAP_MASK),
-        cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
-            CxlFlexBusPortDvsecCapability::new()
-                .with_cache_capable(true)
-                .with_mem_capable(true),
-        ),
-    }
-}
-
-/// Converts a manifest root-port entry into the runtime root-port definition.
-fn build_root_port_definition(rp_cfg: &PcieRootPortConfig) -> GenericPcieRootPortDefinition {
-    let settings = build_root_port_settings(rp_cfg);
-
-    GenericPcieRootPortDefinition {
-        name: rp_cfg.name.as_str().into(),
-        hotplug: rp_cfg.hotplug,
-        settings,
-    }
 }
 
 /// A source for an SRAT generic-initiator entry.
@@ -980,7 +1017,7 @@ impl InitializedVm {
             let smmu_count = cfg
                 .pcie_root_complexes
                 .iter()
-                .filter(|rc| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::Smmu)))
+                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
                 .count();
             let result =
                 build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
@@ -1015,6 +1052,13 @@ impl InitializedVm {
             }
         }
 
+        // A backend must explicitly recognize an optional feature; requesting
+        // one it does not recognize fails here rather than being silently
+        // ignored during partition creation.
+        if cfg.hypervisor.nested_virt && !hypervisor.recognizes_nested_virt() {
+            anyhow::bail!("the selected hypervisor does not support nested virtualization");
+        }
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1025,6 +1069,7 @@ impl InitializedVm {
                     .with_isolation
                     .map(|typ| typ.into())
                     .unwrap_or(virt::IsolationType::None),
+                nested_virt: cfg.hypervisor.nested_virt,
             })
             .context("failed to create the prototype partition")?;
 
@@ -1105,17 +1150,26 @@ impl InitializedVm {
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
         let chipset_mmio = resolved_layout.chipset_mmio;
 
-        // Combine AMD IOMMU RC configs with MMIO ranges from the layout engine.
+        // Combine the IOMMU RC configs with the MMIO ranges from the layout
+        // engine into the resolved per-instance resources. A VM has at most one
+        // IOMMU type, so this produces a single `ResolvedIommu`.
         #[cfg(guest_arch = "x86_64")]
-        let resolved_iommu_resources = amd_iommu_wiring::resolve_iommu_resources(
-            &cfg.pcie_root_complexes,
-            &resolved_layout.amd_iommu_ranges,
-        );
-
-        // Combine SMMU MMIO ranges with SPI layout.
+        let resolved_iommu = match &resolved_layout.iommu_ranges {
+            ResolvedIommuRanges::AmdVi(ranges) => ResolvedIommu::AmdVi(
+                amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
+            ),
+            ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
+                intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
+            ),
+            _ => ResolvedIommu::None,
+        };
         #[cfg(guest_arch = "aarch64")]
-        let resolved_smmu_resources =
-            smmu_wiring::resolve_smmu_resources(&resolved_layout.smmu_ranges, &spi_layout);
+        let resolved_iommu = match &resolved_layout.iommu_ranges {
+            ResolvedIommuRanges::Smmu(ranges) => {
+                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(ranges, &spi_layout))
+            }
+            _ => ResolvedIommu::None,
+        };
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -1289,10 +1343,7 @@ impl InitializedVm {
             virtio_mmio_region,
             chipset_mmio,
             vtl2_framebuffer_gpa_base: resolved_layout.vtl2_framebuffer_gpa_base,
-            #[cfg(guest_arch = "aarch64")]
-            resolved_smmu_resources,
-            #[cfg(guest_arch = "x86_64")]
-            resolved_iommu_resources,
+            resolved_iommu,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1323,10 +1374,7 @@ impl InitializedVm {
             virtio_mmio_region,
             chipset_mmio,
             vtl2_framebuffer_gpa_base,
-            #[cfg(guest_arch = "aarch64")]
-            resolved_smmu_resources,
-            #[cfg(guest_arch = "x86_64")]
-            resolved_iommu_resources,
+            resolved_iommu,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1414,9 +1462,15 @@ impl InitializedVm {
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
         #[cfg(guest_arch = "x86_64")]
-        resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
-            partition.clone().ioapic_routing(),
-        ));
+        let ioapic_routing = {
+            let conn = ioapic_iommu_wiring::IoApicRoutingConnection::new(
+                partition.clone().ioapic_routing(),
+            );
+            resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+                conn.target(),
+            ));
+            conn
+        };
         resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
             memory_manager.ram_visibility_control(),
         ));
@@ -1486,7 +1540,7 @@ impl InitializedVm {
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
-                                amd_iommu: None,
+                                iommu: None,
                             },
                         };
                         let srat = acpi_tables_builder.build_srat();
@@ -1581,7 +1635,6 @@ impl InitializedVm {
         let mut pci_legacy_interrupts = Vec::new();
 
         let mut ide_drives = [[None, None], [None, None]];
-        let mut storvsp_ide_disks = Vec::new();
         if cfg.chipset.with_hyperv_ide {
             pci_legacy_interrupts.push(((7, None), 14));
             pci_legacy_interrupts.push(((7, None), 15));
@@ -1606,20 +1659,17 @@ impl InitializedVm {
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
                     } => {
+                        // This builds only the emulated IDE drive. The storvsp IDE accelerator
+                        // counterpart (which carries any per-disk SCSI parameters via
+                        // SimpleScsiDiskHandle) is offered separately as a VMBus device; the two
+                        // paths are not yet unified.
                         let disk =
                             open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                                 .await
                                 .context("failed to open IDE disk")?;
 
-                        // Only disks get accelerator channels. DVDs dont.
-                        let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        )));
-                        storvsp_ide_disks.push((path, scsi_disk));
-                        ide::DriveMedia::hard_disk(disk.clone())
+                        ide::DriveMedia::hard_disk(disk)
                     }
                 };
 
@@ -1914,7 +1964,6 @@ impl InitializedVm {
             }
         };
 
-        let mut scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
         let mut vmbus_proxy = None;
@@ -1926,14 +1975,6 @@ impl InitializedVm {
         let mut vmbus_redirect = false;
 
         // PCI Express topology
-
-        // Build the RC name→index map before consuming the RC configs.
-        let pcie_rc_name_to_idx: std::collections::HashMap<String, usize> = cfg
-            .pcie_root_complexes
-            .iter()
-            .enumerate()
-            .map(|(i, rc)| (rc.name.clone(), i))
-            .collect();
 
         // Deferred MSI connections for root complexes and switches.
         // These are wired after IOMMU setup so that interrupt remapping
@@ -1947,13 +1988,15 @@ impl InitializedVm {
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
         let (mut pcie_host_bridges, pcie_root_complexes) = {
+            pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
-            for (rc, ranges) in cfg
+            for (rc_idx, (rc, ranges)) in cfg
                 .pcie_root_complexes
                 .iter()
                 .zip(resolved_pcie_root_complex_ranges)
+                .enumerate()
             {
                 let cxl_port_count = rc.ports.iter().filter(|rp_cfg| rp_cfg.cxl).count() as u64;
                 let cxl_config = rc.cxl.as_ref();
@@ -2000,15 +2043,15 @@ impl InitializedVm {
                 // (start_bus << 8) | devfn.
                 let rc_bus_range = pci_core::bus_range::AssignedBusRange::new();
                 rc_bus_range.set_bus_range(rc.start_bus, rc.end_bus);
-                let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 // When the AMD IOMMU is enabled for this root complex,
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
                 #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = if resolved_iommu_resources
-                    .iter()
-                    .any(|r| r.rc_name == rc.name)
+                let rc_iommu = rc.iommu.as_ref();
+                #[cfg(guest_arch = "x86_64")]
+                let root_port_start_device: u8 = if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi))
                 {
                     1
                 } else {
@@ -2017,26 +2060,55 @@ impl InitializedVm {
                 #[cfg(not(guest_arch = "x86_64"))]
                 let root_port_start_device: u8 = 0;
 
+                // On the segment-0 root complex covered by an x86 IOMMU, the
+                // phantom southbridge IOAPIC occupies a fixed devfn whose
+                // device number must not be assigned to a root port. The
+                // IOAPIC RID is on bus 0, so only reserve the device number on
+                // the root complex whose bus range includes bus 0; reserving
+                // it on other segment-0 root complexes would wrongly reject
+                // otherwise-valid port counts. Reserve that device number so
+                // that an overly large port count is rejected rather than
+                // silently shadowing the IOAPIC entry.
+                #[cfg(guest_arch = "x86_64")]
+                let reserved_device_numbers: u32 = if rc.segment == 0
+                    && rc.start_bus == 0
+                    && matches!(
+                        rc_iommu,
+                        Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
+                    ) {
+                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                } else {
+                    0
+                };
+                #[cfg(not(guest_arch = "x86_64"))]
+                let reserved_device_numbers: u32 = 0;
+
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
-                            let root_port_definitions =
-                                rc.ports.iter().map(build_root_port_definition).collect();
+                            let root_port_definitions = rc
+                                .ports
+                                .iter()
+                                .map(pcie_topology::build_root_port_definition)
+                                .collect();
                             GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
                             )
-                            .root_ports(root_port_definitions, msi_conn.target())
+                            .root_ports(
+                                root_port_definitions,
+                                &msi_conn.msi_target(rc_bus_range, 0),
+                            )
                             .first_port_device_number(root_port_start_device)
+                            .reserved_device_numbers(reserved_device_numbers)
                             .chbcr_range(chbcr_range)
                             .build()
                         })?;
 
                 // Defer MSI wiring to after IOMMU setup so that
                 // interrupt remapping can be applied if applicable.
-                let rc_idx = pcie_host_bridges.len();
                 deferred_msi_conns.push(DeferredMsiConn {
                     msi_conn,
                     segment: rc.segment,
@@ -2128,8 +2200,7 @@ impl InitializedVm {
             let parent_segment = parent_port_info.segment;
             let parent_rc_idx = parent_port_info.rc_idx;
 
-            let msi_conn =
-                pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+            let msi_conn = pci_core::msi::MsiConnection::new();
 
             // Defer MSI wiring to after IOMMU setup.
             let msi_target = msi_conn.target().clone();
@@ -2143,18 +2214,16 @@ impl InitializedVm {
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
                 .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                .add(|_services| {
+                .try_add(|_services| {
+                    let downstream_ports = switch
+                        .ports
+                        .iter()
+                        .map(pcie_topology::build_root_port_definition)
+                        .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
-                        downstream_port_count: switch.num_downstream_ports,
-                        hotplug: switch.hotplug,
+                        downstream_ports,
                         msi_target,
-                        dsp_settings: PciePortSettings {
-                            acs_capabilities_supported: switch
-                                .acs_capabilities_supported
-                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
-                            cxl_flex_bus_port_capability: None,
-                        },
                     };
                     GenericPcieSwitch::new(definition)
                 })?;
@@ -2262,41 +2331,94 @@ impl InitializedVm {
         // translating GuestMemory and SignalMsi wrappers that route DMA
         // and MSI writes through the emulated SMMUv3.
         #[cfg(guest_arch = "aarch64")]
-        let smmu_wiring::SmmuDevicesResult {
-            shared_states: smmu_shared_states,
-            configs: smmu_configs,
-        } = smmu_wiring::setup_smmu(
-            &cfg.pcie_root_complexes,
-            &resolved_smmu_resources,
-            &pcie_rc_name_to_idx,
-            &pcie_host_bridges,
-            &chipset_builder,
-            &gm,
-        )?;
+        let smmu_devices = {
+            let resolved: &[smmu_wiring::ResolvedSmmuResources] = match &resolved_iommu {
+                ResolvedIommu::Smmu(resources) => resources,
+                _ => &[],
+            };
+            smmu_wiring::setup_smmu(
+                &cfg.pcie_root_complexes,
+                resolved,
+                &pcie_host_bridges,
+                &chipset_builder,
+                &gm,
+            )?
+        };
 
         // Instantiate an AMD IOMMU on each root complex listed in
         // --amd-iommu. Each IOMMU is an RCiEP at device 0, function 0 on
         // its root complex's start bus with a distinct MMIO base address.
         // Per-device wrappers are created in the PCIe device loop below.
         #[cfg(guest_arch = "x86_64")]
-        let amd_iommu_wiring::IommuDevicesResult {
-            acpi_configs: amd_iommu_acpi_configs,
-            shared_states: amd_iommu_shared_states,
-        } = amd_iommu_wiring::setup_amd_iommu(
-            &resolved_iommu_resources,
-            &pcie_host_bridges,
-            &pcie_rc_name_to_idx,
-            &chipset_builder,
-            partition.as_ref(),
-            &gm,
-        )?;
+        let amd_devices = {
+            let resolved: &[amd_iommu_wiring::ResolvedIommuResources] = match &resolved_iommu {
+                ResolvedIommu::AmdVi(resources) => resources,
+                _ => &[],
+            };
+            amd_iommu_wiring::setup_amd_iommu(
+                resolved,
+                &pcie_host_bridges,
+                &chipset_builder,
+                partition.as_ref(),
+                &gm,
+            )?
+        };
+
+        // Instantiate an Intel VT-d unit on each root complex listed in
+        // --intel-vtd. Each unit is a pure MMIO platform device (no PCI
+        // config space), discovered by the guest via the DMAR ACPI table.
+        #[cfg(guest_arch = "x86_64")]
+        let vtd_devices = {
+            let resolved: &[intel_vtd_wiring::ResolvedVtdResources] = match &resolved_iommu {
+                ResolvedIommu::IntelVtd(resources) => resources,
+                _ => &[],
+            };
+            intel_vtd_wiring::setup_intel_vtd(
+                resolved,
+                &pcie_host_bridges,
+                &chipset_builder,
+                partition.as_ref(),
+                &gm,
+            )?
+        };
+
+        // Collapse the IOMMU setup results into the type-keyed enum.
+        #[cfg(guest_arch = "x86_64")]
+        let iommu_devices = match resolved_iommu {
+            ResolvedIommu::AmdVi(_) => IommuDevices::AmdVi(amd_devices),
+            ResolvedIommu::IntelVtd(_) => IommuDevices::IntelVtd(vtd_devices),
+            ResolvedIommu::None => IommuDevices::None,
+        };
+        #[cfg(guest_arch = "aarch64")]
+        let iommu_devices = match resolved_iommu {
+            ResolvedIommu::Smmu(_) => IommuDevices::Smmu(smmu_devices),
+            ResolvedIommu::None => IommuDevices::None,
+        };
+
+        // Set up IOAPIC routing. When an x86 IOMMU covers the southbridge
+        // IOAPIC (segment 0, bus 0), wrap the hypervisor's IoApicRouting
+        // through that IOMMU's interrupt remapping table so IOAPIC-sourced
+        // interrupts are translated via the guest's IRTEs and invalidation
+        // commands trigger retranslation. The RID and the remapper come from
+        // the same IOMMU, so ACPI discovery and runtime remapping agree.
+        #[cfg(guest_arch = "x86_64")]
+        let ioapic_iommu = match &iommu_devices {
+            IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
+            IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
+            IommuDevices::None => None,
+        };
+        #[cfg(guest_arch = "x86_64")]
+        let ioapic_iommu_rid: Option<u16> = ioapic_iommu.map(|sel| {
+            ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
+            sel.ioapic_rid
+        });
 
         // Wire deferred root complex and switch MSI connections now that
-        // IOMMU setup is complete. On x86_64, this applies AMD IOMMU
+        // IOMMU setup is complete. On x86_64, this applies IOMMU
         // interrupt remapping when the segment is covered.
         for deferred in deferred_msi_conns {
             #[cfg(guest_arch = "x86_64")]
-            let iommu = amd_iommu_shared_states[deferred.rc_idx].as_ref();
+            let iommu = x86_iommu_for_rc(&iommu_devices, deferred.rc_idx);
             pcie_wiring::PcieMsiPlatform {
                 partition: partition.as_ref(),
                 segment: deferred.segment,
@@ -2329,10 +2451,7 @@ impl InitializedVm {
             let mapper = &mapper;
             let port_info = &port_info;
             let processor_topology = &processor_topology;
-            #[cfg(guest_arch = "x86_64")]
-            let iommu_shared_states = &amd_iommu_shared_states;
-            #[cfg(guest_arch = "aarch64")]
-            let smmu_states = &smmu_shared_states;
+            let iommu_devices = &iommu_devices;
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
                 let pi = port_info.get(&port_name).ok_or_else(|| {
@@ -2342,7 +2461,7 @@ impl InitializedVm {
                     )
                 })?;
 
-                let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
+                let msi_conn = pci_core::msi::MsiConnection::new();
 
                 let pcie_ctx =
                     pcie_wiring::build_device_wiring(pcie_wiring::PcieDeviceWiringParams {
@@ -2351,29 +2470,28 @@ impl InitializedVm {
                             segment: pi.segment,
                             processor_topology,
                             #[cfg(guest_arch = "x86_64")]
-                            iommu: iommu_shared_states[pi.rc_idx].as_ref(),
+                            iommu: x86_iommu_for_rc(iommu_devices, pi.rc_idx),
                         },
                         guest_memory: gm,
                         bus_range: &pi.bus_range,
+                        msi: &msi_conn,
                         #[cfg(guest_arch = "aarch64")]
-                        smmu: smmu_states[pi.rc_idx].as_ref(),
+                        smmu: smmu_for_rc(iommu_devices, pi.rc_idx),
                     });
 
                 vmm_core::device_builder::build_pcie_device(
                     vmm_core::device_builder::PciDeviceResolveContext {
                         driver_source,
                         resolver,
-                        guest_memory: &pcie_ctx.guest_memory,
                         resource: dev_cfg.resource,
                         doorbell_registration: partition
                             .clone()
                             .into_doorbell_registration(Vtl::Vtl0),
                         shared_mem_mapper: Some(mapper),
-                        software_iommu: pcie_ctx.software_iommu,
                     },
                     chipset_builder,
                     port_name.clone(),
-                    msi_conn.target(),
+                    &pcie_ctx.dma_target,
                 )
                 .await?;
 
@@ -2505,28 +2623,6 @@ impl InitializedVm {
 
         // Synthetic devices
         {
-            // Arbitrary default
-            const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
-            if let Some(vmbus) = &vmbus_server {
-                for (path, scsi_disk) in storvsp_ide_disks {
-                    scsi_devices.push(
-                        offer_channel_unit(
-                            &driver_source.simple(),
-                            &state_units,
-                            vmbus,
-                            storvsp::StorageDevice::build_ide(
-                                &driver_source,
-                                path.channel,
-                                path.drive,
-                                scsi_disk,
-                                DEFAULT_IO_QUEUE_DEPTH,
-                            ),
-                        )
-                        .await?,
-                    );
-                }
-            }
-
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(
@@ -2572,13 +2668,11 @@ impl InitializedVm {
                         vmm_core::device_builder::PciDeviceResolveContext {
                             driver_source: &driver_source,
                             resolver: &resolver,
-                            guest_memory: &gm,
                             resource: dev_cfg.resource,
                             doorbell_registration: partition
                                 .clone()
                                 .into_doorbell_registration(vtl),
                             shared_mem_mapper: Some(&mapper),
-                            software_iommu: false,
                         },
                         vmbus.control(),
                         &chipset_builder,
@@ -2591,6 +2685,7 @@ impl InitializedVm {
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
+                        gm.clone(),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2844,7 +2939,6 @@ impl InitializedVm {
                 partition,
                 chipset_devices: devices,
                 _vmtime: vmtime,
-                _scsi_devices: scsi_devices,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,
@@ -2883,18 +2977,13 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 chipset: chipset.chipset.clone(),
+                iommu_devices,
                 #[cfg(guest_arch = "x86_64")]
-                amd_iommu_acpi_configs,
+                ioapic_iommu_rid,
                 pcie_host_bridges,
                 pcie_root_complexes,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
-                #[cfg(guest_arch = "aarch64")]
-                smmu_configs,
-                #[cfg(guest_arch = "aarch64")]
-                smmu_shared_states,
-                #[cfg(guest_arch = "x86_64")]
-                amd_iommu_shared_states,
             },
         };
 
@@ -2975,14 +3064,27 @@ impl LoadedVmInner {
                 with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
-                amd_iommu: if self.amd_iommu_acpi_configs.is_empty() {
-                    None
-                } else {
-                    Some(vmm_core::acpi_builder::AmdIommuIvrsConfig {
-                        pa_size: amd_iommu::PA_SIZE,
-                        va_size: amd_iommu::VA_SIZE,
-                        iommus: self.amd_iommu_acpi_configs.clone(),
-                    })
+                iommu: match &self.iommu_devices {
+                    IommuDevices::AmdVi(devices) => {
+                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
+                            vmm_core::acpi_builder::AmdIommuIvrsConfig {
+                                pa_size: amd_iommu::PA_SIZE,
+                                va_size: amd_iommu::VA_SIZE,
+                                iommus: devices.acpi_configs.clone(),
+                                ioapic_rid: self.ioapic_iommu_rid,
+                            },
+                        ))
+                    }
+                    IommuDevices::IntelVtd(devices) => {
+                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
+                            vmm_core::acpi_builder::IntelVtdDmarConfig {
+                                host_address_width: 48,
+                                units: devices.acpi_configs.clone(),
+                                ioapic_rid: self.ioapic_iommu_rid,
+                            },
+                        ))
+                    }
+                    IommuDevices::None => None,
                 },
             },
             #[cfg(guest_arch = "aarch64")]
@@ -2993,7 +3095,10 @@ impl LoadedVmInner {
                     0
                 },
                 virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
-                smmu: self.smmu_configs.clone(),
+                smmu: match &self.iommu_devices {
+                    IommuDevices::Smmu(devices) => devices.configs.clone(),
+                    IommuDevices::None => Vec::new(),
+                },
             },
         };
 
@@ -3045,8 +3150,8 @@ impl LoadedVmInner {
                             })
                         };
 
-                        super::vm_loaders::linux::AcpiTables {
-                            rdsp: tables.rdsp,
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
                             tables: tables.tables,
                         }
                     })?;
@@ -3087,13 +3192,18 @@ impl LoadedVmInner {
                     None
                 };
 
+                let smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig] =
+                    match &self.iommu_devices {
+                        IommuDevices::Smmu(devices) => &devices.configs,
+                        IommuDevices::None => &[],
+                    };
                 let regs = super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
                     enable_serial,
                     &self.processor_topology,
                     &self.pcie_host_bridges,
-                    &self.smmu_configs,
+                    smmu_configs,
                     &self.chipset_mmio,
                     build_acpi,
                 )?;
@@ -3128,6 +3238,10 @@ impl LoadedVmInner {
                     cache_topology.is_some().then(|| acpi_builder.build_pptt()),
                     // IORT
                     acpi_builder.build_iort(),
+                    // IVRS (AMD IOMMU)
+                    acpi_builder.build_ivrs(),
+                    // DMAR (Intel VT-d)
+                    acpi_builder.build_dmar(),
                 ];
                 let acpi_tables: Vec<_> =
                     acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
@@ -3543,7 +3657,7 @@ impl LoadedVm {
                                 .bus_range;
 
                             let segment = self.inner.pcie_host_bridges[rc_idx].segment;
-                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range.clone(), 0);
+                            let msi_conn = pci_core::msi::MsiConnection::new();
 
                             let pcie_ctx = pcie_wiring::build_device_wiring(
                                 pcie_wiring::PcieDeviceWiringParams {
@@ -3552,12 +3666,16 @@ impl LoadedVm {
                                         segment,
                                         processor_topology: &self.inner.processor_topology,
                                         #[cfg(guest_arch = "x86_64")]
-                                        iommu: self.inner.amd_iommu_shared_states[rc_idx].as_ref(),
+                                        iommu: x86_iommu_for_rc(
+                                            &self.inner.iommu_devices,
+                                            rc_idx,
+                                        ),
                                     },
                                     guest_memory: &self.inner.gm,
                                     bus_range: &bus_range,
+                                    msi: &msi_conn,
                                     #[cfg(guest_arch = "aarch64")]
-                                    smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
+                                    smmu: smmu_for_rc(&self.inner.iommu_devices, rc_idx),
                                 },
                             );
 
@@ -3570,13 +3688,11 @@ impl LoadedVm {
                                         .resolve(
                                             resource,
                                             pci_resources::ResolvePciDeviceHandleParams {
-                                                msi_target: msi_conn.target(),
+                                                dma_target: &pcie_ctx.dma_target,
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
-                                                guest_memory: &pcie_ctx.guest_memory,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
-                                                software_iommu: pcie_ctx.software_iommu,
                                             },
                                         )
                                         .await
@@ -4016,11 +4132,7 @@ struct WeakMutexPciBusDevice(
 );
 
 impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
-    fn pci_cfg_read(
-        &mut self,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4030,7 +4142,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         )
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
@@ -4042,35 +4154,31 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_read_with_routing(access_type, address, value),
         )
     }
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: u32,
-    ) -> Option<chipset_device::io::IoResult> {
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> Option<IoResult> {
         Some(
             self.0
                 .upgrade()?
                 .lock()
                 .supports_pci()?
-                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+                .pci_cfg_write_with_routing(access_type, address, value),
         )
     }
 }

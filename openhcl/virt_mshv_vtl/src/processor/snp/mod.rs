@@ -69,6 +69,7 @@ use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::apic::X2APIC_MSR_BASE;
@@ -105,8 +106,12 @@ enum SnpGhcbError {
 }
 
 #[derive(Debug, Error)]
-#[error("failed to run")]
-struct SnpRunVpError(#[source] hcl::ioctl::Error);
+enum SnpRunVpError {
+    #[error("guest AVIC backing page is not validated or cannot be accessed")]
+    VpNotRestartableError,
+    #[error("failed to run")]
+    RunVpError(#[source] hcl::ioctl::Error),
+}
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -115,6 +120,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    synic_timer_deadline: SnpSynicTimerDeadline,
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
@@ -149,6 +155,49 @@ struct ExitStats {
     secure_reg_write: Counter,
     avic_no_accel: Counter,
     avic_incomplete_ipi: Counter,
+}
+
+#[derive(Inspect, Default)]
+struct SnpSynicTimerDeadline {
+    #[inspect(hex)]
+    armed_ref_time: Option<u64>,
+    #[inspect(hex)]
+    armed_timeout: Option<VmTime>,
+    #[inspect(hex)]
+    next_ref_time: Option<u64>,
+    deadline_seen: bool,
+}
+
+impl SnpSynicTimerDeadline {
+    fn clear_scan_deadline(&mut self) {
+        // If the previous scan did not report any deadline, the cached armed deadline
+        // is stale and should no longer be restored into VmTime.
+        if !self.deadline_seen {
+            self.armed_ref_time = None;
+            self.armed_timeout = None;
+        }
+
+        // Start a new scan with no candidate. If update_scan_deadline is called
+        // during this scan, deadline_seen preserves the armed deadline for the
+        // next scan boundary.
+        self.next_ref_time = None;
+        self.deadline_seen = false;
+    }
+
+    fn update_scan_deadline(&mut self, ref_time_next: u64) -> bool {
+        // Only the earliest deadline discovered during a scan should drive the
+        // backing timer.
+        if self
+            .next_ref_time
+            .is_some_and(|next_ref_time| ref_time_next >= next_ref_time)
+        {
+            return false;
+        }
+
+        self.next_ref_time = Some(ref_time_next);
+        self.deadline_seen = true;
+        true
+    }
 }
 
 enum UhDirectOverlay {
@@ -408,13 +457,39 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
-        this.shared
+        if !this
+            .backing
+            .synic_timer_deadline
+            .update_scan_deadline(next_ref_time)
+        {
+            return;
+        }
+
+        // The generic VP loop cancels the local VmTime timeout before each scan.
+        // If the effective SynIC deadline is unchanged, restore the cached VmTime
+        // timeout without re-arming the underlying timer.
+        if this.backing.synic_timer_deadline.armed_ref_time == Some(next_ref_time) {
+            if let Some(timeout) = this.backing.synic_timer_deadline.armed_timeout {
+                this.vmtime.set_timeout_if_before(timeout);
+            }
+            return;
+        }
+
+        let timeout = this
+            .shared
             .guest_timer
-            .update_deadline(this, ref_time_now, next_ref_time);
+            .timeout(&this.vmtime, ref_time_now, next_ref_time);
+
+        this.backing.synic_timer_deadline.armed_ref_time = Some(next_ref_time);
+        this.backing.synic_timer_deadline.armed_timeout = Some(timeout);
+        this.vmtime.set_timeout_if_before(timeout);
     }
 
     fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
-        this.shared.guest_timer.clear_deadline(this);
+        this.backing.synic_timer_deadline.clear_scan_deadline();
+        if this.backing.synic_timer_deadline.armed_ref_time.is_none() {
+            this.shared.guest_timer.clear_deadline(this);
+        }
     }
 }
 
@@ -510,6 +585,7 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
+            synic_timer_deadline: Default::default(),
             cvm: UhCvmVpState::new(
                 &shared.cvm,
                 params.partition,
@@ -658,39 +734,51 @@ impl BackingPrivate for SnpBacked {
         if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
             debug_assert!(vtl == GuestVtl::Vtl0);
 
-            match this.backing.cvm.lapics[vtl]
-                .lapic
-                .push_to_offload(|irr, isr, tmr| {
-                    let (apic_page, proxy_irr_vtl0) =
-                        this.runner.secure_avic_page_proxy_irr_exit_vtl0_mut();
-
-                    for (((((irr, page_irr), isr), page_isr), tmr), proxy_irr_vtl0) in irr
-                        .iter()
-                        .zip(&mut apic_page.irr)
-                        .zip(isr)
-                        .zip(&mut apic_page.isr)
-                        .zip(tmr)
-                        .zip(proxy_irr_vtl0)
-                    {
-                        page_irr.value |= *irr;
-                        page_isr.value |= *isr;
-                        *proxy_irr_vtl0 = *tmr;
-                    }
-                }) {
-                Ok(_) => {}
-                Err(virt_support_apic::OffloadNotSupported) => {
-                    tracelimit::error_ratelimited!("push_to_offload failed: offload not supported");
-                }
-            }
-
-            // If there is a pending interrupt, clear the halted and idle state.
-            // TODO SNP: There are few other bits to take into account, such as the VintCtrl.GIF
-            // and the RFLAGS.IF ones as well as running in the interrupt shadow.
-            // Shouldn't be of concern for now as the guests account for these.
-            if matches!(
+            let was_halted = matches!(
                 this.backing.cvm.lapics[vtl].activity,
                 MpState::Halted | MpState::Idle
-            ) {
+            );
+
+            let mut offloaded_interrupt = this
+                .runner
+                .secure_avic_page(vtl)
+                .irr
+                .iter()
+                .any(|irr| irr.value != 0);
+            let offload_supported =
+                match this.backing.cvm.lapics[vtl]
+                    .lapic
+                    .push_to_offload(|irr, isr, tmr| {
+                        offloaded_interrupt |= irr.iter().any(|&irr| irr != 0);
+
+                        let (apic_page, proxy_irr_vtl0) =
+                            this.runner.secure_avic_page_proxy_irr_exit_vtl0_mut();
+
+                        for (((((irr, page_irr), isr), page_isr), tmr), proxy_irr_vtl0) in irr
+                            .iter()
+                            .zip(&mut apic_page.irr)
+                            .zip(isr)
+                            .zip(&mut apic_page.isr)
+                            .zip(tmr)
+                            .zip(proxy_irr_vtl0)
+                        {
+                            page_irr.value |= *irr;
+                            page_isr.value |= *isr;
+                            *proxy_irr_vtl0 = *tmr;
+                        }
+                    }) {
+                    Ok(_) => true,
+                    Err(virt_support_apic::OffloadNotSupported) => false,
+                };
+
+            if !offload_supported {
+                tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
+                this.set_apic_offload(vtl, false);
+                hardware_cvm::apic::poll_apic_core(this, vtl, false);
+                return;
+            }
+
+            if was_halted && offloaded_interrupt {
                 this.backing.cvm.lapics[vtl].activity = MpState::Running;
             }
         }
@@ -935,7 +1023,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
         self.dev.handle_eoi(vector.into())
     }
 
-    fn now(&mut self) -> vmcore::vmtime::VmTime {
+    fn now(&mut self) -> VmTime {
         self.vmtime.now()
     }
 
@@ -1524,31 +1612,74 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
+
+        // Kernel offload may have set or cleared the halt/idle states while
+        // handling VTL0 exits internally. Keep the userspace activity state in
+        // sync before processing the exit that finally returned to userspace.
+        if offload_enabled && kernel_known_state {
+            let offload_flags = self.runner.offload_flags_mut();
+
+            self.backing.cvm.lapics[entered_from_vtl].activity =
+                match (offload_flags.halted_hlt(), offload_flags.halted_idle()) {
+                    (false, false) => MpState::Running,
+                    (true, false) => MpState::Halted,
+                    (false, true) => MpState::Idle,
+                    (true, true) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            "Kernel indicates VP is both halted and idle!"
+                        );
+                        activity
+                    }
+                };
+        }
+
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
-        // TODO SNP: The guest busy bit needs to be tested and set atomically.
-        let inject = if vmsa.sev_features().alternate_injection() {
-            if vmsa.v_intr_cntrl().guest_busy() {
-                self.backing.general_stats[entered_from_vtl]
-                    .guest_busy
-                    .increment();
-                // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
-                // points to the instruction and the event should be re-generated when the
-                // instruction is re-executed. Note that hardware does not provide instruction
-                // length in this case so it's impossible to directly re-inject a software event if
-                // delivery generates an intercept.
-                //
-                // TODO SNP: Handle ICEBP.
-                let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-                assert!(
-                    exit_int_info.valid(),
-                    "event inject info should be valid {exit_int_info:x?}"
-                );
+        // Atomically test and set the guest busy bit. This prevents the untrusted
+        // hypervisor from re-entering the VMSA on another physical CPU while VTL2
+        // is processing the exit.
+        let was_busy = vmsa.guest_busy_bit_test_and_set();
+        let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
 
-                match exit_int_info.interruption_type() {
+        if was_busy {
+            self.backing.general_stats[entered_from_vtl]
+                .guest_busy
+                .increment();
+
+            let sev_error_code = SevExitCode(vmsa.guest_error_code());
+            match sev_error_code {
+                SevExitCode::NOT_RESTARTABLE => {
+                    // The guest AVIC backing page is not validated in the RMP.
+                    return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
+                }
+                SevExitCode::NPF => {
+                    let exit_info = SevNpfInfo::from(vmsa.exit_info1());
+                    if exit_info.not_restartable() {
+                        // An access to the guest AVIC backing page by hardware resulted
+                        // in a nested page fault.
+                        return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if vmsa.sev_features().alternate_injection() {
+            // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
+            // points to the instruction and the event should be re-generated when the
+            // instruction is re-executed. Note that hardware does not provide instruction
+            // length in this case so it's impossible to directly re-inject a software event if
+            // delivery generates an intercept.
+            //
+            // TODO SNP: Handle ICEBP.
+            let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
+
+            if exit_int_info.valid() {
+                let inject = match exit_int_info.interruption_type() {
                     x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
                         if exit_int_info.vector() != 3 && exit_int_info.vector() != 4 {
                             // If the event is an exception, we can inject it.
@@ -1559,24 +1690,24 @@ impl UhProcessor<'_, SnpBacked> {
                     }
                     x86defs::snp::SEV_INTR_TYPE_SW => None,
                     _ => Some(exit_int_info),
+                };
+
+                if let Some(inject) = inject {
+                    vmsa.set_event_inject(inject);
                 }
+
+                // Since the exit interrupt information was processed, it must be
+                // cleared so that it is not examined again on a subsequent reentry to
+                // the HCL.
+                vmsa.set_exit_int_info(0);
             } else {
-                None
+                // Any previously injected event has been consumed.
             }
         } else {
-            #[cfg(not(feature = "disable_secure_avic"))]
             assert!(
-                vmsa.sev_features().secure_avic(),
+                cfg!(feature = "disable_secure_avic") || vmsa.sev_features().secure_avic(),
                 "secure AVIC must be enabled"
             );
-            None
-        };
-
-        if let Some(inject) = inject {
-            vmsa.set_event_inject(inject);
-        }
-        if vmsa.sev_features().alternate_injection() {
-            vmsa.v_intr_cntrl_mut().set_guest_busy(true);
         }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
@@ -2035,7 +2166,7 @@ impl UhProcessor<'_, SnpBacked> {
                     vmsa.cpl(),
                     vmsa.exit_info1(),
                     vmsa.exit_info2(),
-                    vmsa.exit_int_info(),
+                    exit_int_info_trace,
                     vmsa.virtual_tom(),
                     vmsa.efer(),
                     vmsa.cr4(),
@@ -2919,7 +3050,6 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X86X_AMD_MSR_SYSCFG
             | x86defs::X86X_MSR_MCG_CAP
             | x86defs::X86X_MSR_MCG_STATUS => 0,
-
             hvdef::HV_X64_MSR_GUEST_IDLE => {
                 self.backing.cvm.lapics[vtl].activity = MpState::Idle;
                 let mut vmsa = self.runner.vmsa_mut(vtl);

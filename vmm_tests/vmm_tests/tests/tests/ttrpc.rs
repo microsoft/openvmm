@@ -37,9 +37,12 @@ fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
 ) -> anyhow::Result<()> {
-    let mut socket_path = std::env::temp_dir();
-    socket_path.push(Guid::new_random().to_string());
-    let pidfile_path = std::env::temp_dir().join(format!("{}.pid", Guid::new_random()));
+    // All temporary files for this test live under a single temp directory
+    // that is cleaned up automatically when it is dropped at the end of the
+    // test.
+    let tempdir = tempfile::tempdir()?;
+    let socket_path = tempdir.path().join("ttrpc.sock");
+    let pidfile_path = tempdir.path().join("openvmm.pid");
 
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
@@ -113,15 +116,79 @@ fn test_ttrpc_interface(
             &driver,
             mesh_rpc::client::UnixDialier::new(driver.clone(), ttrpc_path),
         );
+
+        let query_props = || {
+            client.call().start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+        };
+
+        let caps = client
+            .call()
+            .start(vmservice::Vm::CapabilitiesVm, ())
+            .await
+            .unwrap();
+        assert!(
+            caps.supported_resources.iter().any(|r| r.resource
+                == vmservice::capabilities_vm_response::Resource::Scsi as i32
+                && r.add),
+            "SCSI add should be advertised as a supported resource"
+        );
+        assert!(
+            caps.supported_resources.iter().any(|r| r.resource
+                == vmservice::capabilities_vm_response::Resource::Vpci as i32
+                && r.add
+                && r.remove
+                && !r.update),
+            "vPCI add/remove should be advertised as supported"
+        );
+        assert_eq!(
+            caps.supported_guest_os,
+            vec![vmservice::capabilities_vm_response::SupportedGuestOs::Linux as i32],
+            "only Linux direct boot is supported"
+        );
+
+        let props = query_props().await.unwrap();
+        assert_eq!(
+            props.state,
+            vmservice::VmState::Uninitialized as i32,
+            "no VM created yet, expected UNINITIALIZED"
+        );
+
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig::default()),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        let props = query_props().await.unwrap();
+        assert_eq!(
+            props.state,
+            vmservice::VmState::Uninitialized as i32,
+            "a failed CreateVm must leave state UNINITIALIZED"
+        );
+
+        // Backing files for the PCIe storage devices created on iteration 0
+        // (virtio-blk and an NVMe namespace). They are plain raw disks.
+        let nvme_disk_path = tempdir.path().join("nvme.img");
+        let blk_disk_path = tempdir.path().join("blk.img");
+        for path in [&nvme_disk_path, &blk_disk_path] {
+            std::fs::File::create(path)?.set_len(1024 * 1024)?;
+        }
+
         for i in 0..3 {
-            let mut com1_path = std::env::temp_dir();
-            com1_path.push(Guid::new_random().to_string());
+            let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
+            let console_path = tempdir.path().join(format!("console-{i}.sock"));
+            let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
+            std::fs::create_dir_all(&virtiofs_root)?;
 
-            let mut console_path = std::env::temp_dir();
-            console_path.push(Guid::new_random().to_string());
-
-            let virtiofs_root = std::env::temp_dir().join(Guid::new_random().to_string());
-            std::fs::create_dir_all(&virtiofs_root).unwrap();
+            let consomme_nic_id = Guid::new_random().to_string();
 
             // On iteration 0, test `connect: true` for both serial and
             // virtio console by pre-creating listeners that the VM will
@@ -139,27 +206,162 @@ fn test_ttrpc_interface(
                 None
             };
 
+            // On iteration 0, exercise the richer CreateVM surface: a NUMA
+            // topology (replacing flat memory), an explicit processor topology,
+            // and a PCIe topology with virtio + NVMe devices behind root ports
+            // and a switch, plus an empty hotplug port used below for
+            // AddPcieDevice/RemovePcieDevice. Other iterations use the simpler
+            // flat-memory configuration so the flat path stays covered too.
+            let (memory_config, numa_config, processor_config, pcie) = if i == 0 {
+                let switch = vmservice::PcieSwitch {
+                    name: "sw0".to_string(),
+                    downstream_ports: vec![
+                        vmservice::PciePort {
+                            name: "sw0-dp0".to_string(),
+                            hotplug: false,
+                            attached: Some(attachment_device(virtio_device(
+                                vmservice::virtio_device::Kind::Blk(vmservice::VirtioBlk {
+                                    backend: Some(file_disk(&blk_disk_path)),
+                                    read_only: false,
+                                }),
+                            ))),
+                            devfn: None,
+                        },
+                        vmservice::PciePort {
+                            name: "sw0-dp1".to_string(),
+                            hotplug: false,
+                            attached: None,
+                            devfn: None,
+                        },
+                    ],
+                };
+                let root_complex = vmservice::PcieRootComplex {
+                    name: "rc0".to_string(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    low_mmio: 64 * 1024 * 1024,
+                    high_mmio: 1024 * 1024 * 1024,
+                    root_ports: vec![
+                        // virtio-rng behind a root port.
+                        pcie_root_port(
+                            "rp0",
+                            false,
+                            Some(attachment_device(virtio_device(
+                                vmservice::virtio_device::Kind::Rng(vmservice::VirtioRng {}),
+                            ))),
+                        ),
+                        // NVMe controller with a file-backed namespace.
+                        pcie_root_port(
+                            "rp1",
+                            false,
+                            Some(attachment_device(vmservice::PcieDeviceKind {
+                                kind: Some(vmservice::pcie_device_kind::Kind::Nvme(
+                                    vmservice::NvmeConfig {
+                                        controller_id: "nvme0".to_string(),
+                                        namespaces: vec![vmservice::NvmeNamespace {
+                                            nsid: 1,
+                                            backend: Some(file_disk(&nvme_disk_path)),
+                                            read_only: false,
+                                        }],
+                                    },
+                                )),
+                            })),
+                        ),
+                        // virtio-net (consomme) behind a root port.
+                        pcie_root_port(
+                            "rp2",
+                            false,
+                            Some(attachment_device(virtio_device(
+                                vmservice::virtio_device::Kind::Net(vmservice::VirtioNet {
+                                    max_queues: None,
+                                    mac_address: "00-15-5D-12-12-13".to_string(),
+                                    backend: Some(vmservice::NicBackend {
+                                        kind: Some(vmservice::nic_backend::Kind::Consomme(
+                                            vmservice::ConsommeBackend {
+                                                cidr: String::new(),
+                                                ports: vec![],
+                                            },
+                                        )),
+                                    }),
+                                }),
+                            ))),
+                        ),
+                        // A switch hosting a virtio-blk device on its first
+                        // downstream port.
+                        pcie_root_port("rp3", false, Some(attachment_switch(switch))),
+                        // Empty hotplug-capable port for AddPcieDevice.
+                        pcie_root_port("rphp", true, None),
+                    ],
+                    ..Default::default()
+                };
+                (
+                    None,
+                    Some(vmservice::NumaConfig {
+                        nodes: vec![
+                            vmservice::NumaNode {
+                                memory: Some(vmservice::NodeMemoryConfig {
+                                    memory_mb: 128,
+                                    ..Default::default()
+                                }),
+                                vps: None,
+                            },
+                            vmservice::NumaNode {
+                                memory: Some(vmservice::NodeMemoryConfig {
+                                    memory_mb: 128,
+                                    ..Default::default()
+                                }),
+                                vps: None,
+                            },
+                        ],
+                        distances: vec![vmservice::NumaDistance {
+                            src: 0,
+                            dst: 1,
+                            distance: 20,
+                        }],
+                    }),
+                    Some(vmservice::ProcessorConfig {
+                        processor_count: 2,
+                        ..Default::default()
+                    }),
+                    Some(vmservice::PcieTopologyConfig {
+                        root_complexes: vec![root_complex],
+                    }),
+                )
+            } else {
+                (
+                    Some(vmservice::MemoryConfig {
+                        memory_mb: 256,
+                        ..Default::default()
+                    }),
+                    None,
+                    Some(vmservice::ProcessorConfig {
+                        processor_count: 2,
+                        ..Default::default()
+                    }),
+                    None,
+                )
+            };
+
+            let guest_command = if i == 1 { "sleep 30" } else { "poweroff -f" };
+
             client
                 .call()
                 .start(
                     vmservice::Vm::CreateVm,
                     vmservice::CreateVmRequest {
                         config: Some(vmservice::VmConfig {
-                            memory_config: Some(vmservice::MemoryConfig {
-                                memory_mb: 256,
-                                ..Default::default()
-                            }),
-                            processor_config: Some(vmservice::ProcessorConfig {
-                                processor_count: 2,
-                                ..Default::default()
-                            }),
+                            memory_config,
+                            numa_config,
+                            processor_config,
+                            pcie,
                             boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
                                 vmservice::DirectBoot {
                                     kernel_path: kernel_path.get().to_string_lossy().to_string(),
                                     initrd_path: initrd_path.get().to_string_lossy().to_string(),
-                                    kernel_cmdline:
-                                        "console=ttyS0 rdinit=/bin/busybox panic=-1 -- poweroff -f"
-                                            .to_string(),
+                                    kernel_cmdline: format!(
+                                        "console=ttyS0 rdinit=/bin/busybox panic=-1 -- {guest_command}"
+                                    ),
                                 },
                             )),
                             serial_config: Some(vmservice::SerialConfig {
@@ -171,11 +373,12 @@ fn test_ttrpc_interface(
                             }),
                             devices_config: Some(vmservice::DevicesConfig {
                                 nic_config: vec![vmservice::NicConfig {
-                                    nic_id: Guid::new_random().to_string(),
+                                    nic_id: consomme_nic_id.clone(),
                                     mac_address: "00-15-5D-12-12-12".to_string(),
                                     backend: Some(vmservice::nic_config::Backend::Consomme(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
+                                            ports: vec![],
                                         },
                                     )),
                                     ..Default::default()
@@ -197,6 +400,85 @@ fn test_ttrpc_interface(
                 )
                 .await
                 .unwrap();
+
+            let props = query_props().await.unwrap();
+            assert_eq!(
+                props.state,
+                vmservice::VmState::Paused as i32,
+                "VM should be PAUSED immediately after CreateVm"
+            );
+            assert!(
+                props.memory_stats.is_none() && props.processor_stats.is_none(),
+                "memory/processor stats should be unset, not zeroed"
+            );
+
+            // Invalid protocols exercise Consomme update/remove without binding a port.
+            for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::ModifyResource,
+                        vmservice::ModifyResourceRequest {
+                            r#type: modify_type as i32,
+                            resource: Some(
+                                vmservice::modify_resource_request::Resource::NicConfig(
+                                    vmservice::NicConfig {
+                                        nic_id: consomme_nic_id.clone(),
+                                        mac_address: "00-15-5D-12-12-12".to_string(),
+                                        backend: Some(vmservice::nic_config::Backend::Consomme(
+                                            vmservice::ConsommeBackend {
+                                                cidr: String::new(),
+                                                ports: vec![vmservice::PortConfig {
+                                                    host_port: 8080,
+                                                    guest_port: 80,
+                                                    protocol: 99,
+                                                }],
+                                            },
+                                        )),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.message.contains("invalid protocol"),
+                    "expected invalid protocol error, got: {}",
+                    err.message
+                );
+            }
+
+            // On iteration 0, hot-add a virtio-rng device to the empty
+            // hotplug-capable port and then hot-remove it, exercising the
+            // AddPcieDevice/RemovePcieDevice RPCs.
+            if i == 0 {
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::AddPcieDevice,
+                        vmservice::AddPcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                            device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
+                                vmservice::VirtioRng {},
+                            ))),
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::RemovePcieDevice,
+                        vmservice::RemovePcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
 
             // Get the serial connection - either by accepting on our listener
             // (connect: true) or connecting to the VM's socket (connect: false).
@@ -254,7 +536,25 @@ fn test_ttrpc_interface(
                         .await
                         .unwrap();
 
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "after ResumeVm, expected RUNNING"
+                    );
+
                     waiter.await.unwrap();
+
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Halted as i32,
+                        "guest powered off, expected HALTED"
+                    );
+                    assert!(
+                        props.halt_reason.as_deref().is_some_and(|r| !r.is_empty()),
+                        "HALTED state should carry a halt_reason"
+                    );
 
                     if i == 0 {
                         client
@@ -262,6 +562,17 @@ fn test_ttrpc_interface(
                             .start(vmservice::Vm::TeardownVm, ())
                             .await
                             .unwrap();
+
+                        let props = query_props().await.unwrap();
+                        assert_eq!(
+                            props.state,
+                            vmservice::VmState::Uninitialized as i32,
+                            "after TeardownVm, expected UNINITIALIZED"
+                        );
+                        assert!(
+                            props.halt_reason.is_none(),
+                            "after TeardownVm, halt_reason should be cleared"
+                        );
 
                         client
                             .call()
@@ -275,6 +586,32 @@ fn test_ttrpc_interface(
                 1 => {
                     client
                         .call()
+                        .start(vmservice::Vm::ResumeVm, ())
+                        .await
+                        .unwrap();
+
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "after ResumeVm, expected RUNNING"
+                    );
+
+                    client
+                        .call()
+                        .start(vmservice::Vm::PauseVm, ())
+                        .await
+                        .unwrap();
+
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Paused as i32,
+                        "after PauseVm, expected PAUSED"
+                    );
+
+                    client
+                        .call()
                         .start(vmservice::Vm::TeardownVm, ())
                         .await
                         .unwrap();
@@ -283,15 +620,9 @@ fn test_ttrpc_interface(
                 }
                 _ => unreachable!(),
             }
-
-            // Clean up temp files from this iteration.
-            let _ = std::fs::remove_file(&com1_path);
-            let _ = std::fs::remove_file(&console_path);
-            let _ = std::fs::remove_dir_all(&virtiofs_root);
         }
 
         let exit_status = child.wait().await?;
-        let _ = std::fs::remove_file(&socket_path);
 
         // Surface the OpenVMM exit status so that abnormal exits (e.g. an abort
         // from a panic — the workspace uses `panic = 'abort'`) are visible in
@@ -311,4 +642,52 @@ fn test_ttrpc_interface(
 
         Ok(())
     })
+}
+
+/// Wraps a `PcieDeviceKind` as a device attachment behind a PCIe port.
+fn attachment_device(device: vmservice::PcieDeviceKind) -> vmservice::PcieAttachment {
+    vmservice::PcieAttachment {
+        kind: Some(vmservice::pcie_attachment::Kind::Device(device)),
+    }
+}
+
+/// Wraps a `PcieSwitch` as a switch attachment behind a PCIe port.
+fn attachment_switch(switch: vmservice::PcieSwitch) -> vmservice::PcieAttachment {
+    vmservice::PcieAttachment {
+        kind: Some(vmservice::pcie_attachment::Kind::Switch(switch)),
+    }
+}
+
+/// Builds a PCIe root port with the given name, hotplug flag, and optional
+/// attached device/switch.
+fn pcie_root_port(
+    name: &str,
+    hotplug: bool,
+    attached: Option<vmservice::PcieAttachment>,
+) -> vmservice::PciePort {
+    vmservice::PciePort {
+        name: name.to_string(),
+        hotplug,
+        attached,
+        devfn: None,
+    }
+}
+
+/// Wraps a virtio device function kind as a `PcieDeviceKind`.
+fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
+    vmservice::PcieDeviceKind {
+        kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
+            vmservice::VirtioDevice { kind: Some(kind) },
+        )),
+    }
+}
+
+/// Builds a file-backed disk backend for the given path.
+fn file_disk(path: &std::path::Path) -> vmservice::DiskBackend {
+    vmservice::DiskBackend {
+        kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+            path: path.to_string_lossy().into(),
+            direct: false,
+        })),
+    }
 }

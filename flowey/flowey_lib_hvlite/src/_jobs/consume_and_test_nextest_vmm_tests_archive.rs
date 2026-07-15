@@ -4,6 +4,7 @@
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
+use crate::build_incubator::IncubatorOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openvmm::OpenvmmOutput;
@@ -24,6 +25,10 @@ use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct VmmTestsDepArtifacts {
+    /// Incubator binary (bundling its profiles directory) used to run tests
+    /// inside an emulated VM (e.g. QEMU TCG). Only set when running via
+    /// [`Params::incubator_profile`].
+    pub incubator: Option<ReadVar<IncubatorOutput>>,
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
     pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
@@ -101,6 +106,13 @@ flowey_request! {
         /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
+        /// If set, run tests inside an incubator using the named profile,
+        /// instead of directly on the host. The profile name (without the
+        /// `.toml` extension) is resolved against the profiles directory
+        /// bundled in the incubator artifact supplied via
+        /// [`VmmTestsDepArtifacts::incubator`] (e.g. "aarch64-tcg-pcie").
+        pub incubator_profile: Option<String>,
+
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
         /// If provided, also publish junit.xml test results as an artifact.
@@ -117,13 +129,18 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
+        ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
@@ -137,6 +154,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
+            incubator_profile,
             prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
@@ -149,6 +167,7 @@ impl SimpleFlowNode for Node {
         });
 
         let VmmTestsDepArtifacts {
+            incubator: register_incubator,
             openvmm: register_openvmm,
             openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
@@ -218,7 +237,7 @@ impl SimpleFlowNode for Node {
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
-            test_content_dir,
+            test_content_dir: test_content_dir.clone(),
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_openvmm_vhost,
@@ -269,12 +288,81 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
+        let (extra_env, nextest_working_dir, nextest_config_file) = if let Some(profile_name) =
+            incubator_profile
+        {
+            let incubator = register_incubator.ok_or_else(|| {
+                anyhow::anyhow!("incubator profile was set but no incubator artifact was provided")
+            })?;
+
+            let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
+
+            let kernel = ctx.reqv(|v| {
+                crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                    arch,
+                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                    v,
+                )
+            });
+            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+
+            let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
+            let qemu_binary = ctx.reqv(|v| {
+                crate::resolve_openvmm_qemu::Request::Get(
+                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                    host_arch,
+                    v,
+                )
+            });
+
+            // Resolve the incubator binary and the selected profile from the
+            // incubator artifact (which bundles the profiles directory).
+            let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
+            let profile_path = incubator.map(ctx, move |o| {
+                o.profiles.join(format!("{profile_name}.toml"))
+            });
+
+            let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+            let nextest_config_file = openvmm_repo_path
+                .clone()
+                .map(ctx, |p| p.join(".config").join("nextest.toml"));
+            let nextest_archive = nextest_vmm_tests_archive
+                .clone()
+                .map(ctx, |x| x.archive_file);
+
+            let extra_env = ctx.reqv(|v| crate::write_incubator_target_runner::Request {
+                incubator_bin,
+                profile_path,
+                kernel: Some(kernel),
+                initrd: Some(initrd),
+                repo_root: openvmm_repo_path.clone(),
+                test_content_dir: test_content_dir.clone(),
+                extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
+                extra_env: Some(extra_env),
+                qemu_binary: Some(qemu_binary),
+                target: target.clone(),
+                nextest_env: v,
+            });
+
+            (
+                extra_env,
+                Some(openvmm_repo_path),
+                Some(nextest_config_file),
+            )
+        } else {
+            if let Some(register_incubator) = register_incubator {
+                register_incubator.claim_unused(ctx);
+            }
+            (extra_env, None, None)
+        };
+
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
             nextest_archive_file: nextest_vmm_tests_archive,
             nextest_profile,
             nextest_filter_expr,
-            nextest_working_dir: None,
-            nextest_config_file: None,
+            nextest_working_dir,
+            nextest_config_file,
             nextest_bin: None,
             target: None,
             extra_env,

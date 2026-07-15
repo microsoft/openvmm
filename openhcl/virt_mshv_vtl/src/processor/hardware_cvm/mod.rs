@@ -60,6 +60,8 @@ use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vm_topology::memory::AddressType;
+use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeAccess;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
@@ -2964,13 +2966,13 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
 /// timer virtualization.
 pub(super) struct VmTimeGuestTimer;
 
-impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
-    fn is_hardware_virtualized(&self) -> bool {
-        false
-    }
-
-    /// Update timer deadline.
-    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+impl VmTimeGuestTimer {
+    pub(super) fn timeout(
+        &self,
+        vmtime: &VmTimeAccess,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) -> VmTime {
         /// Convert reference time in 100ns units to Duration.
         fn duration_from_100ns(n: u64) -> std::time::Duration {
             const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
@@ -2980,7 +2982,18 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         // Convert from reference timer basis to [`VmTime`] basis via
         // difference of programmed timer and current reference time.
         let ref_diff = ref_time_next.saturating_sub(ref_time_now);
-        let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
+        vmtime.now().wrapping_add(duration_from_100ns(ref_diff))
+    }
+}
+
+impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+        let timeout = self.timeout(&vp.vmtime, ref_time_now, ref_time_next);
         vp.vmtime.set_timeout_if_before(timeout);
     }
 
