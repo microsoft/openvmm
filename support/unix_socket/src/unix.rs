@@ -4,8 +4,7 @@
 //! Low-level `sendmsg`/`recvmsg` helpers with SCM_RIGHTS fd passing.
 //!
 //! These are transport-agnostic single-syscall wrappers: message framing is
-//! the caller's responsibility. They are used by the mesh Unix transports
-//! (`mesh_remote`) and by the OpenVMM ttrpc fd-passing protocol.
+//! the caller's responsibility.
 //!
 //! - [`send_with_fds`] performs a single `sendmsg`, attaching an iterator of
 //!   borrowed descriptors via one `SCM_RIGHTS` control message.
@@ -100,8 +99,10 @@ pub fn send_with_fds<'a>(
         hdr.msg_controllen = used.try_into().unwrap();
     }
 
+    // Suppress SIGPIPE when the peer has closed, so callers get an `EPIPE`
+    // error instead of a signal.
     // SAFETY: `hdr` references valid iov and control buffers for this call.
-    let n = unsafe { libc::sendmsg(sock.as_raw_fd(), &hdr, 0) };
+    let n = unsafe { libc::sendmsg(sock.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
     if n < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -205,9 +206,12 @@ impl ScmReceiver {
                 // SAFETY: `cmsg` is valid per the `CMSG_*HDR` contract.
                 let c = unsafe { &*cmsg };
                 if c.cmsg_level == libc::SOL_SOCKET && c.cmsg_type == libc::SCM_RIGHTS {
-                    let data_len = c.cmsg_len as usize - size_of::<libc::cmsghdr>();
                     // SAFETY: `CMSG_DATA` points at the fd array within `control`.
                     let data = unsafe { libc::CMSG_DATA(cmsg) };
+                    // The fd array runs from `CMSG_DATA` to the end of the
+                    // control message, so its length is `cmsg_len` minus the
+                    // header (plus any alignment padding before the data).
+                    let data_len = c.cmsg_len as usize - (data as usize - cmsg as usize);
                     self.fd_offset = data as usize - self.control.as_ptr() as usize;
                     self.fd_count = data_len / size_of::<RawFd>();
                     break;
