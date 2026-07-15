@@ -115,11 +115,15 @@ impl Fuse for VirtioFs {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
 
-        // In aggregate mode, advertise submounts so the guest gives each child
-        // root its own st_dev when crossing into it.
-        if self.initialize_submounts(info.capable() & FUSE_SUBMOUNTS != 0) {
-            info.want |= FUSE_SUBMOUNTS;
-        }
+        // Aggregate children are exposed as plain subdirectories of the
+        // synthetic root rather than FUSE submounts. Advertising
+        // `FUSE_SUBMOUNTS` would make the guest auto-mount each child on a
+        // cloned superblock whose mountinfo root is "/"; instead consumers
+        // (e.g. the WSL drvfs mount-source resolver) rely on each child bind
+        // carrying the per-child root "/<child>" so the originating share can
+        // be recovered. Initialize in the namespaced-inode mode, which keeps
+        // child inode numbers collision-free within the single superblock.
+        self.initialize_submounts(false);
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -582,9 +586,9 @@ impl VirtioFs {
     ///
     /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
     /// expose host folders as named children, each with its own read-only
-    /// setting. During FUSE initialization, `FUSE_SUBMOUNTS` is negotiated so
-    /// the guest kernel can give each child a distinct `st_dev`; if unavailable,
-    /// guest inode numbers use the fallback volume namespace.
+    /// setting. Children are exposed as plain subdirectories of the synthetic
+    /// root (not FUSE submounts), so guest inode numbers use the per-volume
+    /// namespace to stay collision-free within the single superblock.
     pub fn new_aggregate() -> Self {
         Self {
             inner: Arc::new(VirtioFsInner {

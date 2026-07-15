@@ -135,7 +135,7 @@ impl VirtioFsFile {
                     }
                     // Children share this directory's volume, so apply its
                     // guest inode mapping to match lookup/readdirplus.
-                    self.inode.guest_ino(entry.inode_nr)?
+                    self.inode.guest_ino(entry.inode_nr)
                 };
 
                 Ok(buffer.dir_entry(

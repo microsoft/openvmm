@@ -16,27 +16,25 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-const VOLUME_ID_BITS: u32 = 6;
-const INODE_BITS: u32 = u64::BITS - VOLUME_ID_BITS;
-const INODE_MASK: u64 = (1 << INODE_BITS) - 1;
+/// Multiplier used to spread a volume id across the 64-bit inode space when
+/// namespacing inode numbers (see [`namespace_ino`]). It is the 64-bit
+/// golden-ratio constant, chosen because it has good bit-mixing properties.
+const INO_NAMESPACE_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 
-pub(crate) const MAX_AGGREGATE_VOLUMES: u32 = 1 << VOLUME_ID_BITS;
-
-/// Uses the high six bits to namespace the low 58 bits of a host inode number.
-/// `volume_id == 0` is reserved for direct mode and returns `raw` unchanged;
-/// aggregate volume IDs 1 through 64 map to namespace values 0 through 63.
-pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::Result<lx::ino_t> {
+/// XORs a per-volume key into a raw host inode number to reduce the likelihood
+/// of cross-volume `st_ino` collisions under the shared FUSE superblock.
+///
+/// `volume_id == 0` (direct/single-root mode) returns `raw` unchanged. For
+/// aggregated volumes the transform is a bijection within each volume
+/// (preserving hard-link identity) and uses the full 64-bit inode space, so it
+/// never overflows and imposes no limit on the number of volumes. Cross-volume
+/// collisions are still possible when two volumes happen to have inode numbers
+/// whose XOR equals the difference of their volume keys.
+pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::ino_t {
     if volume_id == 0 {
-        return Ok(raw);
+        return raw;
     }
-    if volume_id > MAX_AGGREGATE_VOLUMES {
-        return Err(lx::Error::ENOSPC);
-    }
-    if raw > INODE_MASK {
-        return Err(lx::Error::EOVERFLOW);
-    }
-
-    Ok((u64::from(volume_id - 1) << INODE_BITS) | raw)
+    raw ^ u64::from(volume_id).wrapping_mul(INO_NAMESPACE_MULTIPLIER)
 }
 
 pub(crate) struct VirtioFsVolume {
@@ -73,9 +71,9 @@ impl VirtioFsVolume {
         }
     }
 
-    pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::Result<lx::ino_t> {
+    pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::ino_t {
         if self.use_raw_inodes {
-            Ok(raw)
+            raw
         } else {
             namespace_ino(self.id, raw)
         }
@@ -105,24 +103,20 @@ impl VirtioFsInode {
     /// Create a new inode for the specified path.
     pub fn new(volume: Arc<VirtioFsVolume>, path: PathBuf) -> lx::Result<(Self, lx::Stat)> {
         let stat = volume.lstat(&path)?;
-        let inode = Self::with_attr(volume, path, &stat)?;
+        let inode = Self::with_attr(volume, path, &stat);
         Ok((inode, stat))
     }
 
     /// Create a new inode for the specified path, with previously retrieved attributes.
-    pub fn with_attr(
-        volume: Arc<VirtioFsVolume>,
-        path: PathBuf,
-        stat: &lx::Stat,
-    ) -> lx::Result<Self> {
-        let guest_inode_nr = volume.map_inode(stat.inode_nr)?;
-        Ok(Self {
+    pub fn with_attr(volume: Arc<VirtioFsVolume>, path: PathBuf, stat: &lx::Stat) -> Self {
+        let guest_inode_nr = volume.map_inode(stat.inode_nr);
+        Self {
             volume,
             path: RwLock::new(path),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
             guest_inode_nr,
-        })
+        }
     }
 
     /// Return the files inode number as reported by the underlying file system.
@@ -152,7 +146,7 @@ impl VirtioFsInode {
     /// Maps a raw host inode number from this inode's volume for guest use. For
     /// numbers belonging to *other* inodes in the same volume (e.g. readdir
     /// child entries); for this inode's own number use [`Self::guest_inode_nr`].
-    pub(crate) fn guest_ino(&self, raw: lx::ino_t) -> lx::Result<lx::ino_t> {
+    pub(crate) fn guest_ino(&self, raw: lx::ino_t) -> lx::ino_t {
         self.volume.map_inode(raw)
     }
 
@@ -265,7 +259,7 @@ impl VirtioFsInode {
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat)?;
+        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr, file))
     }
@@ -283,7 +277,7 @@ impl VirtioFsInode {
             .volume
             .mkdir_stat(&path, LxCreateOptions::new(mode, uid, gid))?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat)?;
+        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -304,7 +298,7 @@ impl VirtioFsInode {
             device_id as usize,
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat)?;
+        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -324,7 +318,7 @@ impl VirtioFsInode {
             LxCreateOptions::new(lx::S_IFLNK | 0o777, uid, gid),
         )?;
 
-        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat)?;
+        let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }

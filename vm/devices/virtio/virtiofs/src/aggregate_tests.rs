@@ -4,7 +4,6 @@
 use super::SYNTHETIC_ROOT_FH;
 use crate::VirtioFs;
 use crate::inode;
-use crate::inode::MAX_AGGREGATE_VOLUMES;
 use fuse::protocol::FUSE_ATTR_SUBMOUNT;
 use fuse::protocol::FUSE_ROOT_ID;
 use lxutil::LxVolumeOptions;
@@ -119,21 +118,23 @@ fn submount_flag_requires_negotiation() {
         let children = fs.inner.aggregate().unwrap().registry.read();
         Arc::clone(&children.entries[index].volume)
     };
-    assert_eq!(
-        volume(0).map_inode(u64::MAX).unwrap_err(),
-        lx::Error::EOVERFLOW
-    );
+    // Before submounts are negotiated, child inode numbers are namespaced into
+    // the shared superblock, so even the largest host inode maps without
+    // overflowing (and is no longer the identity).
+    assert_ne!(volume(0).map_inode(u64::MAX), u64::MAX);
 
     let entry = fs
         .lookup_synthetic_root(lx::LxStr::from_bytes(b"first"))
         .unwrap();
     assert_eq!(entry.attr.flags & FUSE_ATTR_SUBMOUNT, 0);
 
+    // With submounts negotiated each child gets its own st_dev, so inode
+    // numbers are passed through unchanged.
     assert!(fs.initialize_submounts(true));
-    assert_eq!(volume(0).map_inode(u64::MAX).unwrap(), u64::MAX);
+    assert_eq!(volume(0).map_inode(u64::MAX), u64::MAX);
 
     fs.add_child("second", second.path(), None).unwrap();
-    assert_eq!(volume(1).map_inode(u64::MAX).unwrap(), u64::MAX);
+    assert_eq!(volume(1).map_inode(u64::MAX), u64::MAX);
     assert_ne!(
         fs.lookup_synthetic_root(lx::LxStr::from_bytes(b"second"))
             .unwrap()
@@ -145,61 +146,29 @@ fn submount_flag_requires_negotiation() {
 
     fs.reset_submounts();
     assert!(!fs.initialize_submounts(false));
-    assert_eq!(volume(0).map_inode(u64::MAX), Err(lx::Error::EOVERFLOW));
-    assert_eq!(volume(1).map_inode(u64::MAX), Err(lx::Error::EOVERFLOW));
+    assert_ne!(volume(0).map_inode(u64::MAX), u64::MAX);
+    assert_ne!(volume(1).map_inode(u64::MAX), u64::MAX);
 }
 
 #[test]
 fn inode_namespacing_avoids_cross_volume_collisions() {
     // Direct mode (volume id 0) is the identity transform.
-    assert_eq!(inode::namespace_ino(0, 42).unwrap(), 42);
-    assert_eq!(inode::namespace_ino(0, u64::MAX).unwrap(), u64::MAX);
+    assert_eq!(inode::namespace_ino(0, 42), 42);
+    assert_eq!(inode::namespace_ino(0, u64::MAX), u64::MAX);
 
-    const INODE_MASK: u64 = (1 << 58) - 1;
-    let raw = INODE_MASK;
-    assert_eq!(inode::namespace_ino(1, raw).unwrap(), INODE_MASK);
-    assert_eq!(
-        inode::namespace_ino(2, raw).unwrap(),
-        (1 << 58) | INODE_MASK
-    );
-    assert_eq!(inode::namespace_ino(64, raw).unwrap(), u64::MAX);
-    assert_eq!(
-        inode::namespace_ino(65, raw).unwrap_err(),
-        lx::Error::ENOSPC
-    );
-    assert_eq!(
-        inode::namespace_ino(1, INODE_MASK + 1).unwrap_err(),
-        lx::Error::EOVERFLOW
-    );
+    // Namespacing uses the full 64-bit inode space, so even the largest host
+    // inode numbers map without overflowing or being rejected, and there is no
+    // limit on the number of volumes.
+    let _ = inode::namespace_ino(1, u64::MAX);
+    let _ = inode::namespace_ino(1000, u64::MAX);
 
-    // Distinct host inode numbers remain distinct within a volume.
-    assert_ne!(
-        inode::namespace_ino(1, 10).unwrap(),
-        inode::namespace_ino(1, 11).unwrap()
-    );
-}
+    // The transform is a bijection within a volume: distinct host inode numbers
+    // stay distinct.
+    assert_ne!(inode::namespace_ino(1, 10), inode::namespace_ino(1, 11));
 
-#[test]
-fn aggregate_volume_count_is_limited_to_namespace_capacity() {
-    let root = tempfile::tempdir().unwrap();
-    for submounts in [None, Some(false), Some(true)] {
-        let fs = VirtioFs::new_aggregate();
-        fs.inner
-            .aggregate()
-            .unwrap()
-            .registry
-            .write()
-            .next_volume_id = MAX_AGGREGATE_VOLUMES;
-        if let Some(capable) = submounts {
-            assert_eq!(fs.initialize_submounts(capable), capable);
-        }
-
-        fs.add_child("last_available", root.path(), None).unwrap();
-        assert_eq!(
-            fs.add_child("one_too_many", root.path(), None),
-            Err(lx::Error::ENOSPC)
-        );
-    }
+    // The same host inode number maps to different values in different volumes,
+    // reducing cross-volume st_ino collisions under the shared superblock.
+    assert_ne!(inode::namespace_ino(1, 42), inode::namespace_ino(2, 42));
 }
 
 #[test]

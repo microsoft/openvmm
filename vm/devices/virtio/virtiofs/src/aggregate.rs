@@ -14,7 +14,6 @@ use crate::ATTRIBUTE_TIMEOUT;
 use crate::ENTRY_TIMEOUT;
 use crate::VirtioFs;
 use crate::build_volume;
-use crate::inode::MAX_AGGREGATE_VOLUMES;
 use crate::inode::VirtioFsInode;
 use crate::inode::VirtioFsVolume;
 use fuse::DirEntryWriter;
@@ -98,9 +97,6 @@ impl AggregateRegistry {
         if self.tearing_down {
             return Err(lx::Error::EAGAIN);
         }
-        if self.next_volume_id > MAX_AGGREGATE_VOLUMES {
-            return Err(lx::Error::ENOSPC);
-        }
         Ok(())
     }
 }
@@ -138,7 +134,7 @@ impl VirtioFs {
     /// - `EAGAIN` if the device has begun tearing down (see
     ///   [`Self::begin_teardown`]).
     /// - `EEXIST` if a child with the same name already exists.
-    /// - `ENOSPC` if 64 children have already been allocated.
+    /// - `ENOSPC` if the volume-id space is exhausted (2^32 children).
     pub fn add_child(
         &self,
         name: &str,
@@ -178,6 +174,13 @@ impl VirtioFs {
                 use_raw_inodes,
             )),
         });
+        tracing::info!(
+            name,
+            volume_id,
+            child_count = registry.entries.len(),
+            submounts = use_raw_inodes,
+            "added aggregate virtio-fs child"
+        );
         Ok(())
     }
 
@@ -402,13 +405,12 @@ impl VirtioFs {
         } else {
             // Plain readdir: report the directory using the volume root's
             // guest-visible inode number. If the root cannot be queried, use
-            // the volume id as a stable surrogate; mapping errors still
-            // propagate because the inode cannot be represented correctly.
+            // the volume id as a stable surrogate.
             let raw = volume
                 .lstat(PathBuf::new())
                 .map(|s| s.inode_nr)
                 .unwrap_or(volume.id() as lx::ino_t);
-            let ino = volume.map_inode(raw)?;
+            let ino = volume.map_inode(raw);
             Ok(buffer.dir_entry(name, ino, next_off, lx::DT_DIR as u32))
         }
     }
