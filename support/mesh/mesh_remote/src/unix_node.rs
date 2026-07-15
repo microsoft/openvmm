@@ -651,7 +651,7 @@ async fn run_receive(
 ) -> Result<(), ReceiveError> {
     let mut buf = vec![0; MAX_PACKET_SIZE];
     let mut fds = Vec::new();
-    let mut receiver = unix_socket::ScmReceiver::new(MAX_RECV_FDS);
+    let mut receiver = unix_socket::ScmReceiver::new(protocol::MAX_FDS_PER_MESSAGE);
     loop {
         let len = socket.recv(&mut buf, &mut fds, &mut receiver).await?;
         if len == 0 {
@@ -1051,10 +1051,6 @@ struct UnixSocket {
     socket: Mutex<PolledSocket<Socket>>,
 }
 
-/// Maximum number of descriptors received per message. Matches the historical
-/// `SCM_RIGHTS` buffer capacity of the mesh transport.
-const MAX_RECV_FDS: usize = 64;
-
 impl UnixSocket {
     fn new(driver: &dyn SpawnDriver, fd: Socket) -> Self {
         let socket = PolledSocket::new(driver, fd).unwrap();
@@ -1079,6 +1075,20 @@ impl UnixSocket {
         iov: &mut [IoSlice<'_>],
         fds: &[OsResource],
     ) -> Result<usize, io::Error> {
+        // Bound the fd count to what the receiver can hold. Without this,
+        // attaching more than `MAX_FDS_PER_MESSAGE` descriptors would
+        // deterministically trip `MSG_CTRUNC` on the receiver and tear down the
+        // connection; reject it locally with a clear error instead.
+        if fds.len() > protocol::MAX_FDS_PER_MESSAGE {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "too many file descriptors ({}, max {})",
+                    fds.len(),
+                    protocol::MAX_FDS_PER_MESSAGE
+                ),
+            ));
+        }
         let n = poll_fn(|cx| {
             self.socket
                 .lock()

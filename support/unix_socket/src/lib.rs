@@ -7,10 +7,14 @@
 //! This can go away once the `std` types are available on Windows.
 //!
 //! <https://github.com/rust-lang/rust/issues/56533>
-//!
-//! On UNIX, it also provides low-level `SCM_RIGHTS` fd-passing helpers (see
-//! [`send_with_fds`] and [`ScmReceiver`]).
+#![cfg_attr(
+    unix,
+    doc = "",
+    doc = "On UNIX, it also provides low-level `SCM_RIGHTS` fd-passing helpers",
+    doc = "(see [`send_with_fds`] and [`ScmReceiver`])."
+)]
 
+#[cfg(windows)]
 mod windows;
 
 #[cfg(unix)]
