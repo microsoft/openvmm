@@ -1,5 +1,15 @@
 # Release Management
 
+## OpenVMM product version
+
+The source of truth for the OpenVMM product version is
+`openvmm/VERSION`. It contains the three-component version used by OpenVMM
+artifacts, independently of the release branch names described below.
+
+Update this file when selecting the next planned OpenVMM release. Build and
+release tooling may append prerelease or build metadata, but must not replace
+the product version with a CI build number.
+
 Occasionally, the OpenVMM project will declare upcoming release milestones. We
 stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
 named for the YYMM when the branch was forked. Future references to the release
