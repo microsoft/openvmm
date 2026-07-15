@@ -219,26 +219,28 @@ pub struct MountRequest {
     pub mkdir_target: bool,
 }
 
-/// A request to bind a UNIX-domain listener inside the guest and relay a
-/// single accepted connection over a pair of mesh pipes.
+/// A request to bind a UNIX-domain listener inside the guest and relay each
+/// accepted connection back to the host as a pair of mesh pipes.
 ///
 /// The handler binds the listener synchronously (so a bind failure is
 /// reported to the caller via the RPC response) and then spawns a task that
-/// waits for exactly one connection. Bytes written to `to_socket` are
-/// forwarded to the connected peer, and bytes received from the peer are
-/// forwarded to `from_socket`. The pumps tear down when either side closes,
-/// at which point the listener and the bind-path filesystem entry are
-/// cleaned up.
+/// accepts connections in a loop. For every accepted peer, pipette allocates
+/// a fresh pipe pair and sends the host-facing halves over `connections`;
+/// receiving an item is itself the "a peer connected" signal. Each
+/// connection is pumped independently until either side closes. Dropping the
+/// receiver lets pipette tear the listener (and its bind-path filesystem
+/// entry) down.
 #[derive(MeshPayload)]
 pub struct RelayUnixSocketRequest {
     /// Path inside the guest at which pipette should bind a UNIX listener.
     /// The path must not already exist; pipette is responsible for
     /// `unlink`ing the path once the relay tears down.
     pub bind_path: String,
-    /// Bytes the host wants written to the accepted connection.
-    pub to_socket: ReadPipe,
-    /// Bytes read from the accepted connection, sent back to the host.
-    pub from_socket: WritePipe,
+    /// Sender for accepted connections. For each peer that connects, pipette
+    /// sends the host-facing pipe halves `(read, write)`: bytes from the peer
+    /// arrive on `read`, and bytes written to `write` are forwarded to the
+    /// peer.
+    pub connections: mesh::Sender<(ReadPipe, WritePipe)>,
 }
 
 /// A request to connect to an existing UNIX-domain socket inside the guest

@@ -273,16 +273,18 @@ impl NestedL2Builder {
             );
         }
 
-        // 3. Set up relays for the L2 pipette vsock and L2 serial console.
-        //    Both are bound by pipette inside L1 *before* openvmm starts,
-        //    so the paths exist when openvmm attempts to connect.
+        // 3. Bind the L2 pipette-vsock and L2 serial relays inside L1. Both
+        //    are bound *before* openvmm starts so the paths exist when it
+        //    connects. `accept()` on each listener resolves only once a peer
+        //    actually connects, letting us wait for the (slow, nested) L2 to
+        //    boot separately from the pipette handshake.
         let vsock_bind_path = format!("{L1_BIND_PREFIX}_{}", PIPETTE_PORT);
-        let pipette_duplex = l1_agent
+        let mut pipette_listener = l1_agent
             .relay_unix_socket(&vsock_bind_path)
             .await
             .context("failed to start vsock RelayUnixSocket on L1 pipette")?;
 
-        let serial_duplex = l1_agent
+        let mut serial_listener = l1_agent
             .relay_unix_socket(L1_SERIAL_SOCKET)
             .await
             .context("failed to start serial RelayUnixSocket on L1 pipette")?;
@@ -290,12 +292,19 @@ impl NestedL2Builder {
         // 4. Spawn the in-L1 openvmm in ttrpc server mode. In this mode,
         //    openvmm binds a ttrpc socket and waits for RPCs; it closes
         //    stdout to signal readiness.
-        let mut child = l1_agent
-            .command(&staged_openvmm)
+        let mut command = l1_agent.command(&staged_openvmm);
+        command
             .args(["--ttrpc", L1_TTRPC_SOCKET])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Propagate OPENVMM_LOG so the in-L1 openvmm's tracing verbosity can be
+        // raised to debug the L2 (its output is captured to
+        // nested-l2-openvmm.log).
+        if let Ok(log) = std::env::var("OPENVMM_LOG") {
+            command.env("OPENVMM_LOG", log);
+        }
+        let mut child = command
             .spawn()
             .await
             .context("failed to spawn in-L1 openvmm")?;
@@ -418,8 +427,12 @@ impl NestedL2Builder {
             .await
             .map_err(|s| anyhow::anyhow!("CreateVm RPC failed: {} (code {})", s.message, s.code))?;
 
-        // 9. Log the L2 serial console output (relayed from the L1 serial
-        //    socket).
+        // 9. Accept the in-L1 openvmm's serial connection (opened while
+        //    handling CreateVm) and log the L2 serial console output.
+        let serial_duplex = serial_listener
+            .accept()
+            .await
+            .context("in-L1 openvmm did not connect the L2 serial socket")?;
         let serial_task = self.driver.spawn(
             "nested-l2-serial",
             crate::log_task(
@@ -436,16 +449,32 @@ impl NestedL2Builder {
             .await
             .map_err(|s| anyhow::anyhow!("ResumeVm RPC failed: {} (code {})", s.message, s.code))?;
 
-        // 11. Bring up the L2 pipette client over the relayed vsock.
-        //     Race the pipette handshake against the in-L1 openvmm exiting
-        //     so that if the L2 fails to launch we fail fast.
+        // 11. Wait for the L2 pipette to connect out to the relay, then
+        //     bring up the pipette client. These are two distinct waits:
+        //
+        //     - Waiting for the connection is unbounded (racing only the
+        //       in-L1 openvmm exiting), because the L2 is booted by a nested,
+        //       dev-unoptimized VMM and can take a long and unpredictable
+        //       time to boot. This mirrors a plain `accept()` on the
+        //       top-level pipette listener.
+        //     - The handshake itself runs against a live connection with
+        //       `PipetteClient`'s normal timeout, so a wedged handshake still
+        //       fails fast.
+        //
+        //     Both race the in-L1 openvmm exiting so a failed L2 launch fails
+        //     fast rather than hanging.
         let l2_agent = {
-            let pipette_fut =
-                PipetteClient::new(&self.driver, pipette_duplex, self.log_source.output_dir());
+            let connect_fut = async {
+                let pipette_duplex = pipette_listener
+                    .accept()
+                    .await
+                    .context("L1 relay closed before the L2 pipette connected")?;
+                PipetteClient::new(&self.driver, pipette_duplex, self.log_source.output_dir()).await
+            };
             let wait_fut = child.wait();
-            let pipette_fut = std::pin::pin!(pipette_fut);
+            let connect_fut = std::pin::pin!(connect_fut);
             let wait_fut = std::pin::pin!(wait_fut);
-            match futures::future::select(pipette_fut, wait_fut).await {
+            match futures::future::select(connect_fut, wait_fut).await {
                 futures::future::Either::Left((res, _)) => {
                     res.context("failed to set up L2 PipetteClient")?
                 }

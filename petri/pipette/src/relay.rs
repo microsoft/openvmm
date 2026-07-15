@@ -3,9 +3,8 @@
 
 //! Handler for the `RelayUnixSocket` and `RelayConnectUnixSocket` requests.
 //!
-//! `RelayUnixSocket` binds a UNIX-domain listener at the requested path,
-//! waits for a single connection, and pumps bytes between that connection
-//! and the host via a pair of mesh pipes.
+//! `RelayUnixSocket` binds a UNIX-domain listener at the requested path and
+//! relays each accepted connection back to the host as a pair of mesh pipes.
 //!
 //! `RelayConnectUnixSocket` connects to an existing UNIX-domain socket and
 //! pumps bytes the same way.
@@ -25,21 +24,20 @@ use pipette_protocol::RelayUnixSocketRequest;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
-/// Handles a single `RelayUnixSocket` request.
+/// Handles a `RelayUnixSocket` request.
 ///
 /// Binds the listener synchronously so a bind failure is surfaced to the
 /// caller through the RPC response. Once the bind succeeds, spawns a
-/// detached task that owns the listener, waits for a connection, and runs
-/// the pumps; the request future then returns `Ok(())` immediately so the
-/// host can proceed without waiting for the peer connect.
+/// detached task that owns the listener and accepts connections in a loop;
+/// the request future then returns `Ok(())` immediately so the host can
+/// proceed without waiting for any peer to connect.
 pub fn handle_relay_unix_socket(
     driver: &DefaultDriver,
     request: RelayUnixSocketRequest,
 ) -> anyhow::Result<()> {
     let RelayUnixSocketRequest {
         bind_path,
-        to_socket,
-        from_socket,
+        connections,
     } = request;
 
     tracing::debug!(bind_path, "relay-unix-socket bind");
@@ -53,7 +51,7 @@ pub fn handle_relay_unix_socket(
     driver
         .spawn(
             "relay-unix-socket",
-            run_relay(task_driver, bind_path, polled, to_socket, from_socket),
+            run_relay(task_driver, bind_path, polled, connections),
         )
         .detach();
     Ok(())
@@ -63,10 +61,9 @@ async fn run_relay(
     driver: DefaultDriver,
     bind_path: String,
     mut listener: PolledSocket<UnixListener>,
-    to_socket: mesh::pipe::ReadPipe,
-    from_socket: mesh::pipe::WritePipe,
+    connections: mesh::Sender<(mesh::pipe::ReadPipe, mesh::pipe::WritePipe)>,
 ) {
-    let result = relay_inner(&driver, &mut listener, to_socket, from_socket).await;
+    let result = accept_loop(&driver, &mut listener, &connections).await;
     if let Err(err) = result {
         tracing::warn!(
             bind_path,
@@ -88,22 +85,46 @@ async fn run_relay(
     }
 }
 
-async fn relay_inner(
+async fn accept_loop(
     driver: &DefaultDriver,
     listener: &mut PolledSocket<UnixListener>,
-    to_socket: mesh::pipe::ReadPipe,
-    from_socket: mesh::pipe::WritePipe,
+    connections: &mesh::Sender<(mesh::pipe::ReadPipe, mesh::pipe::WritePipe)>,
 ) -> anyhow::Result<()> {
-    let (conn, _addr) = listener
-        .accept()
-        .await
-        .context("failed to accept relay connection")?;
-    tracing::debug!("relay-unix-socket accepted peer connection");
+    loop {
+        let (conn, _addr) = listener
+            .accept()
+            .await
+            .context("failed to accept relay connection")?;
 
-    let conn =
-        PolledSocket::new(driver, conn).context("failed to create polled socket for relay peer")?;
+        // Stop once the host has dropped the receiver; there is no point
+        // servicing further connections.
+        if connections.is_closed() {
+            break;
+        }
 
-    pump_connection(conn, to_socket, from_socket).await
+        tracing::debug!("relay-unix-socket accepted peer connection");
+        let conn = PolledSocket::new(driver, conn)
+            .context("failed to create polled socket for relay peer")?;
+
+        // Allocate a fresh pipe pair for this connection and hand the
+        // host-facing halves to the host. `(host_read, guest_write)` carries
+        // peer -> host bytes; `(guest_read, host_write)` carries host -> peer.
+        let (host_read, guest_write) = mesh::pipe::pipe();
+        let (guest_read, host_write) = mesh::pipe::pipe();
+        connections.send((host_read, host_write));
+
+        driver
+            .spawn("relay-unix-socket-conn", async move {
+                if let Err(err) = pump_connection(conn, guest_read, guest_write).await {
+                    tracing::warn!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "relay-unix-socket connection pump failed",
+                    );
+                }
+            })
+            .detach();
+    }
+    Ok(())
 }
 
 /// Handles a `RelayConnectUnixSocket` request.

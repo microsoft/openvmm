@@ -66,39 +66,61 @@ impl AsyncWrite for PipeDuplex {
     }
 }
 
+/// A handle to a UNIX-domain listener bound inside the guest by
+/// [`PipetteClient::relay_unix_socket`].
+///
+/// Each call to [`accept`](Self::accept) waits for the next peer to connect
+/// to the in-guest listener and yields a [`PipeDuplex`] for that connection,
+/// mirroring a plain listener's accept loop. Dropping the listener lets
+/// pipette tear the in-guest listener down.
+pub struct RelayListener {
+    connections: mesh::Receiver<(ReadPipe, WritePipe)>,
+}
+
+impl RelayListener {
+    /// Waits for the next peer to connect to the in-guest listener, returning
+    /// a duplex byte stream for that connection.
+    ///
+    /// This is distinct from the guest merely having *bound* the listener
+    /// (which has already happened by the time [`RelayListener`] is returned):
+    /// it resolves only once a peer actually connects, so a caller can wait
+    /// for e.g. a guest that has yet to boot.
+    pub async fn accept(&mut self) -> anyhow::Result<PipeDuplex> {
+        let (read, write) = self
+            .connections
+            .recv()
+            .await
+            .context("relay listener closed before a peer connected")?;
+        Ok(PipeDuplex { read, write })
+    }
+}
+
 impl PipetteClient {
-    /// Asks the agent to bind a UNIX-domain listener at `bind_path`, wait
-    /// for a single peer connection, and pump bytes between that peer and
-    /// the returned duplex stream.
+    /// Asks the agent to bind a UNIX-domain listener at `bind_path` and relay
+    /// each accepted connection back to the host.
     ///
-    /// The returned [`PipeDuplex`] is intended to be handed to
-    /// [`PipetteClient::new`] (or any other consumer of an
-    /// `AsyncRead + AsyncWrite` byte stream).
-    ///
-    /// The RPC ack returns once pipette has successfully bound the
-    /// listener, so callers can be sure the listener exists before
-    /// asking another guest-side process to connect to it.
-    pub async fn relay_unix_socket(&self, bind_path: &str) -> anyhow::Result<PipeDuplex> {
-        // Pair 1: host writes -> pipette reads -> peer receives.
-        let (peer_read, host_write) = mesh::pipe::pipe();
-        // Pair 2: peer sends -> pipette writes -> host reads.
-        let (host_read, peer_write) = mesh::pipe::pipe();
+    /// The RPC ack returns once pipette has successfully bound the listener,
+    /// so callers can be sure the listener exists before asking another
+    /// guest-side process to connect to it. Use
+    /// [`RelayListener::accept`] to obtain a [`PipeDuplex`] for each peer that
+    /// connects; the first such duplex is typically handed to
+    /// [`PipetteClient::new`].
+    pub async fn relay_unix_socket(&self, bind_path: &str) -> anyhow::Result<RelayListener> {
+        let (connections_send, connections_recv) = mesh::channel();
 
         self.send
             .call_failable(
                 PipetteRequest::RelayUnixSocket,
                 RelayUnixSocketRequest {
                     bind_path: bind_path.to_owned(),
-                    to_socket: peer_read,
-                    from_socket: peer_write,
+                    connections: connections_send,
                 },
             )
             .await
             .context("failed to start relay-unix-socket")?;
 
-        Ok(PipeDuplex {
-            read: host_read,
-            write: host_write,
+        Ok(RelayListener {
+            connections: connections_recv,
         })
     }
 
