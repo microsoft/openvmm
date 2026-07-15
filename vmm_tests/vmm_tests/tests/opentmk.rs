@@ -49,19 +49,19 @@ fn opentmk_config_json(test: &str) -> Vec<u8> {
 fn opentmk_requirements(
     isolation: Option<petri::IsolationType>,
 ) -> petri::requirements::TestCaseRequirements {
+    use petri::requirements::ExecutionEnvironment;
     use petri::requirements::IsolationType as ReqIsolationType;
     use petri::requirements::TestRequirement;
 
     let requirement = match isolation {
         None => TestRequirement::Any,
-        Some(isolation) => {
-            let isolation = match isolation {
-                petri::IsolationType::Vbs => ReqIsolationType::Vbs,
-                petri::IsolationType::Snp => ReqIsolationType::Snp,
-                petri::IsolationType::Tdx => ReqIsolationType::Tdx,
-            };
-            TestRequirement::Isolation(isolation)
-        }
+        // Hyper-V VBS does not work nested, so also require a baremetal host
+        // (matching the `#[vmm_test]` macro behavior for hyper-v + vbs).
+        Some(petri::IsolationType::Vbs) => TestRequirement::Isolation(ReqIsolationType::Vbs).and(
+            TestRequirement::ExecutionEnvironment(ExecutionEnvironment::Baremetal),
+        ),
+        Some(petri::IsolationType::Snp) => TestRequirement::Isolation(ReqIsolationType::Snp),
+        Some(petri::IsolationType::Tdx) => TestRequirement::Isolation(ReqIsolationType::Tdx),
     };
 
     petri::requirements::TestCaseRequirements::new(requirement)
@@ -126,105 +126,112 @@ fn run_opentmk_uefi<T: PetriVmmBackend>(
 
 #[cfg(windows)]
 mod hyperv {
-    use crate::OpentmkArtifacts;
     use crate::resolve_opentmk_openhcl;
     use crate::run_opentmk_uefi;
     use petri::IsolationType;
     use petri::hyperv::HyperVPetriBackend;
 
-    /// Defines a Hyper-V + OpenHCL OpenTMK test that runs the guest-internal
-    /// scenario `$test` under the given `$isolation`.
+    /// Maps an isolation token (`none`/`snp`/`tdx`) to its
+    /// `Option<petri::IsolationType>` value.
+    macro_rules! opentmk_isolation {
+        (none) => {
+            None
+        };
+        (vbs) => {
+            Some(IsolationType::Vbs)
+        };
+        (snp) => {
+            Some(IsolationType::Snp)
+        };
+        (tdx) => {
+            Some(IsolationType::Tdx)
+        };
+    }
+
+    /// Defines one or more Hyper-V + OpenHCL OpenTMK tests for the guest-internal
+    /// scenario `$test`, one per isolation token in the `[..]` list.
     ///
-    /// Isolated variants (`$isolation` is `Some(..)`) declare an isolation host
+    /// Each generated test is named `$base` plus an isolation suffix (`_snp` /
+    /// `_tdx`, no suffix for `none`). Isolated variants declare an isolation host
     /// requirement so they only run on isolation-capable CI runners and are
     /// skipped elsewhere. `$tpm` attaches a vTPM to the VM (required by the
     /// `hv_tpm_*` scenarios).
     macro_rules! opentmk_test {
-        ($name:ident, $test:literal, $isolation:expr, $tpm:expr) => {
+        ($base:literal, $test:literal, $tpm:expr, [$($iso:tt),+ $(,)?]) => {
             ::petri::multitest!(vec![
-                ::petri::SimpleTest::new(
-                    stringify!($name),
-                    |resolver| {
-                        resolve_opentmk_openhcl::<HyperVPetriBackend>(
-                            resolver, $test, $isolation, $tpm,
-                        )
-                    },
-                    $name,
-                    Some(crate::opentmk_requirements($isolation)),
-                    false,
-                    ::petri::RemoteAccess::LocalOnly,
-                )
-                .into()
+                $( opentmk_test!(@case $base, $test, $tpm, $iso) ),+
             ]);
-
-            fn $name(
-                params: petri::PetriTestParams<'_>,
-                artifacts: OpentmkArtifacts<HyperVPetriBackend>,
-            ) -> anyhow::Result<()> {
-                run_opentmk_uefi(params, artifacts)
-            }
+        };
+        (@case $base:literal, $test:literal, $tpm:expr, none) => {
+            opentmk_test!(@build concat!($base), $test, $tpm, none)
+        };
+        (@case $base:literal, $test:literal, $tpm:expr, vbs) => {
+            opentmk_test!(@build concat!($base, "_vbs"), $test, $tpm, vbs)
+        };
+        (@case $base:literal, $test:literal, $tpm:expr, snp) => {
+            opentmk_test!(@build concat!($base, "_snp"), $test, $tpm, snp)
+        };
+        (@case $base:literal, $test:literal, $tpm:expr, tdx) => {
+            opentmk_test!(@build concat!($base, "_tdx"), $test, $tpm, tdx)
+        };
+        (@build $name:expr, $test:literal, $tpm:expr, $iso:tt) => {
+            ::petri::SimpleTest::new(
+                $name,
+                |resolver| {
+                    resolve_opentmk_openhcl::<HyperVPetriBackend>(
+                        resolver,
+                        $test,
+                        opentmk_isolation!($iso),
+                        $tpm,
+                    )
+                },
+                run_opentmk_uefi::<HyperVPetriBackend>,
+                Some(crate::opentmk_requirements(opentmk_isolation!($iso))),
+                false,
+                ::petri::RemoteAccess::LocalOnly,
+            )
+            .into()
         };
     }
 
-    // Baseline VP-count scenario on a non-isolated VM and on SNP/TDX CVMs.
-    opentmk_test!(opentmk_hyperv_openhcl_uefi_x64, "hv_processor", None, false);
     opentmk_test!(
-        opentmk_hyperv_openhcl_uefi_x64_snp,
+        "opentmk_hyperv_openhcl_uefi_x64",
         "hv_processor",
-        Some(IsolationType::Snp),
-        false
-    );
-    opentmk_test!(
-        opentmk_hyperv_openhcl_uefi_x64_tdx,
-        "hv_processor",
-        Some(IsolationType::Tdx),
-        false
+        false,
+        [none, vbs, snp, tdx]
     );
 
-    // Interrupt scenarios that run on a non-isolated OpenHCL VTL guest.
     opentmk_test!(
-        opentmk_hyperv_openhcl_memory_protect_read,
+        "opentmk_hyperv_openhcl_memory_protect_read",
         "hv_memory_protect_read",
-        None,
-        false
+        false,
+        [none, vbs, snp, tdx]
     );
     opentmk_test!(
-        opentmk_hyperv_openhcl_memory_protect_write,
+        "opentmk_hyperv_openhcl_memory_protect_write",
         "hv_memory_protect_write",
-        None,
-        false
+        false,
+        [none, vbs, snp, tdx]
     );
     opentmk_test!(
-        opentmk_hyperv_openhcl_register_intercept,
+        "opentmk_hyperv_openhcl_register_intercept",
         "hv_register_intercept",
-        None,
-        false
+        false,
+        [none, vbs, snp, tdx]
     );
 
-    // Interrupt scenarios that require a confidential VM (TPM), on SNP and TDX.
     opentmk_test!(
-        opentmk_hyperv_openhcl_tpm_read_cvm_snp,
+        "opentmk_hyperv_openhcl_tpm_read_cvm",
         "hv_tpm_read_cvm",
-        Some(IsolationType::Snp),
-        true
+        true,
+        [snp, tdx]
     );
+
     opentmk_test!(
-        opentmk_hyperv_openhcl_tpm_write_cvm_snp,
+        "opentmk_hyperv_openhcl_tpm_write_cvm",
         "hv_tpm_write_cvm",
-        Some(IsolationType::Snp),
-        true
-    );
-    opentmk_test!(
-        opentmk_hyperv_openhcl_tpm_read_cvm_tdx,
-        "hv_tpm_read_cvm",
-        Some(IsolationType::Tdx),
-        true
-    );
-    opentmk_test!(
-        opentmk_hyperv_openhcl_tpm_write_cvm_tdx,
-        "hv_tpm_write_cvm",
-        Some(IsolationType::Tdx),
-        true
+        true,
+        [snp, tdx]
     );
 }
 #[cfg(windows)]
