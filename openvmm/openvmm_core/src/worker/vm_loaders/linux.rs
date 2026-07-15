@@ -85,11 +85,6 @@ pub fn load_linux_x86(
     gm: &GuestMemory,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
 ) -> Result<(Vec<X86Register>, Vec<virt::InitialPageImport>), Error> {
-    const SNP_SECRETS_BASE: u64 = 0x10000;
-    const SNP_CPUID_BASE: u64 = 0x11000;
-    const SNP_CC_BLOB_BASE: u64 = 0x12000;
-    const SNP_CC_SETUP_DATA_BASE: u64 = 0x13000;
-
     let mut kernel_file = cfg.kernel;
 
     let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
@@ -109,12 +104,7 @@ pub fn load_linux_x86(
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
     let snp_boot =
-        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig {
-            secrets_address: SNP_SECRETS_BASE,
-            cpuid_address: SNP_CPUID_BASE,
-            cc_blob_address: SNP_CC_BLOB_BASE,
-            cc_setup_data_address: SNP_CC_SETUP_DATA_BASE,
-        });
+        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig);
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 

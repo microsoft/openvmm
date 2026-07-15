@@ -24,6 +24,7 @@ use aarch64defs::TranslationGranule1;
 use bitfield_struct::bitfield;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
+use memory_range::MemoryRange;
 use page_table::IdentityMapSize;
 use page_table::x64::IdentityMapBuilder;
 use page_table::x64::PAGE_TABLE_MAX_BYTES;
@@ -44,16 +45,22 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+struct ZeroPageBuildResult {
+    boot_params: defs::boot_params,
+    additional_pages: Option<MemoryRange>,
+}
+
 /// Construct a zero page from the following parameters.
 fn build_zero_page(
     mem_layout: &MemoryLayout,
     acpi_len: usize,
     smbios_struct_len: usize,
+    additional_page_count: u64,
     cmdline: &CString,
     initrd_base: u32,
     initrd_size: u32,
     bzimage_header: Option<&defs::setup_header>,
-) -> Result<defs::boot_params, Error> {
+) -> Result<ZeroPageBuildResult, Error> {
     // Loader type 0xff = unregistered bootloader, used for both ELF and
     // bzImage paths since OpenVMM does not have a registered Linux
     // bootloader ID.
@@ -94,9 +101,9 @@ fn build_zero_page(
     //   [0, acpi_base)          RAM       boot metadata: GDT, zero page, cmdline,
     //                                     identity-map page tables
     //   [acpi_base, acpi_end)   ACPI      RSDT/XSDT and all ACPI tables
-    //   [acpi_end, smbios_end)  RESERVED  SMBIOS structure table, pointed to by
-    //                                     the _SM3_ anchor in the F-segment
-    //   [smbios_end, 0xe0000)   RAM
+    //   [acpi_end, smbios_end)  RESERVED  SMBIOS structure table
+    //   [smbios_end, additional_end) RESERVED additional requested pages
+    //   [additional_end, 0xe0000)    RAM
     //   [0xe0000, 0x100000)     RESERVED  legacy BIOS region holding the RSDP at
     //                                     0xe0000 (found by the kernel's legacy
     //                                     scan) and the SMBIOS _SM3_ anchor at
@@ -109,14 +116,21 @@ fn build_zero_page(
     // structure table sits just above the ACPI tables in its own reserved
     // region so it can grow well past the 64 KiB F-segment.
     const ONE_MB: u64 = 0x100000;
-    let acpi_base = ACPI_TABLES_BASE;
     let aligned_acpi_len = align_up_to_page_size(acpi_len as u64);
-    let acpi_end = acpi_base + aligned_acpi_len;
+    let acpi_end = ACPI_TABLES_BASE + aligned_acpi_len;
     let aligned_smbios_len = align_up_to_page_size(smbios_struct_len as u64);
     let smbios_end = acpi_end + aligned_smbios_len;
-    if smbios_end > RSDP_BASE {
-        return Err(Error::LowTablesTooLarge(smbios_end, RSDP_BASE));
+    let additional_size = additional_page_count
+        .checked_mul(HV_PAGE_SIZE)
+        .ok_or(Error::LowTablesTooLarge(u64::MAX, RSDP_BASE))?;
+    let additional_end = smbios_end
+        .checked_add(additional_size)
+        .ok_or(Error::LowTablesTooLarge(u64::MAX, RSDP_BASE))?;
+    if additional_end > RSDP_BASE {
+        return Err(Error::LowTablesTooLarge(additional_end, RSDP_BASE));
     }
+    let additional_pages =
+        (additional_size != 0).then(|| MemoryRange::new(smbios_end..additional_end));
 
     // Emit the e820 entries in ascending address order. Zero-length regions
     // (e.g. the SMBIOS reserved region when no SMBIOS tables are present) are
@@ -140,10 +154,11 @@ fn build_zero_page(
         n += 1;
         Ok(())
     };
-    push(0, acpi_base, defs::E820_RAM)?;
-    push(acpi_base, aligned_acpi_len, defs::E820_ACPI)?;
+    push(0, ACPI_TABLES_BASE, defs::E820_RAM)?;
+    push(ACPI_TABLES_BASE, aligned_acpi_len, defs::E820_ACPI)?;
     push(acpi_end, aligned_smbios_len, defs::E820_RESERVED)?;
-    push(smbios_end, RSDP_BASE - smbios_end, defs::E820_RAM)?;
+    push(smbios_end, additional_size, defs::E820_RESERVED)?;
+    push(additional_end, RSDP_BASE - additional_end, defs::E820_RAM)?;
     push(RSDP_BASE, ONE_MB - RSDP_BASE, defs::E820_RESERVED)?;
     push(ONE_MB, range.range.end() - ONE_MB, defs::E820_RAM)?;
     for range in ram {
@@ -151,7 +166,10 @@ fn build_zero_page(
     }
     p.e820_entries = n as u8;
 
-    Ok(p)
+    Ok(ZeroPageBuildResult {
+        boot_params: p,
+        additional_pages,
+    })
 }
 
 #[derive(Debug, Error)]
@@ -194,8 +212,10 @@ pub enum Error {
     PageTableBuilder(#[from] page_table::Error),
     #[error("kernel command line ({0} bytes) exceeds its {1:#x}-byte slot")]
     CommandLineTooLong(usize, u64),
-    #[error("acpi and smbios tables end at {0:#x}, past the reserved region at {1:#x}")]
+    #[error("low-memory tables and boot pages end at {0:#x}, past the reserved region at {1:#x}")]
     LowTablesTooLarge(u64, u64),
+    #[error("SNP CC blob address {0:#x} does not fit in the Linux boot protocol field")]
+    SnpCcBlobAddressTooHigh(u64),
     #[error("too many memory ranges to fit in the {0}-entry e820 map")]
     TooManyMemoryRanges(usize),
     #[error("acpi tables are empty")]
@@ -248,13 +268,11 @@ const SMBIOS_FSEGMENT_BASE: u64 = 0xf0000;
 /// The Linux x86 kernel loads at the conventional 1 MB mark.
 const KERNEL_BASE: u64 = 0x100000;
 
+/// Enables allocation of the SEV-SNP Linux boot protocol pages.
 #[derive(Debug, Clone, Copy)]
-pub struct SnpBootConfig {
-    pub secrets_address: u64,
-    pub cpuid_address: u64,
-    pub cc_blob_address: u64,
-    pub cc_setup_data_address: u64,
-}
+pub struct SnpBootConfig;
+
+const SNP_BOOT_PAGE_COUNT: u64 = 4;
 
 /// The GPA of the SMBIOS structure table: immediately above the ACPI tables in
 /// the low reserved area. Only the `_SM3_` anchor stays in the F-segment; the
@@ -326,16 +344,17 @@ pub struct LoadInfo {
 
 fn import_snp_boot_pages(
     importer: &mut impl ImageLoad<X86Register>,
-    snp_boot: SnpBootConfig,
-) -> Result<(), Error> {
-    check_address_alignment(snp_boot.secrets_address)?;
-    check_address_alignment(snp_boot.cpuid_address)?;
-    check_address_alignment(snp_boot.cc_blob_address)?;
-    check_address_alignment(snp_boot.cc_setup_data_address)?;
+    range: MemoryRange,
+) -> Result<u64, Error> {
+    assert_eq!(range.len(), SNP_BOOT_PAGE_COUNT * HV_PAGE_SIZE);
+    let secrets_address = range.start();
+    let cpuid_address = range.start() + HV_PAGE_SIZE;
+    let cc_blob_address = range.start() + 2 * HV_PAGE_SIZE;
+    let cc_setup_data_address = range.start() + 3 * HV_PAGE_SIZE;
 
     importer
         .import_pages(
-            snp_boot.secrets_address / HV_PAGE_SIZE,
+            secrets_address / HV_PAGE_SIZE,
             1,
             "linux-snp-secrets",
             BootPageAcceptance::SecretsPage,
@@ -344,7 +363,7 @@ fn import_snp_boot_pages(
         .map_err(Error::Importer)?;
     importer
         .import_pages(
-            snp_boot.cpuid_address / HV_PAGE_SIZE,
+            cpuid_address / HV_PAGE_SIZE,
             1,
             "linux-snp-cpuid",
             BootPageAcceptance::CpuidPage,
@@ -356,16 +375,16 @@ fn import_snp_boot_pages(
         magic: defs::CC_BLOB_SEV_INFO_MAGIC,
         version: 0,
         _reserved: 0,
-        secrets_phys: snp_boot.secrets_address,
+        secrets_phys: secrets_address,
         secrets_len: HV_PAGE_SIZE as u32,
         _rsvd1: 0,
-        cpuid_phys: snp_boot.cpuid_address,
+        cpuid_phys: cpuid_address,
         cpuid_len: HV_PAGE_SIZE as u32,
         _rsvd2: 0,
     };
     importer
         .import_pages(
-            snp_boot.cc_blob_address / HV_PAGE_SIZE,
+            cc_blob_address / HV_PAGE_SIZE,
             1,
             "linux-snp-cc-blob",
             BootPageAcceptance::Exclusive,
@@ -373,24 +392,28 @@ fn import_snp_boot_pages(
         )
         .map_err(Error::Importer)?;
 
+    let cc_blob_address = u32::try_from(cc_blob_address)
+        .map_err(|_| Error::SnpCcBlobAddressTooHigh(cc_blob_address))?;
     let cc_setup_data = defs::cc_setup_data {
         header: defs::setup_data {
             next: 0,
             ty: defs::SETUP_CC_BLOB,
             len: size_of::<defs::cc_setup_data>() as u32,
         },
-        cc_blob_address: snp_boot.cc_blob_address as u32,
+        cc_blob_address,
         _padding: [0; 3],
     };
     importer
         .import_pages(
-            snp_boot.cc_setup_data_address / HV_PAGE_SIZE,
+            cc_setup_data_address / HV_PAGE_SIZE,
             1,
             "linux-snp-cc-setup-data",
             BootPageAcceptance::Exclusive,
             cc_setup_data.as_bytes(),
         )
-        .map_err(Error::Importer)
+        .map_err(Error::Importer)?;
+
+    Ok(cc_setup_data_address)
 }
 
 /// Check if an address is aligned to a page.
@@ -651,21 +674,22 @@ fn import_config(
         )
         .map_err(Error::Importer)?;
 
-    if let Some(snp_boot) = snp_boot {
-        import_snp_boot_pages(importer, snp_boot)?;
-    }
-
-    let mut boot_params = build_zero_page(
+    let requested_page_count = snp_boot.map_or(0, |_| SNP_BOOT_PAGE_COUNT);
+    let ZeroPageBuildResult {
+        mut boot_params,
+        additional_pages,
+    } = build_zero_page(
         mem_layout,
         acpi.tables.len(),
         smbios.map_or(0, |s| s.structure_table.len()),
+        requested_page_count,
         cmdline,
         load_info.initrd.as_ref().map(|info| info.gpa).unwrap_or(0) as u32,
         load_info.initrd.as_ref().map(|info| info.size).unwrap_or(0) as u32,
         load_info.bzimage_setup_header.as_ref(),
     )?;
-    if let Some(snp_boot) = snp_boot {
-        boot_params.hdr.setup_data = snp_boot.cc_setup_data_address.into();
+    if let Some(allocated_range) = additional_pages {
+        boot_params.hdr.setup_data = import_snp_boot_pages(importer, allocated_range)?.into();
     }
     importer
         .import_pages(
@@ -750,7 +774,7 @@ fn import_config(
 ///   The loader re-homes the RSDP to the fixed 0xe0000 legacy-scan location.
 /// * `smbios` - an optional SMBIOS identity; when present the loader assembles
 ///   the `_SM3_` entry point and structure table into the F-segment.
-/// * `snp_boot` - optional SEV-SNP Linux boot protocol page locations.
+/// * `snp_boot` - optionally allocate SEV-SNP Linux boot protocol pages.
 pub fn load_config_x86(
     importer: &mut impl ImageLoad<X86Register>,
     load_info: &LoadInfo,
@@ -1092,7 +1116,6 @@ mod tests {
     use crate::importer::IsolationConfig;
     use crate::importer::ParameterAreaIndex;
     use crate::importer::StartupMemoryType;
-    use memory_range::MemoryRange;
     use test_with_tracing::test;
     use zerocopy::FromBytes;
 
@@ -1141,12 +1164,14 @@ mod tests {
             &make_layout(256 * MB),
             acpi_len,
             smbios_len,
+            0,
             &CString::new("root=/dev/sda").unwrap(),
             0,
             0,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .boot_params;
 
         let acpi_end = ACPI_TABLES_BASE + 0x2000;
         let smbios_end = acpi_end + 0x1000;
@@ -1176,12 +1201,14 @@ mod tests {
             &make_layout(256 * MB),
             0x1800,
             0,
+            0,
             &CString::new("").unwrap(),
             0,
             0,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .boot_params;
 
         let acpi_end = ACPI_TABLES_BASE + 0x2000;
         let expected = [
@@ -1209,12 +1236,14 @@ mod tests {
             &make_layout(8 * GB),
             0x1000,
             0x1000,
+            0,
             &CString::new("").unwrap(),
             0,
             0,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .boot_params;
         assert_eq!(p.e820_entries, 7);
         let last = &p.e820_map[6];
         assert_eq!(u64::from(last.addr), 4 * GB);
@@ -1235,6 +1264,7 @@ mod tests {
         let result = build_zero_page(
             &make_layout(256 * MB),
             (RSDP_BASE - ACPI_TABLES_BASE) as usize + 0x1000,
+            0,
             0,
             &CString::new("").unwrap(),
             0,
@@ -1495,25 +1525,48 @@ mod tests {
 
     #[test]
     fn imports_snp_boot_pages_with_linux_cc_blob() {
-        let snp_boot = SnpBootConfig {
-            secrets_address: 0x10000,
-            cpuid_address: 0x11000,
-            cc_blob_address: 0x12000,
-            cc_setup_data_address: 0x13000,
-        };
+        let acpi_len = 0x1800;
+        let smbios_len = 0x100;
+        let ZeroPageBuildResult {
+            boot_params,
+            additional_pages,
+        } = build_zero_page(
+            &make_layout(256 * MB),
+            acpi_len,
+            smbios_len,
+            SNP_BOOT_PAGE_COUNT,
+            &CString::new("").unwrap(),
+            0,
+            0,
+            None,
+        )
+        .unwrap();
+        let allocated_range = additional_pages.unwrap();
         let mut importer = RecordingImporter::default();
 
-        import_snp_boot_pages(&mut importer, snp_boot).unwrap();
+        let cc_setup_data_address = import_snp_boot_pages(&mut importer, allocated_range).unwrap();
 
         assert_eq!(importer.imports.len(), 4);
-        assert_eq!(importer.imports[0].page_base, 0x10);
+        assert_eq!(
+            allocated_range.start(),
+            ACPI_TABLES_BASE
+                + align_up_to_page_size(acpi_len as u64)
+                + align_up_to_page_size(smbios_len as u64)
+        );
+        assert_eq!(
+            importer.imports[0].page_base,
+            allocated_range.start() / HV_PAGE_SIZE
+        );
         assert_eq!(importer.imports[0].page_count, 1);
         assert_eq!(importer.imports[0].tag, "linux-snp-secrets");
         assert_eq!(
             importer.imports[0].acceptance,
             BootPageAcceptance::SecretsPage
         );
-        assert_eq!(importer.imports[1].page_base, 0x11);
+        assert_eq!(
+            importer.imports[1].page_base,
+            allocated_range.start() / HV_PAGE_SIZE + 1
+        );
         assert_eq!(
             importer.imports[1].acceptance,
             BootPageAcceptance::CpuidPage
@@ -1522,9 +1575,9 @@ mod tests {
         let cc_blob = defs::cc_blob_sev_info::read_from_bytes(&importer.imports[2].data).unwrap();
         assert_eq!(cc_blob.magic, defs::CC_BLOB_SEV_INFO_MAGIC);
         assert_eq!(cc_blob.version, 0);
-        assert_eq!(cc_blob.secrets_phys, snp_boot.secrets_address);
+        assert_eq!(cc_blob.secrets_phys, allocated_range.start());
         assert_eq!(cc_blob.secrets_len, HV_PAGE_SIZE as u32);
-        assert_eq!(cc_blob.cpuid_phys, snp_boot.cpuid_address);
+        assert_eq!(cc_blob.cpuid_phys, allocated_range.start() + HV_PAGE_SIZE);
         assert_eq!(cc_blob.cpuid_len, HV_PAGE_SIZE as u32);
 
         let cc_setup_data =
@@ -1537,7 +1590,34 @@ mod tests {
         );
         assert_eq!(
             cc_setup_data.cc_blob_address,
-            snp_boot.cc_blob_address as u32
+            u32::try_from(allocated_range.start() + 2 * HV_PAGE_SIZE).unwrap()
         );
+        assert_eq!(allocated_range.end(), cc_setup_data_address + HV_PAGE_SIZE,);
+        assert!(allocated_range.end() <= RSDP_BASE);
+
+        let smbios_reserved = &boot_params.e820_map[2];
+        let acpi_end = ACPI_TABLES_BASE + align_up_to_page_size(acpi_len as u64);
+        assert_eq!(u64::from(smbios_reserved.addr), acpi_end);
+        assert_eq!(
+            u64::from(smbios_reserved.size),
+            align_up_to_page_size(smbios_len as u64)
+        );
+        let additional_reserved = &boot_params.e820_map[3];
+        assert_eq!(u64::from(additional_reserved.addr), allocated_range.start());
+        assert_eq!(u64::from(additional_reserved.size), allocated_range.len());
+
+        assert!(matches!(
+            build_zero_page(
+                &make_layout(256 * MB),
+                (RSDP_BASE - ACPI_TABLES_BASE) as usize,
+                0,
+                SNP_BOOT_PAGE_COUNT,
+                &CString::new("").unwrap(),
+                0,
+                0,
+                None,
+            ),
+            Err(Error::LowTablesTooLarge(..))
+        ));
     }
 }
