@@ -2286,6 +2286,17 @@ pub struct MemoryConfig {
     /// Per-NUMA-node memory sizes. When set, RAM is distributed across
     /// vNUMA nodes instead of assigning all RAM to node 0.
     pub numa_mem_sizes: Option<Vec<u64>>,
+    /// Back guest RAM with private anonymous memory rather than a shared
+    /// (file/memfd-backed) memory section.
+    ///
+    /// Defaults to `true`. Set to `false` for tests that require the guest
+    /// RAM backing to be shareable with another process, such as vhost-user
+    /// backends. Note that `with_hugepages` and `with_memory_backing_file`
+    /// force shared memory regardless of this setting, since they require a
+    /// file-backed mapping.
+    ///
+    /// Only applies to the OpenVMM backend; ignored by Hyper-V.
+    pub private_memory: bool,
 }
 
 impl Default for MemoryConfig {
@@ -2294,6 +2305,7 @@ impl Default for MemoryConfig {
             startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
             numa_mem_sizes: None,
+            private_memory: true,
         }
     }
 }

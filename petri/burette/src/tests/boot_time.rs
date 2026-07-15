@@ -79,6 +79,18 @@ impl BootProfile {
                     }
                 })
             });
+        } else {
+            // Guest RAM defaults to private memory; force shared memory for
+            // the non-private profiles so they measure the shared backing.
+            builder = builder.modify_backend(|c| {
+                c.with_custom_config(|c| {
+                    for node in &mut c.numa.nodes {
+                        if let Some(mem) = &mut node.mem {
+                            mem.private_memory = false;
+                        }
+                    }
+                })
+            });
         }
 
         if self.uses_quiet_serial() {

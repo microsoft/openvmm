@@ -168,21 +168,17 @@ async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
     Ok(())
 }
 
-/// Boot with private anonymous memory instead of shared memory sections.
+/// Boot with shared (file/memfd-backed) memory sections instead of the
+/// default private anonymous memory.
 #[openvmm_test(
     linux_direct_x64,
     // TODO: add linux_direct_aarch64 (GH #1798)
 )]
-async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn boot_shared_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                for node in &mut c.numa.nodes {
-                    if let Some(mem) = &mut node.mem {
-                        mem.private_memory = true;
-                    }
-                }
-            })
+        .with_memory(MemoryConfig {
+            private_memory: false,
+            ..Default::default()
         })
         .run()
         .await?;
@@ -922,6 +918,12 @@ async fn vhost_user_blk_device<T>(
     .into_resource();
 
     let (vm, agent) = config
+        // vhost-user requires the guest RAM backing to be shareable with the
+        // backend process, so opt out of the default private memory.
+        .with_memory(MemoryConfig {
+            private_memory: false,
+            ..Default::default()
+        })
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));

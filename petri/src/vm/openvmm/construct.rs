@@ -428,6 +428,7 @@ impl PetriVmConfigOpenVmm {
                 startup_bytes,
                 dynamic_memory_range,
                 numa_mem_sizes,
+                private_memory,
             } = memory;
 
             if dynamic_memory_range.is_some() {
@@ -437,7 +438,7 @@ impl PetriVmConfigOpenVmm {
             let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
                 mem_size: size,
                 prefetch_memory: false,
-                private_memory: false,
+                private_memory,
                 transparent_hugepages: false,
                 hugepages: false,
                 hugepage_size: None,

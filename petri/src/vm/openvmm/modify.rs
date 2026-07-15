@@ -335,17 +335,29 @@ impl PetriVmConfigOpenVmm {
     /// The file at the given path will be created (or opened) and sized to
     /// match the VM's configured memory. Guest memory is then backed by
     /// this file, which persists across snapshot save/restore.
+    ///
+    /// This forces shared (non-private) memory, since a file-backed mapping
+    /// is incompatible with private anonymous RAM.
     pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.memory_backing_file = Some(path.into());
+        for node in &mut self.config.numa.nodes {
+            if let Some(mem) = &mut node.mem {
+                mem.private_memory = false;
+            }
+        }
         self
     }
 
     /// Use explicit hugetlb-backed guest memory.
+    ///
+    /// This forces shared (non-private) memory, since hugetlb backing
+    /// requires a file-backed mapping rather than private anonymous RAM.
     pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
         for node in &mut self.config.numa.nodes {
             if let Some(mem) = &mut node.mem {
                 mem.hugepages = true;
                 mem.hugepage_size = hugepage_size;
+                mem.private_memory = false;
             }
         }
         self

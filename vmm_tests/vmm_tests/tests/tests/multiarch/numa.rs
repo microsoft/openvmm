@@ -23,11 +23,11 @@ use vmm_test_macros::openvmm_test;
 const SIZE_1_GB: u64 = 1024 * 1024 * 1024;
 const SIZE_2_GB: u64 = 2 * SIZE_1_GB;
 
-fn make_mem(size: u64) -> MemoryConfig {
+fn make_mem(size: u64, private_memory: bool) -> MemoryConfig {
     MemoryConfig {
         mem_size: size,
         prefetch_memory: false,
-        private_memory: false,
+        private_memory,
         transparent_hugepages: false,
         hugepages: false,
         hugepage_size: None,
@@ -103,8 +103,8 @@ async fn boot_numa_two_nodes(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     let (vm, agent) = config
         .with_memory(petri::MemoryConfig {
             startup_bytes: SIZE_2_GB * 2,
-            dynamic_memory_range: None,
             numa_mem_sizes: Some(vec![SIZE_2_GB, SIZE_2_GB]),
+            ..Default::default()
         })
         .with_processor_topology(petri::ProcessorTopology {
             vp_count: 4,
@@ -144,10 +144,13 @@ async fn boot_numa_two_nodes(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 /// Boot a 4-node NUMA VM with asymmetric memory, a CPU-only node, a
 /// memory-only node, explicit VP assignment, and custom SLIT distances.
 ///
-/// - Node 0: 1 GB RAM, VPs [0, 1]
-/// - Node 1: 2 GB RAM, VPs [2, 3]
+/// - Node 0: 1 GB RAM, VPs [0, 1] (private memory)
+/// - Node 1: 2 GB RAM, VPs [2, 3] (shared memory)
 /// - Node 2: no memory, VPs [4, 5] (CPU-only)
-/// - Node 3: 1 GB RAM, no VPs (memory-only)
+/// - Node 3: 1 GB RAM, no VPs (memory-only, private memory)
+///
+/// The mix of private and shared per-node backing also exercises the
+/// memory manager building heterogeneous RAM backings in one VM.
 ///
 /// Custom distances: 10 self, 15/25/30 between select pairs.
 #[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
@@ -164,14 +167,14 @@ async fn boot_numa_complex_topology(
             b.with_custom_config(|c| {
                 c.numa = NumaTopology {
                     nodes: vec![
-                        // Node 0: 1 GB, VPs 0-1
+                        // Node 0: 1 GB, VPs 0-1 (private memory)
                         NumaNode {
-                            mem: Some(make_mem(SIZE_1_GB)),
+                            mem: Some(make_mem(SIZE_1_GB, true)),
                             vps: VpAssignment::Explicit(vec![0, 1]),
                         },
-                        // Node 1: 2 GB, VPs 2-3
+                        // Node 1: 2 GB, VPs 2-3 (shared memory)
                         NumaNode {
-                            mem: Some(make_mem(SIZE_2_GB)),
+                            mem: Some(make_mem(SIZE_2_GB, false)),
                             vps: VpAssignment::Explicit(vec![2, 3]),
                         },
                         // Node 2: CPU-only (no memory), VPs 4-5
@@ -179,9 +182,9 @@ async fn boot_numa_complex_topology(
                             mem: None,
                             vps: VpAssignment::Explicit(vec![4, 5]),
                         },
-                        // Node 3: memory-only (1 GB), no VPs
+                        // Node 3: memory-only (1 GB), no VPs (private memory)
                         NumaNode {
-                            mem: Some(make_mem(SIZE_1_GB)),
+                            mem: Some(make_mem(SIZE_1_GB, true)),
                             vps: VpAssignment::Empty,
                         },
                     ],
@@ -314,11 +317,11 @@ async fn pcie_device_numa_affinity(
                 c.numa = NumaTopology {
                     nodes: vec![
                         NumaNode {
-                            mem: Some(make_mem(SIZE_2_GB)),
+                            mem: Some(make_mem(SIZE_2_GB, true)),
                             vps: VpAssignment::Explicit(vec![0, 1]),
                         },
                         NumaNode {
-                            mem: Some(make_mem(SIZE_2_GB)),
+                            mem: Some(make_mem(SIZE_2_GB, true)),
                             vps: VpAssignment::Explicit(vec![2, 3]),
                         },
                     ],
