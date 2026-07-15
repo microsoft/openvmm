@@ -333,7 +333,7 @@ impl<'a> TpmGuestTests<'a> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -631,7 +631,7 @@ async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
 /// VBS boot test with attestation enabled
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS Ubuntu attestation boot is not yet reliable", openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)))
+    ignore(reason = "OpenVMM VBS Ubuntu attestation boot is not yet reliable (microsoft/openvmm#2608)", openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)))
 )]
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

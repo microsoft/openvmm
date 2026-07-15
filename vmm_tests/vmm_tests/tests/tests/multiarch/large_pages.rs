@@ -22,8 +22,8 @@ use vmm_test_macros::openvmm_test;
 /// that the large-page section allocation succeeds; the test fails (rather than
 /// skips) if large-page backing is unavailable, per design.
 ///
-/// TODO: clear unstable prefix once the CI runners have the
-/// SeLockMemoryPrivilege enabled for the test user.
+/// TODO: remove the `ignore(...)` wrapper on `linux_direct_x64` once the CI
+/// runners have the SeLockMemoryPrivilege enabled for the test user.
 #[openvmm_test(
     ignore(
         reason = "missing SeLockMemoryPrivilege in x86_64 runners",
