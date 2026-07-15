@@ -190,9 +190,21 @@ fn nested_virt_capable_probe() -> bool {
         nested_enabled("/sys/module/kvm_intel/parameters/nested")
             || nested_enabled("/sys/module/kvm_amd/parameters/nested")
     }
-    #[cfg(not(target_os = "linux"))]
+    // WHP reports nested-virt support through a processor-feature capability
+    // bit (x86-only).
+    // xtask-fmt allow-target-arch oneoff-petri-host-arch
+    #[cfg(all(windows, target_arch = "x86_64"))]
     {
-        // TODO: probe WHP for nested-virt support.
+        match whp::capabilities::processor_features() {
+            Ok(features) => features
+                .bank1
+                .is_set(whp::abi::WHV_PROCESSOR_FEATURES1::NestedVirtSupport),
+            Err(_) => false,
+        }
+    }
+    // xtask-fmt allow-target-arch oneoff-petri-host-arch
+    #[cfg(not(any(target_os = "linux", all(windows, target_arch = "x86_64"))))]
+    {
         false
     }
 }

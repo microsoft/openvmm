@@ -6369,6 +6369,7 @@ dependencies = [
  "vmsocket",
  "vmswitch",
  "vtl2_settings_proto",
+ "whp",
  "windows-version",
  "x86defs",
 ]
