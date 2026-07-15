@@ -1304,30 +1304,72 @@ mod x86 {
                 todo!("WHP can only translate gvas against VTL0");
             }
 
-            let flags = convert_translate_control_flags(control_flags)?;
+            let result = if self.vp.vp.partition.caps.nested_virt {
+                // When nested virtualization is enabled, the software page table
+                // walker cannot account for the hypervisor's nested paging
+                // state, so defer the translation to the hypervisor via
+                // `WHvTranslateGva`.
+                let mut flags = whp::abi::WHvTranslateGvaFlagNone;
+                if control_flags.validate_read() {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateRead;
+                }
+                if control_flags.validate_write() {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateWrite;
+                }
+                if control_flags.validate_execute() {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateExecute;
+                }
+                if control_flags.privilege_exempt() {
+                    flags |= whp::abi::WHvTranslateGvaFlagPrivilegeExempt;
+                }
+                if control_flags.set_page_table_bits() {
+                    flags |= whp::abi::WHvTranslateGvaFlagSetPageTableBits;
+                }
 
-            let result = translate_gva_to_gpa(
-                &self.vp.vp.partition.gm,
-                gva_page * HV_PAGE_SIZE,
-                &self.vp.translation_registers(Vtl::Vtl0),
-                flags,
-            );
-
-            let result = match result {
-                Ok(TranslateResult { gpa, cache_info: _ }) => {
-                    hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                match self.vp.translate_gva_via_hypervisor(
+                    Vtl::Vtl0,
+                    gva_page * HV_PAGE_SIZE,
+                    flags,
+                ) {
+                    Ok(gpa) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
                         gpa_page: gpa / HV_PAGE_SIZE,
                         ..FromZeros::new_zeroed()
-                    }
-                }
-                Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-                    translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
-                        result: hvdef::hypercall::TranslateGvaResult::new()
-                            .with_result_code(TranslateGvaResultCode::from(err).0),
+                    },
+                    Err(code) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
+                            result: hvdef::hypercall::TranslateGvaResult::new()
+                                .with_result_code(code.0),
+                            ..FromZeros::new_zeroed()
+                        },
                         ..FromZeros::new_zeroed()
                     },
-                    ..FromZeros::new_zeroed()
-                },
+                }
+            } else {
+                let flags = convert_translate_control_flags(control_flags)?;
+
+                let result = translate_gva_to_gpa(
+                    &self.vp.vp.partition.gm,
+                    gva_page * HV_PAGE_SIZE,
+                    &self.vp.translation_registers(Vtl::Vtl0),
+                    flags,
+                );
+
+                match result {
+                    Ok(TranslateResult { gpa, cache_info: _ }) => {
+                        hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                            gpa_page: gpa / HV_PAGE_SIZE,
+                            ..FromZeros::new_zeroed()
+                        }
+                    }
+                    Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
+                            result: hvdef::hypercall::TranslateGvaResult::new()
+                                .with_result_code(TranslateGvaResultCode::from(err).0),
+                            ..FromZeros::new_zeroed()
+                        },
+                        ..FromZeros::new_zeroed()
+                    },
+                }
             };
 
             Ok(result)
