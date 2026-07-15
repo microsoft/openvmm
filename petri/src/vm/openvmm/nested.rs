@@ -200,10 +200,18 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             // `PetriVmConfigOpenVmm::without_save_restore_check`.
             b.with_nested_virt()
                 .without_save_restore_check()
-                .with_pcie_root_topology(1, 1, 1)
+                .with_pcie_root_topology(1, 1, 2)
                 .with_custom_config(move |c| {
+                    // Pick the first PCIe root port not already claimed. The
+                    // no-vmbus L1 adds a virtio-vsock device (on the first
+                    // free port) during construction, so the virtio-fs share
+                    // must land on a distinct port to avoid a name clash.
+                    let fs_port = (0..)
+                        .map(|i| format!("s0rc0rp{i}"))
+                        .find(|name| !c.pcie_devices.iter().any(|d| d.port_name == *name))
+                        .expect("a free PCIe root port for the nested virtio-fs share");
                     c.pcie_devices.push(PcieDeviceConfig {
-                        port_name: "s0rc0rp0".into(),
+                        port_name: fs_port,
                         resource: virtio_resources::VirtioPciDeviceHandle(
                             virtio_resources::fs::VirtioFsHandle {
                                 tag: NESTED_VFS_TAG.into(),
