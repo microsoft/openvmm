@@ -177,7 +177,7 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         let pipette_data = fs_err::read(pipette_path.get())
             .context("failed to read pipette binary for L2 initrd injection")?;
         let merged_gz =
-            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+            initrd_cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
                 .context("failed to inject pipette into L2 initrd")?;
         fs_err::write(staging_dir.path().join(STAGED_INITRD_NAME), &merged_gz)
             .context("failed to write L2 initrd with pipette")?;
