@@ -376,15 +376,15 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
         parse_hex_u64(start)
     };
 
-    // Enable PCI memory-space decode + bus mastering (COMMAND |= MEM|BUSMASTER)
-    // by writing the low COMMAND byte through sysfs config space. 0x0006 =
+    // Enable PCI memory-space decode + bus mastering by writing COMMAND =
+    // MEM|BUSMASTER through sysfs config space. The device is freshly bound, so
+    // a fixed write (rather than read/modify/write) is sufficient. 0x0006 =
     // MEM (bit1) | BUSMASTER (bit2), at the 16-bit COMMAND register (offset 4).
     let enable_mem_bus_master = async |bdf: &str| -> anyhow::Result<()> {
         let cfg = format!("/sys/bus/pci/devices/{bdf}/config");
         cmd!(sh, "dd of={cfg} bs=1 seek=4 count=2 conv=notrunc")
             .stdin([0x06u8, 0x00u8])
             .ignore_stdout()
-            .ignore_stderr()
             .run()
             .await
             .with_context(|| format!("failed to enable MEM|BUSMASTER on {bdf}"))
