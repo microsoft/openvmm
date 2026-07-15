@@ -1314,7 +1314,9 @@ mod x86 {
                 // Validate and normalize the control flags the same way as the
                 // non-nested path so that unsupported/reserved bits still return
                 // `HvError::InvalidParameter` rather than being silently ignored,
-                // then build the WHP flags from the validated result.
+                // then build the WHP flags from the validated result. Controls
+                // that `WHvTranslateGva` cannot represent (an explicit
+                // user/supervisor access mode) are rejected rather than dropped.
                 let translate_flags = convert_translate_control_flags(control_flags)?;
 
                 let mut flags = whp::abi::WHvTranslateGvaFlagNone;
@@ -1327,11 +1329,35 @@ mod x86 {
                 if translate_flags.validate_execute {
                     flags |= whp::abi::WHvTranslateGvaFlagValidateExecute;
                 }
-                if matches!(
-                    translate_flags.privilege_check,
-                    TranslatePrivilegeCheck::None
-                ) {
-                    flags |= whp::abi::WHvTranslateGvaFlagPrivilegeExempt;
+                match translate_flags.privilege_check {
+                    // No privilege checks: exempt the walk from access-mode
+                    // enforcement.
+                    TranslatePrivilegeCheck::None => {
+                        flags |= whp::abi::WHvTranslateGvaFlagPrivilegeExempt;
+                    }
+                    // Check against the VP's current privilege level. This is
+                    // `WHvTranslateGva`'s default behavior when no privilege
+                    // flag is set, so there is nothing to map.
+                    TranslatePrivilegeCheck::CurrentPrivilegeLevel => {}
+                    // WHP has no way to request an explicit user- or
+                    // supervisor-mode access independent of the current CPL, so
+                    // these controls cannot be honored under nested virt.
+                    //
+                    // TODO: `WHvTranslateGva` exposes no equivalent of the
+                    // `USER_ACCESS`/`SUPERVISOR_ACCESS` hypercall flags. No
+                    // in-tree caller sets them today, so reject them rather than
+                    // silently translating with different privilege semantics.
+                    TranslatePrivilegeCheck::User
+                    | TranslatePrivilegeCheck::Supervisor
+                    | TranslatePrivilegeCheck::Both => {
+                        return Err(HvError::InvalidParameter);
+                    }
+                }
+                if translate_flags.override_smap {
+                    flags |= whp::abi::WHvTranslateGvaFlagOverrideSmap;
+                }
+                if translate_flags.enforce_smap {
+                    flags |= whp::abi::WHvTranslateGvaFlagEnforceSmap;
                 }
                 if translate_flags.set_page_table_bits {
                     flags |= whp::abi::WHvTranslateGvaFlagSetPageTableBits;

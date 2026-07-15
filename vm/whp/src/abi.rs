@@ -603,6 +603,12 @@ pub const WHvTranslateGvaFlagPrivilegeExempt: WHV_TRANSLATE_GVA_FLAGS =
     WHV_TRANSLATE_GVA_FLAGS(0x00000008);
 pub const WHvTranslateGvaFlagSetPageTableBits: WHV_TRANSLATE_GVA_FLAGS =
     WHV_TRANSLATE_GVA_FLAGS(0x00000010);
+#[cfg(target_arch = "x86_64")]
+pub const WHvTranslateGvaFlagEnforceSmap: WHV_TRANSLATE_GVA_FLAGS =
+    WHV_TRANSLATE_GVA_FLAGS(0x00000100);
+#[cfg(target_arch = "x86_64")]
+pub const WHvTranslateGvaFlagOverrideSmap: WHV_TRANSLATE_GVA_FLAGS =
+    WHV_TRANSLATE_GVA_FLAGS(0x00000200);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
