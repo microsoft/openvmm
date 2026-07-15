@@ -226,9 +226,11 @@ pub struct MountRequest {
 /// accepts connections in a loop. For every accepted peer, pipette allocates
 /// a fresh pipe pair and sends the host-facing halves over `connections`;
 /// receiving an item is itself the "a peer connected" signal. Each
-/// connection is pumped independently until either side closes. Dropping the
-/// receiver lets pipette tear the listener (and its bind-path filesystem
-/// entry) down.
+/// connection is pumped independently until either side closes. Once the host
+/// drops the receiver the loop stops servicing new peers (the next accepted
+/// connection is dropped and the loop exits, cleaning up the listener and its
+/// bind-path filesystem entry); a listener that is idle at that point is
+/// cleaned up when the pipette agent shuts down.
 #[derive(MeshPayload)]
 pub struct RelayUnixSocketRequest {
     /// Path inside the guest at which pipette should bind a UNIX listener.

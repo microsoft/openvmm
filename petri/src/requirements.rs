@@ -229,7 +229,9 @@ pub enum TestRequirement {
     /// self-exclude on any host that cannot satisfy them.
     RequiresCapability(&'static str),
     /// Requires a hypervisor backend that supports VPCI (virtual PCI)
-    /// device emulation. On Linux this means /dev/mshv (not KVM).
+    /// device emulation. This is currently detected only on Windows (WHP);
+    /// on Linux `vpci_supported` is always false, so this requirement is not
+    /// yet satisfiable there.
     VpciSupport,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
