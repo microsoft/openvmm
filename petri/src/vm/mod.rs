@@ -184,6 +184,9 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     use_virtio_vsock: bool,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Expose nested-virtualization extensions (VMX/SVM) to the guest so it
+    // can itself host a nested VM.
+    nested_virt: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -206,6 +209,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
+            .field("nested_virt", &self.nested_virt)
             .finish()
     }
 }
@@ -291,6 +295,8 @@ pub struct PetriVmProperties {
     pub use_virtio_vsock: bool,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// Nested-virtualization extensions are exposed to the guest
+    pub nested_virt: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -463,6 +469,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
+            nested_virt: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -539,6 +546,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
+            nested_virt: false,
         })
     }
 
@@ -662,6 +670,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             self.use_virtio_vsock = true;
         }
         self.config.vmbus_storage_controllers.clear();
+        self
+    }
+
+    /// Expose nested-virtualization extensions (VMX/SVM) to the guest so it
+    /// can itself host a nested VM.
+    ///
+    /// The OpenVMM backend honors this on both the KVM and WHP hypervisors:
+    /// with it set they advertise the vendor virtualization CPUID bit (VMX on
+    /// Intel, SVM on AMD) to the guest; without it that bit is stripped, so
+    /// the guest cannot run its own VMs. The Hyper-V backend does not yet act
+    /// on this (stubbed for now). The host must itself be able to host a
+    /// nested guest — tests declare that via the `nested_virt` capability
+    /// (`requires(nested_virt)`).
+    pub fn with_nested_virt(mut self) -> Self {
+        self.nested_virt = true;
         self
     }
 
@@ -964,6 +987,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
             no_vmbus: self.no_vmbus,
+            nested_virt: self.nested_virt,
         }
     }
 

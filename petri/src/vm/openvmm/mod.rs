@@ -182,11 +182,6 @@ pub struct PetriVmConfigOpenVmm {
     // Deferred IOMMU configuration: (rc_name, iommu_config) pairs resolved
     // against pcie_root_complexes at VM start time.
     pending_iommu: Vec<(String, openvmm_defs::config::PcieIommuConfig)>,
-    // Test author has opted out of the default save/restore smoke check
-    // because the VM intentionally includes a device whose backend cannot
-    // be serialized (e.g. virtio-fs / virtio-9p). See
-    // `PetriVmConfigOpenVmm::without_save_restore_check`.
-    skip_save_restore_check: bool,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {

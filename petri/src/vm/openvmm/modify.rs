@@ -48,37 +48,6 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Expose nested-virtualization extensions (VMX/SVM) to the guest so it
-    /// can itself host a nested VM.
-    ///
-    /// This sets OpenVMM's `nested_virt` hypervisor config flag, which both
-    /// the KVM and WHP backends honor: with the flag set they advertise the
-    /// vendor virtualization CPUID bit (VMX on Intel, SVM on AMD) to the
-    /// guest; without it that bit is stripped, so the guest cannot run its
-    /// own VMs. The host must itself be able to host a nested guest — tests
-    /// declare this via the `nested_virt` capability (`requires(nested_virt)`).
-    pub fn with_nested_virt(mut self) -> Self {
-        self.config.hypervisor.nested_virt = true;
-        self
-    }
-
-    /// Opt out of the framework's default save/restore smoke check that
-    /// runs after the VM resumes for the first time.
-    ///
-    /// The default flow saves, resets, and restores the VM twice to catch
-    /// regressions in device save/restore. Tests that intentionally attach
-    /// a device whose backend cannot round-trip through save/restore
-    /// (notably virtio-fs and virtio-9p, which hold host-side filesystem
-    /// state that is not serialised in the saved state) should call this
-    /// to avoid a guaranteed failure that has nothing to do with what the
-    /// test is exercising. See the trait doc-comment on
-    /// `VirtioDevice::supports_save_restore` for which device backends
-    /// fall in this category.
-    pub fn without_save_restore_check(mut self) -> Self {
-        self.skip_save_restore_check = true;
-        self
-    }
-
     /// Enable the battery for the VM.
     pub fn with_battery(mut self) -> Self {
         if self.resources.properties.is_openhcl {

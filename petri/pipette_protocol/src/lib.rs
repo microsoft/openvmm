@@ -58,9 +58,8 @@ pub enum PipetteRequest {
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
-    /// Binds a UNIX-domain listener inside the guest, accepts a single
-    /// connection, and pumps bytes between that connection and a pair of
-    /// mesh pipes (Linux only).
+    /// Binds a UNIX-domain listener inside the guest and relays each
+    /// accepted connection to the host as a pair of mesh pipes.
     ///
     /// This is the primitive used by nested-virt tests to reach an L2
     /// pipette agent: the in-L1 openvmm hybrid-vsock device translates an
@@ -69,7 +68,7 @@ pub enum PipetteRequest {
     /// host over the existing mesh transport.
     RelayUnixSocket(FailableRpc<RelayUnixSocketRequest, ()>),
     /// Connects to an existing UNIX-domain socket inside the guest and
-    /// relays bytes over a pair of mesh pipes (Linux only).
+    /// relays bytes over a pair of mesh pipes.
     ///
     /// This is the complement of `RelayUnixSocket`: instead of binding a
     /// new listener, pipette connects to a socket that some other process

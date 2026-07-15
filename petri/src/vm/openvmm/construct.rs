@@ -598,7 +598,7 @@ impl PetriVmConfigOpenVmm {
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
-                nested_virt: false,
+                nested_virt: properties.nested_virt,
             },
             vmbus: if properties.no_vmbus {
                 None
@@ -719,7 +719,6 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu: Vec::new(),
-            skip_save_restore_check: false,
         })
     }
 }

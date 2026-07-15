@@ -143,15 +143,16 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
     ///
     /// This stages the L2 artifacts (musl `openvmm` binary, kernel, initrd)
     /// into a temporary directory on the host and attaches that directory
-    /// to the L1 VM as a read-only virtio-fs share. The returned
+    /// to the L1 VM as a virtio-fs share. The returned
     /// [`NestedL2Builder`] must be retained until after the L1 VM has
     /// booted and its pipette is available; calling
     /// [`NestedL2Builder::launch`] then mounts the share inside L1 and
     /// spawns the in-L1 openvmm.
     ///
-    /// Internally calls [`PetriVmBuilder::modify_backend`] (which composes
-    /// across calls) and `with_nested_virt`, so the L1 is configured to
-    /// expose nested-virtualization extensions to the guest.
+    /// Internally calls [`PetriVmBuilder::with_nested_virt`], so the L1 is
+    /// configured to expose nested-virtualization extensions to the guest,
+    /// and [`PetriVmBuilder::modify_backend`] (which composes across calls)
+    /// for the virtio-fs share and PCIe topology.
     ///
     /// The L1 is also configured with [`PetriVmBuilder::with_no_vmbus`]: on
     /// WHP the hypervisor cannot provide synic ports (which vmbus needs) at
@@ -193,39 +194,40 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         let log_source = self.resources.log_source.clone();
         let staging_root_path = staging_dir.path().to_string_lossy().into_owned();
 
-        let builder = self.with_no_vmbus().modify_backend(move |b| {
-            // virtio-fs holds host-side filesystem state that cannot be
-            // round-tripped through save/restore, so opt out of the
-            // framework's default save/restore smoke check. See
-            // `PetriVmConfigOpenVmm::without_save_restore_check`.
-            b.with_nested_virt()
-                .without_save_restore_check()
-                .with_pcie_root_topology(1, 1, 2)
-                .with_custom_config(move |c| {
-                    // Pick the first PCIe root port not already claimed. The
-                    // no-vmbus L1 adds a virtio-vsock device (on the first
-                    // free port) during construction, so the virtio-fs share
-                    // must land on a distinct port to avoid a name clash.
-                    let fs_port = (0..)
-                        .map(|i| format!("s0rc0rp{i}"))
-                        .find(|name| !c.pcie_devices.iter().any(|d| d.port_name == *name))
-                        .expect("a free PCIe root port for the nested virtio-fs share");
-                    c.pcie_devices.push(PcieDeviceConfig {
-                        port_name: fs_port,
-                        resource: virtio_resources::VirtioPciDeviceHandle(
-                            virtio_resources::fs::VirtioFsHandle {
-                                tag: NESTED_VFS_TAG.into(),
-                                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                                    root_path: staging_root_path,
-                                    mount_options: String::new(),
-                                },
-                            }
+        let builder = self
+            .with_no_vmbus()
+            .with_nested_virt()
+            .modify_backend(move |b| {
+                // The default save/restore smoke check is already skipped for
+                // this VM: `with_no_vmbus` selects virtio-vsock, which petri
+                // treats as non-save/restore-able (as is the virtio-fs share
+                // added below).
+                b.with_pcie_root_topology(1, 1, 2)
+                    .with_custom_config(move |c| {
+                        // Pick the first PCIe root port not already claimed. The
+                        // no-vmbus L1 adds a virtio-vsock device (on the first
+                        // free port) during construction, so the virtio-fs share
+                        // must land on a distinct port to avoid a name clash.
+                        let fs_port = (0..)
+                            .map(|i| format!("s0rc0rp{i}"))
+                            .find(|name| !c.pcie_devices.iter().any(|d| d.port_name == *name))
+                            .expect("a free PCIe root port for the nested virtio-fs share");
+                        c.pcie_devices.push(PcieDeviceConfig {
+                            port_name: fs_port,
+                            resource: virtio_resources::VirtioPciDeviceHandle(
+                                virtio_resources::fs::VirtioFsHandle {
+                                    tag: NESTED_VFS_TAG.into(),
+                                    fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                                        root_path: staging_root_path,
+                                        mount_options: String::new(),
+                                    },
+                                }
+                                .into_resource(),
+                            )
                             .into_resource(),
-                        )
-                        .into_resource(),
-                    });
-                })
-        });
+                        });
+                    })
+            });
 
         Ok((
             builder,
@@ -395,7 +397,7 @@ impl NestedL2Builder {
                 vmservice::CreateVmRequest {
                     config: Some(vmservice::VmConfig {
                         memory_config: Some(vmservice::MemoryConfig {
-                            memory_mb: self.memory_bytes / (1024 * 1024),
+                            memory_mb: self.memory_bytes.div_ceil(1024 * 1024),
                             ..Default::default()
                         }),
                         processor_config: Some(vmservice::ProcessorConfig {
