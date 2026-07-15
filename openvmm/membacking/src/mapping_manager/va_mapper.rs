@@ -216,13 +216,14 @@ impl MapperTask {
     ) -> Result<(), MappingError> {
         let &MappingParams {
             range,
+            backing: _,
             writable,
+            mapping_type: _,
             policy:
                 MemoryPolicy {
                     numa_node,
                     transparent_hugepages,
                 },
-            ..
         } = params;
         let map_result = cfg_select! {
             windows => {
@@ -309,12 +310,14 @@ impl MapperTask {
     fn map_private(&self, params: &MappingParams) -> Result<(), MappingError> {
         let &MappingParams {
             range,
+            backing: _,
+            writable: _,
+            mapping_type: _,
             policy:
                 MemoryPolicy {
                     numa_node,
                     transparent_hugepages,
                 },
-            ..
         } = params;
         let offset = range.start() as usize;
         let len = range.len() as usize;

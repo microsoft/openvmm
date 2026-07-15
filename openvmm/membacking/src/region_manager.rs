@@ -1307,7 +1307,7 @@ mod tests {
                             file_offset: 0,
                         },
                         writable: true,
-                        policy: MemoryPolicy::default(),
+                        policy: MemoryPolicy::none(),
                     },
                 )
                 .await
@@ -1323,7 +1323,7 @@ mod tests {
                         range_in_region: MemoryRange::new(range_in_region),
                         backing: MappingBacking::Private,
                         writable: true,
-                        policy: MemoryPolicy::default(),
+                        policy: MemoryPolicy::none(),
                     },
                 )
                 .await
@@ -1455,7 +1455,7 @@ mod tests {
                     range_in_region: MemoryRange::new(0x8000..0xC000),
                     backing: MappingBacking::Private,
                     writable: true,
-                    policy: MemoryPolicy::default(),
+                    policy: MemoryPolicy::none(),
                 },
             )
             .await;
@@ -1589,7 +1589,7 @@ mod tests {
                         file_offset: 0,
                     },
                     writable: true,
-                    policy: MemoryPolicy::default(),
+                    policy: MemoryPolicy::none(),
                 },
             )
             .await;

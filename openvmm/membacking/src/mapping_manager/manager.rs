@@ -308,7 +308,12 @@ impl MappingBacking {
 /// Host-memory policy for a mapping, applied to the mapped VA range after the
 /// backing is established. Independent of how the mapping is backed, so it
 /// lives here rather than on [`MappingBacking`].
-#[derive(Debug, Copy, Clone, Default, MeshPayload)]
+///
+/// There is deliberately no `Default` impl: the correct policy is
+/// context-sensitive (guest RAM wants THP enabled, device memory does not), so
+/// an implicit fallback would silently do the wrong thing. Use [`MemoryPolicy::none`]
+/// when no special policy is desired, or construct the struct explicitly.
+#[derive(Debug, Copy, Clone, MeshPayload)]
 pub struct MemoryPolicy {
     /// Host NUMA node to strictly bind the mapping to (Linux `mbind(MPOL_BIND)`,
     /// Windows `MemExtendedParameterNumaNode`). `None` means OS default.
@@ -316,6 +321,21 @@ pub struct MemoryPolicy {
     /// Whether the range is advised as Transparent Huge Page eligible (Linux
     /// `madvise(MADV_HUGEPAGE)`).
     pub transparent_hugepages: bool,
+}
+
+impl MemoryPolicy {
+    /// Returns a policy that requests no special host-memory placement: no NUMA
+    /// binding (OS default placement) and no Transparent Huge Page advice.
+    ///
+    /// This may be the right choice for mappings that are not guest RAM, such
+    /// as device memory. Guest RAM should instead construct the policy
+    /// explicitly so that THP eligibility is a deliberate decision.
+    pub fn none() -> Self {
+        Self {
+            numa_node: None,
+            transparent_hugepages: false,
+        }
+    }
 }
 
 /// The mapping parameters.
@@ -761,7 +781,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -775,7 +795,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -810,7 +830,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -836,7 +856,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Ram,
-            policy: MemoryPolicy::default(),
+            policy: MemoryPolicy::none(),
         };
         task.add_mapping(params.clone()).await.unwrap();
         (task, params)
@@ -912,7 +932,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            policy: MemoryPolicy::default(),
+            policy: MemoryPolicy::none(),
         };
 
         // The eager mapper needs to respond to the MapEager Rpc.
@@ -1027,7 +1047,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            policy: MemoryPolicy::default(),
+            policy: MemoryPolicy::none(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1147,7 +1167,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1237,7 +1257,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            policy: MemoryPolicy::default(),
+            policy: MemoryPolicy::none(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1346,7 +1366,7 @@ mod tests {
             },
             writable: true,
             mapping_type: MappingType::Device,
-            policy: MemoryPolicy::default(),
+            policy: MemoryPolicy::none(),
         })
         .await
         .unwrap();
@@ -1455,7 +1475,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1505,7 +1525,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1543,7 +1563,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1574,7 +1594,7 @@ mod tests {
                 },
                 writable: true,
                 mapping_type: MappingType::Device,
-                policy: MemoryPolicy::default(),
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();

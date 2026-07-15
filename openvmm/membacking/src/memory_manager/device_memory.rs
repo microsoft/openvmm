@@ -120,7 +120,7 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
                     file_offset: new_mapping.file_offset,
                 },
                 new_mapping.writable,
-                MemoryPolicy::default(),
+                MemoryPolicy::none(),
             )) {
                 return Err(io::Error::other(e));
             }
@@ -179,7 +179,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                             file_offset: mapping.file_offset,
                         },
                         mapping.writable,
-                        MemoryPolicy::default(),
+                        MemoryPolicy::none(),
                     )
                     .await
                     .map_err(io::Error::other)?;
