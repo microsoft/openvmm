@@ -10,7 +10,10 @@ fn parse_component(name: &str, value: &str) -> u16 {
 }
 
 fn product_version() -> [u16; 3] {
-    let version = include_str!("../VERSION").trim();
+    let version_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../VERSION");
+    let version = std::fs::read_to_string(&version_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", version_path.display()));
+    let version = version.trim();
     let components = version.split('.').collect::<Vec<_>>();
     let [major, minor, patch] = components.as_slice() else {
         panic!("OpenVMM VERSION must contain exactly three components, got {version:?}");
@@ -23,32 +26,10 @@ fn product_version() -> [u16; 3] {
     ]
 }
 
-fn resource_version(product_version: [u16; 3]) -> [u16; 4] {
-    fn env_component(name: &str, default: u16) -> u16 {
-        match std::env::var(name) {
-            Ok(value) => parse_component(name, &value),
-            Err(std::env::VarError::NotPresent) => default,
-            Err(std::env::VarError::NotUnicode(_)) => {
-                panic!("{name} must contain valid Unicode");
-            }
-        }
-    }
-
-    let [major, minor, patch] = product_version;
-    [
-        env_component("OPENVMM_MAJOR", major),
-        env_component("OPENVMM_MINOR", minor),
-        env_component("OPENVMM_PATCH", patch),
-        env_component("OPENVMM_REVISION", 0),
-    ]
-}
-
 fn main() {
     // Prevent this build script from rerunning unnecessarily.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../VERSION");
-
-    let product_version = product_version();
 
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         println!("cargo:rustc-link-lib=onecore_apiset");
@@ -56,12 +37,9 @@ fn main() {
 
         // Embed version/resource info into the EXE.
         println!("cargo:rerun-if-changed=resources.rc");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MAJOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MINOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_PATCH");
-        println!("cargo:rerun-if-env-changed=OPENVMM_REVISION");
 
-        let [major, minor, patch, revision] = resource_version(product_version);
+        let [major, minor, patch] = product_version();
+        let revision = 0;
 
         let macros = [
             (
