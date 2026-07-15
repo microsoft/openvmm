@@ -326,6 +326,8 @@ impl Parse for ArgsWithOverrides {
                     let inner;
                     syn::parenthesized!(inner in input);
                     let reason = parse_reason(&inner)?;
+                    // Tolerate a trailing comma (e.g. from rustfmt).
+                    let _: Option<Token![,]> = inner.parse()?;
                     if !inner.is_empty() {
                         return Err(inner.error(
                             "whole-list `ignore`/`unstable` takes only `reason = \"...\"`; \
@@ -558,6 +560,8 @@ impl Parse for Config {
                 )
             })?;
             let mut config = inner.parse::<Config>()?;
+            // Tolerate a trailing comma (e.g. from rustfmt).
+            let _: Option<Token![,]> = inner.parse()?;
             if !inner.is_empty() {
                 return Err(inner.error("expected a single config after the reason"));
             }
