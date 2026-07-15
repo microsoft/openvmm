@@ -4,9 +4,10 @@
 //! Aggregate (multi-root) virtio-fs.
 //!
 //! An aggregate device exposes a synthetic, read-only root directory whose
-//! named children are independent host folders. Each child is
-//! advertised to the guest with `FUSE_ATTR_SUBMOUNT` (when negotiated) so it
-//! gets its own `st_dev`. This module owns all of the aggregate-only state and
+//! named children are independent host folders sharing a single FUSE
+//! superblock. Each child's inode numbers are namespaced per volume (see
+//! [`namespace_ino`](crate::inode::namespace_ino)) to avoid cross-volume
+//! `st_ino` collisions. This module owns all of the aggregate-only state and
 //! the [`VirtioFs`] methods that operate on it; the core (direct-mode) file
 //! system lives in the crate root.
 
@@ -47,15 +48,7 @@ struct ChildEntry {
 struct AggregateRegistry {
     entries: Vec<ChildEntry>,
     next_volume_id: u32,
-    /// Guest inode mapping selected during FUSE initialization.
-    inode_mode: Option<InodeMode>,
     tearing_down: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InodeMode {
-    Namespaced,
-    Raw,
 }
 
 impl AggregateRegistry {
@@ -65,32 +58,8 @@ impl AggregateRegistry {
         Self {
             entries: Vec::new(),
             next_volume_id: 1,
-            inode_mode: None,
             tearing_down: false,
         }
-    }
-
-    fn initialize(&mut self, submounts: bool) {
-        let inode_mode = if submounts {
-            InodeMode::Raw
-        } else {
-            InodeMode::Namespaced
-        };
-        self.inode_mode = Some(inode_mode);
-        for child in &mut self.entries {
-            child.volume = Arc::new(child.volume.with_inode_mapping(submounts));
-        }
-    }
-
-    fn reset(&mut self) {
-        self.inode_mode = None;
-        for child in &mut self.entries {
-            child.volume = Arc::new(child.volume.with_inode_mapping(false));
-        }
-    }
-
-    fn submounts_enabled(&self) -> bool {
-        self.inode_mode == Some(InodeMode::Raw)
     }
 
     fn check_can_add(&self) -> lx::Result<()> {
@@ -109,19 +78,12 @@ impl AggregateRegistry {
 pub(crate) struct AggregateState {
     /// Aggregated children and their lifecycle state.
     registry: RwLock<AggregateRegistry>,
-    /// Whether this consumer wants FUSE submounts (each child on its own cloned
-    /// superblock, giving it a distinct `st_dev`). Chosen by the device host at
-    /// construction (see [`VirtioFs::new_aggregate`]). When false,
-    /// `FUSE_SUBMOUNTS` is never negotiated and children stay plain
-    /// subdirectories of the synthetic root regardless of guest kernel support.
-    wants_submounts: bool,
 }
 
 impl AggregateState {
-    pub(crate) fn new(wants_submounts: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             registry: RwLock::new(AggregateRegistry::new()),
-            wants_submounts,
         }
     }
 }
@@ -171,21 +133,14 @@ impl VirtioFs {
 
         let volume_id = registry.next_volume_id;
         registry.next_volume_id = volume_id.checked_add(1).ok_or(lx::Error::ENOSPC)?;
-        let use_raw_inodes = registry.submounts_enabled();
         registry.entries.push(ChildEntry {
             name: name.to_string(),
-            volume: Arc::new(VirtioFsVolume::new(
-                volume,
-                volume_id,
-                readonly,
-                use_raw_inodes,
-            )),
+            volume: Arc::new(VirtioFsVolume::new(volume, volume_id, readonly)),
         });
         tracing::info!(
             name,
             volume_id,
             child_count = registry.entries.len(),
-            submounts = use_raw_inodes,
             "added aggregate virtio-fs child"
         );
         Ok(())
@@ -231,38 +186,6 @@ impl VirtioFs {
 
     pub(crate) fn is_synthetic_root_handle(&self, node_id: u64, fh: u64) -> bool {
         self.is_synthetic_root(node_id) && fh == SYNTHETIC_ROOT_FH
-    }
-
-    /// Finalize aggregate inode mapping after FUSE capability negotiation.
-    ///
-    /// Submounts are enabled only when the guest kernel is `capable` *and* the
-    /// device host requested them at construction (see
-    /// [`VirtioFs::new_aggregate`]).
-    pub(crate) fn initialize_submounts(&self, capable: bool) -> bool {
-        let Some(aggregate) = self.inner.aggregate() else {
-            return false;
-        };
-        let enable = capable && aggregate.wants_submounts;
-        let mut registry = aggregate.registry.write();
-        registry.initialize(enable);
-        enable
-    }
-
-    /// Return the aggregate to its pre-initialization state for a remount.
-    pub(crate) fn reset_submounts(&self) {
-        let Some(aggregate) = self.inner.aggregate() else {
-            return;
-        };
-        let mut registry = aggregate.registry.write();
-        registry.reset();
-    }
-
-    /// Whether aggregate children should be advertised with
-    /// `FUSE_ATTR_SUBMOUNT`. Always false in direct mode.
-    pub(crate) fn submounts(&self) -> bool {
-        self.inner
-            .aggregate()
-            .is_some_and(|aggregate| aggregate.registry.read().submounts_enabled())
     }
 
     /// Attributes of the synthetic aggregate root directory.
@@ -324,11 +247,8 @@ impl VirtioFs {
 
     fn insert_child_root_entry(&self, volume: Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out> {
         let (inode, stat) = VirtioFsInode::new(volume, PathBuf::new())?;
-        let mut attr = inode.attr_from_stat(&stat);
+        let attr = inode.attr_from_stat(&stat);
         let (_, node_id) = self.insert_inode(inode);
-        if self.submounts() {
-            attr.flags |= FUSE_ATTR_SUBMOUNT;
-        }
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,

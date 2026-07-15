@@ -4,7 +4,6 @@
 use super::SYNTHETIC_ROOT_FH;
 use crate::VirtioFs;
 use crate::inode;
-use fuse::protocol::FUSE_ATTR_SUBMOUNT;
 use fuse::protocol::FUSE_ROOT_ID;
 use lxutil::LxVolumeOptions;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ fn aggregate_child_registry() {
     let b = tempfile::tempdir().unwrap();
     let mut readonly = LxVolumeOptions::default();
     readonly.readonly(true);
-    let fs = VirtioFs::new_aggregate(true);
+    let fs = VirtioFs::new_aggregate();
 
     assert_eq!(fs.synthetic_root_attr().nlink, 2);
     assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 2);
@@ -60,7 +59,7 @@ fn aggregate_child_registry() {
 
 #[test]
 fn aggregate_operations_are_scoped_to_aggregate_mode() {
-    let aggregate = VirtioFs::new_aggregate(true);
+    let aggregate = VirtioFs::new_aggregate();
     assert!(aggregate.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
     assert!(!aggregate.is_synthetic_root_handle(FUSE_ROOT_ID + 1, SYNTHETIC_ROOT_FH));
 
@@ -77,7 +76,7 @@ fn aggregate_operations_are_scoped_to_aggregate_mode() {
 #[test]
 fn add_child_validates_name() {
     let root = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate(true);
+    let fs = VirtioFs::new_aggregate();
 
     for name in ["", ".", "..", "a/b", "a\0b"] {
         assert_eq!(
@@ -99,7 +98,7 @@ fn synthetic_root_node_ids_start_after_root() {
     // In aggregate mode the synthetic root occupies FUSE_ROOT_ID, so the
     // first real inode inserted must be allocated a higher id.
     let a = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate(true);
+    let fs = VirtioFs::new_aggregate();
     fs.add_child("share", a.path(), None).unwrap();
     let entry = fs
         .lookup_synthetic_root(lx::LxStr::from_bytes(b"share"))
@@ -108,65 +107,18 @@ fn synthetic_root_node_ids_start_after_root() {
 }
 
 #[test]
-fn submount_flag_requires_negotiation() {
-    let first = tempfile::tempdir().unwrap();
-    let second = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate(true);
-    fs.add_child("first", first.path(), None).unwrap();
-
-    let volume = |index: usize| {
-        let children = fs.inner.aggregate().unwrap().registry.read();
-        Arc::clone(&children.entries[index].volume)
-    };
-    // Before submounts are negotiated, child inode numbers are namespaced into
-    // the shared superblock, so even the largest host inode maps without
-    // overflowing (and is no longer the identity).
-    assert_ne!(volume(0).map_inode(u64::MAX), u64::MAX);
-
-    let entry = fs
-        .lookup_synthetic_root(lx::LxStr::from_bytes(b"first"))
-        .unwrap();
-    assert_eq!(entry.attr.flags & FUSE_ATTR_SUBMOUNT, 0);
-
-    // With submounts negotiated each child gets its own st_dev, so inode
-    // numbers are passed through unchanged.
-    assert!(fs.initialize_submounts(true));
-    assert_eq!(volume(0).map_inode(u64::MAX), u64::MAX);
-
-    fs.add_child("second", second.path(), None).unwrap();
-    assert_eq!(volume(1).map_inode(u64::MAX), u64::MAX);
-    assert_ne!(
-        fs.lookup_synthetic_root(lx::LxStr::from_bytes(b"second"))
-            .unwrap()
-            .attr
-            .flags
-            & FUSE_ATTR_SUBMOUNT,
-        0
-    );
-
-    fs.reset_submounts();
-    assert!(!fs.initialize_submounts(false));
-    assert_ne!(volume(0).map_inode(u64::MAX), u64::MAX);
-    assert_ne!(volume(1).map_inode(u64::MAX), u64::MAX);
-}
-
-#[test]
-fn submounts_disabled_by_construction() {
-    // An aggregate constructed without submounts never negotiates them, even
-    // when the guest kernel is capable.
+fn aggregate_children_namespace_inodes() {
+    // Under the single shared superblock, each aggregated child namespaces its
+    // inode numbers so that even the largest host inode maps to a value other
+    // than the identity transform reserved for direct mode (volume id 0).
     let root = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate(false);
+    let fs = VirtioFs::new_aggregate();
     fs.add_child("child", root.path(), None).unwrap();
-
-    assert!(!fs.initialize_submounts(true));
-    assert_eq!(
-        fs.lookup_synthetic_root(lx::LxStr::from_bytes(b"child"))
-            .unwrap()
-            .attr
-            .flags
-            & FUSE_ATTR_SUBMOUNT,
-        0
-    );
+    let volume = {
+        let children = fs.inner.aggregate().unwrap().registry.read();
+        Arc::clone(&children.entries[0].volume)
+    };
+    assert_ne!(volume.map_inode(u64::MAX), u64::MAX);
 }
 
 #[test]
@@ -196,7 +148,7 @@ fn hard_link_rejects_cross_volume_target() {
     let second = tempfile::tempdir().unwrap();
     std::fs::write(first.path().join("target"), b"data").unwrap();
 
-    let fs = VirtioFs::new_aggregate(true);
+    let fs = VirtioFs::new_aggregate();
     fs.add_child("first", first.path(), None).unwrap();
     fs.add_child("second", second.path(), None).unwrap();
 
@@ -229,7 +181,7 @@ fn hard_link_rejects_cross_volume_target() {
 #[test]
 fn add_child_rejected_after_teardown() {
     let a = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate(true);
+    let fs = VirtioFs::new_aggregate();
     fs.add_child("before", a.path(), None).unwrap();
 
     fs.begin_teardown();

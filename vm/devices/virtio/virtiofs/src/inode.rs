@@ -41,16 +41,14 @@ pub(crate) struct VirtioFsVolume {
     volume: Arc<LxVolume>,
     id: u32,
     readonly: bool,
-    use_raw_inodes: bool,
 }
 
 impl VirtioFsVolume {
-    pub(crate) fn new(volume: LxVolume, id: u32, readonly: bool, use_raw_inodes: bool) -> Self {
+    pub(crate) fn new(volume: LxVolume, id: u32, readonly: bool) -> Self {
         Self {
             volume: Arc::new(volume),
             id,
             readonly,
-            use_raw_inodes,
         }
     }
 
@@ -62,21 +60,8 @@ impl VirtioFsVolume {
         self.readonly
     }
 
-    pub(crate) fn with_inode_mapping(&self, use_raw_inodes: bool) -> Self {
-        Self {
-            volume: Arc::clone(&self.volume),
-            id: self.id,
-            readonly: self.readonly,
-            use_raw_inodes,
-        }
-    }
-
     pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::ino_t {
-        if self.use_raw_inodes {
-            raw
-        } else {
-            namespace_ino(self.id, raw)
-        }
+        namespace_ino(self.id, raw)
     }
 }
 
@@ -88,14 +73,30 @@ impl Deref for VirtioFsVolume {
     }
 }
 
+/// Key used to deduplicate inodes in the `InodeMap` so that repeated lookups of
+/// the same host file return a single, stable FUSE node id.
+///
+/// Volumes that report stable inode numbers key by `(volume_id, inode_nr)`.
+/// Volumes that recycle inode numbers (FAT/exFAT) cannot trust the inode
+/// number as an identity, so they key by `(volume_id, path)` instead — a given
+/// path then maps to one node id across lookups even though the host inode
+/// number is not reliable.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) enum DedupKey {
+    /// `(volume_id, host_inode_number)`, for stable-id volumes.
+    Ino(u32, lx::ino_t),
+    /// `(volume_id, host_path)`, for volumes that recycle inode numbers.
+    Path(u32, PathBuf),
+}
+
 /// Implements inode callbacks for virtio-fs.
 pub struct VirtioFsInode {
     pub(crate) volume: Arc<VirtioFsVolume>,
     path: RwLock<PathBuf>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
-    /// This inode's number as reported to the guest: its host inode number
-    /// when submounts are negotiated, or its fallback namespaced number.
+    /// This inode's number as reported to the guest: its namespaced inode
+    /// number under the shared superblock.
     guest_inode_nr: lx::ino_t,
 }
 
@@ -136,9 +137,8 @@ impl VirtioFsInode {
         self.volume.readonly()
     }
 
-    /// This inode's own number as reported to the guest: its host inode number
-    /// when submounts are negotiated, or its fallback namespaced number. Fixed
-    /// for the inode's lifetime.
+    /// This inode's own number as reported to the guest: its namespaced inode
+    /// number under the shared superblock. Fixed for the inode's lifetime.
     pub(crate) fn guest_inode_nr(&self) -> lx::ino_t {
         self.guest_inode_nr
     }
@@ -398,6 +398,35 @@ impl VirtioFsInode {
     /// Gets a clone of the stored path.
     pub fn clone_path(&self) -> PathBuf {
         self.get_path().clone()
+    }
+
+    /// The key used to deduplicate this inode in the `InodeMap`, or `None` if it
+    /// should not be deduplicated.
+    ///
+    /// Stable-id volumes key by `(volume_id, inode_nr)`. Volumes that recycle
+    /// inode numbers (FAT/exFAT) key by `(volume_id, path)` instead, so a given
+    /// path maps to a single, stable FUSE node id across lookups. A path-keyed
+    /// inode with an empty path (a volume root) is not deduplicated and returns
+    /// `None`.
+    pub(crate) fn dedup_key(&self) -> Option<DedupKey> {
+        if self.volume.supports_stable_file_id() {
+            return Some(DedupKey::Ino(self.volume_id(), self.inode_nr()));
+        }
+        let path = self.get_path();
+        if path.as_os_str().is_empty() {
+            return None;
+        }
+        Some(DedupKey::Path(self.volume_id(), path.clone()))
+    }
+
+    /// The [`DedupKey::Path`] that a child named `name` of this inode would use,
+    /// for path-keyed (non-stable-id) volumes only.
+    pub(crate) fn child_path_dedup_key(&self, name: &LxStr) -> Option<DedupKey> {
+        if self.volume.supports_stable_file_id() {
+            return None;
+        }
+        let path = self.child_path(name).ok()?;
+        Some(DedupKey::Path(self.volume_id(), path))
     }
 
     /// Appends a child name to this inode's path.
