@@ -75,6 +75,7 @@ where
             Layout::from_size_align(1024 * 1024, 4096).expect("msg: failed to create layout");
         // SAFETY: Layout has a non zero size
         let ptr = unsafe { alloc(layout) };
+        tmk_assert!(!ptr.is_null(), "heap allocation should succeed");
         log::info!("allocated some memory in the heap from vtl1");
 
         #[expect(static_mut_refs)]

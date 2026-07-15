@@ -44,8 +44,10 @@ pub(super) fn dispatch(vector: u8) {
 
 /// Sets the handler for a specific interrupt vector.
 pub fn set_handler(interrupt: u8, handler: Box<dyn Fn() + Send + Sync + 'static>) {
-    let mut handlers = HANDLERS.write();
-    handlers[interrupt as usize] = Some(handler);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut handlers = HANDLERS.write();
+        handlers[interrupt as usize] = Some(handler);
+    });
 }
 
 /// Initializes and loads the IDT and enables interrupts.
