@@ -18,7 +18,7 @@ use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
 
-static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
+static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 
 static mut RETURN_VALUE: u8 = 0;
 
@@ -28,6 +28,8 @@ static mut RETURN_VALUE: u8 = 0;
 #[expect(static_mut_refs)]
 // writing to a static generates a warning. we safely handle RETURN_VALUE so ignoring it here.
 fn violate_heap() {
+    // SAFETY: intentionally reads through the test-controlled heap pointer to
+    // trigger a VTL memory-protection intercept.
     unsafe {
         let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
         // after a VTL switch we can't trust the value returned by eax
@@ -76,6 +78,7 @@ where
 
         #[expect(static_mut_refs)]
         // writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
+        // SAFETY: initializes the test-controlled heap pointer during setup.
         unsafe {
             let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;
