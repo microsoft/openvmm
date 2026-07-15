@@ -152,6 +152,13 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
     /// Internally calls [`PetriVmBuilder::modify_backend`] (which composes
     /// across calls) and `with_nested_virt`, so the L1 is configured to
     /// expose nested-virtualization extensions to the guest.
+    ///
+    /// The L1 is also configured with [`PetriVmBuilder::with_no_vmbus`]: on
+    /// WHP the hypervisor cannot provide synic ports (which vmbus needs) at
+    /// the same time as nested virtualization, so the L1 uses virtio-vsock
+    /// (a PCIe device) for pipette instead of vmbus. This is harmless on the
+    /// KVM backend, which supports either, so no host-specific branching is
+    /// needed.
     pub fn with_nested_l2(self, cfg: NestedL2Config) -> anyhow::Result<(Self, NestedL2Builder)> {
         let staging_dir = tempfile::Builder::new()
             .prefix("petri-nested-l2-")
@@ -186,7 +193,7 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         let log_source = self.resources.log_source.clone();
         let staging_root_path = staging_dir.path().to_string_lossy().into_owned();
 
-        let builder = self.modify_backend(move |b| {
+        let builder = self.with_no_vmbus().modify_backend(move |b| {
             // virtio-fs holds host-side filesystem state that cannot be
             // round-tripped through save/restore, so opt out of the
             // framework's default save/restore smoke check. See
