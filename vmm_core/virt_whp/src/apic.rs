@@ -416,7 +416,9 @@ impl WhpProcessor<'_> {
                 break;
             }
 
-            let scan_irr = self.vplc(vtl).scan_irr.swap(false, Ordering::Relaxed);
+            // Pair with `wake_for_apic` so the IRR staged before its release
+            // publication is visible before scanning.
+            let scan_irr = self.vplc(vtl).scan_irr.swap(false, Ordering::Acquire);
             let vtl_state = &mut self.state.vtls[vtl];
             if let Some(lapic) = &mut vtl_state.lapic {
                 let work = lapic.apic.scan(&mut self.state.vmtime, scan_irr);
