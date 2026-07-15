@@ -9035,8 +9035,10 @@ name = "unix_socket"
 version = "0.0.0"
 dependencies = [
  "getrandom 0.4.2",
+ "libc",
  "mesh_protobuf",
  "socket2",
+ "test_with_tracing",
  "windows-sys 0.61.0",
 ]
 
@@ -9285,7 +9287,6 @@ name = "vhost_user_protocol"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
- "libc",
  "open_enum",
  "pal_async",
  "parking_lot",

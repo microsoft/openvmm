@@ -7,10 +7,14 @@
 //! This can go away once the `std` types are available on Windows.
 //!
 //! <https://github.com/rust-lang/rust/issues/56533>
-
-#![cfg_attr(not(windows), forbid(unsafe_code))]
+//!
+//! On UNIX, it also provides low-level `SCM_RIGHTS` fd-passing helpers (see
+//! [`send_with_fds`] and [`ScmReceiver`]).
 
 mod windows;
+
+#[cfg(unix)]
+mod unix;
 
 #[cfg(windows)]
 pub use windows::*;
@@ -19,3 +23,9 @@ pub use windows::*;
 pub use std::os::unix::net::UnixListener;
 #[cfg(unix)]
 pub use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+pub use unix::ScmDrainIter;
+#[cfg(unix)]
+pub use unix::ScmReceiver;
+#[cfg(unix)]
+pub use unix::send_with_fds;
