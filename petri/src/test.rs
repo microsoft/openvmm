@@ -362,7 +362,9 @@ where
         self
     }
 
-    /// Marks this test as unstable, meaning its failures do not fail the run.
+    /// Marks this test as unstable. When `PETRI_IGNORE_UNSTABLE_FAILURES` is
+    /// set (as it is in CI), a failure of this test is logged and ignored
+    /// rather than failing the run; otherwise it fails like any other test.
     ///
     /// `reason` documents why the test is unstable and is logged when an
     /// unstable failure is ignored.
