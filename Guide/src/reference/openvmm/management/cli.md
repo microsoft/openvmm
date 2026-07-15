@@ -29,8 +29,8 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `prefetch=on|off` - pre-populate guest RAM mappings up front.
     Only has an effect under WHP; a no-op on KVM/mshv.
   * `thp=on|off` - mark guest RAM (shared or private) as Transparent Huge
-    Page eligible via `madvise(MADV_HUGEPAGE)`. Linux-only, best-effort, and
-    on by default; pass `thp=off` to opt out.
+    Page eligible. Linux-only, best-effort, and on by default; pass `thp=off` to
+    opt out.
   * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages
     (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
     shared memory.

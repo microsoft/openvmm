@@ -71,19 +71,24 @@ host mapping, so guest RAM is always faulted in on demand.
 ## Huge pages
 
 There are two independent mechanisms for backing guest RAM with pages larger
-than 4 KiB. They pull in **opposite** directions on the shared/private choice,
-so it is worth keeping them straight.
+than 4 KiB: opportunistic Transparent Huge Pages and explicit huge-page
+backing. They are quite different — one is an always-on, best-effort hint, the
+other an opt-in, guaranteed reservation — so it is worth keeping them straight.
 
 ### Transparent Huge Pages (`thp=on`)
 
-Transparent Huge Pages are a **Linux, private-memory** feature. Setting
-`thp=on` marks the anonymous guest RAM as THP-eligible (via `madvise` with
-`MADV_HUGEPAGE`), inviting the kernel to *opportunistically* back it with 2 MB
-pages. It is best-effort: the kernel promotes pages when it can and silently
-falls back to 4 KB when it cannot, so nothing is pinned or guaranteed.
+Transparent Huge Pages are a **Linux** feature that is **on by default**.
+OpenVMM marks guest RAM as THP-eligible (via `madvise` with `MADV_HUGEPAGE`),
+inviting the kernel to *opportunistically* back it with 2 MB pages. It is
+best-effort: the kernel promotes pages when it can and silently falls back to
+4 KB when it cannot, so nothing is pinned or guaranteed. Because it is only an
+advisory hint, it applies to **both shared and private** guest RAM; pass
+`thp=off` to opt out.
 
-- Requires `shared=off` (private memory).
-- Linux only.
+- Applies to both shared and private memory.
+- Linux only; a no-op on other hosts.
+- On by default; suppressed automatically for explicit `hugepages=on`
+  backings, which are already huge.
 
 ### Explicit huge pages (`hugepages=on`)
 
@@ -144,7 +149,7 @@ memory or explicit huge pages.
 | Snapshots, VTL2, out-of-process memory consumers | `shared=on` |
 | In-process assigned-device/IOMMU DMA | Either backing mode |
 | Save/restore to a specific file | `file=<PATH>` |
-| Opportunistic 2 MB pages, Linux | `shared=off,thp=on` |
+| Opportunistic 2 MB pages, Linux | on by default (`thp=off` to disable) |
 | Guaranteed large pages, best TLB behavior | `hugepages=on` |
 | Avoid first-touch faults (WHP only) | add `prefetch=on` |
 
@@ -154,7 +159,7 @@ memory or explicit huge pages.
 |---|---|---|---|
 | `shared=off` (private) | — | all | No snapshots/out-of-process sharing; not with PCAT legacy RAM |
 | `prefetch=on` | — | WHP only | Commits + populates SLAT up front; no-op on KVM/mshv |
-| `thp=on` | `shared=off` | Linux | Best-effort 2 MB pages |
+| `thp=on|off` | — | Linux | On by default; best-effort 2 MB pages; suppressed under `hugepages=on` |
 | `hugepages=on` | `shared=on` | Linux, Windows | Guaranteed; size/range must be huge-page aligned |
 | `hugepage_size=<SIZE>` | `hugepages=on` | Linux (any), Windows (2 MB only) | Default 2 MB |
 | `file=<PATH>` | `shared=on` | all | Persistent backing file for snapshots |
