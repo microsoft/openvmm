@@ -496,7 +496,10 @@ impl<'a> WhpVpRef<'a> {
 
     #[cfg(guest_arch = "x86_64")]
     fn wake_for_apic(&self, vtl: Vtl) {
-        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
+        // Publish the staged IRR before the wake. The APIC only wakes on the
+        // first transition to pending, so missing this publication can strand
+        // an interrupt with no later wake to rescan it.
+        self.vplc(vtl).scan_irr.store(true, Ordering::Release);
         self.wake();
     }
 
