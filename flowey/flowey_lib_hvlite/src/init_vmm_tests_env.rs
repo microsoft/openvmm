@@ -37,6 +37,8 @@ flowey_request! {
         /// Register a guest_test_uefi image
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
+        /// Register an opentmk UEFI application
+        pub register_opentmk: Option<ReadVar<crate::build_opentmk::OpentmkOutput>>,
         /// Register OpenHCL IGVM files
         pub register_openhcl_igvm_files: Vec<ReadVar<OpenhclIgvmOutput>>,
         /// Register TMK VMM binaries.
@@ -94,6 +96,7 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_opentmk,
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
@@ -157,6 +160,7 @@ impl SimpleFlowNode for Node {
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
+            let opentmk = register_opentmk.claim(ctx);
             let tmks = register_tmks.claim(ctx);
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
@@ -336,6 +340,11 @@ impl SimpleFlowNode for Node {
                         img,
                     } = rt.read(guest_test_uefi);
                     fs_err::copy(img, test_content_dir.join("guest_test_uefi.img"))?;
+                }
+
+                if let Some(opentmk) = opentmk {
+                    let crate::build_opentmk::OpentmkOutput { efi, pdb: _ } = rt.read(opentmk);
+                    fs_err::copy(efi, test_content_dir.join("opentmk.efi"))?;
                 }
 
                 if let Some(tmks) = tmks {

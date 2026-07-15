@@ -790,6 +790,12 @@ impl ResolvedArtifactSelections {
                 self.build.guest_test_uefi = true;
             }
 
+            // OpenTMK
+            petri_artifacts_vmm_test::artifacts::opentmk::OPENTMK_EFI_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::opentmk::OPENTMK_EFI_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.opentmk = true;
+            }
+
             // TMKs
             petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64 ::GLOBAL_UNIQUE_ID => {

@@ -8,6 +8,7 @@ use vmm_tests_run::VmmTestsRunCli;
 
 pub mod build_docs;
 pub mod build_igvm;
+pub mod build_opentmk;
 pub mod build_reproducible;
 pub mod cca_tests;
 pub mod checkin_gates;
@@ -28,6 +29,9 @@ pub enum OpenvmmPipelines {
     BuildIgvm(build_igvm::BuildIgvmCli),
     BuildReproducible(build_reproducible::BuildReproducibleCli),
     CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
+
+    /// Build OpenTMK and package it into a bootable VHD
+    BuildOpentmk(build_opentmk::BuildOpentmkCli),
 
     /// Flowey pipelines primarily designed to run in CI.
     #[clap(subcommand)]
@@ -61,6 +65,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 std::process::exit(status.code().unwrap_or(-1));
             }
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::BuildOpentmk(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::BuildReproducible(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::Ci(cmd) => match cmd {

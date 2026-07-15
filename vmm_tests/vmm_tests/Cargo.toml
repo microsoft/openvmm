@@ -15,6 +15,10 @@ name = "tmks"
 harness = false
 
 [[test]]
+name = "opentmk"
+harness = false
+
+[[test]]
 name = "cca"
 harness = false
 

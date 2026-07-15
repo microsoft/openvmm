@@ -111,9 +111,9 @@ where
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 type SerialPortWriter = Serial<InstrIoAccess>;
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
-/// The global logger instance for x86_64 architecture, using COM2 serial port.
+/// The global logger instance for x86_64 architecture, using COM1 serial port.
 pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
-    TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
+    TmkLogger::new(SerialPortWriter::new(SerialPort::COM1, InstrIoAccess));
 
 #[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
 /// The global logger instance for aarch64 architecture, using the default serial implementation.

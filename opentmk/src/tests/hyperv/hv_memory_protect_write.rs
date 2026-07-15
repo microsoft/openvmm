@@ -19,7 +19,7 @@ use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
 
-static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
+static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
 // Without inline the compiler may optimize away the call and the VTL switch may
@@ -28,6 +28,8 @@ static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 // SAFETY: we safely handle HEAP_ALLOC_PTR so ignoring it here.
 #[expect(static_mut_refs)]
 fn violate_heap() {
+    // SAFETY: intentionally writes through the test-controlled heap pointer to
+    // trigger a VTL memory-protection intercept.
     unsafe {
         let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
         *(alloc_ptr.add(10)) = 0x56;
@@ -76,6 +78,7 @@ where
         log::info!("allocated some memory in the heap from vtl1");
 
         #[expect(static_mut_refs)]
+        // SAFETY: initializes the test-controlled heap pointer during setup.
         unsafe {
             let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;

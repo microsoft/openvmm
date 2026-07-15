@@ -104,9 +104,12 @@ petri = { path = "petri" }
 initrd_cpio = { path = "petri/initrd_cpio" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
-
 pipette_client = { path = "petri/pipette_client" }
 pipette_protocol = { path = "petri/pipette_protocol" }
+
+# opentmk
+opentmk_protocol = { path = "opentmk_protocol" }
+opentmk_disk = { path = "opentmk/opentmk_disk" }
 
 # support crates
 address_filter = { path = "support/address_filter" }
