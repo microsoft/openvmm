@@ -12,6 +12,7 @@ loader.workspace = true
 loader_defs.workspace = true
 
 hvdef.workspace = true
+page_table.workspace = true
 
 memory_range.workspace = true
 underhill_confidentiality.workspace = true
@@ -25,7 +26,7 @@ crypto = { workspace = true, features = ["native", "vendored"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true
-igvm_defs.workspace = true
+igvm_defs = { workspace = true, features = ["unstable"] }
 range_map_vec.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }

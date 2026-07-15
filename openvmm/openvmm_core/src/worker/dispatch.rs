@@ -3294,6 +3294,40 @@ impl LoadedVmInner {
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
 
+                // Build a DSDT for native IGVM guests using the actual chipset
+                // config and PCI device assignments.
+                #[cfg(guest_arch = "x86_64")]
+                let dsdt = acpi_builder.build_dsdt(|dsdt| {
+                    add_devices_to_dsdt_x64(
+                        dsdt,
+                        &self.chipset_cfg,
+                        &self.chipset_capabilities,
+                        true, // serial_uarts
+                        self.vmbus_server.is_some(),
+                        &self.chipset_mmio,
+                        self.virtio_mmio_region,
+                        self.virtio_mmio_irq,
+                        &self.pci_legacy_interrupts,
+                    );
+                });
+                #[cfg(guest_arch = "x86_64")]
+                let dsdt_bytes = Some(dsdt);
+                #[cfg(guest_arch = "aarch64")]
+                let dsdt_bytes = Some(acpi_builder.build_dsdt(|dsdt| {
+                    add_devices_to_dsdt_arm64(
+                        dsdt,
+                        true, // enable_serial
+                        self.vmbus_server.is_some(),
+                        &self.chipset_mmio,
+                        self.hypervisor_cfg.with_hv,
+                    );
+                }));
+
+                // Build the FADT from the ACPI builder which knows the
+                // PM register layout. x_dsdt is left as 0; igvm.rs
+                // fills it in at assembly time once the DSDT GPA is known.
+                let fadt = acpi_builder.build_fadt();
+
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
                     gm: &self.gm,
@@ -3305,6 +3339,9 @@ impl LoadedVmInner {
                         srat: &srat,
                         slit: slit.as_deref(),
                         pptt: None,
+                        fadt,
+                        dsdt: dsdt_bytes.as_deref(),
+                        oem_info: vmm_core::acpi_builder::OEM_INFO,
                     },
                     vtl2_base_address,
                     vtl2_framebuffer_gpa_base: self.vtl2_framebuffer_gpa_base,
