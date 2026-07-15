@@ -177,11 +177,13 @@ async fn recv_serialized(
     // carrying more than `MAX_FD_COUNT` is rejected below (or, if it actually
     // attaches that many, by truncation).
     let mut receiver = ScmReceiver::new(MAX_FD_COUNT);
+    // Descriptors arrive with a single read but must be accumulated here, since
+    // `recv` closes any it still holds on the next call.
+    let mut fds: Vec<OwnedFd> = Vec::new();
 
-    // Read the header. Fds may arrive with this read and accumulate in the
-    // receiver.
+    // Read the header. Fds may arrive with this read.
     let mut header = PayloadHeader::new_zeroed();
-    recv_exact_with_fds(stream, header.as_mut_bytes(), &mut receiver)
+    recv_exact_with_fds(stream, header.as_mut_bytes(), &mut receiver, &mut fds)
         .await
         .map_err(RecvPayloadError::Io)?;
 
@@ -204,33 +206,34 @@ async fn recv_serialized(
     // Read the data (fds may also arrive here if the header read was split).
     let mut data = vec![0u8; data_len];
     if !data.is_empty() {
-        recv_exact_with_fds(stream, &mut data, &mut receiver)
+        recv_exact_with_fds(stream, &mut data, &mut receiver, &mut fds)
             .await
             .map_err(RecvPayloadError::Io)?;
     }
 
-    if receiver.fds().len() != fd_count {
+    if fds.len() != fd_count {
         return Err(RecvPayloadError::FdCountMismatch {
             expected: fd_count,
-            actual: receiver.fds().len(),
+            actual: fds.len(),
         });
     }
 
     // Move the received fds out as mesh resources.
-    let resources: Vec<Resource> = receiver
-        .drain()
+    let resources: Vec<Resource> = fds
+        .into_iter()
         .map(|fd| Resource::Os(OsResource::Fd(fd)))
         .collect();
 
     Ok(SerializedMessage { data, resources })
 }
 
-/// Read exactly `buf.len()` bytes from the stream, collecting any fds received
-/// into `receiver`.
+/// Read exactly `buf.len()` bytes from the stream, draining any fds received
+/// into `fds` after each read.
 async fn recv_exact_with_fds(
     stream: &mut PolledSocket<UnixStream>,
     buf: &mut [u8],
     receiver: &mut ScmReceiver,
+    fds: &mut Vec<OwnedFd>,
 ) -> io::Result<()> {
     let mut read = 0;
     while read < buf.len() {
@@ -240,6 +243,8 @@ async fn recv_exact_with_fds(
             })
         })
         .await?;
+        // Drain immediately: the next `recv` closes any fds still held.
+        fds.extend(receiver.drain());
         if n == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }

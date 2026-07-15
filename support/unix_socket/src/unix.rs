@@ -112,23 +112,24 @@ pub fn send_with_fds<'a>(
 /// A reusable receiver for messages carrying `SCM_RIGHTS` descriptors.
 ///
 /// Owns a heap control buffer sized (at construction) for up to `max_fds`
-/// descriptors, plus the descriptors received so far — which live *in* that
-/// control buffer as their raw values, not in a separate allocation. Reuse one
-/// [`ScmReceiver`] across many messages to avoid re-allocating the buffer.
+/// descriptors, plus the descriptors received by the most recent
+/// [`recv`](Self::recv) — which live *in* that control buffer as their raw
+/// values, not in a separate allocation. Reuse one [`ScmReceiver`] across many
+/// messages to avoid re-allocating the buffer.
 ///
-/// Descriptors accumulate across successive [`recv`](Self::recv) calls, so a
-/// single logical message can be reassembled from several reads on a stream
-/// socket. This relies on an invariant that holds for OpenVMM's protocols:
-/// **all of a message's descriptors are delivered by a single `recvmsg`** (the
-/// sender attaches them to one `sendmsg`). While the receiver already holds
-/// unconsumed descriptors it does not offer its control buffer to the kernel,
-/// which protects the held descriptors from being clobbered; because of the
-/// invariant this never drops incoming descriptors.
+/// Each [`recv`](Self::recv) starts fresh: it first closes any descriptors
+/// still held from the previous call, then receives. Its behavior therefore
+/// does not depend on whether the caller remembered to consume the prior
+/// descriptors. **Consume the descriptors — via [`fds`](Self::fds) (borrow in
+/// place) or [`drain`](Self::drain) (take ownership) — before calling
+/// [`recv`](Self::recv) again**, or they are dropped.
+///
+/// Each `recv` exposes only the descriptors delivered by that one `recvmsg`.
+/// To gather descriptors across several `recv` calls, drain after each and
+/// accumulate them yourself.
 ///
 /// The receiver owns the descriptors it holds and closes any that are still
-/// unconsumed when it is dropped, cleared, or reused. Consume them with
-/// [`fds`](Self::fds) (borrow in place) or [`drain`](Self::drain) (take
-/// ownership).
+/// unconsumed when it is dropped, cleared, or reused.
 pub struct ScmReceiver {
     /// Aligned control buffer, reused across `recv` calls.
     control: Vec<u64>,
@@ -166,20 +167,27 @@ impl ScmReceiver {
     /// [`io::ErrorKind::WouldBlock`]. Returns the number of bytes read (0 on
     /// EOF).
     ///
-    /// Descriptors are appended to those already held (see the type-level
-    /// docs). If the control buffer is too small for the descriptors in a
-    /// message the received descriptors are closed and an error is returned.
+    /// Any descriptors still held from a previous `recv` are closed first (see
+    /// the type-level docs), so consume them before calling again. If the
+    /// control buffer is too small for the descriptors in a message the
+    /// received descriptors are closed and an error is returned.
     pub fn recv(&mut self, sock: BorrowedFd<'_>, buf: &mut [u8]) -> io::Result<usize> {
         assert!(!buf.is_empty());
+        // Close any descriptors left unconsumed from a previous `recv`. Each
+        // call starts fresh and offers the control buffer below, so held fds
+        // would otherwise be clobbered by the kernel; the caller is expected to
+        // consume them (via `fds`/`drain`) before calling again.
+        self.clear();
+
         let mut iov = IoSliceMut::new(buf);
         // SAFETY: `msghdr` has no validity invariants; a zeroed value is valid.
         let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
         hdr.msg_iov = std::ptr::from_mut(&mut iov).cast();
         hdr.msg_iovlen = 1;
 
-        // Offer the control buffer only while we hold no unconsumed
-        // descriptors, so a later read of the same message cannot clobber them.
-        let offer_control = self.fd_count == 0 && self.control_len != 0;
+        // Always offer the control buffer so descriptors are received on every
+        // call; there are none held to protect, since we just cleared.
+        let offer_control = self.control_len != 0;
         if offer_control {
             hdr.msg_control = self.control.as_mut_ptr().cast();
             hdr.msg_controllen = self.control_len as _;
@@ -210,8 +218,14 @@ impl ScmReceiver {
                     let data = unsafe { libc::CMSG_DATA(cmsg) };
                     // The fd array runs from `CMSG_DATA` to the end of the
                     // control message, so its length is `cmsg_len` minus the
-                    // header (plus any alignment padding before the data).
-                    let data_len = c.cmsg_len as usize - (data as usize - cmsg as usize);
+                    // header (plus any alignment padding before the data). The
+                    // kernel always reports a `cmsg_len` at least as large as
+                    // that offset, so this subtraction never underflows; use
+                    // `checked_sub` to fail loudly rather than silently if that
+                    // assumption is ever violated.
+                    let data_len = (c.cmsg_len as usize)
+                        .checked_sub(data as usize - cmsg as usize)
+                        .unwrap();
                     self.fd_offset = data as usize - self.control.as_ptr() as usize;
                     self.fd_count = data_len / size_of::<RawFd>();
                     break;
@@ -446,9 +460,35 @@ mod tests {
     }
 
     #[test]
-    fn accumulate_across_reads() {
-        // Descriptors delivered with the first read stay held across a later
-        // read of the same message.
+    fn drain_between_reads() {
+        // All of a message's fds arrive with the first read; the caller drains
+        // them into its own collection before the next read.
+        let (a, b) = socketpair();
+        let (r1, _w1) = pipe();
+        send_with_fds(a.as_fd(), &[IoSlice::new(b"AABB")], [r1.as_fd()]).unwrap();
+        drop(r1);
+
+        let mut rx = ScmReceiver::new(2);
+        let mut buf = [0u8; 2];
+        let mut fds = Vec::new();
+
+        // First read gets the fd alongside the first two bytes; drain it.
+        let n = rx.recv(b.as_fd(), &mut buf).unwrap();
+        assert_eq!(n, 2);
+        fds.extend(rx.drain());
+        assert_eq!(fds.len(), 1);
+
+        // Second read gets the remaining bytes and no new fds.
+        let n = rx.recv(b.as_fd(), &mut buf).unwrap();
+        assert_eq!(n, 2);
+        fds.extend(rx.drain());
+        assert_eq!(fds.len(), 1);
+    }
+
+    #[test]
+    fn recv_clears_unconsumed_fds() {
+        // If the caller forgets to consume the fds, the next `recv` closes them
+        // rather than silently retaining them.
         let (a, b) = socketpair();
         let (r1, _w1) = pipe();
         send_with_fds(a.as_fd(), &[IoSlice::new(b"AABB")], [r1.as_fd()]).unwrap();
@@ -457,17 +497,14 @@ mod tests {
         let mut rx = ScmReceiver::new(2);
         let mut buf = [0u8; 2];
 
-        // First read gets the fd alongside the first two bytes.
         let n = rx.recv(b.as_fd(), &mut buf).unwrap();
         assert_eq!(n, 2);
         assert_eq!(rx.fds().len(), 1);
 
-        // Second read gets the remaining bytes; the fd is still held (the
-        // control buffer was not offered this time).
+        // Second read starts fresh: the previously-held fd is closed.
         let n = rx.recv(b.as_fd(), &mut buf).unwrap();
         assert_eq!(n, 2);
-        assert_eq!(rx.fds().len(), 1);
-        assert_eq!(rx.drain().count(), 1);
+        assert!(rx.fds().is_empty());
     }
 
     #[test]

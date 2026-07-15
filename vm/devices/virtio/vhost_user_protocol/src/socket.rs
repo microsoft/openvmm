@@ -148,8 +148,8 @@ impl VhostUserSocket {
     /// Waits until the socket is readable, then performs the recv.
     /// On spurious readiness (WouldBlock), re-polls automatically.
     ///
-    /// `receiver` must be empty on entry; it is drained (into `fds`) or cleared
-    /// before returning, so it is empty again on exit.
+    /// The `receiver` is drained (into `fds`) or cleared before returning, so
+    /// it is always empty on exit and therefore empty on the next entry.
     async fn recv_raw(
         &self,
         receiver: &mut ScmReceiver,
