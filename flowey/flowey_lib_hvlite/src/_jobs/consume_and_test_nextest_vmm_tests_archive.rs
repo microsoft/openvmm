@@ -7,6 +7,7 @@ use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_incubator::IncubatorOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
+use crate::build_opentmk::OpentmkOutput;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
@@ -34,6 +35,7 @@ pub struct VmmTestsDepArtifacts {
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
+    pub opentmk: Option<ReadVar<OpentmkOutput>>,
     pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
     pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
     pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
@@ -173,6 +175,7 @@ impl SimpleFlowNode for Node {
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
+            opentmk: register_opentmk,
             prep_steps: register_prep_steps,
             openhcl_standard,
             openhcl_standard_dev,
@@ -244,7 +247,7 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
-            register_opentmk: None,
+            register_opentmk,
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
