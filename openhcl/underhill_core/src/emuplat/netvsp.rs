@@ -587,6 +587,7 @@ impl HclNetworkVFManagerWorker {
                 tracing::error!(
                     vtl2_vfid,
                     vtl0_bus = %self.vtl0_bus_control,
+                    revoke_vtl0_vfid = vfid_from_guid(&vpci_bus_control.instance_id()),
                     err = err.as_ref() as &dyn std::error::Error,
                     "Failed to revoke VTL0 VF"
                 );
