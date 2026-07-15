@@ -55,9 +55,8 @@ impl PetriVmConfigOpenVmm {
     /// the KVM and WHP backends honor: with the flag set they advertise the
     /// vendor virtualization CPUID bit (VMX on Intel, SVM on AMD) to the
     /// guest; without it that bit is stripped, so the guest cannot run its
-    /// own VMs. The host must itself be able to host a nested guest — see
-    /// [`crate::requirements::TestRequirement::NestedVirtCapable`], which
-    /// tests declare via the `_nested` firmware-tag suffix.
+    /// own VMs. The host must itself be able to host a nested guest — tests
+    /// declare this via the `nested_virt` capability (`requires(nested_virt)`).
     pub fn with_nested_virt(mut self) -> Self {
         self.config.hypervisor.nested_virt = true;
         self

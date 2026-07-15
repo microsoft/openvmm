@@ -587,16 +587,15 @@ async fn snapshot_save_to_disk(
 /// the test then asks the L2 to run `uname -a` and checks that Linux
 /// reported itself.
 ///
-/// Gated on `TestRequirement::NestedVirtCapable` (the `_nested` suffix
-/// on the firmware tag), so the selection process skips it on hosts whose
-/// hypervisor cannot expose nested-virt extensions to the guest. This
-/// covers both the KVM (Linux host) and WHP (Windows host) backends; the
-/// L1 guest is always Linux regardless of host.
-#[openvmm_test(linux_direct_x64_nested[
+/// Requires the `nested_virt` capability, so the selection process skips it
+/// on hosts whose hypervisor cannot expose nested-virt extensions to the
+/// guest. This covers both the KVM (Linux host) and WHP (Windows host)
+/// backends; the L1 guest is always Linux regardless of host.
+#[vmm_test_with(openvmm, requires(nested_virt), configs(linux_direct_x64[
     petri_artifacts_vmm_test::artifacts::OPENVMM_GUEST_LINUX_X64,
     petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64,
     petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64,
-])]
+]))]
 async fn nested_l2_boot<O, K, I>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (

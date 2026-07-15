@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 /// Execution environments where tests can run.
 ///
 /// This describes whether the *test runner itself* is running inside a VM. It
-/// is distinct from [`TestRequirement::NestedVirtCapable`], which describes
-/// whether the runner can *host* nested VMs.
+/// is distinct from the `nested_virt` capability, which describes whether the
+/// runner can *host* nested VMs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEnvironment {
     /// The test runner is running on bare metal (not nested virtualization).
@@ -231,15 +231,6 @@ pub enum TestRequirement {
     /// Requires a hypervisor backend that supports VPCI (virtual PCI)
     /// device emulation. On Linux this means /dev/mshv (not KVM).
     VpciSupport,
-    /// Requires that the host hypervisor can run guests with nested
-    /// virtualization enabled (so the guest itself can host a second
-    /// level VM).
-    ///
-    /// This is distinct from
-    /// [`ExecutionEnvironment::Nested`] — that variant describes whether
-    /// the *test runner* is already inside a VM, whereas this requirement
-    /// describes whether the host can *host* a nested guest.
-    NestedVirtCapable,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -293,7 +284,6 @@ impl TestRequirement {
             }
             TestRequirement::RequiresCapability(name) => capabilities.contains(name),
             TestRequirement::VpciSupport => context.vpci_supported,
-            TestRequirement::NestedVirtCapable => context.nested_virt_capable,
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied_with_capabilities(context, capabilities)
                     && req2.is_satisfied_with_capabilities(context, capabilities)
@@ -323,6 +313,10 @@ fn available_capabilities(context: &HostContext) -> BTreeSet<&'static str> {
 
     if context.vpci_supported {
         capabilities.insert(capabilities::VPCI);
+    }
+
+    if context.nested_virt_capable {
+        capabilities.insert(capabilities::NESTED_VIRT);
     }
 
     match std::env::var("PETRI_CAPABILITIES") {
