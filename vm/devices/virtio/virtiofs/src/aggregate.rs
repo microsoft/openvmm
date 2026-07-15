@@ -109,12 +109,19 @@ impl AggregateRegistry {
 pub(crate) struct AggregateState {
     /// Aggregated children and their lifecycle state.
     registry: RwLock<AggregateRegistry>,
+    /// Whether this consumer wants FUSE submounts (each child on its own cloned
+    /// superblock, giving it a distinct `st_dev`). Chosen by the device host at
+    /// construction (see [`VirtioFs::new_aggregate`]). When false,
+    /// `FUSE_SUBMOUNTS` is never negotiated and children stay plain
+    /// subdirectories of the synthetic root regardless of guest kernel support.
+    wants_submounts: bool,
 }
 
 impl AggregateState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(wants_submounts: bool) -> Self {
         Self {
             registry: RwLock::new(AggregateRegistry::new()),
+            wants_submounts,
         }
     }
 }
@@ -227,13 +234,18 @@ impl VirtioFs {
     }
 
     /// Finalize aggregate inode mapping after FUSE capability negotiation.
+    ///
+    /// Submounts are enabled only when the guest kernel is `capable` *and* the
+    /// device host requested them at construction (see
+    /// [`VirtioFs::new_aggregate`]).
     pub(crate) fn initialize_submounts(&self, capable: bool) -> bool {
         let Some(aggregate) = self.inner.aggregate() else {
             return false;
         };
+        let enable = capable && aggregate.wants_submounts;
         let mut registry = aggregate.registry.write();
-        registry.initialize(capable);
-        capable
+        registry.initialize(enable);
+        enable
     }
 
     /// Return the aggregate to its pre-initialization state for a remount.

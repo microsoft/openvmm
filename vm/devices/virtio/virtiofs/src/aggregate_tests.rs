@@ -16,7 +16,7 @@ fn aggregate_child_registry() {
     let b = tempfile::tempdir().unwrap();
     let mut readonly = LxVolumeOptions::default();
     readonly.readonly(true);
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
 
     assert_eq!(fs.synthetic_root_attr().nlink, 2);
     assert_eq!(fs.synthetic_root_statx(lx::StatExMask::new()).nlink, 2);
@@ -60,7 +60,7 @@ fn aggregate_child_registry() {
 
 #[test]
 fn aggregate_operations_are_scoped_to_aggregate_mode() {
-    let aggregate = VirtioFs::new_aggregate();
+    let aggregate = VirtioFs::new_aggregate(true);
     assert!(aggregate.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
     assert!(!aggregate.is_synthetic_root_handle(FUSE_ROOT_ID + 1, SYNTHETIC_ROOT_FH));
 
@@ -77,7 +77,7 @@ fn aggregate_operations_are_scoped_to_aggregate_mode() {
 #[test]
 fn add_child_validates_name() {
     let root = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
 
     for name in ["", ".", "..", "a/b", "a\0b"] {
         assert_eq!(
@@ -99,7 +99,7 @@ fn synthetic_root_node_ids_start_after_root() {
     // In aggregate mode the synthetic root occupies FUSE_ROOT_ID, so the
     // first real inode inserted must be allocated a higher id.
     let a = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
     fs.add_child("share", a.path(), None).unwrap();
     let entry = fs
         .lookup_synthetic_root(lx::LxStr::from_bytes(b"share"))
@@ -111,7 +111,7 @@ fn synthetic_root_node_ids_start_after_root() {
 fn submount_flag_requires_negotiation() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
     fs.add_child("first", first.path(), None).unwrap();
 
     let volume = |index: usize| {
@@ -151,6 +151,25 @@ fn submount_flag_requires_negotiation() {
 }
 
 #[test]
+fn submounts_disabled_by_construction() {
+    // An aggregate constructed without submounts never negotiates them, even
+    // when the guest kernel is capable.
+    let root = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new_aggregate(false);
+    fs.add_child("child", root.path(), None).unwrap();
+
+    assert!(!fs.initialize_submounts(true));
+    assert_eq!(
+        fs.lookup_synthetic_root(lx::LxStr::from_bytes(b"child"))
+            .unwrap()
+            .attr
+            .flags
+            & FUSE_ATTR_SUBMOUNT,
+        0
+    );
+}
+
+#[test]
 fn inode_namespacing_avoids_cross_volume_collisions() {
     // Direct mode (volume id 0) is the identity transform.
     assert_eq!(inode::namespace_ino(0, 42), 42);
@@ -177,7 +196,7 @@ fn hard_link_rejects_cross_volume_target() {
     let second = tempfile::tempdir().unwrap();
     std::fs::write(first.path().join("target"), b"data").unwrap();
 
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
     fs.add_child("first", first.path(), None).unwrap();
     fs.add_child("second", second.path(), None).unwrap();
 
@@ -210,7 +229,7 @@ fn hard_link_rejects_cross_volume_target() {
 #[test]
 fn add_child_rejected_after_teardown() {
     let a = tempfile::tempdir().unwrap();
-    let fs = VirtioFs::new_aggregate();
+    let fs = VirtioFs::new_aggregate(true);
     fs.add_child("before", a.path(), None).unwrap();
 
     fs.begin_teardown();

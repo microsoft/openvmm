@@ -115,15 +115,13 @@ impl Fuse for VirtioFs {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
 
-        // Aggregate children are exposed as plain subdirectories of the
-        // synthetic root rather than FUSE submounts. Advertising
-        // `FUSE_SUBMOUNTS` would make the guest auto-mount each child on a
-        // cloned superblock whose mountinfo root is "/"; instead consumers
-        // (e.g. the WSL drvfs mount-source resolver) rely on each child bind
-        // carrying the per-child root "/<child>" so the originating share can
-        // be recovered. Initialize in the namespaced-inode mode, which keeps
-        // child inode numbers collision-free within the single superblock.
-        self.initialize_submounts(false);
+        // In aggregate mode, advertise submounts when the guest kernel supports
+        // them *and* the device host requested them at construction (see
+        // `new_aggregate`). Submounts give each child its own `st_dev` on a
+        // cloned superblock, but make its mountinfo root "/".
+        if self.initialize_submounts(info.capable() & FUSE_SUBMOUNTS != 0) {
+            info.want |= FUSE_SUBMOUNTS;
+        }
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -586,17 +584,21 @@ impl VirtioFs {
     ///
     /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
     /// expose host folders as named children, each with its own read-only
-    /// setting. Children are exposed as plain subdirectories of the synthetic
-    /// root (not FUSE submounts), so guest inode numbers use the per-volume
-    /// namespace to stay collision-free within the single superblock.
-    pub fn new_aggregate() -> Self {
+    /// setting.
+    ///
+    /// `submounts` selects whether children are advertised with
+    /// `FUSE_ATTR_SUBMOUNT` (and `FUSE_SUBMOUNTS` negotiated) when the guest
+    /// kernel supports it, giving each child a distinct `st_dev` on its own
+    /// cloned superblock. Pass `false` for consumers that recover a child's
+    /// identity from its mountinfo root (which a submount reports as "/").
+    pub fn new_aggregate(submounts: bool) -> Self {
         Self {
             inner: Arc::new(VirtioFsInner {
                 // Inode numbers are deduplicated per volume (see `InodeMap`), so
                 // enable the stable-id map and key it by `(volume_id, ino)`.
                 inodes: RwLock::new(InodeMap::new(true, true)),
                 files: RwLock::new(HandleMap::new()),
-                mode: VirtioFsMode::Aggregate(AggregateState::new()),
+                mode: VirtioFsMode::Aggregate(AggregateState::new(submounts)),
             }),
         }
     }
