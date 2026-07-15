@@ -588,11 +588,10 @@ async fn snapshot_save_to_disk(
 /// reported itself.
 ///
 /// Gated on `TestRequirement::NestedVirtCapable` (the `_nested` suffix
-/// on the firmware tag), so it is skipped on hosts where the host
-/// hypervisor does not expose nested-virt extensions to the guest.
-/// Runs on both the KVM (Linux host) and WHP (Windows host) backends; the
+/// on the firmware tag), so the selection process skips it on hosts whose
+/// hypervisor cannot expose nested-virt extensions to the guest. This
+/// covers both the KVM (Linux host) and WHP (Windows host) backends; the
 /// L1 guest is always Linux regardless of host.
-#[cfg(any(target_os = "linux", windows))]
 #[openvmm_test(linux_direct_x64_nested[
     petri_artifacts_vmm_test::artifacts::OPENVMM_GUEST_LINUX_X64,
     petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64,
