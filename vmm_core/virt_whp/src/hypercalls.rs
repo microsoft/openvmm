@@ -736,6 +736,7 @@ mod x86 {
     use virt::VpIndex;
 
     use virt_support_x86emu::translate::TranslateFlags;
+    use virt_support_x86emu::translate::TranslatePrivilegeCheck;
     use virt_support_x86emu::translate::TranslateResult;
     use virt_support_x86emu::translate::translate_gva_to_gpa;
     use vmcore::vpci_msi::VpciInterruptParameters;
@@ -1309,20 +1310,30 @@ mod x86 {
                 // walker cannot account for the hypervisor's nested paging
                 // state, so defer the translation to the hypervisor via
                 // `WHvTranslateGva`.
+                //
+                // Validate and normalize the control flags the same way as the
+                // non-nested path so that unsupported/reserved bits still return
+                // `HvError::InvalidParameter` rather than being silently ignored,
+                // then build the WHP flags from the validated result.
+                let translate_flags = convert_translate_control_flags(control_flags)?;
+
                 let mut flags = whp::abi::WHvTranslateGvaFlagNone;
-                if control_flags.validate_read() {
+                if translate_flags.validate_read {
                     flags |= whp::abi::WHvTranslateGvaFlagValidateRead;
                 }
-                if control_flags.validate_write() {
+                if translate_flags.validate_write {
                     flags |= whp::abi::WHvTranslateGvaFlagValidateWrite;
                 }
-                if control_flags.validate_execute() {
+                if translate_flags.validate_execute {
                     flags |= whp::abi::WHvTranslateGvaFlagValidateExecute;
                 }
-                if control_flags.privilege_exempt() {
+                if matches!(
+                    translate_flags.privilege_check,
+                    TranslatePrivilegeCheck::None
+                ) {
                     flags |= whp::abi::WHvTranslateGvaFlagPrivilegeExempt;
                 }
-                if control_flags.set_page_table_bits() {
+                if translate_flags.set_page_table_bits {
                     flags |= whp::abi::WHvTranslateGvaFlagSetPageTableBits;
                 }
 
