@@ -734,7 +734,6 @@ mod x86 {
     use std::sync::atomic::Ordering;
     use tracing_helpers::ErrorValueExt;
     use virt::VpIndex;
-
     use virt_support_x86emu::translate::TranslateFlags;
     use virt_support_x86emu::translate::TranslatePrivilegeCheck;
     use virt_support_x86emu::translate::TranslateResult;

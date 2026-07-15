@@ -234,7 +234,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
                 TranslateMode::Execute => whp::abi::WHvTranslateGvaFlagValidateExecute,
             };
             let vtl = self.vp.state.active_vtl;
-            return match self.vp.translate_gva_via_hypervisor(vtl, gva, flags) {
+            match self.vp.translate_gva_via_hypervisor(vtl, gva, flags) {
                 Ok(gpa) => Ok(EmuTranslateResult {
                     gpa,
                     overlay_page: None,
@@ -261,10 +261,10 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
                     code,
                     event_info: None,
                 }),
-            };
+            }
+        } else {
+            emulate_translate_gva(self, gva, mode)
         }
-
-        emulate_translate_gva(self, gva, mode)
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
