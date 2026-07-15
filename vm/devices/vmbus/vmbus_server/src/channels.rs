@@ -1717,24 +1717,16 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // restore_channel was never called for this, but it was in
                     // the saved state. This indicates the offer is meant to be
                     // fresh, so revoke and reoffer it.
-                    //
-                    // Exception: if the channel is Closed there is no
-                    // per-device state to lose, and revoking would race with
-                    // any guest probe currently attempting to open it.
-                    if matches!(channel.state, ChannelState::Closed) {
-                        channel.restore_state = RestoreState::Restored;
-                    } else {
-                        let retain = revoke(
-                            self.inner
-                                .pending_messages
-                                .sender(self.notifier, self.inner.state.is_paused()),
-                            offer_id,
-                            channel,
-                            &mut self.inner.gpadls,
-                        );
-                        assert!(retain, "channel has not been released");
-                        channel.state = ChannelState::Reoffered;
-                    }
+                    let retain = revoke(
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
+                        offer_id,
+                        channel,
+                        &mut self.inner.gpadls,
+                    );
+                    assert!(retain, "channel has not been released");
+                    channel.state = ChannelState::Reoffered;
                 }
                 RestoreState::Unmatched => {
                     // offer_channel was never called for this, but it was in
