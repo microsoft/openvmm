@@ -989,7 +989,7 @@ impl SimpleFlowNode for Node {
                 if results.all_tests_passed {
                     log::info!("all tests passed!");
                 } else {
-                    log::error!("encountered test failures.");
+                    anyhow::bail!("encountered test failures.")
                 }
 
                 Ok(())
