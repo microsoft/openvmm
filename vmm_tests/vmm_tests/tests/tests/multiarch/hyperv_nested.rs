@@ -21,7 +21,7 @@ use vmm_test_macros::openvmm_test;
 /// Assignment (DDA) NVMe controller — to confirm nested virtualization works.
 #[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
 async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let mut vm = config
+    let (mut vm, agent) = config
         .with_no_vmbus()
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .with_default_boot_always_attempt(true)
@@ -70,10 +70,9 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
                 }
             })
         })
-        .run_without_agent()
+        .run()
         .await?;
 
-    let agent = vm.wait_for_agent().await?;
     let shell = agent.windows_shell();
 
     // Install the Hyper-V role and management tools. DISM returns exit code
