@@ -752,13 +752,44 @@ options:
     #[clap(long, value_name = "PATH")]
     pub pidfile: Option<PathBuf>,
 
-    /// run as a ttrpc server on the specified Unix socket
+    /// \[deprecated\] run as a ttrpc server on the specified Unix socket
+    ///
+    /// Use `--rpc path=<PATH>,transport=ttrpc` instead.
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
 
-    /// run as a grpc server on the specified Unix socket
+    /// \[deprecated\] run as a grpc server on the specified Unix socket
+    ///
+    /// Use `--rpc path=<PATH>,transport=grpc` instead.
     #[clap(long, value_name = "SOCKETPATH", conflicts_with("ttrpc"))]
     pub grpc: Option<PathBuf>,
+
+    /// run as an RPC server on the specified Unix socket
+    #[clap(long_help = r#"
+Run as an RPC server on the specified Unix socket.
+
+syntax: path=<PATH>[,transport=<TRANSPORT>]
+
+options:
+    `path=<PATH>`                  Unix socket path to listen on (required)
+    `transport=<TRANSPORT>`        wire transport to accept (default: auto)
+
+valid transports:
+    `auto`                         auto-detect ttrpc vs. gRPC per connection
+    `ttrpc`                        accept ttrpc clients only
+    `grpc`                         accept gRPC clients only
+
+Examples:
+    --rpc path=/tmp/openvmm.sock
+    --rpc path=/tmp/openvmm.sock,transport=ttrpc
+"#)]
+    #[clap(
+        long,
+        value_name = "path=PATH[,transport=TRANSPORT]",
+        conflicts_with("ttrpc"),
+        conflicts_with("grpc")
+    )]
+    pub rpc: Option<RpcCli>,
 
     /// do not launch child processes
     #[clap(long)]
@@ -1940,6 +1971,66 @@ impl FromStr for DiskCliKind {
             },
         };
         Ok(disk)
+    }
+}
+
+/// Wire transport selection for `--rpc`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum RpcTransportCli {
+    /// Auto-detect ttrpc vs. gRPC per connection, based on the first byte of
+    /// the stream.
+    #[default]
+    Auto,
+    /// Accept ttrpc clients only.
+    Ttrpc,
+    /// Accept gRPC clients only.
+    Grpc,
+}
+
+/// RPC server configuration parsed from `--rpc`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcCli {
+    /// Unix socket path to listen on.
+    pub path: PathBuf,
+    /// Wire transport to accept.
+    pub transport: RpcTransportCli,
+}
+
+impl FromStr for RpcCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut path = None;
+        let mut transport = None;
+        for part in s.split(',') {
+            let (key, value) = part
+                .split_once('=')
+                .with_context(|| format!("invalid rpc option '{part}', expected key=value"))?;
+            match key {
+                "path" => {
+                    anyhow::ensure!(path.is_none(), "duplicate option 'path'");
+                    anyhow::ensure!(!value.is_empty(), "'path' requires a value");
+                    path = Some(PathBuf::from(value));
+                }
+                "transport" => {
+                    anyhow::ensure!(transport.is_none(), "duplicate option 'transport'");
+                    transport = Some(match value {
+                        "auto" => RpcTransportCli::Auto,
+                        "ttrpc" => RpcTransportCli::Ttrpc,
+                        "grpc" => RpcTransportCli::Grpc,
+                        _ => anyhow::bail!(
+                            "invalid transport '{value}', expected auto, ttrpc, or grpc"
+                        ),
+                    });
+                }
+                _ => anyhow::bail!("unknown rpc option '{key}'"),
+            }
+        }
+
+        Ok(RpcCli {
+            path: path.context("'path' is required")?,
+            transport: transport.unwrap_or_default(),
+        })
     }
 }
 
@@ -3746,6 +3837,33 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn test_parse_rpc() {
+        // explicit path, default transport
+        let rpc = RpcCli::from_str("path=/tmp/openvmm.sock").unwrap();
+        assert_eq!(rpc.path, Path::new("/tmp/openvmm.sock"));
+        assert_eq!(rpc.transport, RpcTransportCli::Auto);
+
+        // explicit transport
+        for (s, transport) in [
+            ("auto", RpcTransportCli::Auto),
+            ("ttrpc", RpcTransportCli::Ttrpc),
+            ("grpc", RpcTransportCli::Grpc),
+        ] {
+            let rpc = RpcCli::from_str(&format!("path=/tmp/s.sock,transport={s}")).unwrap();
+            assert_eq!(rpc.path, Path::new("/tmp/s.sock"));
+            assert_eq!(rpc.transport, transport);
+        }
+
+        // errors
+        assert!(RpcCli::from_str("").is_err());
+        assert!(RpcCli::from_str("transport=ttrpc").is_err());
+        assert!(RpcCli::from_str("path=").is_err());
+        assert!(RpcCli::from_str("path=/tmp/s.sock,transport=bogus").is_err());
+        assert!(RpcCli::from_str("path=/tmp/s.sock,bogus=1").is_err());
+        assert!(RpcCli::from_str("path=/a,path=/b").is_err());
+    }
 
     #[test]
     fn test_parse_file_opts() {

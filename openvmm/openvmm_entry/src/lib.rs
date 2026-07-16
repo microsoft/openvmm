@@ -2488,35 +2488,49 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     }
 
     #[cfg(any(feature = "grpc", feature = "ttrpc"))]
-    if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        return block_on(async {
-            let _ = std::fs::remove_file(path);
-            let listener =
-                unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
+    {
+        let rpc = opt
+            .rpc
+            .as_ref()
+            .map(|rpc| {
+                let transport = match rpc.transport {
+                    cli_args::RpcTransportCli::Auto => ttrpc::RpcTransport::Auto,
+                    cli_args::RpcTransportCli::Ttrpc => ttrpc::RpcTransport::Ttrpc,
+                    cli_args::RpcTransportCli::Grpc => ttrpc::RpcTransport::Grpc,
+                };
+                (rpc.path.as_path(), transport)
+            })
+            .or_else(|| {
+                opt.ttrpc
+                    .as_deref()
+                    .map(|p| (p, ttrpc::RpcTransport::Ttrpc))
+            })
+            .or_else(|| opt.grpc.as_deref().map(|p| (p, ttrpc::RpcTransport::Grpc)));
 
-            let transport = if opt.ttrpc.is_some() {
-                ttrpc::RpcTransport::Ttrpc
-            } else {
-                ttrpc::RpcTransport::Grpc
-            };
+        if let Some((path, transport)) = rpc {
+            return block_on(async {
+                let _ = std::fs::remove_file(path);
+                let listener =
+                    unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
-            // This is a local launch
-            let mut handle =
-                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
-                    listener,
-                    transport,
-                })
-                .await?;
+                // This is a local launch
+                let mut handle =
+                    mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+                        listener,
+                        transport,
+                    })
+                    .await?;
 
-            tracing::info!(%transport, path = %path.display(), "listening");
+                tracing::info!(%transport, path = %path.display(), "listening");
 
-            // Signal the the parent process that the server is ready.
-            pal::close_stdout().context("failed to close stdout")?;
+                // Signal the the parent process that the server is ready.
+                pal::close_stdout().context("failed to close stdout")?;
 
-            handle.join().await?;
+                handle.join().await?;
 
-            Ok(0)
-        });
+                Ok(0)
+            });
+        }
     }
 
     DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
