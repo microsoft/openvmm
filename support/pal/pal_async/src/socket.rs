@@ -608,6 +608,11 @@ impl<T: AsSockRef> AsyncRead for ReadHalf<T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets `Ok(0)`
+        // immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.poll_io(cx, |this| (&*this.inner.socket.as_sock_ref()).read(buf))
     }
 

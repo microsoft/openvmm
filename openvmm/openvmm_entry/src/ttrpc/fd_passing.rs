@@ -129,20 +129,35 @@ pub(super) async fn serve(
         .await
         .context("failed to send fd-passing handshake")?;
 
-    // Track the names registered by this connection so they can be dropped when
-    // it closes.
-    let mut owned_names: Vec<String> = Vec::new();
-    let result = serve_requests(&mut conn, registry, &mut owned_names).await;
-    for name in owned_names {
-        registry.deregister(&name);
+    // Track the names registered by this connection so they are dropped when
+    // it closes. `OwnedNames` deregisters on drop, so cleanup runs even if this
+    // future is cancelled (dropped) before `serve_requests` returns.
+    let mut owned_names = OwnedNames {
+        registry,
+        names: Vec::new(),
+    };
+    serve_requests(&mut conn, &mut owned_names).await
+}
+
+/// Tracks the names a connection has registered and deregisters them on drop,
+/// so cleanup runs even if the serving future is dropped mid-flight (e.g. when
+/// the accept loop is cancelled) rather than leaking them into the registry.
+struct OwnedNames<'a> {
+    registry: &'a FdRegistry,
+    names: Vec<String>,
+}
+
+impl Drop for OwnedNames<'_> {
+    fn drop(&mut self) {
+        for name in self.names.drain(..) {
+            self.registry.deregister(&name);
+        }
     }
-    result
 }
 
 async fn serve_requests(
     conn: &mut Connection,
-    registry: &FdRegistry,
-    owned_names: &mut Vec<String>,
+    owned_names: &mut OwnedNames<'_>,
 ) -> anyhow::Result<()> {
     loop {
         // Read the request header (opcode + name length). A clean EOF here (at
@@ -170,9 +185,9 @@ async fn serve_requests(
         match opcode {
             protocol::OPCODE_REGISTER => match parse_name(&name_bytes) {
                 Some(name) => match fd {
-                    Some(fd) => match registry.register(name.clone(), fd) {
+                    Some(fd) => match owned_names.registry.register(name.clone(), fd) {
                         Ok(()) => {
-                            owned_names.push(name);
+                            owned_names.names.push(name);
                             conn.write_response(None).await?;
                         }
                         Err(err) => conn.write_response(Some(&err.to_string())).await?,
@@ -196,9 +211,9 @@ async fn serve_requests(
                         .await?
                 }
                 Some(name) => {
-                    if let Some(pos) = owned_names.iter().position(|n| *n == name) {
-                        owned_names.swap_remove(pos);
-                        registry.deregister(&name);
+                    if let Some(pos) = owned_names.names.iter().position(|n| *n == name) {
+                        owned_names.names.swap_remove(pos);
+                        owned_names.registry.deregister(&name);
                         conn.write_response(None).await?;
                     } else {
                         conn.write_response(Some("name not registered by this connection"))
