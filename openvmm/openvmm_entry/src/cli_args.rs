@@ -19,8 +19,6 @@
 #![warn(missing_docs)]
 
 use anyhow::Context;
-use clap::CommandFactory;
-use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::spec::CfmwsWindowRestrictions;
@@ -39,7 +37,7 @@ use thiserror::Error;
 /// Parse CLI options, using a thread with a larger stack on Windows to avoid
 /// stack overflow in debug builds due to clap's deep stack usage.
 /// See <https://github.com/clap-rs/clap/issues/5134>.
-fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+pub(crate) fn parse_options() -> Options {
     // In non-optimized builds, clap uses an embarrassing amount of stack space
     // to construct the `Command` instance for `Options`, more than the Windows
     // default of 1MB. This has been known since 2023:
@@ -49,48 +47,22 @@ fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
     // Work around this by running the code on a thread with lots of stack
     // space. This is easier and more reliable than configuring the PE binary to
     // have a larger stack.
-    if cfg!(windows) {
-        std::thread::scope(|s| {
-            std::thread::Builder::new()
-                .stack_size(0x400000)
-                .spawn_scoped(s, f)
-                .unwrap()
-                .join()
-                .unwrap()
-        })
-    } else {
-        f()
-    }
-}
-
-pub(crate) fn parse_options(command_metadata: Option<crate::CommandMetadata>) -> Options {
-    on_big_stack(move || {
-        if let Some(command_metadata) = command_metadata {
-            let matches = command(command_metadata).get_matches();
-            Options::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+    fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+        if cfg!(windows) {
+            std::thread::scope(|s| {
+                std::thread::Builder::new()
+                    .stack_size(0x400000)
+                    .spawn_scoped(s, f)
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            })
         } else {
-            Options::parse()
+            f()
         }
-    })
-}
-
-pub(crate) fn parse_version(command_metadata: crate::CommandMetadata) {
-    let mut args = std::env::args_os().skip(1);
-    let version_requested = args
-        .next()
-        .is_some_and(|arg| arg == "--version" || arg == "-V")
-        && args.next().is_none();
-
-    if version_requested {
-        on_big_stack(move || command(command_metadata).get_matches());
-        unreachable!("clap exits after displaying the version");
     }
-}
 
-fn command(command_metadata: crate::CommandMetadata) -> clap::Command {
-    Options::command()
-        .name(command_metadata.name)
-        .version(command_metadata.version)
+    on_big_stack(Options::parse)
 }
 
 const DEFAULT_MEMORY_SIZE: u64 = 1024 * 1024 * 1024;
@@ -3774,19 +3746,6 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
-
-    #[test]
-    fn version() {
-        let error = command(crate::CommandMetadata {
-            name: "openvmm",
-            version: "0.1.0",
-        })
-        .try_get_matches_from(["openvmm", "--version"])
-        .unwrap_err();
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-        assert_eq!(error.to_string(), "openvmm 0.1.0\n");
-    }
 
     #[test]
     fn test_parse_file_opts() {

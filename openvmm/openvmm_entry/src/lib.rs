@@ -147,28 +147,14 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
-#[derive(Clone, Copy)]
-pub struct CommandMetadata {
-    pub name: &'static str,
-    pub version: &'static str,
-}
-
 pub fn openvmm_main() {
-    openvmm_main_inner(None)
-}
-
-pub fn openvmm_main_with_metadata(command_metadata: CommandMetadata) {
-    openvmm_main_inner(Some(command_metadata))
-}
-
-fn openvmm_main_inner(command_metadata: Option<CommandMetadata>) {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
     let mut pidfile_guard: Option<pidfile::Pidfile> = None;
-    let exit_code = match do_main(&mut pidfile_guard, command_metadata) {
+    let exit_code = match do_main(&mut pidfile_guard) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -2473,16 +2459,9 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(
-    pidfile_guard: &mut Option<pidfile::Pidfile>,
-    command_metadata: Option<CommandMetadata>,
-) -> anyhow::Result<i32> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
-
-    if let Some(command_metadata) = command_metadata {
-        cli_args::parse_version(command_metadata);
-    }
 
     tracing_init::enable_tracing()?;
 
@@ -2491,7 +2470,7 @@ fn do_main(
     // not return). Any worker host setup errors are return and bubbled up.
     meshworker::run_vmm_mesh_host()?;
 
-    let opt = cli_args::parse_options(command_metadata);
+    let opt = cli_args::parse_options();
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
