@@ -2755,21 +2755,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let is_released = channel.state.is_released();
         if is_released || channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            if is_released {
+            let status = if is_released {
                 tracelimit::warn_ratelimited!(
                     channel_id = channel_id.0,
                     key = %channel.offer.key(),
                     gpadl_id = gpadl_id.0,
-                    "guest sent GPADL for unreferenced channel, ignoring"
+                    "guest sent GPADL for unreferenced channel"
                 );
-            }
 
-            // A gpadl for a channel that was revoked but still referenced is
-            // allowed. In this case there is no channel to notify so
-            // immediately send a success response.
-            let status = if is_released {
                 protocol::STATUS_UNSUCCESSFUL
             } else {
+                // A gpadl for a channel that was revoked but still referenced is
+                // allowed. In this case there is no channel to notify so
+                // immediately send a success response.
                 gpadl.state = GpadlState::Accepted;
                 protocol::STATUS_SUCCESS
             };
