@@ -67,7 +67,9 @@ use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
+use disk_backend::shared_disk::SharedDiskResolver;
 use disk_backend_resources::BlockDeviceDiskHandle;
+use disk_backend_resources::SharedDiskRefHandle;
 use disk_blockdevice::resolver::BlockDeviceResolver;
 use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
@@ -116,8 +118,6 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
@@ -2209,6 +2209,17 @@ async fn new_underhill_vm(
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
 
+    // The shared-disk resolver lets a single opened backing store be shared
+    // between an emulated IDE drive and its storvsp accelerator channel without
+    // opening it twice (required for VTL2 NVMe namespaces opened exclusively).
+    let shared_disk_resolver = SharedDiskResolver::new();
+    resolver.add_async_resolver::<DiskHandleKind, _, disk_backend_resources::SharedDiskHandle, _>(
+        shared_disk_resolver.clone(),
+    );
+    resolver.add_async_resolver::<DiskHandleKind, _, SharedDiskRefHandle, _>(
+        shared_disk_resolver.clone(),
+    );
+
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
         let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
@@ -2658,7 +2669,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
-        pci_chipset_devices,
+        mut pci_chipset_devices,
         isa_dma_controller,
         capabilities,
     } = chipset
@@ -2797,7 +2808,10 @@ async fn new_underhill_vm(
         })
         .unwrap();
 
-    let mut ide_drives = [[None, None], [None, None]];
+    // Hard disks are resolved here rather than lazily (like DVDs) because the
+    // storvsp accelerator needs the concrete Disk to Arc-share; the emulated
+    // controller then references that same open via the shared-disk primitive.
+    let mut ide_disks: Vec<ide_resources::IdeDeviceConfig> = Vec::new();
     let mut storvsp_ide_disks = Vec::new();
     let mut ide_io_queue_depth = None;
 
@@ -2814,18 +2828,19 @@ async fn new_underhill_vm(
         ] {
             for disk_cfg in disks.into_iter() {
                 let drive = disk_cfg.path.drive;
-                let media = match disk_cfg.guest_media {
-                    GuestMedia::Dvd(device) => {
-                        let scsi_dvd = resolver
-                            .resolve(
-                                device,
-                                ResolveScsiDeviceHandleParams {
-                                    driver_source: &driver_source,
-                                },
-                            )
-                            .await?;
-                        ide::DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(scsi_dvd.0)))
-                    }
+                let path = ide_resources::IdePath { channel, drive };
+
+                if ide_disks
+                    .iter()
+                    .any(|d| d.path.channel == channel && d.path.drive == drive)
+                {
+                    anyhow::bail!("duplicate ide device at {}/{}", channel, drive);
+                }
+
+                let guest_media = match disk_cfg.guest_media {
+                    // DVDs have no accelerator channel, so the emulated IDE
+                    // controller resolves them directly.
+                    dvd @ GuestMedia::Dvd(_) => dvd,
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
@@ -2834,7 +2849,6 @@ async fn new_underhill_vm(
                             disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
                                 .await?;
 
-                        let path = ide_resources::IdePath { channel, drive };
                         let params = controllers
                             .ide_disk_params
                             .get(&path)
@@ -2846,18 +2860,15 @@ async fn new_underhill_vm(
                         // Only disks, not DVD drives, get IDE accelerator channels.
                         storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));
 
-                        ide::DriveMedia::hard_disk(disk)
+                        let key = shared_disk_resolver.register(disk);
+                        GuestMedia::Disk {
+                            disk_type: SharedDiskRefHandle { key }.into_resource(),
+                            read_only,
+                        }
                     }
                 };
 
-                let old_media = ide_drives[channel as usize]
-                    .get_mut(drive as usize)
-                    .context("invalid ide device")?
-                    .replace(media);
-
-                if old_media.is_some() {
-                    anyhow::bail!("duplicate ide device at {}/{}", channel, drive);
-                }
+                ide_disks.push(ide_resources::IdeDeviceConfig { path, guest_media });
             }
         }
     }
@@ -2926,18 +2937,15 @@ async fn new_underhill_vm(
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
 
-    let deps_hyperv_ide = if chipset.with_hyperv_ide {
-        let [primary_channel_drives, secondary_channel_drives] = ide_drives;
-        Some(dev::HyperVIdeDeps {
-            attached_to: pci_bus_id_piix4.clone(),
-            primary_channel_drives,
-            secondary_channel_drives,
-        })
-    } else {
-        // Ensured above.
-        assert!(ide_drives.iter().flatten().all(|d| d.is_none()));
-        None
-    };
+    if !ide_disks.is_empty() {
+        pci_chipset_devices.push(vmotherboard::LegacyPciChipsetDeviceHandle {
+            name: "ide".to_string(),
+            resource: chipset_resources::ide::HyperVIdeDeviceHandle { disks: ide_disks }
+                .into_resource(),
+            pci_bus_name: chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: chipset_resources::ide::HYPERV_IDE_BDF,
+        });
+    }
 
     let deps_underhill_vga_proxy =
         chipset
@@ -3105,7 +3113,6 @@ async fn new_underhill_vm(
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
-        deps_hyperv_ide,
         deps_hyperv_vga: None,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,

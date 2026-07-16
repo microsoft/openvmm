@@ -48,6 +48,50 @@ impl ResourceId<DiskHandleKind> for DiskWithReservationsHandle {
     const ID: &'static str = "prwrap";
 }
 
+/// Disk handle for a disk that is resolved exactly once and shared (by cheap
+/// clone) among multiple independently-resolved consumers.
+///
+/// This is the "carrier" half of the shared-disk primitive: the first consumer
+/// to resolve this handle resolves `inner` (opening the backing store once) and
+/// caches the resulting disk under `key`. Other consumers reference the same
+/// backing store via [`SharedDiskRefHandle`] with the matching `key`, obtaining
+/// a clone rather than opening it again.
+///
+/// This exists so that a backing store that can only be opened once (e.g. an
+/// NVMe namespace opened exclusively, or a file-backed disk) can be attached to
+/// two devices at the same time — for example, an emulated IDE drive and its
+/// storvsp accelerator channel.
+///
+/// The `key` must be unique within the scope of a single resource resolver.
+#[derive(MeshPayload)]
+pub struct SharedDiskHandle {
+    /// The key identifying this shared disk within the resource resolver.
+    pub key: u64,
+    /// The underlying disk resource, resolved exactly once.
+    pub inner: Resource<DiskHandleKind>,
+}
+
+impl ResourceId<DiskHandleKind> for SharedDiskHandle {
+    const ID: &'static str = "shared";
+}
+
+/// A reference to a shared disk that has already been (or will be) resolved via
+/// a [`SharedDiskHandle`] carrier, or registered directly on the resolver, with
+/// the matching `key`.
+///
+/// Resolving this handle returns a clone of the already-resolved disk. It is an
+/// error to resolve a reference before its disk has been made available, so the
+/// carrier (or a direct registration) must be resolved first.
+#[derive(MeshPayload)]
+pub struct SharedDiskRefHandle {
+    /// The key identifying the shared disk within the resource resolver.
+    pub key: u64,
+}
+
+impl ResourceId<DiskHandleKind> for SharedDiskRefHandle {
+    const ID: &'static str = "shared_ref";
+}
+
 /// Disk handle for a delay disk.
 #[derive(MeshPayload)]
 pub struct DelayDiskHandle {

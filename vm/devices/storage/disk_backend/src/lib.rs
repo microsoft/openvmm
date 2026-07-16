@@ -74,6 +74,7 @@
 
 pub mod pr;
 pub mod resolve;
+pub mod shared_disk;
 pub mod sync_wrapper;
 
 use guestmem::AccessError;
