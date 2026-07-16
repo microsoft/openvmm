@@ -2742,25 +2742,50 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Sends a GPADL to the device when `ranges` is Some. Returns false if the
-    /// GPADL should be removed because the channel is already revoked.
+    /// GPADL should be removed because the channel is already released by the
+    /// guest.
     #[must_use]
     fn gpadl_updated(
         mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &Channel,
         gpadl_id: GpadlId,
-        gpadl: &Gpadl,
+        gpadl: &mut Gpadl,
     ) -> bool {
-        if channel.state.is_revoked() {
+        let is_released = channel.state.is_released();
+        if is_released || channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_UNSUCCESSFUL);
-            false
+            if is_released {
+                tracelimit::warn_ratelimited!(
+                    channel_id = channel_id.0,
+                    key = %channel.offer.key(),
+                    gpadl_id = gpadl_id.0,
+                    "guest sent GPADL for unreferenced channel, ignoring"
+                );
+            }
+
+            // A gpadl for a channel that was revoked but still referenced is
+            // allowed. In this case there is no channel to notify so
+            // immediately send a success response.
+            let status = if is_released {
+                protocol::STATUS_UNSUCCESSFUL
+            } else {
+                gpadl.state = GpadlState::Accepted;
+                protocol::STATUS_SUCCESS
+            };
+
+            sender.send_gpadl_created(channel_id, gpadl_id, status);
+
+            // Keep the gpadl around until the channel is released, so that the
+            // guest can tear it down if it wants.
+            !is_released
         } else {
             // Notify the channel if the GPADL is done.
             sender.notifier.notify(
                 offer_id,
                 Action::Gpadl(gpadl_id, gpadl.count, gpadl.buf.clone()),
             );
+
             true
         }
     }
