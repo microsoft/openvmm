@@ -2523,7 +2523,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
                 tracing::info!(%transport, path = %path.display(), "listening");
 
-                // Signal the the parent process that the server is ready.
+                // Signal the parent process that the server is ready.
                 pal::close_stdout().context("failed to close stdout")?;
 
                 handle.join().await?;

@@ -3,6 +3,10 @@
 
 //! Socket-related functionality.
 
+// UNSAFETY: Reinterpreting an initialized `&mut [u8]` as
+// `&mut [MaybeUninit<u8>]` to pass to `socket2::Socket::peek`.
+#![expect(unsafe_code)]
+
 #[cfg(unix)]
 use super::fd;
 use super::interest::InterestSlot;
@@ -134,10 +138,12 @@ impl<T: AsSockRef> PolledSocket<T> {
     ///
     /// The peeked data remains in the socket's receive buffer, so a subsequent
     /// read (or peek) will observe the same bytes.
-    // UNSAFETY: Reinterpreting an initialized `&mut [u8]` as
-    // `&mut [MaybeUninit<u8>]` to pass to `socket2::Socket::peek`.
-    #[expect(unsafe_code)]
     pub fn poll_peek(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets the documented
+        // `Ok(0)` immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.poll_io(cx, InterestSlot::Read, PollEvents::IN, |this| {
             // SAFETY: Reinterpreting an initialized `&mut [u8]` as
             // `&mut [MaybeUninit<u8>]` is sound: every `u8` is a valid
@@ -353,6 +359,11 @@ impl<T: AsSockRef + Read> AsyncRead for PolledSocket<T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets `Ok(0)`
+        // immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.poll_io(cx, InterestSlot::Read, PollEvents::IN, |this| {
             this.socket.read(buf)
         })

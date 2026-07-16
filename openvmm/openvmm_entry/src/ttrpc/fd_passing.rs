@@ -261,12 +261,22 @@ impl Connection {
         })
         .await?;
         self.read_buf.extend(&buf[..n]);
-        // Drain immediately: the next `recv` closes any fds still held. At most
-        // one arrives per `recv`, and the previous message's descriptor has
-        // already been consumed, so `fd` is empty here.
+        // Take the at-most-one descriptor that arrived with this `recv`. A
+        // conforming client attaches a descriptor only to a `Register` and
+        // reads the response before sending anything else, so the previous
+        // message's descriptor has already been consumed and `fd` is empty
+        // here. A misbehaving client can still attach descriptors to other
+        // bytes; since the protocol requires the server never panic on any
+        // input, treat an unconsumed descriptor as a protocol violation and
+        // error out (dropping both descriptors and closing the connection)
+        // rather than asserting.
         if let Some(fd) = self.receiver.drain().next() {
-            let prev = self.fd.replace(fd);
-            assert!(prev.is_none(), "a descriptor was left unconsumed");
+            if self.fd.replace(fd).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "received a descriptor before the previous one was consumed",
+                ));
+            }
         }
         Ok(n)
     }
