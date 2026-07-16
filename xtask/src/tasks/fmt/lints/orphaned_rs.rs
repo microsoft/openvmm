@@ -10,62 +10,48 @@ use std::path::Path;
 use std::path::PathBuf;
 use toml_edit::DocumentMut;
 
-const SUPPRESS: &str = "xtask-fmt allow-orphaned-rust-file";
-
-struct RustFile {
-    path: PathBuf,
-    content: String,
-}
-
 pub struct OrphanedRustFiles {
-    crate_dir: PathBuf,
-    manifest: String,
-    files: Vec<RustFile>,
+    files: Vec<PathBuf>,
+    references: String,
 }
 
 impl Lint for OrphanedRustFiles {
     fn new(_ctx: &LintCtx) -> Self {
         Self {
-            crate_dir: PathBuf::new(),
-            manifest: String::new(),
             files: Vec::new(),
+            references: String::new(),
         }
     }
 
     fn enter_workspace(&mut self, _content: &Lintable<DocumentMut>) {}
 
-    fn enter_crate(&mut self, content: &Lintable<DocumentMut>) {
-        self.crate_dir = content.path().parent().unwrap_or(Path::new("")).to_owned();
-        self.manifest = content.raw().unwrap_or_default().to_owned();
+    fn enter_crate(&mut self, _content: &Lintable<DocumentMut>) {
         self.files.clear();
+        self.references.clear();
     }
 
     fn visit_file(&mut self, content: &mut Lintable<String>) {
-        self.files.push(RustFile {
-            path: content.path().to_owned(),
-            content: content.to_string(),
-        });
+        self.files.push(content.path().to_owned());
+        self.references.push_str(content);
+        self.references.push('\n');
     }
 
-    fn exit_crate(&mut self, _content: &mut Lintable<DocumentMut>) {
-        let mut references = self.manifest.clone();
-        for file in &self.files {
-            references.push_str(&file.content);
-        }
+    fn exit_crate(&mut self, content: &mut Lintable<DocumentMut>) {
+        let crate_dir = content.path().parent().unwrap_or(Path::new(""));
+        let manifest = content.raw().unwrap_or_default();
 
         for file in &self.files {
-            let relative_path = file.path.strip_prefix(&self.crate_dir).unwrap();
+            let relative_path = file.strip_prefix(crate_dir).unwrap();
             if is_cargo_target(relative_path)
-                || file.content.contains(SUPPRESS)
-                || is_referenced(relative_path, &references)
+                || is_referenced(relative_path, manifest)
+                || is_referenced(relative_path, &self.references)
             {
                 continue;
             }
 
             log::warn!(
-                "{}: Rust source file is not referenced by a Cargo target, module, or include \
-                 (add `{SUPPRESS}` to suppress)",
-                file.path.display(),
+                "{}: Rust source file is not referenced by a Cargo target, module, or include",
+                file.display(),
             );
         }
     }
@@ -124,10 +110,10 @@ fn is_referenced(path: &Path, references: &str) -> bool {
     }
 
     let module_name = if file_name == "mod.rs" {
-        path.parent()
-            .and_then(Path::file_name)
-            .unwrap()
-            .to_string_lossy()
+        let Some(module_name) = path.parent().and_then(Path::file_name) else {
+            return false;
+        };
+        module_name.to_string_lossy()
     } else {
         path.file_stem().unwrap().to_string_lossy()
     };
@@ -175,5 +161,10 @@ mod tests {
             "include_str!(\"./templates/device.template.rs\")"
         ));
         assert!(!is_referenced(Path::new("src/device.rs"), "pub mod other;"));
+    }
+
+    #[test]
+    fn crate_root_mod_rs_is_unreferenced() {
+        assert!(!is_referenced(Path::new("mod.rs"), ""));
     }
 }
