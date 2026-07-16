@@ -9,7 +9,7 @@ fn parse_component(name: &str, value: &str) -> u16 {
         .unwrap_or_else(|_| panic!("{name} must be an unsigned 16-bit integer, got {value:?}"))
 }
 
-fn product_version() -> [u16; 3] {
+fn product_version() -> (String, [u16; 3]) {
     let version_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../VERSION");
     let version = std::fs::read_to_string(&version_path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", version_path.display()));
@@ -19,17 +19,23 @@ fn product_version() -> [u16; 3] {
         panic!("OpenVMM VERSION must contain exactly three components, got {version:?}");
     };
 
-    [
-        parse_component("OpenVMM VERSION major component", major),
-        parse_component("OpenVMM VERSION minor component", minor),
-        parse_component("OpenVMM VERSION patch component", patch),
-    ]
+    (
+        version.to_owned(),
+        [
+            parse_component("OpenVMM VERSION major component", major),
+            parse_component("OpenVMM VERSION minor component", minor),
+            parse_component("OpenVMM VERSION patch component", patch),
+        ],
+    )
 }
 
 fn main() {
     // Prevent this build script from rerunning unnecessarily.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../VERSION");
+
+    let (product_version, [major, minor, patch]) = product_version();
+    println!("cargo:rustc-env=OPENVMM_PRODUCT_VERSION={product_version}");
 
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         println!("cargo:rustc-link-lib=onecore_apiset");
@@ -38,7 +44,6 @@ fn main() {
         // Embed version/resource info into the EXE.
         println!("cargo:rerun-if-changed=resources.rc");
 
-        let [major, minor, patch] = product_version();
         let revision = 0;
 
         let macros = [

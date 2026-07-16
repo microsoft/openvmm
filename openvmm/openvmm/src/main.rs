@@ -13,5 +13,8 @@ extern crate openvmm_resources as _;
 crypto::ensure_single_backend!();
 
 fn main() {
-    openvmm_entry::openvmm_main()
+    openvmm_entry::openvmm_main_with_metadata(openvmm_entry::CommandMetadata {
+        name: "openvmm",
+        version: env!("OPENVMM_PRODUCT_VERSION"),
+    })
 }
