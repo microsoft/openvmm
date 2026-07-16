@@ -119,9 +119,11 @@ pub(super) async fn serve(
         anyhow::bail!("invalid fd-passing handshake magic");
     }
     // `features` (handshake[4..8]) is reserved and ignored in this revision.
-    // The handshake carries no descriptors; drop any a misbehaving client
-    // attached.
-    conn.fd = None;
+    // The handshake carries no ancillary data; a descriptor attached here is a
+    // protocol violation, so fail fast and close the connection.
+    if conn.fd.is_some() {
+        anyhow::bail!("fd-passing handshake must not carry a descriptor");
+    }
 
     let mut server_handshake = [0u8; 8];
     server_handshake[..4].copy_from_slice(&protocol::HANDSHAKE_MAGIC);
