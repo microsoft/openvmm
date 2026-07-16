@@ -796,7 +796,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         mut data: &[u8],
     ) -> Result<(), anyhow::Error> {
@@ -1044,7 +1044,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         data: &[u8],
     ) -> anyhow::Result<()> {

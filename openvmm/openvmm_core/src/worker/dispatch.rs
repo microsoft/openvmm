@@ -114,6 +114,7 @@ use virtio::PciInterruptModel;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
+use vm_loader::InitialLoad;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -3107,7 +3108,10 @@ impl LoadedVmInner {
         }
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
-        let (mut regs, initial_page_imports) = match &self.load_mode {
+        let InitialLoad {
+            mut regs,
+            page_imports: initial_page_imports,
+        } = match &self.load_mode {
             LoadMode::None => return Ok(()),
             #[cfg(guest_arch = "x86_64")]
             &LoadMode::Linux {
@@ -3270,13 +3274,19 @@ impl LoadedVmInner {
                         acpi_tables: &acpi_tables,
                     })?;
 
-                (regs, Vec::new())
+                InitialLoad {
+                    regs,
+                    page_imports: Vec::new(),
+                }
             }
             #[cfg(guest_arch = "x86_64")]
             LoadMode::Pcat { .. } => {
                 let regs = super::vm_loaders::pcat::load_pcat(&self.gm, &self.mem_layout)?;
 
-                (regs, Vec::new())
+                InitialLoad {
+                    regs,
+                    page_imports: Vec::new(),
+                }
             }
             &LoadMode::Igvm {
                 file: _,

@@ -213,7 +213,7 @@ pub struct InitialPageImport {
     /// The hypervisor-facing import type for this range.
     pub import_type: InitialPageImportType,
     /// Loader-provided debug tag identifying the source of this range.
-    pub tag: String,
+    pub tag: &'static str,
 }
 
 /// Prototype partition creation configuration.

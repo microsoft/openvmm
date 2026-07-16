@@ -12,6 +12,7 @@ use openvmm_defs::config::IsolationType;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
+use vm_loader::InitialLoad;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
@@ -84,7 +85,7 @@ pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
-) -> Result<(Vec<X86Register>, Vec<virt::InitialPageImport>), Error> {
+) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
 
     let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
@@ -853,7 +854,7 @@ pub fn load_linux_arm64(
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
     chipset_mmio: &ChipsetMmioRanges,
     build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
-) -> Result<(Vec<Aarch64Register>, Vec<virt::InitialPageImport>), Error> {
+) -> Result<InitialLoad<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
 

@@ -28,9 +28,15 @@ use vm_topology::memory::MemoryLayout;
 
 pub mod initial_regs;
 
+#[derive(Debug)]
+pub struct InitialLoad<R> {
+    pub regs: Vec<R>,
+    pub page_imports: Vec<InitialPageImport>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RangeInfo {
-    tag: String,
+    tag: &'static str,
     acceptance: BootPageAcceptance,
 }
 
@@ -58,7 +64,7 @@ impl<R> Loader<'_, R> {
         self.regs.into_values().collect()
     }
 
-    pub fn initial_regs_and_page_imports(mut self) -> (Vec<R>, Vec<InitialPageImport>) {
+    pub fn initial_regs_and_page_imports(mut self) -> InitialLoad<R> {
         // Merge adjacent ranges first to help cut down on the number of entries
         // in the initial page import list. Since we load from an IGVM file,
         // most ranges are a single 4K page which can be merged for easier
@@ -77,7 +83,10 @@ impl<R> Loader<'_, R> {
             })
             .collect();
 
-        (self.regs.into_values().collect(), page_imports)
+        InitialLoad {
+            regs: self.regs.into_values().collect(),
+            page_imports,
+        }
     }
 
     /// Track a new imported page range with a given acceptance.
@@ -85,7 +94,7 @@ impl<R> Loader<'_, R> {
         &mut self,
         page_base: u64,
         page_count: u64,
-        tag: &str,
+        tag: &'static str,
         acceptance: BootPageAcceptance,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(page_count != 0, "{tag} has an empty page range");
@@ -106,10 +115,7 @@ impl<R> Loader<'_, R> {
                 ))
             }
             Entry::Vacant(entry) => {
-                entry.insert(RangeInfo {
-                    tag: tag.to_string(),
-                    acceptance,
-                });
+                entry.insert(RangeInfo { tag, acceptance });
                 Ok(())
             }
         }
@@ -130,7 +136,7 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         data: &[u8],
     ) -> anyhow::Result<()> {
@@ -358,7 +364,10 @@ mod tests {
             .import_vp_register(X86Register::Rip(0x100000))
             .unwrap();
 
-        let (initial_regs, page_imports) = loader.initial_regs_and_page_imports();
+        let InitialLoad {
+            regs: initial_regs,
+            page_imports,
+        } = loader.initial_regs_and_page_imports();
 
         assert_eq!(initial_regs, vec![X86Register::Rip(0x100000)]);
         assert_eq!(
@@ -366,7 +375,7 @@ mod tests {
             vec![InitialPageImport {
                 range: MemoryRange::from_4k_gpn_range(1..3),
                 import_type: InitialPageImportType::NormalUnmeasured,
-                tag: "test-pages".to_string(),
+                tag: "test-pages",
             }]
         );
     }

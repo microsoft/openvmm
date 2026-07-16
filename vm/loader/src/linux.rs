@@ -1346,7 +1346,7 @@ mod tests {
             &mut self,
             page_base: u64,
             page_count: u64,
-            debug_tag: &str,
+            debug_tag: &'static str,
             acceptance: BootPageAcceptance,
             data: &[u8],
         ) -> anyhow::Result<()> {
