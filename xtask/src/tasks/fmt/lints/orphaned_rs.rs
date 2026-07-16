@@ -10,30 +10,43 @@ use std::path::Path;
 use std::path::PathBuf;
 use toml_edit::DocumentMut;
 
+struct RustFile {
+    path: PathBuf,
+    referenced: bool,
+}
+
 pub struct OrphanedRustFiles {
-    files: Vec<PathBuf>,
-    references: String,
+    files: Vec<RustFile>,
 }
 
 impl Lint for OrphanedRustFiles {
     fn new(_ctx: &LintCtx) -> Self {
-        Self {
-            files: Vec::new(),
-            references: String::new(),
-        }
+        Self { files: Vec::new() }
     }
 
     fn enter_workspace(&mut self, _content: &Lintable<DocumentMut>) {}
 
     fn enter_crate(&mut self, _content: &Lintable<DocumentMut>) {
         self.files.clear();
-        self.references.clear();
+    }
+
+    fn enter_crate_files(&mut self, files: &[PathBuf]) {
+        self.files
+            .extend(files.iter().filter_map(|path| match path.extension() {
+                Some(extension) if extension == "rs" => Some(RustFile {
+                    path: path.clone(),
+                    referenced: false,
+                }),
+                _ => None,
+            }));
     }
 
     fn visit_file(&mut self, content: &mut Lintable<String>) {
-        self.files.push(content.path().to_owned());
-        self.references.push_str(content);
-        self.references.push('\n');
+        for file in &mut self.files {
+            if !file.referenced && is_referenced(&file.path, content) {
+                file.referenced = true;
+            }
+        }
     }
 
     fn exit_crate(&mut self, content: &mut Lintable<DocumentMut>) {
@@ -41,17 +54,17 @@ impl Lint for OrphanedRustFiles {
         let manifest = content.raw().unwrap_or_default();
 
         for file in &self.files {
-            let relative_path = file.strip_prefix(crate_dir).unwrap();
+            let relative_path = file.path.strip_prefix(crate_dir).unwrap();
             if is_cargo_target(relative_path)
                 || is_referenced(relative_path, manifest)
-                || is_referenced(relative_path, &self.references)
+                || file.referenced
             {
                 continue;
             }
 
             log::warn!(
                 "{}: Rust source file is not referenced by a Cargo target, module, or include",
-                file.display(),
+                file.path.display(),
             );
         }
     }
