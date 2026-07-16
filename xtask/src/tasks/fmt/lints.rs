@@ -44,11 +44,6 @@ pub trait Lint {
     /// Begin processing a crate, given the parsed Cargo.toml of the crate root.
     fn enter_crate(&mut self, content: &Lintable<DocumentMut>);
 
-    /// Provide the files in the current crate, with paths relative to the workspace root.
-    fn enter_crate_files(&mut self, files: &[PathBuf]) {
-        let _ = files;
-    }
-
     /// Process a Rust source file in the current crate.
     fn visit_file(&mut self, content: &mut Lintable<String>);
 
@@ -324,27 +319,6 @@ fn lint_workspace(
     let mut any_failed = false;
 
     for crate_dir in crate_dirs {
-        // Collect nested crate dirs within this crate to avoid
-        // processing files that belong to a child crate.
-        let nested_crate_dirs: Vec<_> = crate_dirs
-            .iter()
-            .filter(|other| *other != crate_dir && other.starts_with(crate_dir))
-            .collect();
-        let crate_files: Vec<_> = all_files
-            .iter()
-            .copied()
-            .filter(|file| {
-                file.starts_with(crate_dir)
-                    && !nested_crate_dirs
-                        .iter()
-                        .any(|nested| file.starts_with(nested))
-            })
-            .collect();
-        let relative_crate_files: Vec<_> = crate_files
-            .iter()
-            .map(|file| file.strip_prefix(workspace_dir).unwrap().to_owned())
-            .collect();
-
         let manifest_path = crate_dir.join("Cargo.toml");
         let mut crate_manifest =
             Lintable::<DocumentMut>::from_file(&manifest_path, ctx, workspace_dir)?;
@@ -352,12 +326,21 @@ fn lint_workspace(
         log::debug!("Linting crate {}", crate_dir.display());
         for lint in lints.iter_mut() {
             lint.enter_crate(&crate_manifest);
-            lint.enter_crate_files(&relative_crate_files);
         }
+
+        // Collect nested crate dirs within this crate to avoid
+        // processing files that belong to a child crate.
+        let nested_crate_dirs: Vec<_> = crate_dirs
+            .iter()
+            .filter(|other| *other != crate_dir && other.starts_with(crate_dir))
+            .collect();
 
         // Use pre-collected file paths instead of walking the crate
         // directory again, avoiding redundant filesystem traversals.
-        for path in crate_files {
+        for path in all_files.iter().filter(|f| {
+            f.starts_with(crate_dir)
+                && !nested_crate_dirs.iter().any(|nested| f.starts_with(nested))
+        }) {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let Some(mut file) = Lintable::<String>::from_file(path, ctx, workspace_dir)? else {
                 // Skip binary files

@@ -6,65 +6,56 @@
 use super::Lint;
 use super::LintCtx;
 use super::Lintable;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use toml_edit::DocumentMut;
 
-struct RustFile {
-    path: PathBuf,
-    referenced: bool,
+#[derive(Default)]
+struct References {
+    file_names: HashSet<String>,
+    module_names: HashSet<String>,
 }
 
 pub struct OrphanedRustFiles {
-    files: Vec<RustFile>,
+    files: Vec<PathBuf>,
+    references: References,
 }
 
 impl Lint for OrphanedRustFiles {
     fn new(_ctx: &LintCtx) -> Self {
-        Self { files: Vec::new() }
+        Self {
+            files: Vec::new(),
+            references: References::default(),
+        }
     }
 
     fn enter_workspace(&mut self, _content: &Lintable<DocumentMut>) {}
 
     fn enter_crate(&mut self, _content: &Lintable<DocumentMut>) {
         self.files.clear();
-    }
-
-    fn enter_crate_files(&mut self, files: &[PathBuf]) {
-        self.files
-            .extend(files.iter().filter_map(|path| match path.extension() {
-                Some(extension) if extension == "rs" => Some(RustFile {
-                    path: path.clone(),
-                    referenced: false,
-                }),
-                _ => None,
-            }));
+        self.references.clear();
     }
 
     fn visit_file(&mut self, content: &mut Lintable<String>) {
-        for file in &mut self.files {
-            if !file.referenced && is_referenced(&file.path, content) {
-                file.referenced = true;
-            }
-        }
+        self.files.push(content.path().to_owned());
+        self.references.extend(content);
     }
 
     fn exit_crate(&mut self, content: &mut Lintable<DocumentMut>) {
         let crate_dir = content.path().parent().unwrap_or(Path::new(""));
         let manifest = content.raw().unwrap_or_default();
+        self.references.extend(manifest);
 
         for file in &self.files {
-            let relative_path = file.path.strip_prefix(crate_dir).unwrap();
-            if is_cargo_target(relative_path)
-                || is_referenced(relative_path, manifest)
-                || file.referenced
-            {
+            let relative_path = file.strip_prefix(crate_dir).unwrap();
+            if is_cargo_target(relative_path) || self.references.contains(relative_path) {
                 continue;
             }
 
             log::warn!(
                 "{}: Rust source file is not referenced by a Cargo target, module, or include",
-                file.path.display(),
+                file.display(),
             );
         }
     }
@@ -116,23 +107,74 @@ fn is_cargo_target(path: &Path) -> bool {
     }
 }
 
-fn is_referenced(path: &Path, references: &str) -> bool {
-    let file_name = path.file_name().unwrap().to_string_lossy();
-    if references.contains(file_name.as_ref()) {
-        return true;
+impl References {
+    fn clear(&mut self) {
+        self.file_names.clear();
+        self.module_names.clear();
     }
 
-    let module_name = if file_name == "mod.rs" {
+    fn extend(&mut self, content: &str) {
+        let mut remaining = content;
+        while let Some(index) = remaining.find(".rs") {
+            let end = index + ".rs".len();
+            let start = remaining[..index]
+                .char_indices()
+                .rfind(|(_, character)| !is_file_name_character(*character))
+                .map_or(0, |(index, character)| index + character.len_utf8());
+            self.file_names.insert(remaining[start..end].to_owned());
+            remaining = &remaining[end..];
+        }
+
+        for line in content.lines() {
+            let mut remaining = line;
+            while let Some(index) = remaining.find("mod ") {
+                remaining = &remaining[index + "mod ".len()..];
+                let Some(end) = remaining.find(';') else {
+                    break;
+                };
+                let module_name = &remaining[..end];
+                if !module_name.is_empty()
+                    && !module_name.chars().any(char::is_whitespace)
+                    && module_name
+                        .chars()
+                        .all(|character| is_file_name_character(character) || character == '#')
+                {
+                    self.module_names.insert(
+                        module_name
+                            .strip_prefix("r#")
+                            .unwrap_or(module_name)
+                            .to_owned(),
+                    );
+                }
+                remaining = &remaining[end + 1..];
+            }
+        }
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        if self.file_names.contains(file_name.as_ref()) {
+            return true;
+        }
+
+        self.module_names.contains(module_name(path).as_ref())
+    }
+}
+
+fn is_file_name_character(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+}
+
+fn module_name(path: &Path) -> std::borrow::Cow<'_, str> {
+    let file_name = path.file_name().unwrap().to_string_lossy();
+    if file_name == "mod.rs" {
         let Some(module_name) = path.parent().and_then(Path::file_name) else {
-            return false;
+            return "".into();
         };
         module_name.to_string_lossy()
     } else {
         path.file_stem().unwrap().to_string_lossy()
-    };
-
-    references.contains(&format!("mod {module_name};"))
-        || references.contains(&format!("mod r#{module_name};"))
+    }
 }
 
 #[cfg(test)]
@@ -161,23 +203,26 @@ mod tests {
 
     #[test]
     fn recognizes_module_and_path_references() {
-        assert!(is_referenced(
-            Path::new("src/device.rs"),
-            "pub(crate) mod device;"
-        ));
-        assert!(is_referenced(
-            Path::new("src/device/mod.rs"),
-            "pub mod device;"
-        ));
-        assert!(is_referenced(
-            Path::new("src/templates/device.template.rs"),
-            "include_str!(\"./templates/device.template.rs\")"
-        ));
-        assert!(!is_referenced(Path::new("src/device.rs"), "pub mod other;"));
+        let mut references = References::default();
+        references.extend(
+            r#"
+            //! Documentation about `mod service`.
+            pub(crate) mod device;
+            pub mod r#type;
+            include_str!("./templates/device.template.rs");
+            "#,
+        );
+
+        assert!(references.contains(Path::new("src/device.rs")));
+        assert!(references.contains(Path::new("src/device/mod.rs")));
+        assert!(references.contains(Path::new("src/type.rs")));
+        assert!(references.contains(Path::new("src/templates/device.template.rs")));
+        assert!(!references.contains(Path::new("src/other.rs")));
     }
 
     #[test]
     fn crate_root_mod_rs_is_unreferenced() {
-        assert!(!is_referenced(Path::new("mod.rs"), ""));
+        let references = References::default();
+        assert!(!references.contains(Path::new("mod.rs")));
     }
 }
