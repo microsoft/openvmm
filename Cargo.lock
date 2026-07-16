@@ -4390,16 +4390,19 @@ dependencies = [
  "guestmem",
  "hvdef",
  "inspect",
+ "inspect_counters",
  "memory_range",
  "mesh",
  "pal_async",
  "parking_lot",
+ "range_map_vec",
  "slab",
  "sparse_mmap",
  "thiserror 2.0.16",
  "tracing",
  "virt",
  "vmcore",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
