@@ -343,6 +343,7 @@ impl PetriVmConfigOpenVmm {
         for node in &mut self.config.numa.nodes {
             if let Some(mem) = &mut node.mem {
                 mem.private_memory = false;
+                mem.transparent_hugepages = false;
             }
         }
         self
@@ -358,6 +359,7 @@ impl PetriVmConfigOpenVmm {
                 mem.hugepages = true;
                 mem.hugepage_size = hugepage_size;
                 mem.private_memory = false;
+                mem.transparent_hugepages = false;
             }
         }
         self

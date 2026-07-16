@@ -429,6 +429,7 @@ impl PetriVmConfigOpenVmm {
                 dynamic_memory_range,
                 numa_mem_sizes,
                 private_memory,
+                transparent_hugepages,
             } = memory;
 
             if dynamic_memory_range.is_some() {
@@ -446,11 +447,16 @@ impl PetriVmConfigOpenVmm {
             // setting.
             let private_memory = private_memory && !firmware.is_openhcl() && !firmware.is_pcat();
 
+            // THP is only valid for private anonymous memory and only on
+            // Linux; disable it otherwise to avoid a memory build error.
+            let transparent_hugepages =
+                transparent_hugepages && private_memory && cfg!(target_os = "linux");
+
             let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
                 mem_size: size,
                 prefetch_memory: false,
                 private_memory,
-                transparent_hugepages: false,
+                transparent_hugepages,
                 hugepages: false,
                 hugepage_size: None,
                 host_numa_node: None,
