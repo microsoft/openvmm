@@ -2741,9 +2741,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         Ok(())
     }
 
-    /// Sends a GPADL to the device when `ranges` is Some. Returns false if the
-    /// GPADL should be removed because the channel is already released by the
-    /// guest.
+    /// Sends a GPADL to the device after the full list of ranges was received.
+    /// Returns false if the GPADL should be removed because the channel is
+    /// already released by the guest.
     #[must_use]
     fn gpadl_updated(
         mut sender: MessageSender<'_, N>,
