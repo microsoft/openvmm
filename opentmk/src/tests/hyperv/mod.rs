@@ -3,7 +3,7 @@
 
 pub mod test_helpers;
 
-crate::tmk_tests! {
+crate::opentmk_tests! {
     ctx: crate::platform::hyperv::ctx::HvTestCtx,
     tests: {
         hv_error_vp_start,

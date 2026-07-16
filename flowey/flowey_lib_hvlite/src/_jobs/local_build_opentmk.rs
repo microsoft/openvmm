@@ -12,7 +12,7 @@ flowey_request! {
 
         pub arch: crate::common::CommonArch,
         pub release: bool,
-        /// Custom name for the output binary and VHD. Defaults to "opentmk".
+        /// Custom name for the output `.efi`, `.vhd`, and `.pdb`. Defaults to "opentmk".
         pub name: Option<String>,
         /// Optional JSON test-selection config to embed in the built VHD.
         pub config: Option<PathBuf>,

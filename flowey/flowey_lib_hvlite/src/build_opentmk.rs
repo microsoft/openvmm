@@ -21,7 +21,7 @@ flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
         pub profile: CommonProfile,
-        /// Custom output binary name. Defaults to "opentmk".
+        /// Custom output `.efi`/`.pdb` name. Defaults to "opentmk".
         pub out_name: Option<String>,
         pub opentmk: WriteVar<OpentmkOutput>,
     }
