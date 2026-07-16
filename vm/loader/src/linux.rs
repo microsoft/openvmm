@@ -398,7 +398,7 @@ fn import_snp_boot_pages(
         header: defs::setup_data {
             next: 0,
             ty: defs::SETUP_CC_BLOB,
-            len: size_of::<defs::cc_setup_data>() as u32,
+            len: (size_of::<defs::cc_setup_data>() - size_of::<defs::setup_data>()) as u32,
         },
         cc_blob_address,
         _padding: [0; 3],
@@ -1586,7 +1586,7 @@ mod tests {
         assert_eq!(cc_setup_data.header.ty, defs::SETUP_CC_BLOB);
         assert_eq!(
             cc_setup_data.header.len,
-            size_of::<defs::cc_setup_data>() as u32
+            (size_of::<defs::cc_setup_data>() - size_of::<defs::setup_data>()) as u32
         );
         assert_eq!(
             cc_setup_data.cc_blob_address,
