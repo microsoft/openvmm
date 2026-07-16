@@ -584,8 +584,10 @@ async fn test_gpadl_on_revoked_channel(spawner: DefaultDriver) {
         ),
         false,
     );
-    env.expect_response(protocol::MessageType::GPADL_CREATED)
-        .await;
+    let created = env.get_response::<protocol::GpadlCreated>().await;
+    assert_eq!(created.channel_id, ChannelId(1));
+    assert_eq!(created.gpadl_id, GpadlId(10));
+    assert_eq!(created.status, protocol::STATUS_SUCCESS);
 
     // Tear down the GPADL. The server should complete the teardown without notifying the device.
     env.synic.send_message(protocol::GpadlTeardown {
