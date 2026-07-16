@@ -63,6 +63,7 @@ pub const X64_EFER_LMA: u64 = 0x0000000000000400; // Long Mode Active
 pub const X64_EFER_NXE: u64 = 0x0000000000000800; // No-execute Enable
 pub const X64_EFER_SVME: u64 = 0x0000000000001000; // SVM enable
 pub const X64_EFER_FFXSR: u64 = 0x0000000000004000; // Fast save/restore enabled
+pub const X64_EFER_TCE: u64 = 0x0000000000008000; // Translation Cache Extension enable
 
 pub const X86X_MSR_DEFAULT_PAT: u64 = 0x0007040600070406;
 pub const X64_EMPTY_DR7: u64 = 0x0000000000000400;
