@@ -59,7 +59,6 @@ use gdma_resources::VportDefinition;
 use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
-use io::Read;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -1344,23 +1343,10 @@ async fn vm_config_from_command_line(
             .transpose()
             .context("failed to open initrd")?;
 
-        let custom_dsdt = match &opt.custom_dsdt {
-            Some(path) => {
-                let mut v = Vec::new();
-                fs_err::File::open(path)
-                    .context("failed to open custom dsdt")?
-                    .read_to_end(&mut v)
-                    .context("failed to read custom dsdt")?;
-                Some(v)
-            }
-            None => None,
-        };
-
         load_mode = LoadMode::Linux {
             kernel: kernel.into(),
             initrd: initrd.map(Into::into),
             cmdline,
-            custom_dsdt,
             enable_serial: any_serial_configured,
             boot_mode: if opt.device_tree {
                 openvmm_defs::config::LinuxDirectBootMode::DeviceTree

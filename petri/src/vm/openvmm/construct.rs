@@ -862,7 +862,6 @@ impl PetriVmConfigSetupCore<'_> {
                     kernel,
                     initrd: Some(initrd),
                     cmdline,
-                    custom_dsdt: None,
                     enable_serial: self.enable_serial,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                 }

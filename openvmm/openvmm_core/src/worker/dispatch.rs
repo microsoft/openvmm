@@ -3119,7 +3119,6 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                ref custom_dsdt,
                 boot_mode,
             } => {
                 match boot_mode {
@@ -3136,23 +3135,19 @@ impl LoadedVmInner {
                     isolation: self.hypervisor_cfg.with_isolation,
                 };
                 super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                    let tables = if let Some(dsdt) = custom_dsdt {
-                        acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
-                    } else {
-                        acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                            add_devices_to_dsdt_x64(
-                                dsdt,
-                                &self.chipset_cfg,
-                                &self.chipset_capabilities,
-                                enable_serial,
-                                self.vmbus_server.is_some(),
-                                &self.chipset_mmio,
-                                self.virtio_mmio_region,
-                                self.virtio_mmio_irq,
-                                &self.pci_legacy_interrupts,
-                            )
-                        })
-                    };
+                    let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                        add_devices_to_dsdt_x64(
+                            dsdt,
+                            &self.chipset_cfg,
+                            &self.chipset_capabilities,
+                            enable_serial,
+                            self.vmbus_server.is_some(),
+                            &self.chipset_mmio,
+                            self.virtio_mmio_region,
+                            self.virtio_mmio_irq,
+                            &self.pci_legacy_interrupts,
+                        )
+                    });
 
                     loader::linux::AcpiTables {
                         rsdp: tables.rsdp,
@@ -3166,7 +3161,6 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                custom_dsdt: _,
                 boot_mode,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;

@@ -543,7 +543,6 @@ impl VmService {
                     kernel,
                     initrd,
                     cmdline: boot.kernel_cmdline,
-                    custom_dsdt: None,
                     enable_serial: true,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                 }

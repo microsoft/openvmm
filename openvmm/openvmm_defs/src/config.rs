@@ -130,7 +130,6 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
-        custom_dsdt: Option<Vec<u8>>,
         boot_mode: LinuxDirectBootMode,
     },
     Uefi {

@@ -884,16 +884,6 @@ flags:
     #[clap(long)]
     pub nested_virt: bool,
 
-    /// (dev utility) boot linux using a custom (raw) DSDT table.
-    ///
-    /// This is a _very_ niche utility, and it's unlikely you'll need to use it.
-    ///
-    /// e.g: this flag helped bring up certain Hyper-V Generation 1 legacy
-    /// devices without needing to port the associated ACPI code into OpenVMM's
-    /// DSDT builder.
-    #[clap(long, value_name = "FILE", conflicts_with_all(&["uefi", "pcat", "igvm"]))]
-    pub custom_dsdt: Option<PathBuf>,
-
     /// attach an ide drive (can be passed multiple times)
     ///
     /// Each ide controller has two channels. Each channel can have up to two
