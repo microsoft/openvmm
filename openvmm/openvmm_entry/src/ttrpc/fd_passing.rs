@@ -91,6 +91,11 @@ impl FdRegistry {
 
     /// Resolves `name` to a freshly duplicated descriptor. The registry entry
     /// remains valid.
+    ///
+    /// Only the tap NIC backend (`cfg(target_os = "linux")`) and the unit tests
+    /// call this, so on other unix targets (e.g. macOS) it is otherwise
+    /// unused; suppress the resulting dead-code warning there.
+    #[cfg_attr(not(any(target_os = "linux", test)), expect(dead_code))]
     pub fn resolve(&self, name: &str) -> anyhow::Result<OwnedFd> {
         let map = self.inner.lock();
         let fd = map

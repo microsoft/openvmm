@@ -17,7 +17,7 @@ use fd_passing::FdRegistry;
 /// empty placeholder there; it is never populated or resolved.
 #[cfg(not(unix))]
 #[derive(Clone, Default)]
-struct FdRegistry;
+struct FdRegistry {}
 
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
