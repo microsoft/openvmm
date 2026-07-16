@@ -738,8 +738,6 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         self.validate_set_vp_register_value(vtl, &mut reg)?;
         let reg = &reg;
 
-        // TODO CVM: when access vp state has support for single registers,
-        // clean this up.
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
                 HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
