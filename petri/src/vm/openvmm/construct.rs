@@ -435,6 +435,17 @@ impl PetriVmConfigOpenVmm {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
+            // Private (anonymous) guest memory is incompatible with two
+            // OpenVMM features that petri enables based on the firmware:
+            // - OpenHCL uses a remote VA mapper to share VTL0 RAM with VTL2,
+            //   which requires a shareable memory section.
+            // - PCAT (Gen1) relies on x86 legacy support (the VGA hole and
+            //   PAM registers), which toggles low RAM visibility in a way
+            //   that requires shared, file-backed memory.
+            // Force shared memory in these cases regardless of the requested
+            // setting.
+            let private_memory = private_memory && !firmware.is_openhcl() && !firmware.is_pcat();
+
             let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
                 mem_size: size,
                 prefetch_memory: false,

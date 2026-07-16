@@ -2293,7 +2293,9 @@ pub struct MemoryConfig {
     /// RAM backing to be shareable with another process, such as vhost-user
     /// backends. Note that `with_hugepages` and `with_memory_backing_file`
     /// force shared memory regardless of this setting, since they require a
-    /// file-backed mapping.
+    /// file-backed mapping. Private memory is also forced off for OpenHCL
+    /// (which shares VTL0 RAM with VTL2 via a remote mapper) and PCAT/Gen1
+    /// (which relies on x86 legacy support), since both require shared memory.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub private_memory: bool,
