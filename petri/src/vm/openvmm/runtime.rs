@@ -671,7 +671,7 @@ impl PetriVmInner {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(
+                    tracing::trace!(
                         error = &e as &dyn std::error::Error,
                         "TCP connect failed, guest not ready yet"
                     );

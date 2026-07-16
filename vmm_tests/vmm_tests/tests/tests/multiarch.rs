@@ -25,6 +25,8 @@ use vmm_test_macros::vmm_test_with;
 
 /// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
+/// Nested-virtualization test: Hyper-V role + DDA inside an OpenVMM guest.
+mod hyperv_nested;
 /// Tests for Hyper-V integration components.
 mod ic;
 /// Tests for Windows large-page (2 MB SLAT) guest RAM backing.

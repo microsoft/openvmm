@@ -1837,7 +1837,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
+    pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
         // As a workaround for #2470 (where the guest crashes when the pipette
         // connection timeout expires due to a vmbus bug), wait for the shutdown
         // IC to come online first so that we probably won't time out when
