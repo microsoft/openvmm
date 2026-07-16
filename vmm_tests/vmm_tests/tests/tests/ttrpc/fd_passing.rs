@@ -3,7 +3,7 @@
 
 //! Integration test for OpenVMM's fd-passing protocol on the TTRPC endpoint.
 //!
-//! This boots a real `openvmm --ttrpc` process and drives the bespoke
+//! This boots a real `openvmm --rpc` process and drives the bespoke
 //! fd-passing protocol (see `openvmm_ttrpc_vmservice/src/fd_passing.md`) over
 //! the same Unix socket, then confirms that a descriptor registered on the
 //! fd-passing connection is resolvable by name from a *separate* TTRPC

@@ -623,9 +623,9 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-/// Spawns `openvmm --ttrpc <socket_path> --pidfile <pidfile_path>`, waits for it
-/// to signal readiness (by closing stdout), validates the pidfile, and connects
-/// a ttrpc client.
+/// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
+/// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
+/// validates the pidfile, and connects a ttrpc client.
 ///
 /// Returns the child process, a connected ttrpc client, and the stderr-pump
 /// task (which must be kept alive for the child's lifetime).
@@ -645,8 +645,8 @@ async fn launch_openvmm(
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let (stdout_read, stdout_write) = pal::pipe_pair()?;
     let child = std::process::Command::new(openvmm)
-        .arg("--ttrpc")
-        .arg(socket_path)
+        .arg("--rpc")
+        .arg(format!("path={},transport=ttrpc", socket_path.display()))
         .arg("--pidfile")
         .arg(pidfile_path)
         .stdin(Stdio::null())
