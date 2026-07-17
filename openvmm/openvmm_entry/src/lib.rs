@@ -422,10 +422,7 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let mut resources = VmResources {
-        serial_driver: Some(serial_driver),
-        ..Default::default()
-    };
+    let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
         resources.console_in = Some(input);
@@ -2015,6 +2012,7 @@ async fn vm_config_from_command_line(
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    resources.serial_driver = Some(serial_driver);
     Ok((cfg, resources))
 }
 
