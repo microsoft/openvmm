@@ -2562,6 +2562,7 @@ async fn new_underhill_vm(
                 }
             }
         };
+        let base_secure_boot_template_vars = base_vars.clone();
 
         // check if vmgs includes custom UEFI JSON
         let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
@@ -2599,6 +2600,7 @@ async fn new_underhill_vm(
         };
 
         let config = firmware_uefi_resources::UefiConfig {
+            base_secure_boot_template_vars,
             custom_uefi_vars,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,

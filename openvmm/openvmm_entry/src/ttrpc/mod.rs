@@ -665,6 +665,7 @@ impl VmService {
             vpci_resources: vec![],
             vmgs: None,
             secure_boot_enabled: false,
+            base_secure_boot_template_vars: Default::default(),
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,

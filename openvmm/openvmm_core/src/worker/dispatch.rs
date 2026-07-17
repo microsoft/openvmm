@@ -212,6 +212,7 @@ impl Manifest {
             vpci_resources: config.vpci_resources,
             vmgs: config.vmgs,
             secure_boot_enabled: config.secure_boot_enabled,
+            base_secure_boot_template_vars: config.base_secure_boot_template_vars,
             custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
             debugger_rpc: config.debugger_rpc,
@@ -263,6 +264,7 @@ pub struct Manifest {
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     vmgs: Option<VmgsResource>,
     secure_boot_enabled: bool,
+    base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
@@ -3941,6 +3943,7 @@ impl LoadedVm {
             vpci_resources: vec![], // TODO
             vmgs: None,             // TODO
             secure_boot_enabled: false, // TODO
+            base_secure_boot_template_vars: Default::default(), // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
             debugger_rpc: None,          // TODO

@@ -43,6 +43,26 @@ const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 const INITIAL_NVRAM_SIZE: usize = 32768;
 const MAXIMUM_NVRAM_SIZE: usize = INITIAL_NVRAM_SIZE * 4;
 
+/// Base Secure Boot template variable contents expected to be present in loaded NVRAM.
+#[derive(Clone, Debug)]
+pub struct BaseSecureBootTemplateVariables {
+    pk: Vec<u8>,
+    kek: Vec<u8>,
+    db: Vec<u8>,
+    dbx: Vec<u8>,
+}
+
+impl BaseSecureBootTemplateVariables {
+    /// Create a new base Secure Boot template variable set.
+    pub fn new(pk: Vec<u8>, kek: Vec<u8>, db: Vec<u8>, dbx: Vec<u8>) -> Self {
+        Self { pk, kek, db, dbx }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pk.is_empty() && self.kek.is_empty() && self.db.is_empty() && self.dbx.is_empty()
+    }
+}
+
 mod format {
     use super::*;
     use open_enum::open_enum;
@@ -98,6 +118,9 @@ pub struct HclCompatNvram<S> {
 
     // whether the NVRAM has been loaded, either from storage or saved state
     loaded: bool,
+
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    base_secure_boot_template_variables: Option<BaseSecureBootTemplateVariables>,
 }
 
 impl<S: StorageBackend> HclCompatNvram<S> {
@@ -115,7 +138,20 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             nvram_buf: Vec::new(),
 
             loaded: false,
+
+            base_secure_boot_template_variables: None,
         }
+    }
+
+    /// Store the base Secure Boot template variables for later observation.
+    pub fn with_base_secure_boot_template_variables(
+        mut self,
+        template: BaseSecureBootTemplateVariables,
+    ) -> Self {
+        if !template.is_empty() {
+            self.base_secure_boot_template_variables = Some(template);
+        }
+        self
     }
 
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
