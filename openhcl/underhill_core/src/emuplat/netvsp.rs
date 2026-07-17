@@ -273,6 +273,7 @@ enum Vtl0Bus {
     Present(HclVpciBusControl),
     HiddenNotPresent,
     HiddenPresent(HclVpciBusControl),
+    PendingRevoke(HclVpciBusControl),
 }
 impl std::fmt::Display for Vtl0Bus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -286,6 +287,13 @@ impl std::fmt::Display for Vtl0Bus {
                 write!(
                     f,
                     "HiddenPresent(vtl0_vfid={})",
+                    bus_control.instance_id().data1
+                )
+            }
+            Vtl0Bus::PendingRevoke(bus_control) => {
+                write!(
+                    f,
+                    "PendingRevoke(vtl0_vfid={})",
                     bus_control.instance_id().data1
                 )
             }
@@ -506,9 +514,23 @@ impl HclNetworkVFManagerWorker {
     ///
     /// On return, the worker will no longer treat the VF as offered, regardless
     /// of whether notification or revoke operations encountered errors.
+    ///
+    /// If the VTL2 device is not `Present`, then VTL0 VF revoke is skipped.
+    ///
     /// If no vPCI bus is `Present`, then VTL0 VF revoke is skipped.
-    async fn try_notify_guest_and_revoke_vtl0_vf(&mut self, bus_control: &Vtl0Bus) {
+    async fn try_notify_guest_and_revoke_vtl0_vf(
+        &mut self,
+        bus_control: &Vtl0Bus,
+        vtl2_device_state: &Vtl2DeviceState,
+    ) {
         if !self.guest_state.is_offered_to_guest().await {
+            return;
+        }
+
+        // VTL0 VF revoke issues a MAC filter change command to the SOC.
+        // When VTL2 is not present, skip the revoke and leave the guest
+        // with the VF offered.
+        if !matches!(vtl2_device_state, Vtl2DeviceState::Present) {
             return;
         }
 
@@ -663,8 +685,19 @@ impl HclNetworkVFManagerWorker {
     /// Assumes the worker is not in shutdown.
     /// On return, `guest_state.offered_to_guest` is true only if the offer
     /// RPC succeeds; otherwise the worker state is left unchanged.
-    async fn add_vtl0_vf(&mut self) {
+    async fn add_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+        if matches!(
+            vtl2_device_state,
+            Vtl2DeviceState::Missing | Vtl2DeviceState::Reconfiguring
+        ) {
+            tracing::info!(
+                vtl2_vfid,
+                vtl2_device_state = ?vtl2_device_state,
+                "VTL2 device not present; skipping VTL0 VF offer"
+            );
+            return;
+        }
         if !self.guest_state.is_offered_to_guest().await
             && self.guest_state.vtl0_vfid().await.is_some()
         {
@@ -722,29 +755,22 @@ impl HclNetworkVFManagerWorker {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent);
                     if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                        let vtl0_vf_offered = self.guest_state.is_offered_to_guest().await;
-                        if vtl0_vf_offered {
-                            // Reconfigure may have left the VTL0 VF offered to the guest.
-                            // Regardless of device state, if the VF is offered, revoke it
-                            // to preserve the invariant that a hidden VF is not offered.
-                            tracing::info!(
-                                vtl0_vfid = vtl0_vfid_from_bus_control(&old_bus_control),
-                                vtl0_vf_offered,
-                                vtl2_device_state = ?vtl2_device_state,
-                                "VTL0 VF will be revoked as part of hide operation"
-                            );
-                        }
-
-                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) || vtl0_vf_offered
-                        {
+                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
                             *self.guest_state.vtl0_vfid.lock().await =
                                 vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                            self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
-                                .await;
+                            self.try_notify_guest_and_revoke_vtl0_vf(
+                                &old_bus_control,
+                                vtl2_device_state,
+                            )
+                            .await;
                         }
                         let Vtl0Bus::Present(bus_control) = old_bus_control else {
                             unreachable!();
                         };
+                        // When VTL2 is not present the VTL0 VF revoke is deferred.
+                        // VTL0 VF stays offered while bus is `HiddenPresent`.
+                        // In `startup_vtl2_device` once the VTL2 has returned,
+                        // the VTL0 VF will be revoked.
                         self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control);
                     }
                 }
@@ -788,29 +814,9 @@ impl HclNetworkVFManagerWorker {
     /// Removes the VTL0 VF from the guest.
     ///
     /// Generally called when not in shutdown, but it's not assumed here.
-    /// The guest-facing offer bit is cleared before the revoke RPC is issued so
-    /// duplicate removals become no-ops. On return,
-    /// `guest_state.offered_to_guest` is always false even if the RPC fails or
-    /// times out.
-    async fn remove_vtl0_vf(&mut self) {
-        let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-        let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
-        if self.guest_state.is_offered_to_guest().await {
-            *self.guest_state.offered_to_guest.lock().await = false;
-            if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                match self.revoke_vtl0_vf(vtl0_bus_control).await {
-                    Ok(_) => (),
-                    Err(err) => {
-                        tracing::error!(
-                            vtl2_vfid,
-                            vtl0_vfid,
-                            err = err.as_ref() as &dyn std::error::Error,
-                            "Failed to remove VTL0 VF"
-                        );
-                    }
-                }
-            }
-        }
+    async fn remove_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
+        self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent, vtl2_device_state)
+            .await;
     }
 
     /// Updates which VTL0 VF, if any, is associated with this worker.
@@ -820,8 +826,6 @@ impl HclNetworkVFManagerWorker {
     /// arrival/removal notifications are updated immediately. Otherwise the bus
     /// change is recorded on `self.vtl0_bus_control` and the guest-facing state
     /// remains cleared until the VTL2 device is started again.
-    /// If the VTL0 VF is still offered to the guest when a removal notification
-    /// is received, the VF is revoked so the guest will switch to synthetic.
     async fn update_vtl0_vf(
         &mut self,
         rpc: Rpc<Option<HclVpciBusControl>, ()>,
@@ -866,8 +870,11 @@ impl HclNetworkVFManagerWorker {
                     match self.vtl0_bus_control {
                         Vtl0Bus::Present(_) => self.notify_vtl0_vf_arrival(),
                         Vtl0Bus::NotPresent => {
-                            self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
-                                .await
+                            self.try_notify_guest_and_revoke_vtl0_vf(
+                                &old_bus_control,
+                                vtl2_device_state,
+                            )
+                            .await
                         }
                         _ => unreachable!(),
                     }
@@ -879,20 +886,20 @@ impl HclNetworkVFManagerWorker {
                     | Vtl2DeviceState::DeviceEnumerated,
                     _,
                 ) => {
-                    let is_removal = bus_control.is_none();
                     let old_bus_control = std::mem::replace(
                         &mut self.vtl0_bus_control,
                         bus_control
                             .map(Vtl0Bus::Present)
                             .unwrap_or(Vtl0Bus::NotPresent),
                     );
-                    if is_removal && is_offered_to_guest {
-                        // A VTL0 VF may be offered even though VTL2 is not present.
-                        // Since the vPCI bus is now gone, revoke the VF now so the
-                        // guest will switch to synthetic.
-                        *self.guest_state.vtl0_vfid.lock().await = None;
-                        self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
-                            .await;
+                    // When VTL2 is not present the VTL0 VF revoke is deferred.
+                    // VTL0 VF stays offered while bus is `PendingRevoke`.
+                    // In `startup_vtl2_device` once the VTL2 has returned,
+                    // the VTL0 VF will be revoked.
+                    if is_offered_to_guest {
+                        if let Vtl0Bus::Present(bus_control) = old_bus_control {
+                            self.vtl0_bus_control = Vtl0Bus::PendingRevoke(bus_control);
+                        }
                     }
                 }
             }
@@ -1004,6 +1011,36 @@ impl HclNetworkVFManagerWorker {
                 *self.guest_state.vtl0_vfid.lock().await =
                     vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
                 self.notify_vtl0_vf_arrival();
+            } else if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_))
+                && self.guest_state.is_offered_to_guest().await
+            {
+                // Reconcile a `hide_vtl0_vf` that arrived while VTL2 was absent:
+                // the bus is `HiddenPresent` but VF is still offered.
+                let Vtl0Bus::HiddenPresent(bus_control) =
+                    std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent)
+                else {
+                    unreachable!();
+                };
+                // Now that VTL2 is present, the VTL0 VF revoke can switch datapaths.
+                let revoke_bus = Vtl0Bus::Present(bus_control);
+                self.try_notify_guest_and_revoke_vtl0_vf(&revoke_bus, &Vtl2DeviceState::Present)
+                    .await;
+                let Vtl0Bus::Present(bus_control) = revoke_bus else {
+                    unreachable!();
+                };
+                self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control);
+            } else if matches!(&self.vtl0_bus_control, Vtl0Bus::PendingRevoke(_)) {
+                // Reconcile an `update_vtl0_vf` that removed the VF while VTL2
+                // was absent. The bus is `PendingRevoke` and VF is still offered.
+                let Vtl0Bus::PendingRevoke(bus_control) =
+                    std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::NotPresent)
+                else {
+                    unreachable!();
+                };
+                *self.guest_state.vtl0_vfid.lock().await = None;
+                let revoke_bus = Vtl0Bus::Present(bus_control);
+                self.try_notify_guest_and_revoke_vtl0_vf(&revoke_bus, &Vtl2DeviceState::Present)
+                    .await;
             }
         }
 
@@ -1100,8 +1137,11 @@ impl HclNetworkVFManagerWorker {
                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
                 "VTL0 VF being removed as a result of VF Reconfiguration."
             );
-            self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
-                .await;
+            self.try_notify_guest_and_revoke_vtl0_vf(
+                &Vtl0Bus::NotPresent,
+                &Vtl2DeviceState::Present,
+            )
+            .await;
         }
 
         // Don't 'keep alive'. VTL2 is reconfigured when in a bad state.
@@ -1224,8 +1264,11 @@ impl HclNetworkVFManagerWorker {
                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
                 "VTL0 VF being removed as a result of VTL2 VF revoke."
             );
-            self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
-                .await;
+            self.try_notify_guest_and_revoke_vtl0_vf(
+                &Vtl0Bus::NotPresent,
+                &Vtl2DeviceState::Present,
+            )
+            .await;
         }
 
         if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
@@ -1402,7 +1445,7 @@ impl HclNetworkVFManagerWorker {
                         continue;
                     }
 
-                    self.add_vtl0_vf()
+                    self.add_vtl0_vf(&vtl2_device_state)
                         .instrument(tracing::info_span!("add vtl0 vf", vtl2_vfid))
                         .await;
                 }
@@ -1412,7 +1455,7 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                    self.remove_vtl0_vf()
+                    self.remove_vtl0_vf(&vtl2_device_state)
                         .instrument(tracing::info_span!("remove vtl0 vf", vtl2_vfid, vtl0_vfid))
                         .await;
                 }
@@ -1456,7 +1499,7 @@ impl HclNetworkVFManagerWorker {
                         "beginning VTL2 device shutdown"
                     );
                     if remove_vtl0_vf {
-                        self.remove_vtl0_vf()
+                        self.remove_vtl0_vf(&vtl2_device_state)
                             .instrument(tracing::info_span!(
                                 "remove vtl0 vf for shutdown",
                                 vtl2_vfid,
