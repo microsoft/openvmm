@@ -400,23 +400,20 @@ impl VirtioFsInode {
         self.get_path().clone()
     }
 
-    /// The key used to deduplicate this inode in the `InodeMap`, or `None` if it
-    /// should not be deduplicated.
+    /// The key used to deduplicate this inode in the `InodeMap`, so that
+    /// repeated lookups of the same host file return one stable FUSE node id.
     ///
     /// Stable-id volumes key by `(volume_id, inode_nr)`. Volumes that recycle
     /// inode numbers (FAT/exFAT) key by `(volume_id, path)` instead, so a given
-    /// path maps to a single, stable FUSE node id across lookups. A path-keyed
-    /// inode with an empty path (a volume root) is not deduplicated and returns
-    /// `None`.
-    pub(crate) fn dedup_key(&self) -> Option<DedupKey> {
+    /// path maps to a single, stable FUSE node id across lookups. This includes
+    /// the empty path of a volume root, so an aggregate child root keeps one
+    /// stable node id across repeated lookups rather than allocating a fresh one
+    /// each time.
+    pub(crate) fn dedup_key(&self) -> DedupKey {
         if self.volume.supports_stable_file_id() {
-            return Some(DedupKey::Ino(self.volume_id(), self.inode_nr()));
+            return DedupKey::Ino(self.volume_id(), self.inode_nr());
         }
-        let path = self.get_path();
-        if path.as_os_str().is_empty() {
-            return None;
-        }
-        Some(DedupKey::Path(self.volume_id(), path.clone()))
+        DedupKey::Path(self.volume_id(), self.get_path().clone())
     }
 
     /// The [`DedupKey::Path`] that a child named `name` of this inode would use,

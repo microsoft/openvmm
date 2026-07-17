@@ -27,12 +27,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use zerocopy::FromZeros;
 
-/// Reserved file handle returned by `open_dir` on the synthetic aggregate root.
-///
-/// `read_dir`/`read_dir_plus`/`release_dir` recognize this sentinel and service
-/// it from the root registry rather than the (real-file) handle map. `u64::MAX`
-/// can never collide with a real handle because `HandleMap` allocates starting
-/// at 1 and only increments.
+/// Reserved file handle `open_dir` returns for the synthetic aggregate root;
+/// `read_dir`/`read_dir_plus`/`release_dir` recognize it and serve the root
+/// registry instead of the handle map. `u64::MAX` can't collide with a real
+/// handle, since `HandleMap` allocates from 1 upward.
 pub(crate) const SYNTHETIC_ROOT_FH: u64 = u64::MAX;
 
 /// A single host folder exposed as a named child of the synthetic aggregate root.
@@ -73,8 +71,7 @@ impl AggregateRegistry {
 /// State that only exists for an aggregate-mode [`VirtioFs`].
 ///
 /// When present, node 1 is a synthetic directory whose children are the entries
-/// in `registry`; when absent (direct mode), node 1 is a real inode at a single
-/// volume root (legacy single-share behavior).
+/// in `registry`.
 pub(crate) struct AggregateState {
     /// Aggregated children and their lifecycle state.
     registry: RwLock<AggregateRegistry>,
@@ -146,13 +143,10 @@ impl VirtioFs {
         Ok(())
     }
 
-    /// Signal that the owning device host has begun tearing the aggregate
-    /// device down. After this, [`Self::add_child`] rejects new children with
-    /// `EAGAIN`, so an in-flight add cannot append a child to a device that is
-    /// going away. No-op for direct-mode file systems.
-    ///
-    /// The running device keeps serving existing inodes until it is fully
-    /// dropped; this only stops further children from being added.
+    /// Signal that the aggregate device has begun tearing down, so
+    /// [`Self::add_child`] rejects further children with `EAGAIN`. Existing
+    /// inodes keep being served until the device is dropped. No-op in direct
+    /// mode.
     pub fn begin_teardown(&self) {
         if let Some(aggregate) = self.inner.aggregate() {
             aggregate.registry.write().tearing_down = true;

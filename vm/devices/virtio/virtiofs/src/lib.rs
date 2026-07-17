@@ -56,9 +56,8 @@ struct VirtioFsInner {
 
 /// Distinguishes a single-share device from a multi-share aggregate.
 ///
-/// The read-only setting is not tracked here: in direct mode it is baked into
-/// the inodes (each carries its volume's setting), and in aggregate mode each
-/// child carries its own (see [`AggregateState`]).
+/// The read-only setting lives on each volume's inodes, not here, so aggregate
+/// children can differ (see [`AggregateState`]).
 enum VirtioFsMode {
     /// Single share: node 1 is a real inode at the volume root.
     Direct,
@@ -419,10 +418,9 @@ impl Fuse for VirtioFs {
         }
         self.check_writable(&inode)?;
         inode.rename(name, &new_inode, new_name, flags)?;
-        // On path-keyed volumes a rename moves data between
-        // paths without preserving inode identity, so detach both the source
-        // path (now vacated) and the destination path (its prior occupant, if
-        // any, was replaced) from any node ids they referenced.
+        // A rename doesn't preserve inode identity on path-keyed volumes, so
+        // evict both the vacated source path and the overwritten destination
+        // path from the dedup map.
         let mut inodes = self.inner.inodes.write();
         if let Some(key) = inode.child_path_dedup_key(name) {
             inodes.evict_dedup_key(&key);
@@ -588,16 +586,12 @@ impl VirtioFs {
     ///
     /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
     /// expose host folders as named children, each with its own read-only
-    /// setting.
-    ///
-    /// Children are subdirectories of the synthetic root under a single shared
-    /// superblock; their inode numbers are namespaced per volume to avoid
-    /// cross-volume `st_ino` collisions.
+    /// setting. Children share one superblock, with inode numbers namespaced
+    /// per volume to avoid cross-volume `st_ino` collisions.
     pub fn new_aggregate() -> Self {
         Self {
             inner: Arc::new(VirtioFsInner {
-                // Inode numbers are deduplicated per volume (see `InodeMap`), so
-                // enable the stable-id map and key it by `(volume_id, ino)`.
+                // `true` enables aggregate mode: node 1 is synthetic (see `InodeMap`).
                 inodes: RwLock::new(InodeMap::new(true)),
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
@@ -624,9 +618,8 @@ impl VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.unlink(name, flags)?;
-        // On path-keyed (non-stable-id) volumes the path is the inode's
-        // identity, so detach it now that it is gone; a later create at the
-        // same path must not alias the removed inode.
+        // On path-keyed volumes the path is the inode's identity, so evict it
+        // now; a later create at the same path must not alias the removed inode.
         if let Some(key) = inode.child_path_dedup_key(name) {
             self.inner.inodes.write().evict_dedup_key(&key);
         }
@@ -734,10 +727,8 @@ impl<T> HandleMap<T> {
 ///   globally unique, whereas inode numbers are per-volume.
 struct InodeMap {
     inodes_by_node_id: HandleMap<Arc<VirtioFsInode>>,
-    /// Maps a [`DedupKey`] to the registered inode and its FUSE node id, for
-    /// inodes eligible for deduplication. Stable-id volumes key by inode number
-    /// ([`DedupKey::Ino`]); volumes that recycle inode numbers (FAT/exFAT) key
-    /// by path ([`DedupKey::Path`]).
+    /// Maps a [`DedupKey`] to the registered inode and its FUSE node id, so
+    /// repeated lookups of one host file share a single node id.
     inodes_by_key: HashMap<DedupKey, (Arc<VirtioFsInode>, u64)>,
     /// When true, node 1 is synthetic and not stored in this map, so node IDs
     /// are allocated starting at 2 and `clear` does not preserve a real root.
@@ -766,58 +757,43 @@ impl InodeMap {
 
     /// Insert an inode into the map, returning its node ID.
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        // If this inode has a dedup key, reuse an existing node id for the same
-        // host file. Stable-id volumes dedup by `(volume_id, inode_nr)`; volumes
-        // that recycle inode numbers (e.g. FAT) dedup by `(volume_id, path)`, so
-        // a given path keeps one stable node id across lookups.
-        if let Some(key) = inode.dedup_key() {
-            match self.inodes_by_key.entry(key) {
-                Entry::Occupied(entry) => {
-                    // Inode found; increment its count and return the existing FUSE node ID.
-                    let new_path = inode.clone_path();
-                    let (existing, node_id) = entry.get();
-                    existing.lookup(new_path);
-                    return (Arc::clone(existing), *node_id);
-                }
-                Entry::Vacant(entry) => {
-                    // Inode not found, so insert it into both maps.
-                    let inode = Arc::new(inode);
-                    let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
-                    entry.insert((Arc::clone(&inode), node_id));
-                    return (inode, node_id);
-                }
+        // Reuse an existing node id for the same host file; see `DedupKey`
+        // for how each volume type is keyed.
+        match self.inodes_by_key.entry(inode.dedup_key()) {
+            Entry::Occupied(entry) => {
+                // Inode found; increment its count and return the existing FUSE node ID.
+                let new_path = inode.clone_path();
+                let (existing, node_id) = entry.get();
+                existing.lookup(new_path);
+                (Arc::clone(existing), *node_id)
+            }
+            Entry::Vacant(entry) => {
+                // Inode not found, so insert it into both maps.
+                let inode = Arc::new(inode);
+                let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
+                entry.insert((Arc::clone(&inode), node_id));
+                (inode, node_id)
             }
         }
-
-        // Inode is not eligible for dedup (e.g. an empty-path volume root); just
-        // allocate a fresh node id.
-        let inode = Arc::new(inode);
-        let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
-        (inode, node_id)
     }
 
     /// Remove an inode with the specified FUSE node ID from the map.
     pub fn remove(&mut self, node_id: u64) {
         let inode = self.inodes_by_node_id.remove(node_id).unwrap();
-        if let Some(key) = inode.dedup_key() {
-            // Only drop the by-key entry if it still points at THIS node. For
-            // path-keyed volumes a delete+recreate (or an explicit
-            // `evict_dedup_key`) can repoint the path to a newer inode while
-            // this (older) one lingers behind a live fd or inotify watch;
-            // removing it unconditionally would orphan that newer inode.
-            if let Entry::Occupied(entry) = self.inodes_by_key.entry(key) {
-                if entry.get().1 == node_id {
-                    entry.remove();
-                }
+        // Only drop the by-key entry if it still points at THIS node: on
+        // path-keyed volumes the path may have been repointed to a newer inode
+        // (via delete+recreate or `evict_dedup_key`), which must not be lost.
+        if let Entry::Occupied(entry) = self.inodes_by_key.entry(inode.dedup_key()) {
+            if entry.get().1 == node_id {
+                entry.remove();
             }
         }
     }
 
-    /// Detach a [`DedupKey::Path`] entry from whatever inode it currently maps
-    /// to, leaving that inode in `inodes_by_node_id` (a live fd or inotify watch
-    /// may still reference it) but no longer reachable for dedup. A subsequent
-    /// create at the same path therefore gets a fresh node id rather than
-    /// aliasing the removed/renamed file.
+    /// Detach a [`DedupKey::Path`] entry from its current inode so a later
+    /// create at that path gets a fresh node id instead of aliasing the
+    /// removed/renamed file. The inode stays in `inodes_by_node_id` for any
+    /// live fd or watch.
     pub fn evict_dedup_key(&mut self, key: &DedupKey) {
         if matches!(key, DedupKey::Path(..)) {
             self.inodes_by_key.remove(key);
@@ -841,10 +817,9 @@ impl InodeMap {
         // Re-insert the root inode.
         assert!(self.inodes_by_node_id.insert(Arc::clone(&root_inode)) == FUSE_ROOT_ID);
 
-        // Rebuild the dedup map with just the root, if it has a dedup key.
+        // Rebuild the dedup map with just the root.
         self.inodes_by_key.clear();
-        if let Some(key) = root_inode.dedup_key() {
-            self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
-        }
+        let key = root_inode.dedup_key();
+        self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
     }
 }
