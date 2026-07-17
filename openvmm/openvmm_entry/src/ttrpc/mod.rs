@@ -156,7 +156,7 @@ impl Worker for TtrpcWorker {
                 vm_controller_events: None,
                 controller_task: None,
                 wait_vm_response: None,
-                halted: false,
+                lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
@@ -340,6 +340,24 @@ struct Vm {
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
+enum VmLifecycle {
+    Uninitialized,
+    Running,
+    Paused,
+    Halted(String),
+}
+
+impl From<&VmLifecycle> for vmservice::VmState {
+    fn from(lifecycle: &VmLifecycle) -> Self {
+        match lifecycle {
+            VmLifecycle::Uninitialized => vmservice::VmState::Uninitialized,
+            VmLifecycle::Running => vmservice::VmState::Running,
+            VmLifecycle::Paused => vmservice::VmState::Paused,
+            VmLifecycle::Halted(_) => vmservice::VmState::Halted,
+        }
+    }
+}
+
 struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
@@ -347,9 +365,7 @@ struct VmService {
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
     controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
-    /// Set when the guest has halted, so that a later `WaitVm` completes
-    /// immediately instead of blocking forever. Cleared on `CreateVm`.
-    halted: bool,
+    lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
@@ -408,72 +424,40 @@ impl VmService {
                 response.send(Ok(()));
                 return HandleAction::Quit;
             }
-            request => {
-                let vm = match &self.vm {
-                    Some(vm) => vm.clone(),
-                    None => {
-                        request.fail(grpc_error(anyhow!("VM not created yet")));
-                        return HandleAction::None;
-                    }
-                };
-                match request {
-                    vmservice::Vm::PauseVm((), response) => {
-                        let r = Ok(self.pause_vm(&vm));
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::ResumeVm((), response) => {
-                        let r = Ok(self.resume_vm(&vm));
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::WaitVm((), response) => {
-                        if self.wait_vm_response.is_some() {
-                            response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
-                        } else if self.halted {
-                            // Guest already halted before WaitVm was called;
-                            // complete immediately.
-                            response.send(Ok(()));
-                        } else {
-                            self.wait_vm_response = Some((ctx.clone(), response));
-                        }
-                    }
-                    vmservice::Vm::ModifyResource(request, response) => {
-                        let r = self.modify_resource(&vm, request);
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::AddPcieDevice(request, response) => {
-                        let worker_rpc = vm.worker_rpc.clone();
-                        self.start_rpc(
-                            response,
-                            Ok(async move {
-                                let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-                                let resource =
-                                    build_pcie_device(device.context("missing device")?).await?;
-                                worker_rpc
-                                    .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
-                                    .await
-                                    .map_err(anyhow::Error::from)
-                            }),
-                        );
-                    }
-                    vmservice::Vm::RemovePcieDevice(request, response) => {
-                        let recv = vm
-                            .worker_rpc
-                            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
-                        self.start_rpc(
-                            response,
-                            Ok(async move { recv.await.map_err(anyhow::Error::from) }),
-                        );
-                    }
-
-                    r @ vmservice::Vm::CapabilitiesVm(_, _)
-                    | r @ vmservice::Vm::PropertiesVm(_, _) => {
-                        r.fail(grpc_error(anyhow!("not supported")))
-                    }
-
-                    vmservice::Vm::CreateVm(_, _)
-                    | vmservice::Vm::TeardownVm(_, _)
-                    | vmservice::Vm::Quit(_, _) => unreachable!(),
-                };
+            vmservice::Vm::CapabilitiesVm((), response) => {
+                response.send(Ok(self.build_capabilities()));
+            }
+            vmservice::Vm::PropertiesVm(_request, response) => {
+                response.send(Ok(self.build_properties()));
+            }
+            vmservice::Vm::PauseVm((), response) => {
+                response.send(map_grpc(self.pause_vm().await));
+            }
+            vmservice::Vm::ResumeVm((), response) => {
+                response.send(map_grpc(self.resume_vm().await));
+            }
+            vmservice::Vm::WaitVm((), response) => {
+                if self.vm.is_none() {
+                    response.send(Err(grpc_error(anyhow!("VM not created yet"))));
+                } else if self.wait_vm_response.is_some() {
+                    response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
+                } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                    response.send(Ok(()));
+                } else {
+                    self.wait_vm_response = Some((ctx.clone(), response));
+                }
+            }
+            vmservice::Vm::ModifyResource(request, response) => {
+                let r = self.modify_resource(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::AddPcieDevice(request, response) => {
+                let r = self.add_pcie_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemovePcieDevice(request, response) => {
+                let r = self.remove_pcie_device(request);
+                self.start_rpc(response, r);
             }
         }
         HandleAction::None
@@ -544,9 +528,6 @@ impl VmService {
             bail!("VM already created");
         }
 
-        // Reset halt state for the new VM.
-        self.halted = false;
-
         let load_mode = match req_config
             .boot_config
             .context("missing boot configuration")?
@@ -583,9 +564,14 @@ impl VmService {
             })?);
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let arch = vm_manifest_builder::MachineArch::Aarch64;
+        #[cfg(guest_arch = "x86_64")]
+        let arch = vm_manifest_builder::MachineArch::X86_64;
+
         let chipset_builder = VmManifestBuilder::new(
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            vm_manifest_builder::MachineArch::X86_64,
+            arch,
         )
         .with_serial(ports);
         let layout_config = chipset_builder.layout_config();
@@ -616,7 +602,7 @@ impl VmService {
                         mem_size,
                         prefetch_memory: false,
                         private_memory: false,
-                        transparent_hugepages: false,
+                        transparent_hugepages: true,
                         hugepages: false,
                         hugepage_size: None,
                         host_numa_node: None,
@@ -786,7 +772,7 @@ impl VmService {
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
-                format!("failed to bind hvsocket path: {}", &hvsocket_config.path)
+                format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
             config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
             config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
@@ -859,6 +845,7 @@ impl VmService {
             consomme_rpc,
             worker_rpc: send,
         }));
+        self.lifecycle = VmLifecycle::Paused;
         Ok(())
     }
 
@@ -871,27 +858,87 @@ impl VmService {
         }
         self.vm.take();
         self.vm_controller_events.take();
+        self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
         }
         Ok(())
     }
 
-    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Pause, ());
-        async move { recv.await.map(drop).context("pause failed") }
+    fn build_properties(&self) -> vmservice::PropertiesVmResponse {
+        let halt_reason = match &self.lifecycle {
+            VmLifecycle::Halted(reason) => Some(reason.clone()),
+            _ => None,
+        };
+        vmservice::PropertiesVmResponse {
+            memory_stats: None,
+            processor_stats: None,
+            state: vmservice::VmState::from(&self.lifecycle) as i32,
+            halt_reason,
+        }
     }
 
-    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Resume, ());
-        async move { recv.await.map(drop).context("resume failed") }
+    fn build_capabilities(&self) -> vmservice::CapabilitiesVmResponse {
+        use vmservice::capabilities_vm_response::Resource;
+        use vmservice::capabilities_vm_response::SupportedGuestOs;
+        use vmservice::capabilities_vm_response::SupportedResource;
+
+        vmservice::CapabilitiesVmResponse {
+            supported_resources: vec![
+                SupportedResource {
+                    resource: Resource::Scsi as i32,
+                    add: true,
+                    remove: true,
+                    update: false,
+                },
+                SupportedResource {
+                    resource: Resource::Vpci as i32,
+                    add: true,
+                    remove: true,
+                    update: false,
+                },
+                SupportedResource {
+                    resource: Resource::VmNic as i32,
+                    add: true,
+                    remove: true,
+                    update: true,
+                },
+            ],
+            supported_guest_os: vec![SupportedGuestOs::Linux as i32],
+        }
+    }
+
+    async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Pause, ())
+            .await
+            .map(drop)
+            .context("pause failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Paused;
+        }
+        Ok(())
+    }
+
+    async fn resume_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Resume, ())
+            .await
+            .map(drop)
+            .context("resume failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Running;
+        }
+        Ok(())
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
-                self.halted = true;
+                self.lifecycle = VmLifecycle::Halted(reason);
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
@@ -920,6 +967,7 @@ impl VmService {
                 // task will be awaited during final cleanup.
                 self.vm.take();
                 self.vm_controller.take();
+                self.lifecycle = VmLifecycle::Uninitialized;
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -929,12 +977,45 @@ impl VmService {
         }
     }
 
+    fn add_pcie_device(
+        &self,
+        request: vmservice::AddPcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        Ok(async move {
+            let vmservice::AddPcieDeviceRequest { port_name, device } = request;
+            let resource = build_pcie_device(device.context("missing device")?).await?;
+            worker_rpc
+                .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn remove_pcie_device(
+        &self,
+        request: vmservice::RemovePcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
     fn modify_resource(
-        &mut self,
-        vm: &Vm,
+        &self,
         request: vmservice::ModifyResourceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::modify_resource_request::Resource;
+        let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {
                 let scsi_path = storvsp_resources::ScsiPath {
@@ -1187,7 +1268,7 @@ fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopol
                 mem_size,
                 prefetch_memory: prefetch,
                 private_memory,
-                transparent_hugepages,
+                transparent_hugepages: transparent_hugepages.unwrap_or(true),
                 hugepages,
                 hugepage_size: hugepage_size_bytes,
                 host_numa_node,

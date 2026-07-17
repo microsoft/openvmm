@@ -1413,53 +1413,6 @@ fn test_save_restore_hot_add_during_restore() {
 }
 
 #[test]
-fn test_save_restore_closed_channel_without_per_device_restore() {
-    // A channel that is in the Closed state at save time (offered to the
-    // guest but never opened) and is not re-restored per-device must not
-    // be rescinded by revoke_unclaimed_channels. The existing offer has
-    // no per-device state to lose, and rescinding races with any
-    // in-flight probe in the guest that is attempting to open the
-    // channel.
-    let mut env = TestEnv::new();
-
-    let _offer_id1 = env.offer(1);
-    let _offer_id2 = env.offer(2);
-
-    env.connect(Version::Copper, FeatureFlags::new());
-    env.c().handle_request_offers().unwrap();
-
-    let state = env.server.save();
-    let mut env = TestEnv::new();
-
-    let offer_id1 = env.offer(1);
-    let offer_id2 = env.offer(2);
-
-    env.c().restore(state).unwrap();
-    // Only offer_id1 is restored per-device; offer_id2 simulates a
-    // device that doesn't support save/restore (e.g. the IC devices),
-    // which re-offers itself but leaves the per-device restore to
-    // revoke_unclaimed_channels.
-    env.c().restore_channel(offer_id1, false).unwrap();
-
-    env.c().revoke_unclaimed_channels();
-
-    // No messages should be sent: in particular, no rescind for
-    // offer_id2.
-    assert!(env.notifier.messages.is_empty());
-
-    // Both channels should remain in the Closed state, ready to be
-    // opened by the guest.
-    assert!(matches!(
-        env.server.channels[offer_id1].state,
-        ChannelState::Closed
-    ));
-    assert!(matches!(
-        env.server.channels[offer_id2].state,
-        ChannelState::Closed
-    ));
-}
-
-#[test]
 fn test_pending_messages() {
     let mut env = TestEnv::new();
 

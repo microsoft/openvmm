@@ -116,18 +116,19 @@ issues requests in this order:
 
 3. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
    alignment.
-4. **PCIe ECAM** (`Mmio32`), one block per PCI segment. Root complexes
+4. **PCIe ECAM** (`Mmio64`), one block per PCI segment. Root complexes
    that share a segment are grouped so the segment gets a single
    contiguous ECAM block (keeping the MCFG bus-0 base consistent for every
    RC in the segment), which is then subdivided into per-RC sub-ranges.
    The block size is derived from the segment's combined bus window as
    `(max_bus - min_bus + 1) * 1 MB` (32 devices × 8 functions × 4 KiB per
-   config space). Every ECAM range must start at or above a fixed
-   `256 MiB` minimum: the ACPI MCFG table reports the bus-0 base as
-   `ecam_start - start_bus * 1 MiB`, and since `start_bus` is a `u8` up to
-   255 MiB of headroom may be required. A resolved ECAM below this minimum
-   fails VM construction rather than producing an unrepresentable MCFG
-   entry.
+   config space). ECAM is placed above 4 GiB so the low MMIO window stays
+   free for devices that require 32-bit addressing. Every ECAM range must
+   start at or above a fixed `256 MiB` minimum: the ACPI MCFG table reports
+   the bus-0 base as `ecam_start - start_bus * 1 MiB`, and since `start_bus`
+   is a `u8` up to 255 MiB of headroom may be required. A resolved ECAM
+   below this minimum fails VM construction rather than producing an
+   unrepresentable MCFG entry.
 5. **PCIe per-root-complex ranges**, one set per root complex:
     - **Low MMIO** (`Mmio32`), 2 MB aligned. A caller can pin this to a
       fixed range instead of supplying a size, for assigned-device, IOMMU,

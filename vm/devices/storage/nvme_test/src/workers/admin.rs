@@ -609,13 +609,13 @@ impl AdminHandler {
                         AdminQueueFaultBehavior::Panic(message) => {
                             panic!(
                                 "configured fault: admin command panic with command: {:?} and message: {}",
-                                &command, &message
+                                command, message
                             );
                         }
                         AdminQueueFaultBehavior::CustomPayload(_) => {
                             panic!(
                                 "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
-                                &command
+                                command
                             );
                         }
                         AdminQueueFaultBehavior::Verify(send) => {
@@ -776,7 +776,7 @@ impl AdminHandler {
                 AdminQueueFaultBehavior::Panic(message) => {
                     panic!(
                         "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
-                        &command, &completion, &message
+                        command, completion, message
                     );
                 }
                 AdminQueueFaultBehavior::CustomPayload(payload) => {

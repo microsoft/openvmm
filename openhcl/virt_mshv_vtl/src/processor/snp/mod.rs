@@ -69,6 +69,7 @@ use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::apic::X2APIC_MSR_BASE;
@@ -119,6 +120,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    synic_timer_deadline: SnpSynicTimerDeadline,
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
@@ -153,6 +155,49 @@ struct ExitStats {
     secure_reg_write: Counter,
     avic_no_accel: Counter,
     avic_incomplete_ipi: Counter,
+}
+
+#[derive(Inspect, Default)]
+struct SnpSynicTimerDeadline {
+    #[inspect(hex)]
+    armed_ref_time: Option<u64>,
+    #[inspect(hex)]
+    armed_timeout: Option<VmTime>,
+    #[inspect(hex)]
+    next_ref_time: Option<u64>,
+    deadline_seen: bool,
+}
+
+impl SnpSynicTimerDeadline {
+    fn clear_scan_deadline(&mut self) {
+        // If the previous scan did not report any deadline, the cached armed deadline
+        // is stale and should no longer be restored into VmTime.
+        if !self.deadline_seen {
+            self.armed_ref_time = None;
+            self.armed_timeout = None;
+        }
+
+        // Start a new scan with no candidate. If update_scan_deadline is called
+        // during this scan, deadline_seen preserves the armed deadline for the
+        // next scan boundary.
+        self.next_ref_time = None;
+        self.deadline_seen = false;
+    }
+
+    fn update_scan_deadline(&mut self, ref_time_next: u64) -> bool {
+        // Only the earliest deadline discovered during a scan should drive the
+        // backing timer.
+        if self
+            .next_ref_time
+            .is_some_and(|next_ref_time| ref_time_next >= next_ref_time)
+        {
+            return false;
+        }
+
+        self.next_ref_time = Some(ref_time_next);
+        self.deadline_seen = true;
+        true
+    }
 }
 
 enum UhDirectOverlay {
@@ -412,13 +457,39 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
-        this.shared
+        if !this
+            .backing
+            .synic_timer_deadline
+            .update_scan_deadline(next_ref_time)
+        {
+            return;
+        }
+
+        // The generic VP loop cancels the local VmTime timeout before each scan.
+        // If the effective SynIC deadline is unchanged, restore the cached VmTime
+        // timeout without re-arming the underlying timer.
+        if this.backing.synic_timer_deadline.armed_ref_time == Some(next_ref_time) {
+            if let Some(timeout) = this.backing.synic_timer_deadline.armed_timeout {
+                this.vmtime.set_timeout_if_before(timeout);
+            }
+            return;
+        }
+
+        let timeout = this
+            .shared
             .guest_timer
-            .update_deadline(this, ref_time_now, next_ref_time);
+            .timeout(&this.vmtime, ref_time_now, next_ref_time);
+
+        this.backing.synic_timer_deadline.armed_ref_time = Some(next_ref_time);
+        this.backing.synic_timer_deadline.armed_timeout = Some(timeout);
+        this.vmtime.set_timeout_if_before(timeout);
     }
 
     fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
-        this.shared.guest_timer.clear_deadline(this);
+        this.backing.synic_timer_deadline.clear_scan_deadline();
+        if this.backing.synic_timer_deadline.armed_ref_time.is_none() {
+            this.shared.guest_timer.clear_deadline(this);
+        }
     }
 }
 
@@ -514,6 +585,7 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
+            synic_timer_deadline: Default::default(),
             cvm: UhCvmVpState::new(
                 &shared.cvm,
                 params.partition,
@@ -951,7 +1023,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
         self.dev.handle_eoi(vector.into())
     }
 
-    fn now(&mut self) -> vmcore::vmtime::VmTime {
+    fn now(&mut self) -> VmTime {
         self.vmtime.now()
     }
 

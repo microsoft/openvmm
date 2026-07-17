@@ -531,9 +531,7 @@ mod tests {
         verify_header(&bytes);
         // _PXM should NOT be present when vnode is None.
         assert!(
-            !bytes
-                .windows(4)
-                .any(|window| window == [b'_', b'P', b'X', b'M']),
+            !bytes.windows(4).any(|window| window == *b"_PXM"),
             "_PXM should not be emitted when vnode is None"
         );
     }

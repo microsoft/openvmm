@@ -90,7 +90,6 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
 use hyperv_ic_guest::ShutdownGuestIc;
 use ide_resources::GuestMedia;
-use ide_resources::IdePath;
 use igvm_defs::MemoryMapEntryType;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -128,7 +127,6 @@ use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use storvsp::ScsiControllerDisk;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
@@ -2833,21 +2831,22 @@ async fn new_underhill_vm(
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
                     } => {
                         let disk =
                             disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
                                 .await?;
-                        let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        ));
+
+                        let path = ide_resources::IdePath { channel, drive };
+                        let params = controllers
+                            .ide_disk_params
+                            .get(&path)
+                            .cloned()
+                            .unwrap_or_default();
+                        let scsi_disk =
+                            Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params));
 
                         // Only disks, not DVD drives, get IDE accelerator channels.
-                        storvsp_ide_disks.push((
-                            IdePath { channel, drive },
-                            ScsiControllerDisk::new(scsi_disk),
-                        ));
+                        storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));
 
                         ide::DriveMedia::hard_disk(disk)
                     }
@@ -3449,7 +3448,7 @@ async fn new_underhill_vm(
             let io_queue_depth = ide_io_queue_depth.unwrap_or(default_io_queue_depth);
             ide_accel_devices.push(
                 offer_channel_unit(
-                    &tp,
+                    tp,
                     &state_units,
                     vmbus_server
                         .as_ref()
@@ -3775,6 +3774,8 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
+        #[cfg(feature = "product_policy")]
+        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
 
@@ -3791,6 +3792,9 @@ async fn new_underhill_vm(
         #[cfg(feature = "mem-profile-tracing")]
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
+
+    #[cfg(feature = "product_policy")]
+    crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)
 }

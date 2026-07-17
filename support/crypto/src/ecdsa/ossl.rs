@@ -10,6 +10,7 @@ fn err(e: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError(e, op))
 }
 
+#[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner {
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
     curve: EcdsaCurve,
@@ -51,6 +52,43 @@ impl EcdsaKeyPairInner {
         result.extend_from_slice(&r_bytes);
         result.extend_from_slice(&s_bytes);
         Ok(result)
+    }
+
+    pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
+        // SAFETY: PKey<Private> can be safely treated as PKey<Public> for read-only operations.
+        unsafe { std::mem::transmute::<&EcdsaKeyPairInner, &EcdsaPublicKeyInner>(self) }
+    }
+}
+
+#[repr(C)] // Needed for the transmute in as_pub.
+pub struct EcdsaPublicKeyInner {
+    pkey: openssl::pkey::PKey<openssl::pkey::Public>,
+    curve: EcdsaCurve,
+}
+
+impl EcdsaPublicKeyInner {
+    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
+        let key_size = self.curve.key_size();
+        // A signature must be exactly `r || s`, each `key_size` bytes. Any
+        // other length cannot be a valid signature for this curve.
+        if signature.len() != key_size * 2 {
+            return Ok(false);
+        }
+
+        let ec_key = self
+            .pkey
+            .ec_key()
+            .map_err(|e| err(e, "getting EC key from PKey"))?;
+
+        let r = openssl::bn::BigNum::from_slice(&signature[..key_size])
+            .map_err(|e| err(e, "parsing r"))?;
+        let s = openssl::bn::BigNum::from_slice(&signature[key_size..])
+            .map_err(|e| err(e, "parsing s"))?;
+        let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
+            .map_err(|e| err(e, "constructing signature"))?;
+
+        sig.verify(hash, &ec_key)
+            .map_err(|e| err(e, "ECDSA verify"))
     }
 
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {

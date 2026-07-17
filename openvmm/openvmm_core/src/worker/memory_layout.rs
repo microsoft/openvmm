@@ -232,11 +232,8 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
-    // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
-    // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
-    //
-    // TODO: fix the Linux loader and move this above 4GB before the layout
-    // is stabilized.
+    // ECAM: dynamically allocated above 4GB, keeping the low MMIO window free
+    // for devices that require 32-bit addressing.
     for se in &mut segment_ecams {
         let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
         builder.request(
@@ -244,7 +241,7 @@ pub(super) fn resolve_memory_layout(
             &mut se.range,
             bus_count * PCIE_ECAM_BYTES_PER_BUS,
             PCIE_ECAM_BYTES_PER_BUS,
-            Placement::Mmio32,
+            Placement::Mmio64,
         );
     }
 
@@ -748,8 +745,8 @@ mod tests {
         let ranges = &actual.pcie_root_complex_ranges[0];
 
         assert!(
-            ranges.ecam_range.end() <= 4 * GB,
-            "ECAM should be below 4 GB"
+            ranges.ecam_range.start() >= 4 * GB,
+            "ECAM should be above 4 GB"
         );
         assert_eq!(ranges.low_mmio.len(), 64 * MB);
         assert_eq!(ranges.high_mmio.len(), GB);
@@ -1031,33 +1028,6 @@ mod tests {
             err.to_string().contains("must end at or below 4 GiB"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn ecam_below_256mb_is_rejected() {
-        // Force ECAM placement below 256 MiB by reserving most of the free
-        // Mmio32 window for low_mmio. The fixed chipset_low_mmio at the top
-        // of 32-bit space leaves 3968 MiB on x86_64 and 3584 MiB on aarch64
-        // for dynamic Mmio32 requests; size low_mmio to push ECAM near
-        // 127 MiB on both. The resolver must bail because MCFG cannot
-        // represent a bus-0 base below the ECAM start.
-        let low_mmio_size = if cfg!(guest_arch = "x86_64") {
-            3840 * MB
-        } else {
-            3456 * MB
-        };
-        let root_complexes = [pcie_root_complex(
-            PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
-            },
-            PcieMmioRangeConfig::Dynamic { size: GB },
-        )];
-        let mut config = input(&[2 * GB], None);
-        config.pcie_root_complexes = &root_complexes;
-
-        let err = resolve_memory_layout(config).unwrap_err();
-
-        assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
     }
 
     #[test]

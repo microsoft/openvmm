@@ -7,6 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable per-VM measured product policy (decode + validation).
+product_policy = ["dep:product_policy"]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
 # Enable profiler tracing (heap profiling) support
@@ -127,6 +129,7 @@ hvdef.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader_defs = { workspace = true, features = ["inspect"] }
+product_policy = { workspace = true, features = ["inspect"], optional = true }
 loader.workspace = true
 memory_range.workspace = true
 vm_topology.workspace = true

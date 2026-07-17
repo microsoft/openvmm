@@ -8,9 +8,11 @@ use loader::importer::X86Register;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use memory_range::MemoryRange;
+use openvmm_defs::config::IsolationType;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
+use vm_loader::InitialLoad;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
@@ -48,6 +50,7 @@ pub struct KernelConfig<'a> {
     pub initrd: &'a Option<std::fs::File>,
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
+    pub isolation: Option<IsolationType>,
 }
 
 /// The default SMBIOS identity for firmware-less Linux direct boot.
@@ -82,7 +85,7 @@ pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
-) -> Result<Vec<X86Register>, Error> {
+) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
 
     let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
@@ -101,6 +104,8 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
+    let snp_boot =
+        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig);
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
@@ -114,10 +119,11 @@ pub fn load_linux_x86(
         cfg.mem_layout,
         acpi_at_gpa,
         Some(default_smbios_tables()),
+        snp_boot,
     )
     .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs())
+    Ok(loader.initial_regs_and_page_imports())
 }
 
 /// Returns the device tree blob.
@@ -848,7 +854,7 @@ pub fn load_linux_arm64(
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
     chipset_mmio: &ChipsetMmioRanges,
     build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
-) -> Result<Vec<Aarch64Register>, Error> {
+) -> Result<InitialLoad<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
 
@@ -936,5 +942,5 @@ pub fn load_linux_arm64(
     loader::linux::set_direct_boot_registers_arm64(&mut loader, &load_info)
         .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs())
+    Ok(loader.initial_regs_and_page_imports())
 }

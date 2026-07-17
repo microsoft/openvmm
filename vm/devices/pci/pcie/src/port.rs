@@ -9,6 +9,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use cxl_spec::CxlComponentRegisters;
 use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
@@ -702,15 +703,16 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         };
 
-        let secondary_bus = *bus_range.start();
+        // If the target bus number is the secondary bus number of this port, turn the type 1 access into
+        // a type 0 access to the connected device. Otherwise, forward the type 1 access as-is.
+        let new_access_type = if addr.bus == *bus_range.start() {
+            PciConfigAccessType::Type0
+        } else {
+            PciConfigAccessType::Type1
+        };
+
         device
-            .pci_cfg_read_with_routing(
-                secondary_bus,
-                addr.bus,
-                addr.device_function,
-                addr.byte_offset(),
-                value.reborrow(),
-            )
+            .pci_cfg_read_with_routing(new_access_type, addr, value.reborrow())
             .unwrap_or_else(|| {
                 tracelimit::warn_ratelimited!("failed to read from connected device");
                 value.set(!0);
@@ -749,15 +751,16 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         };
 
-        let secondary_bus = *bus_range.start();
+        // If the target bus number is the secondary bus number of this port, turn the type 1 access into
+        // a type 0 access to the connected device. Otherwise, forward the type 1 access as-is.
+        let new_access_type = if addr.bus == *bus_range.start() {
+            PciConfigAccessType::Type0
+        } else {
+            PciConfigAccessType::Type1
+        };
+
         device
-            .pci_cfg_write_with_routing(
-                secondary_bus,
-                addr.bus,
-                addr.device_function,
-                addr.byte_offset(),
-                value,
-            )
+            .pci_cfg_write_with_routing(new_access_type, addr, value)
             .unwrap_or_else(|| {
                 tracelimit::warn_ratelimited!("failed to write to connected device");
                 IoResult::Ok
@@ -864,6 +867,7 @@ mod tests {
     use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::hwid::HardwareIds;
+    use pci_core::test_helpers::TestCfgAccess;
     use std::sync::Arc;
 
     fn make_cxl_bar_port() -> PcieDownstreamPort {
@@ -932,9 +936,11 @@ mod tests {
     #[derive(Default, Debug, Clone, PartialEq, Eq)]
     struct RoutingStats {
         direct_reads: usize,
-        forward_reads: Vec<(u8, u8, u16)>,
         direct_writes: usize,
-        forward_writes: Vec<(u8, u8, u16, ByteEnabledDwordWrite)>,
+        type0_reads: Vec<PciConfigAddress>,
+        type0_writes: Vec<PciConfigAddress>,
+        type1_reads: Vec<PciConfigAddress>,
+        type1_writes: Vec<PciConfigAddress>,
     }
 
     struct MultiFunctionMockDevice {
@@ -962,32 +968,30 @@ mod tests {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            _secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
             mut value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            self.stats
-                .lock()
-                .forward_reads
-                .push((target_bus, function, offset));
+            let mut stats = self.stats.lock();
+            match access_type {
+                PciConfigAccessType::Type0 => stats.type0_reads.push(address),
+                PciConfigAccessType::Type1 => stats.type1_reads.push(address),
+            }
             value.set(0x1234_5678);
             Some(IoResult::Ok)
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            _secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: ByteEnabledDwordWrite,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
+            _value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            self.stats
-                .lock()
-                .forward_writes
-                .push((target_bus, function, offset, value));
+            let mut stats = self.stats.lock();
+            match access_type {
+                PciConfigAccessType::Type0 => stats.type0_writes.push(address),
+                PciConfigAccessType::Type1 => stats.type1_writes.push(address),
+            }
             Some(IoResult::Ok)
         }
     }
@@ -1022,9 +1026,7 @@ mod tests {
         );
 
         // Initially, presence detect state should be 0
-        let mut slot_status_val = 0u32;
-        let result = port.cfg_space.read_u32(0x58, &mut slot_status_val); // 0x40 (cap start) + 0x18 (slot control/status)
-        assert!(matches!(result, IoResult::Ok));
+        let slot_status_val = port.cfg_space.read_u32(0x58); // 0x40 (cap start) + 0x18 (slot control/status)
         let initial_presence_detect = (slot_status_val >> 22) & 0x1; // presence_detect_state is bit 6 of slot status
         assert_eq!(
             initial_presence_detect, 0,
@@ -1037,8 +1039,7 @@ mod tests {
         assert!(result.is_ok(), "Adding device should succeed");
 
         // Check that presence detect state is now 1
-        let result = port.cfg_space.read_u32(0x58, &mut slot_status_val);
-        assert!(matches!(result, IoResult::Ok));
+        let slot_status_val = port.cfg_space.read_u32(0x58); // 0x40 (cap start) + 0x18 (slot control/status)
         let present_presence_detect = (slot_status_val >> 22) & 0x1;
         assert_eq!(
             present_presence_detect, 1,
@@ -1112,9 +1113,7 @@ mod tests {
             None,
         );
 
-        port.cfg_space
-            .write_u32(0x18, (1u32 << 16) | (1u32 << 8))
-            .unwrap();
+        port.cfg_space.write_u32(0x18, (1u32 << 16) | (1u32 << 8));
 
         let stats = Arc::new(Mutex::new(RoutingStats::default()));
         port.link = Some((
@@ -1125,9 +1124,9 @@ mod tests {
         ));
 
         let mut value = 0;
-        // All accesses on the secondary bus go through
-        // pci_cfg_read_with_routing — the linked device is responsible
-        // for dispatching function 0 to its own config space.
+        // All accesses on the secondary bus go through the linked device's
+        // Type 0 routing hook, which is responsible for dispatching function 0
+        // to its own config space.
         assert!(matches!(
             port.forward_cfg_read_with_routing(
                 PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
@@ -1145,7 +1144,13 @@ mod tests {
 
         let stats = stats.lock().clone();
         assert_eq!(stats.direct_reads, 0);
-        assert_eq!(stats.forward_reads, vec![(1, 0, 0x10), (1, 3, 0x14)]);
+        assert_eq!(
+            stats.type0_reads,
+            vec![
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                PciConfigAddress::new(1, 3, 0x14 / 4).unwrap()
+            ]
+        );
     }
 
     #[test]
@@ -1176,9 +1181,7 @@ mod tests {
             None,
         );
 
-        port.cfg_space
-            .write_u32(0x18, (1u32 << 16) | (1u32 << 8))
-            .unwrap();
+        port.cfg_space.write_u32(0x18, (1u32 << 16) | (1u32 << 8));
 
         let stats = Arc::new(Mutex::new(RoutingStats::default()));
         port.link = Some((
@@ -1188,9 +1191,9 @@ mod tests {
             }),
         ));
 
-        // All accesses on the secondary bus go through
-        // pci_cfg_write_with_routing — the linked device is responsible
-        // for dispatching function 0 to its own config space.
+        // All accesses on the secondary bus go through the linked device's
+        // Type 0 routing hook, which is responsible for dispatching function 0
+        // to its own config space.
         assert!(matches!(
             port.forward_cfg_write_with_routing(
                 PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
@@ -1209,20 +1212,10 @@ mod tests {
         let stats = stats.lock().clone();
         assert_eq!(stats.direct_writes, 0);
         assert_eq!(
-            stats.forward_writes,
+            stats.type0_writes,
             vec![
-                (
-                    1,
-                    0,
-                    0x10,
-                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xAAAA_0000)
-                ),
-                (
-                    1,
-                    2,
-                    0x14,
-                    ByteEnabledDwordWrite::with_all_bytes_enabled(0xBBBB_0000)
-                )
+                PciConfigAddress::new(1, 0, 0x10 / 4).unwrap(),
+                PciConfigAddress::new(1, 2, 0x14 / 4).unwrap()
             ]
         );
     }
@@ -1257,13 +1250,13 @@ mod tests {
         );
 
         // Program bridge bus numbers (Type1 register at offset 0x18).
-        port.cfg_space.write_u32(0x18, 0x0012_1000).unwrap();
+        port.cfg_space.write_u32(0x18, 0x0012_1000);
         assert_eq!(port.cfg_space.assigned_bus_range(), 0x10..=0x12);
 
         let saved = port.cfg_space.save().expect("save should succeed");
 
         // Change state away from saved values.
-        port.cfg_space.write_u32(0x18, 0x0000_0000).unwrap();
+        port.cfg_space.write_u32(0x18, 0x0000_0000);
         assert_eq!(port.cfg_space.assigned_bus_range(), 0..=0);
 
         port.cfg_space
@@ -1323,8 +1316,7 @@ mod tests {
             None,
             None,
         );
-        let mut value = 0u32;
-        with_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
+        let value = with_acs.cfg_space.read_u32(0x100);
         assert_eq!(value & 0xffff, ExtendedCapabilityId::ACS.0 as u32);
 
         let without_acs = PcieDownstreamPort::new(
@@ -1338,7 +1330,7 @@ mod tests {
             None,
             None,
         );
-        without_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
+        let value = without_acs.cfg_space.read_u32(0x100);
         assert_eq!(value, 0);
     }
 
@@ -1384,8 +1376,7 @@ mod tests {
             }),
         );
 
-        let mut value = 0u32;
-        port.cfg_space.read_u32(0x100, &mut value).unwrap();
+        let value = port.cfg_space.read_u32(0x100);
         assert_eq!(
             value, 0,
             "CXL DVSECs should be absent when CXL component-register BAR backing is invalid"

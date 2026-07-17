@@ -245,6 +245,12 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Request nested virtualization support from the host hypervisor.
+    pub fn with_nested_virt(mut self) -> Self {
+        self.config.hypervisor.nested_virt = true;
+        self
+    }
+
     /// Enable a synthnic for the VM backed by the Windows vmswitch
     /// DirectIO (`-net dio`) backend.
     ///

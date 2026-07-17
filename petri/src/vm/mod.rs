@@ -1121,7 +1121,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tracing::warn!("Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, collecting diagnostics.");
                 let mut timeout_tasks = Vec::new();
                 if let Some(inspector) = vmm_inspector {
-                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect_all().await })) );
+                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect("").await })) );
                 }
                 if let Some(openhcl_diag_handler) = openhcl_diag_handler {
                     timeout_tasks.push(inspect_task("openhcl", &driver, Box::pin(async move { openhcl_diag_handler.inspect("", None, None).await })));
@@ -1790,6 +1790,26 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.inspect_openhcl("", None, None).await.map(|_| ())
     }
 
+    /// Invoke Inspect on the running VMM process itself (e.g. OpenVMM),
+    /// returning the inspect tree rooted at `path` (pass `""` for the whole
+    /// tree).
+    ///
+    /// Only backends that expose an inspect interface (currently OpenVMM)
+    /// support this; other backends return an error.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to verify that components are working as you
+    /// expect, not to assert on output that some other tool depends on.
+    pub async fn inspect_vmm(&self, path: &str) -> anyhow::Result<inspect::Node> {
+        use anyhow::Context;
+
+        let inspector = self
+            .runtime
+            .inspector()
+            .context("this VMM backend does not support inspect")?;
+        inspector.inspect(path).await
+    }
+
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
@@ -1877,7 +1897,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                     if let Some(inspector) = self.runtime.inspector() {
                         save_inspect(
                             "vmm",
-                            Box::pin(async move { inspector.inspect_all().await }),
+                            Box::pin(async move { inspector.inspect("").await }),
                             &self.resources.log_source,
                         )
                         .await;
@@ -2153,15 +2173,16 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
 /// Interface for getting information about the state of the VM
 #[async_trait]
 pub trait PetriVmInspector: Send + Sync + 'static {
-    /// Get information about the state of the VM
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node>;
+    /// Get information about the state of the VM at the given inspect `path`.
+    /// Pass `""` to inspect the entire tree.
+    async fn inspect(&self, path: &str) -> anyhow::Result<inspect::Node>;
 }
 
 /// Use this for the associated type if not supported
 pub struct NoPetriVmInspector;
 #[async_trait]
 impl PetriVmInspector for NoPetriVmInspector {
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
+    async fn inspect(&self, _path: &str) -> anyhow::Result<inspect::Node> {
         unreachable!()
     }
 }

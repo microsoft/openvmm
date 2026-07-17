@@ -706,15 +706,7 @@ fn write_visible_output(line: &[u8], logged_len: &mut usize, output_send: &mpsc:
 }
 
 petri::multitest!(vec![
-    petri::SimpleTest::new(
-        "cca_runtime",
-        resolve_cca_runtime,
-        cca_runtime,
-        None,
-        false,
-        petri::RemoteAccess::LocalOnly,
-    )
-    .into()
+    petri::SimpleTest::new("cca_runtime", resolve_cca_runtime, cca_runtime).into()
 ]);
 
 fn main() {

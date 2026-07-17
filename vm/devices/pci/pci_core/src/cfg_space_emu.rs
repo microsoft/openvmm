@@ -182,6 +182,10 @@ struct ConfigSpaceCommonHeaderEmulatorState<const N: usize> {
     /// for firmware to communicate IRQ assignments to the OS, but it can really
     /// be used for just about anything.
     interrupt_line: u8,
+    /// The bus number captured by this emulator.
+    captured_bus_number: u8,
+    /// The combined devfn (device << 3 | function) captured by this emulator.
+    captured_devfn: u8,
 }
 
 impl<const N: usize> ConfigSpaceCommonHeaderEmulatorState<N> {
@@ -193,6 +197,8 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulatorState<N> {
                 [ZERO; N]
             },
             interrupt_line: 0,
+            captured_bus_number: 0,
+            captured_devfn: 0,
         }
     }
 }
@@ -530,6 +536,26 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         }
     }
 
+    /// Returns the currently captured bus number.
+    pub fn captured_bus_number(&self) -> u8 {
+        self.state.captured_bus_number
+    }
+
+    /// Returns the currently captured devfn (device << 3 | function) number.
+    pub fn captured_devfn(&self) -> u8 {
+        self.state.captured_devfn
+    }
+
+    /// Overwrites the captured bus number.
+    pub fn set_captured_bus_number(&mut self, bus_number: u8) {
+        self.state.captured_bus_number = bus_number;
+    }
+
+    /// Overwrites the captured devfn (device << 3 | fn) number.
+    pub fn set_captured_devfn(&mut self, devfn: u8) {
+        self.state.captured_devfn = devfn;
+    }
+
     // ===== Configuration Space Read/Write Functions =====
 
     /// Read from the config space.
@@ -617,6 +643,23 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             "ConfigSpaceCommonHeaderEmulator: write offset={:#x}",
             offset,
         );
+
+        // Capture the bus number as described in section 2.2.6.2.1 of the PCIe spec (Rev 7.0).
+        // The spec recommends that functions only capture these values on successful handling of
+        // the access, but we can't really tell that here from this shared emulation helper so we
+        // instead capture unconditionally.
+        if address.bus != self.state.captured_bus_number
+            || address.devfn != self.state.captured_devfn
+        {
+            tracing::debug!(
+                "ConfigSpaceCommonHeaderEmulator: capturing bdf {:x}:{:x}.{:x}",
+                address.bus,
+                address.device(),
+                address.function(),
+            );
+        }
+        self.state.captured_bus_number = address.bus;
+        self.state.captured_devfn = address.devfn;
 
         match CommonHeader(offset) {
             CommonHeader::STATUS_COMMAND => {
@@ -1065,6 +1108,16 @@ impl ConfigSpaceType0Emulator {
         self.common.set_interrupt_pin(pin, line)
     }
 
+    /// Returns the currently captured bus number.
+    pub fn captured_bus_number(&self) -> u8 {
+        self.common.captured_bus_number()
+    }
+
+    /// Returns the currently captured devfn (device << 3 | function) number.
+    pub fn captured_devfn(&self) -> u8 {
+        self.common.captured_devfn()
+    }
+
     /// Resets the configuration space state.
     pub fn reset(&mut self) {
         self.common.reset();
@@ -1121,19 +1174,6 @@ impl ConfigSpaceType0Emulator {
         IoResult::Ok
     }
 
-    /// Read a full DWORD from the config space. `offset` must be 32-bit aligned.
-    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
-    }
-
     /// Read a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
     pub fn read_byte_enabled(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         if !offset.is_multiple_of(4) {
@@ -1186,19 +1226,6 @@ impl ConfigSpaceType0Emulator {
         }
 
         IoResult::Ok
-    }
-
-    /// Write a full DWORD to the config space. `offset` must be 32-bit aligned.
-    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Write a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
@@ -1368,6 +1395,16 @@ impl ConfigSpaceType1Emulator {
         }
     }
 
+    /// Returns the currently captured bus number.
+    pub fn captured_bus_number(&self) -> u8 {
+        self.common.captured_bus_number()
+    }
+
+    /// Returns the currently captured devfn (device << 3 | function) number.
+    pub fn captured_devfn(&self) -> u8 {
+        self.common.captured_devfn()
+    }
+
     /// Resets the configuration space state.
     pub fn reset(&mut self) {
         self.common.reset();
@@ -1506,19 +1543,6 @@ impl ConfigSpaceType1Emulator {
         IoResult::Ok
     }
 
-    /// Read a full DWORD from the config space. `offset` must be 32-bit aligned.
-    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        self.read(addr, ByteEnabledDwordRead::with_all_bytes_enabled(value))
-    }
-
     /// Read a byte-enabled DWORD from the config space. `offset` must be 32-bit aligned.
     pub fn read_byte_enabled(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         if !offset.is_multiple_of(4) {
@@ -1596,19 +1620,6 @@ impl ConfigSpaceType1Emulator {
         }
 
         IoResult::Ok
-    }
-
-    /// Write a full DWORD to the config space. `offset` must be 32-bit aligned.
-    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(0, 0, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        self.write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(val))
     }
 
     /// Write a byte-enabled DWORD to the config space. `offset` must be 32-bit aligned.
@@ -1701,6 +1712,10 @@ mod save_restore {
             pub capabilities: Vec<(String, SavedStateBlob)>,
             #[mesh(16)]
             pub extended_capabilities: Vec<(String, SavedStateBlob)>,
+            #[mesh(17)]
+            pub captured_bus_number: u8,
+            #[mesh(18)]
+            pub captured_devfn: u8,
 
             // Type 1 specific fields (bridge devices)
             // These fields default to 0 for backward compatibility with old save state
@@ -1764,6 +1779,8 @@ mod save_restore {
                         Ok((id, cap.save()?))
                     })
                     .collect::<Result<_, _>>()?,
+                captured_bus_number: self.common.captured_bus_number(),
+                captured_devfn: self.common.captured_devfn(),
                 // Type 1 specific fields - not used for Type 0
                 subordinate_bus_number: 0,
                 secondary_bus_number: 0,
@@ -1788,6 +1805,8 @@ mod save_restore {
                 latency_timer,
                 capabilities,
                 extended_capabilities,
+                captured_bus_number,
+                captured_devfn,
                 // Type 1 specific fields - ignored for Type 0
                 subordinate_bus_number: _,
                 secondary_bus_number: _,
@@ -1856,6 +1875,9 @@ mod save_restore {
                 }
             }
 
+            self.common.set_captured_bus_number(captured_bus_number);
+            self.common.set_captured_devfn(captured_devfn);
+
             Ok(())
         }
     }
@@ -1906,6 +1928,8 @@ mod save_restore {
                         Ok((id, cap.save()?))
                     })
                     .collect::<Result<_, _>>()?,
+                captured_bus_number: self.common.captured_bus_number(),
+                captured_devfn: self.common.captured_devfn(),
                 // Type 1 specific fields
                 subordinate_bus_number,
                 secondary_bus_number,
@@ -1930,6 +1954,8 @@ mod save_restore {
                 latency_timer: _, // Not used for Type 1
                 capabilities,
                 extended_capabilities,
+                captured_bus_number,
+                captured_devfn,
                 subordinate_bus_number,
                 secondary_bus_number,
                 primary_bus_number,
@@ -2014,6 +2040,9 @@ mod save_restore {
                 }
             }
 
+            self.common.set_captured_bus_number(captured_bus_number);
+            self.common.set_captured_devfn(captured_devfn);
+
             Ok(())
         }
     }
@@ -2029,12 +2058,14 @@ mod tests {
     use crate::spec::hwid::ClassCode;
     use crate::spec::hwid::ProgrammingInterface;
     use crate::spec::hwid::Subclass;
+    use crate::test_helpers::TestCfgAccess;
     use chipset_device::pci::ByteEnabledDwordRead;
     use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigByteEnable;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
+    use vmcore::save_restore::SaveRestore;
 
     fn create_type0_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType0Emulator {
         ConfigSpaceType0Emulator::new(
@@ -2071,21 +2102,15 @@ mod tests {
         )
     }
 
-    fn read_cfg(emulator: &ConfigSpaceType1Emulator, offset: u16) -> u32 {
-        let mut val = 0;
-        emulator.read_u32(offset, &mut val).unwrap();
-        val
-    }
-
     #[test]
     fn test_type1_probe() {
         let emu = create_type1_emulator(vec![]);
-        assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
-        assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0); // Capabilities pointer
+        assert_eq!(emu.read_u32(0), 0x2222_1111);
+        assert_eq!(emu.read_u32(4) & 0x10_0000, 0); // Capabilities pointer
 
         let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", 0))]);
-        assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
-        assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0x10_0000); // Capabilities pointer
+        assert_eq!(emu.read_u32(0), 0x2222_1111);
+        assert_eq!(emu.read_u32(4) & 0x10_0000, 0x10_0000); // Capabilities pointer
     }
 
     #[test]
@@ -2094,36 +2119,36 @@ mod tests {
 
         // The bus number (and latency timer) registers are
         // all default 0.
-        assert_eq!(read_cfg(&emu, 0x18), 0);
+        assert_eq!(emu.read_u32(0x18), 0);
         assert_eq!(emu.assigned_bus_range(), 0..=0);
 
         // The bus numbers can be programmed one by one,
         // and the range may not be valid during the middle
         // of allocation.
-        emu.write_u32(0x18, 0x0000_1000).unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0000_1000);
+        emu.write_u32(0x18, 0x0000_1000);
+        assert_eq!(emu.read_u32(0x18), 0x0000_1000);
         assert_eq!(emu.assigned_bus_range(), 0..=0);
-        emu.write_u32(0x18, 0x0012_1000).unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0012_1000);
+        emu.write_u32(0x18, 0x0012_1000);
+        assert_eq!(emu.read_u32(0x18), 0x0012_1000);
         assert_eq!(emu.assigned_bus_range(), 0x10..=0x12);
 
         // The primary bus number register is read/write for compatability
         // but unused.
-        emu.write_u32(0x18, 0x0012_1033).unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0012_1033);
+        emu.write_u32(0x18, 0x0012_1033);
+        assert_eq!(emu.read_u32(0x18), 0x0012_1033);
         assert_eq!(emu.assigned_bus_range(), 0x10..=0x12);
 
         // Software can also just write the entire 4byte value at once
-        emu.write_u32(0x18, 0x0047_4411).unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0047_4411);
+        emu.write_u32(0x18, 0x0047_4411);
+        assert_eq!(emu.read_u32(0x18), 0x0047_4411);
         assert_eq!(emu.assigned_bus_range(), 0x44..=0x47);
 
         // The subordinate bus number can equal the secondary bus number...
-        emu.write_u32(0x18, 0x0088_8800).unwrap();
+        emu.write_u32(0x18, 0x0088_8800);
         assert_eq!(emu.assigned_bus_range(), 0x88..=0x88);
 
         // ... but it cannot be less, that's a confused guest OS.
-        emu.write_u32(0x18, 0x0087_8800).unwrap();
+        emu.write_u32(0x18, 0x0087_8800);
         assert_eq!(emu.assigned_bus_range(), 0..=0);
     }
 
@@ -2139,7 +2164,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0000_0011);
+        assert_eq!(emu.read_u32(0x18), 0x0000_0011);
         assert_eq!(emu.assigned_bus_range(), 0..=0);
 
         emu.write(
@@ -2150,7 +2175,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0000_2211);
+        assert_eq!(emu.read_u32(0x18), 0x0000_2211);
         assert_eq!(emu.assigned_bus_range(), 0..=0);
 
         emu.write(
@@ -2161,7 +2186,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0033_2211);
+        assert_eq!(emu.read_u32(0x18), 0x0033_2211);
         assert_eq!(emu.assigned_bus_range(), 0x22..=0x33);
 
         emu.write(
@@ -2172,7 +2197,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(read_cfg(&emu, 0x18), 0x0033_2211);
+        assert_eq!(emu.read_u32(0x18), 0x0033_2211);
         assert_eq!(emu.assigned_bus_range(), 0x22..=0x33);
     }
 
@@ -2186,33 +2211,33 @@ mod tests {
 
         // The guest can write whatever it wants while MMIO
         // is disabled.
-        emu.write_u32(0x20, 0xDEAD_BEEF).unwrap();
+        emu.write_u32(0x20, 0xDEAD_BEEF);
         assert!(emu.assigned_memory_range().is_none());
 
         // The guest can program a valid resource assignment...
-        emu.write_u32(0x20, 0xFFF0_FF00).unwrap();
+        emu.write_u32(0x20, 0xFFF0_FF00);
         assert!(emu.assigned_memory_range().is_none());
         // ... enable memory decoding...
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(emu.assigned_memory_range(), Some(0xFF00_0000..=0xFFFF_FFFF));
         // ... then disable memory decoding it.
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_memory_range().is_none());
 
         // Setting memory base equal to memory limit is a valid 1MB range.
-        emu.write_u32(0x20, 0xBBB0_BBB0).unwrap();
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x20, 0xBBB0_BBB0);
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(emu.assigned_memory_range(), Some(0xBBB0_0000..=0xBBBF_FFFF));
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_memory_range().is_none());
 
         // The guest can try to program an invalid assignment (base > limit), we
         // just won't decode it.
-        emu.write_u32(0x20, 0xAA00_BB00).unwrap();
+        emu.write_u32(0x20, 0xAA00_BB00);
         assert!(emu.assigned_memory_range().is_none());
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert!(emu.assigned_memory_range().is_none());
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_memory_range().is_none());
     }
 
@@ -2222,10 +2247,10 @@ mod tests {
 
         let mut emu = create_type1_emulator(vec![]);
 
-        emu.write_u32(0x20, 0x567f_123f).unwrap();
-        assert_eq!(read_cfg(&emu, 0x20), 0x5670_1230);
+        emu.write_u32(0x20, 0x567f_123f);
+        assert_eq!(emu.read_u32(0x20), 0x5670_1230);
 
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(emu.assigned_memory_range(), Some(0x1230_0000..=0x567f_ffff));
     }
 
@@ -2238,18 +2263,18 @@ mod tests {
         assert!(emu.assigned_prefetch_range().is_none());
 
         // The guest can program a valid prefetch range...
-        emu.write_u32(0x24, 0xFFF0_FF00).unwrap(); // limit + base
-        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
-        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // limit upper
+        emu.write_u32(0x24, 0xFFF0_FF00); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC); // base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF); // limit upper
         assert!(emu.assigned_prefetch_range().is_none());
         // ... enable memory decoding...
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(
             emu.assigned_prefetch_range(),
             Some(0x00AA_BBCC_FF00_0000..=0x00DD_EEFF_FFFF_FFFF)
         );
         // ... then disable memory decoding it.
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_prefetch_range().is_none());
 
         // The validity of the assignment is determined using the combined 64-bit
@@ -2257,29 +2282,29 @@ mod tests {
 
         // Lower bits of the limit are greater than the lower bits of the
         // base, but the upper bits make that valid.
-        emu.write_u32(0x24, 0xFF00_FFF0).unwrap(); // limit + base
-        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
-        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // limit upper
+        emu.write_u32(0x24, 0xFF00_FFF0); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC); // base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF); // limit upper
         assert!(emu.assigned_prefetch_range().is_none());
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(
             emu.assigned_prefetch_range(),
             Some(0x00AA_BBCC_FFF0_0000..=0x00DD_EEFF_FF0F_FFFF)
         );
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_prefetch_range().is_none());
 
         // The base can equal the limit, which is a valid 1MB range.
-        emu.write_u32(0x24, 0xDD00_DD00).unwrap(); // limit + base
-        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
-        emu.write_u32(0x2C, 0x00AA_BBCC).unwrap(); // limit upper
+        emu.write_u32(0x24, 0xDD00_DD00); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC); // base upper
+        emu.write_u32(0x2C, 0x00AA_BBCC); // limit upper
         assert!(emu.assigned_prefetch_range().is_none());
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(
             emu.assigned_prefetch_range(),
             Some(0x00AA_BBCC_DD00_0000..=0x00AA_BBCC_DD0F_FFFF)
         );
-        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        emu.write_u32(0x4, MMIO_DISABLED);
         assert!(emu.assigned_prefetch_range().is_none());
     }
 
@@ -2289,10 +2314,10 @@ mod tests {
 
         let mut emu = create_type1_emulator(vec![]);
 
-        emu.write_u32(0x24, 0x567e_123e).unwrap();
-        assert_eq!(read_cfg(&emu, 0x24), 0x5671_1231);
+        emu.write_u32(0x24, 0x567e_123e);
+        assert_eq!(emu.read_u32(0x24), 0x5671_1231);
 
-        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED);
         assert_eq!(
             emu.assigned_prefetch_range(),
             Some(0x1230_0000..=0x567f_ffff)
@@ -2301,12 +2326,10 @@ mod tests {
 
     #[test]
     fn test_type1_restore_masks_bridge_memory_range_reserved_bits() {
-        use vmcore::save_restore::SaveRestore;
-
         const MMIO_ENABLED: u32 = 0x0000_0002;
 
         let mut source = create_type1_emulator(vec![]);
-        source.write_u32(0x4, MMIO_ENABLED).unwrap();
+        source.write_u32(0x4, MMIO_ENABLED);
         source.state.memory_base = 0x123f;
         source.state.memory_limit = 0x567f;
         source.state.prefetch_base = 0x234e;
@@ -2317,8 +2340,8 @@ mod tests {
         let mut emu = create_type1_emulator(vec![]);
         emu.restore(saved_state).expect("restore should succeed");
 
-        assert_eq!(read_cfg(&emu, 0x20), 0x5670_1230);
-        assert_eq!(read_cfg(&emu, 0x24), 0x6781_2341);
+        assert_eq!(emu.read_u32(0x20), 0x5670_1230);
+        assert_eq!(emu.read_u32(0x24), 0x6781_2341);
         assert_eq!(emu.assigned_memory_range(), Some(0x1230_0000..=0x567f_ffff));
         assert_eq!(
             emu.assigned_prefetch_range(),
@@ -2773,21 +2796,17 @@ mod tests {
 
     #[test]
     fn test_type0_emulator_save_restore() {
-        use vmcore::save_restore::SaveRestore;
-
         // Test Type 0 emulator save/restore
         let mut emu = create_type0_emulator(vec![]);
 
         // Modify some state by writing to command register
-        emu.write_u32(0x04, 0x0007).unwrap(); // Enable some command bits
+        emu.write_u32(0x04, 0x0007); // Enable some command bits
 
         // Read back and verify
-        let mut test_val = 0u32;
-        emu.read_u32(0x04, &mut test_val).unwrap();
-        assert_eq!(test_val & 0x0007, 0x0007);
+        assert_eq!(emu.read_u32(0x04) & 0x0007, 0x0007);
 
         // Write to latency timer / interrupt register
-        emu.write_u32(0x3C, 0x0040_0000).unwrap(); // Set latency_timer
+        emu.write_u32(0x3C, 0x0040_0000); // Set latency_timer
 
         // Save the state
         let saved_state = emu.save().expect("save should succeed");
@@ -2796,47 +2815,36 @@ mod tests {
         emu.reset();
 
         // Verify state is reset
-        emu.read_u32(0x04, &mut test_val).unwrap();
-        assert_eq!(test_val & 0x0007, 0x0000); // Should be reset
+        assert_eq!(emu.read_u32(0x04) & 0x0007, 0x0000); // Should be reset
 
         // Restore the state
         emu.restore(saved_state).expect("restore should succeed");
 
         // Verify state is restored
-        emu.read_u32(0x04, &mut test_val).unwrap();
-        assert_eq!(test_val & 0x0007, 0x0007); // Should be restored
+        assert_eq!(emu.read_u32(0x04) & 0x0007, 0x0007); // Should be restored
     }
 
     #[test]
     fn test_type1_emulator_save_restore() {
-        use vmcore::save_restore::SaveRestore;
-
         // Test Type 1 emulator save/restore
         let mut emu = create_type1_emulator(vec![]);
 
         // Modify some state
-        emu.write_u32(0x04, 0x0003).unwrap(); // Enable command bits
-        emu.write_u32(0x18, 0x0012_1000).unwrap(); // Set bus numbers
-        emu.write_u32(0x20, 0xFFF0_FF00).unwrap(); // Set memory range
-        emu.write_u32(0x24, 0xFFF0_FF00).unwrap(); // Set prefetch range
-        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // Set prefetch base upper
-        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // Set prefetch limit upper
-        emu.write_u32(0x3C, 0x0001_0000).unwrap(); // Set bridge control
+        emu.write_u32(0x04, 0x0003); // Enable command bits
+        emu.write_u32(0x18, 0x0012_1000); // Set bus numbers
+        emu.write_u32(0x20, 0xFFF0_FF00); // Set memory range
+        emu.write_u32(0x24, 0xFFF0_FF00); // Set prefetch range
+        emu.write_u32(0x28, 0x00AA_BBCC); // Set prefetch base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF); // Set prefetch limit upper
+        emu.write_u32(0x3C, 0x0001_0000); // Set bridge control
 
         // Verify values
-        let mut test_val = 0u32;
-        emu.read_u32(0x04, &mut test_val).unwrap();
-        assert_eq!(test_val & 0x0003, 0x0003);
-        emu.read_u32(0x18, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x0012_1000);
-        emu.read_u32(0x20, &mut test_val).unwrap();
-        assert_eq!(test_val, 0xFFF0_FF00);
-        emu.read_u32(0x28, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x00AA_BBCC);
-        emu.read_u32(0x2C, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x00DD_EEFF);
-        emu.read_u32(0x3C, &mut test_val).unwrap();
-        assert_eq!(test_val >> 16, 0x0001); // bridge_control
+        assert_eq!(emu.read_u32(0x04) & 0x0003, 0x0003);
+        assert_eq!(emu.read_u32(0x18), 0x0012_1000);
+        assert_eq!(emu.read_u32(0x20), 0xFFF0_FF00);
+        assert_eq!(emu.read_u32(0x28), 0x00AA_BBCC);
+        assert_eq!(emu.read_u32(0x2C), 0x00DD_EEFF);
+        assert_eq!(emu.read_u32(0x3C) >> 16, 0x0001); // bridge_control
 
         // Save the state
         let saved_state = emu.save().expect("save should succeed");
@@ -2845,33 +2853,25 @@ mod tests {
         emu.reset();
 
         // Verify state is reset
-        emu.read_u32(0x04, &mut test_val).unwrap();
+        let test_val = emu.read_u32(0x04);
         assert_eq!(test_val & 0x0003, 0x0000);
-        emu.read_u32(0x18, &mut test_val).unwrap();
+        let test_val = emu.read_u32(0x18);
         assert_eq!(test_val, 0x0000_0000);
 
         // Restore the state
         emu.restore(saved_state).expect("restore should succeed");
 
         // Verify state is restored
-        emu.read_u32(0x04, &mut test_val).unwrap();
-        assert_eq!(test_val & 0x0003, 0x0003);
-        emu.read_u32(0x18, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x0012_1000);
-        emu.read_u32(0x20, &mut test_val).unwrap();
-        assert_eq!(test_val, 0xFFF0_FF00);
-        emu.read_u32(0x28, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x00AA_BBCC);
-        emu.read_u32(0x2C, &mut test_val).unwrap();
-        assert_eq!(test_val, 0x00DD_EEFF);
-        emu.read_u32(0x3C, &mut test_val).unwrap();
-        assert_eq!(test_val >> 16, 0x0001); // bridge_control
+        assert_eq!(emu.read_u32(0x04) & 0x0003, 0x0003);
+        assert_eq!(emu.read_u32(0x18), 0x0012_1000);
+        assert_eq!(emu.read_u32(0x20), 0xFFF0_FF00);
+        assert_eq!(emu.read_u32(0x28), 0x00AA_BBCC);
+        assert_eq!(emu.read_u32(0x2C), 0x00DD_EEFF);
+        assert_eq!(emu.read_u32(0x3C) >> 16, 0x0001); // bridge_control
     }
 
     #[test]
     fn test_type1_emulator_save_restore_with_extended_capabilities() {
-        use vmcore::save_restore::SaveRestore;
-
         let mut emu = ConfigSpaceType1Emulator::new(
             HardwareIds {
                 vendor_id: 0x1111,
@@ -2891,21 +2891,17 @@ mod tests {
         );
 
         // Enable all supported ACS control bits.
-        emu.write_u32(0x104, 0xffff_0000).unwrap();
+        emu.write_u32(0x104, 0xffff_0000);
 
-        let mut value = 0u32;
-        emu.read_u32(0x104, &mut value).unwrap();
-        assert_eq!((value >> 16) as u16, 0x005f);
+        assert_eq!((emu.read_u32(0x104) >> 16) as u16, 0x005f);
 
         let saved_state = emu.save().expect("save should succeed");
 
         emu.reset();
-        emu.read_u32(0x104, &mut value).unwrap();
-        assert_eq!((value >> 16) as u16, 0);
+        assert_eq!((emu.read_u32(0x104) >> 16) as u16, 0);
 
         emu.restore(saved_state).expect("restore should succeed");
-        emu.read_u32(0x104, &mut value).unwrap();
-        assert_eq!((value >> 16) as u16, 0x005f);
+        assert_eq!((emu.read_u32(0x104) >> 16) as u16, 0x005f);
     }
 
     #[test]
@@ -2920,9 +2916,7 @@ mod tests {
         let mut emulator = create_type1_emulator(vec![Box::new(pcie_cap)]);
 
         // Initially, presence detect state should be 0
-        let mut slot_status_val = 0u32;
-        let result = emulator.read_u32(COMMON_HEADER_END + 0x18, &mut slot_status_val); // COMMON_HEADER_END (cap start) + 0x18 (slot control/status)
-        assert!(matches!(result, IoResult::Ok));
+        let slot_status_val = emulator.read_u32(COMMON_HEADER_END + 0x18); // COMMON_HEADER_END (cap start) + 0x18 (slot control/status)
         let initial_presence_detect = (slot_status_val >> 22) & 0x1; // presence_detect_state is bit 6 of slot status
         assert_eq!(
             initial_presence_detect, 0,
@@ -2931,8 +2925,7 @@ mod tests {
 
         // Set device as present
         emulator.set_presence_detect_state(true);
-        let result = emulator.read_u32(0x58, &mut slot_status_val);
-        assert!(matches!(result, IoResult::Ok));
+        let slot_status_val = emulator.read_u32(0x58);
         let present_presence_detect = (slot_status_val >> 22) & 0x1;
         assert_eq!(
             present_presence_detect, 1,
@@ -2941,8 +2934,7 @@ mod tests {
 
         // Set device as not present
         emulator.set_presence_detect_state(false);
-        let result = emulator.read_u32(0x58, &mut slot_status_val);
-        assert!(matches!(result, IoResult::Ok));
+        let slot_status_val = emulator.read_u32(0x58);
         let absent_presence_detect = (slot_status_val >> 22) & 0x1;
         assert_eq!(
             absent_presence_detect, 0,
@@ -2984,21 +2976,18 @@ mod tests {
         );
 
         // Initially, no interrupt pin should be configured
-        let mut val = 0u32;
-        emu.read_u32(0x3C, &mut val).unwrap(); // LATENCY_INTERRUPT register
-        assert_eq!(val & 0xFF00, 0); // Interrupt pin should be 0
+        assert_eq!(emu.read_u32(0x3C) & 0xFF00, 0); // Interrupt pin should be 0
 
         // Configure interrupt pin A
         let line_interrupt = LineInterrupt::detached();
         emu.set_interrupt_pin(PciInterruptPin::IntA, line_interrupt);
 
         // Read the register again
-        emu.read_u32(0x3C, &mut val).unwrap();
-        assert_eq!((val >> 8) & 0xFF, 1); // Interrupt pin should be 1 (INTA)
+        assert_eq!((emu.read_u32(0x3C) >> 8) & 0xFF, 1); // Interrupt pin should be 1 (INTA)
 
         // Set interrupt line to 0x42 and verify both pin and line are correct
-        emu.write_u32(0x3C, 0x00110042).unwrap(); // Latency=0x11, pin=ignored, line=0x42
-        emu.read_u32(0x3C, &mut val).unwrap();
+        emu.write_u32(0x3C, 0x00110042); // Latency=0x11, pin=ignored, line=0x42
+        let val = emu.read_u32(0x3C);
         assert_eq!(val & 0xFF, 0x42); // Interrupt line should be 0x42
         assert_eq!((val >> 8) & 0xFF, 1); // Interrupt pin should still be 1 (writes ignored)
         assert_eq!((val >> 16) & 0xFF, 0x11); // Latency timer should be 0x11
@@ -3023,8 +3012,7 @@ mod tests {
         let line_interrupt_d = LineInterrupt::detached();
         emu_d.set_interrupt_pin(PciInterruptPin::IntD, line_interrupt_d);
 
-        emu_d.read_u32(0x3C, &mut val).unwrap();
-        assert_eq!((val >> 8) & 0xFF, 4); // Interrupt pin should be 4 (INTD)
+        assert_eq!((emu_d.read_u32(0x3C) >> 8) & 0xFF, 4); // Interrupt pin should be 4 (INTD)
     }
 
     #[test]
@@ -3277,5 +3265,107 @@ mod tests {
         // no-op for the intercept and must not panic.
         drop(common_emu);
         assert!(!mapped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_type1_bdf_capturing() {
+        // Test that the type1 config space emulator captures
+        // the BDF of accesses it receives.
+        let mut type1_emulator = create_type1_emulator(vec![]);
+
+        // Initially, the captured BDF should be 0.
+        assert_eq!(type1_emulator.captured_bus_number(), 0);
+        assert_eq!(type1_emulator.captured_devfn(), 0);
+
+        // Reads do not capture the BDF.
+        let mut read_value = 0;
+        let _ = type1_emulator.read(
+            PciConfigAddress::new(1, 1, 0).unwrap(),
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut read_value),
+        );
+        assert_eq!(type1_emulator.captured_bus_number(), 0);
+        assert_eq!(type1_emulator.captured_devfn(), 0);
+
+        // Writes capture the BDF.
+        let _ = type1_emulator.write(
+            PciConfigAddress::new(1, 1, 0).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xdead_beef),
+        );
+        assert_eq!(type1_emulator.captured_bus_number(), 1);
+        assert_eq!(type1_emulator.captured_devfn(), 1);
+
+        // And writing a new BDF overwrites the old.
+        let _ = type1_emulator.write(
+            PciConfigAddress::new(4, 1, 0).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xdead_beef),
+        );
+        assert_eq!(type1_emulator.captured_bus_number(), 4);
+        assert_eq!(type1_emulator.captured_devfn(), 1);
+
+        // Save state with BDF captured.
+        let saved_state = type1_emulator.save().expect("save should succeed");
+
+        // Captured BDF should be cleared on reset.
+        type1_emulator.reset();
+        assert_eq!(type1_emulator.captured_bus_number(), 0);
+        assert_eq!(type1_emulator.captured_devfn(), 0);
+
+        // Restore the state, captured BDF should be restored.
+        type1_emulator
+            .restore(saved_state)
+            .expect("restore should succeed");
+        assert_eq!(type1_emulator.captured_bus_number(), 4);
+        assert_eq!(type1_emulator.captured_devfn(), 1);
+    }
+
+    #[test]
+    fn test_type0_bdf_capturing() {
+        // Test that the type0 config space emulator captures
+        // the BDF of accesses it receives.
+        let mut type0_emulator = create_type0_emulator(vec![]);
+
+        // Initially, the captured BDF should be 0.
+        assert_eq!(type0_emulator.captured_bus_number(), 0);
+        assert_eq!(type0_emulator.captured_devfn(), 0);
+
+        // Reads do not capture the BDF.
+        let mut read_value = 0;
+        let _ = type0_emulator.read(
+            PciConfigAddress::new(1, 1, 0).unwrap(),
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut read_value),
+        );
+        assert_eq!(type0_emulator.captured_bus_number(), 0);
+        assert_eq!(type0_emulator.captured_devfn(), 0);
+
+        // Writes capture the BDF.
+        let _ = type0_emulator.write(
+            PciConfigAddress::new(1, 1, 0).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xdead_beef),
+        );
+        assert_eq!(type0_emulator.captured_bus_number(), 1);
+        assert_eq!(type0_emulator.captured_devfn(), 1);
+
+        // And writing a new BDF overwrites the old.
+        let _ = type0_emulator.write(
+            PciConfigAddress::new(4, 1, 0).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xdead_beef),
+        );
+        assert_eq!(type0_emulator.captured_bus_number(), 4);
+        assert_eq!(type0_emulator.captured_devfn(), 1);
+
+        // Save state with BDF captured.
+        let saved_state = type0_emulator.save().expect("save should succeed");
+
+        // Captured BDF should be cleared on reset.
+        type0_emulator.reset();
+        assert_eq!(type0_emulator.captured_bus_number(), 0);
+        assert_eq!(type0_emulator.captured_devfn(), 0);
+
+        // Restore the state, captured BDF should be restored.
+        type0_emulator
+            .restore(saved_state)
+            .expect("restore should succeed");
+        assert_eq!(type0_emulator.captured_bus_number(), 4);
+        assert_eq!(type0_emulator.captured_devfn(), 1);
     }
 }

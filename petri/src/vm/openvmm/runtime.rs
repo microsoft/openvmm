@@ -671,7 +671,7 @@ impl PetriVmInner {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(
+                    tracing::trace!(
                         error = &e as &dyn std::error::Error,
                         "TCP connect failed, guest not ready yet"
                     );
@@ -740,8 +740,8 @@ pub struct OpenVmmInspector {
 
 #[async_trait]
 impl PetriVmInspector for OpenVmmInspector {
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
-        Ok(self.worker.inspect_all().await)
+    async fn inspect(&self, path: &str) -> anyhow::Result<inspect::Node> {
+        Ok(self.worker.inspect(path).await)
     }
 }
 

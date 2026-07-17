@@ -16,20 +16,27 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,shared=on,prefetch=off
   ```
 
+  The keys below select the guest RAM **memory backing**. For an explanation
+  of shared vs. private memory, prefetch, huge pages, and file-backed RAM —
+  and how to choose between them — see
+  [Memory Backing](../../architecture/openvmm/memory-backing.md).
+
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
   * `shared=on|off` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
-  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
-  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
-    This is Linux-only, requires shared memory, and cannot be combined
-    with file-backed memory or PCAT/legacy x86 RAM splitting.
-  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
-    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
-    OpenVMM uses 2 MB pages.
+  * `prefetch=on|off` - pre-populate guest RAM mappings up front.
+    Only has an effect under WHP; a no-op on KVM/mshv.
+  * `thp=on|off` - mark guest RAM (shared or private) as Transparent Huge
+    Page eligible. Linux-only, best-effort, and on by default; pass `thp=off` to
+    opt out.
+  * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages
+    (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
+    shared memory.
+  * `hugepage_size=<SIZE>` - request a specific large-page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; defaults to 2 MB. On
+    Windows only 2 MB is supported.
   * `file=<PATH>` - use an existing file as the guest RAM backing file.
     This is used by snapshots.
 
@@ -39,7 +46,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory 4G
   --memory size=64GB,hugepages=on,hugepage_size=2MB
   --memory size=4G,file=path/to/memory.bin
-  --memory size=4G,shared=off,thp=on
+  --memory size=4G,thp=off
   ```
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
@@ -174,6 +181,15 @@ as well as the generated CLI help (via `cargo run -- --help`).
 Serial devices can be configured to appear as different devices inside the guest:
 
 * `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--com1 debugger-mode:<BACKEND>`: Prefix any COM port binding with
+  `debugger-mode:` to run that port in debugger mode for WinDbg kernel
+  debugging over serial (KD), e.g. `--com1 debugger-mode:listen=<PATH>` or
+  `--com1 debugger-mode:listen=tcp:<IP>:<PORT>`. In this mode OpenVMM keeps that
+  port's backend drained and may drop bytes instead of applying backpressure, so
+  the KD transport does not deadlock across guest resets or reboots; KD recovers
+  dropped bytes with its own retransmission. Debugger mode is chosen
+  independently per COM port, so one port can talk to WinDbg while another
+  behaves normally.
 * `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
   `/dev/hvc0` inside the guest).
 

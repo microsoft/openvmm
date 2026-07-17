@@ -5,14 +5,13 @@
 
 use super::SHA_384_OUTPUT_SIZE_BYTES;
 use crate::file_loader::DEFAULT_COMPATIBILITY_MASK;
+use crypto::sha_384::Sha384;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmInitializationHeader;
 use igvm_defs::IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY;
 use igvm_defs::IGVM_VHS_SNP_ID_BLOCK_SIGNATURE;
 use igvm_defs::IgvmPageDataType;
 use igvm_defs::PAGE_SIZE_4K;
-use sha2::Digest;
-use sha2::Sha384;
 use std::collections::HashMap;
 use thiserror::Error;
 use x86defs::snp::SnpPageInfo;
@@ -52,7 +51,7 @@ pub fn generate_snp_measurement(
 
     // Hash the contents of empty 4K page, used when file does not carry data
     hasher.update(zero_page.as_bytes());
-    let zero_digest = hasher.finalize();
+    let zero_digest = hasher.finish();
 
     // Reuse the same vec for padding out data to 4k.
     let mut padding_vec = vec![0; PAGE_SIZE_4K_USIZE];
@@ -67,11 +66,11 @@ pub fn generate_snp_measurement(
                         padding_vec.fill(0);
                         padding_vec[..data.len()].copy_from_slice(data);
                         hash.update(&padding_vec);
-                        hash.finalize()
+                        hash.finish()
                     }
                     PAGE_SIZE_4K_USIZE => {
                         hash.update(data);
-                        hash.finalize()
+                        hash.finish()
                     }
                     _ => {
                         // TODO SNP: Need to check the PSP spec how to measure 2MB
@@ -83,12 +82,12 @@ pub fn generate_snp_measurement(
                     }
                 }
             }
-            None => [0; SHA_384_OUTPUT_SIZE_BYTES].into(),
+            None => [0; SHA_384_OUTPUT_SIZE_BYTES],
         };
 
         let info = SnpPageInfo {
             digest_current: launch_digest,
-            contents: hash_contents.into(),
+            contents: hash_contents,
             length: size_of::<SnpPageInfo>() as u16,
             page_type,
             imi_page_bit: 0,
@@ -98,7 +97,7 @@ pub fn generate_snp_measurement(
 
         let mut hash = Sha384::new();
         hash.update(info.as_bytes());
-        launch_digest = hash.finalize().into();
+        launch_digest = hash.finish();
     };
 
     let mut policy: u64 = 0;
@@ -288,20 +287,18 @@ fn sign_id_block_with_temp_key(
     let key = EcdsaKeyPair::generate(EcdsaCurve::P384)
         .map_err(|e| Error::TempSigning(format!("EcdsaKeyPair::generate: {e}")))?;
 
-    // Hash the ID block with SHA-384.
-    let mut hash = Sha384::new();
-    hash.update(id_block.as_bytes());
-    let id_block_hash: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hash.finalize().into();
+    // Hash the ID block with SHA-384 (for logging; `sign` re-hashes internally).
+    let id_block_hash = crypto::sha_384::sha_384(id_block.as_bytes());
 
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     tracing::info!("Input Hash Base64: {}", b64.encode(id_block_hash));
     tracing::info!("Using Temporary Signing Key");
 
-    // Sign the hash. Returns r || s in big-endian, each 48 bytes for P-384.
+    // Sign the ID block. Returns r || s in big-endian, each 48 bytes for P-384.
     let signature = key
-        .sign_prehash(&id_block_hash)
-        .map_err(|e| Error::TempSigning(format!("sign_prehash: {e}")))?;
+        .sign(crypto::HashAlgorithm::Sha384, id_block.as_bytes())
+        .map_err(|e| Error::TempSigning(format!("sign: {e}")))?;
 
     if signature.len() != SNP_ECC_KEY_SIZE_BYTES * 2 {
         return Err(Error::TempSigning(format!(

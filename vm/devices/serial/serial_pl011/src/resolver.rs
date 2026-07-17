@@ -63,11 +63,23 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, SerialPl011DeviceHandle>
             .configure
             .new_line(IRQ_LINE_SET, "interrupt", resource.irq);
 
+        let io = serial_core::debugger::apply_debugger_mode(
+            resource.debugger_mode,
+            input.task_driver_source.simple(),
+            input.device_name,
+            io.0.into_io(),
+        );
+
+        let debugger_poll_timer = resource
+            .debugger_mode
+            .then(|| pal_async::timer::PolledTimer::new(&input.task_driver_source.simple()));
+
         let device = SerialPl011::new(
             input.device_name.to_string(),
             resource.base,
             interrupt,
-            io.0.into_io(),
+            io,
+            debugger_poll_timer,
         )
         .map_err(ResolvePl011Error::Configuration)?;
 

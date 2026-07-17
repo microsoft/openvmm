@@ -5,10 +5,9 @@
 
 use super::SHA_384_OUTPUT_SIZE_BYTES;
 use crate::file_loader::DEFAULT_COMPATIBILITY_MASK;
+use crypto::sha_384::Sha384;
 use igvm::IgvmDirectiveHeader;
 use igvm_defs::PAGE_SIZE_4K;
-use sha2::Digest;
-use sha2::Sha384;
 use std::collections::HashMap;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -174,7 +173,7 @@ pub fn generate_tdx_measurement(
         }
     }
 
-    let mrtd: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hasher.finalize().into();
+    let mrtd: [u8; SHA_384_OUTPUT_SIZE_BYTES] = hasher.finish();
     tracing::info!("MRTD: {}", hex::encode_upper(mrtd));
     Ok(mrtd)
 }

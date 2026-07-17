@@ -26,6 +26,31 @@ pub enum Vendor {
     Arm,
 }
 
+impl Vendor {
+    /// Detect the vendor of the host CPU the test is running on.
+    pub fn host() -> Self {
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        {
+            let result =
+                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
+            let vendor =
+                x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx);
+            if vendor.is_amd_compatible() {
+                Vendor::Amd
+            } else {
+                assert!(vendor.is_intel_compatible());
+                Vendor::Intel
+            }
+        }
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            Vendor::Arm
+        }
+    }
+}
+
 /// Types of isolation supported.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IsolationType {
@@ -96,34 +121,7 @@ impl HostContext {
             }
         };
 
-        let vendor = {
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
-                let result = safe_intrinsics::cpuid(
-                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
-                    0,
-                );
-                if x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
-                    .is_amd_compatible()
-                {
-                    Vendor::Amd
-                } else {
-                    assert!(
-                        x86defs::cpuid::Vendor::from_ebx_ecx_edx(
-                            result.ebx, result.ecx, result.edx
-                        )
-                        .is_intel_compatible()
-                    );
-                    Vendor::Intel
-                }
-            }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                Vendor::Arm
-            }
-        };
+        let vendor = Vendor::host();
 
         let vm_host_info = {
             #[cfg(windows)]

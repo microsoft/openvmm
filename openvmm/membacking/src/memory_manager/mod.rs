@@ -12,6 +12,7 @@ use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
+use crate::mapping_manager::MemoryPolicy;
 use crate::mapping_manager::VaMapper;
 use crate::mapping_manager::VaMapperError;
 use crate::partition_mapper::PartitionMapper;
@@ -146,17 +147,11 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
-    /// THP requires private memory mode.
-    #[error("transparent huge pages requires private memory mode")]
-    ThpWithoutPrivateMemory,
-    /// THP is only supported on Linux.
-    #[error("transparent huge pages is only supported on Linux")]
-    ThpUnsupportedPlatform,
     /// Hugepage size is too large.
     #[error("hugepage size {0} is too large")]
     HugepageSizeTooLarge(MemorySize),
-    /// Hugepages are only supported on Linux.
-    #[error("hugepages are only supported on Linux")]
+    /// Hugepages are only supported on Linux and Windows.
+    #[error("hugepages are only supported on Linux and Windows")]
     HugepagesUnsupportedPlatform,
     /// Host NUMA node binding is only supported on Linux and Windows.
     #[error("host NUMA node binding is only supported on Linux and Windows")]
@@ -246,7 +241,13 @@ impl RamBackingRequest {
         self
     }
 
-    /// Enable Transparent Huge Pages (requires `private_memory`, Linux only).
+    /// Enable Transparent Huge Pages for guest RAM (Linux only, best-effort).
+    ///
+    /// Applies to both shared (memfd) and private (anonymous) backings. The
+    /// kernel treats `madvise(MADV_HUGEPAGE)` as advisory and may accept it
+    /// without allocating huge pages. Advice failures are logged but do not
+    /// fail the build. This has no effect on non-Linux hosts or explicit
+    /// hugetlb (`hugepages`) backings, which are already huge.
     pub fn transparent_hugepages(mut self, enable: bool) -> Self {
         self.transparent_hugepages = enable;
         self
@@ -268,7 +269,8 @@ impl RamBackingRequest {
     }
 
     /// Bind this backing's memory to a specific host NUMA node
-    /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
+    /// (Linux: `mbind(MPOL_BIND)`, Windows: `CreateFileMappingNuma` for
+    /// large-page sections and `MemExtendedParameterNumaNode` otherwise).
     ///
     /// Only supported on Linux and Windows; returns
     /// [`MemoryBuildError::HostNumaNodeUnsupportedPlatform`] at build time on
@@ -412,25 +414,20 @@ impl GuestMemoryBuilder {
             if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
             }
-            if req.transparent_hugepages {
-                if !req.private_memory {
-                    return Err(MemoryBuildError::ThpWithoutPrivateMemory);
-                }
-                if !cfg!(target_os = "linux") {
-                    return Err(MemoryBuildError::ThpUnsupportedPlatform);
-                }
-            }
             if req.host_numa_node.is_some()
                 && cfg!(not(any(target_os = "linux", target_os = "windows")))
             {
                 return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
             }
             if req.hugepages {
-                if !cfg!(target_os = "linux") {
+                if !cfg!(any(target_os = "linux", target_os = "windows")) {
                     return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
                 }
                 if req.private_memory {
                     return Err(MemoryBuildError::HugepagesWithPrivateMemory);
+                }
+                if req.existing_mappable.is_some() {
+                    return Err(MemoryBuildError::HugepagesWithExistingBacking);
                 }
                 if self.x86_legacy_support {
                     return Err(MemoryBuildError::HugepagesWithLegacy);
@@ -500,10 +497,18 @@ impl GuestMemoryBuilder {
                     let hugepage_size =
                         validate_hugepage_size(req.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
                     validate_hugepage_ram_alignment(size, &req.ranges, hugepage_size as u64)?;
+                    // TODO: on Windows, when this large-page (SEC_LARGE_PAGES)
+                    // section is later mapped into the guest VA, we should
+                    // really map it with MEM_LARGE_PAGES so the view itself
+                    // uses large pages. Released versions of Windows don't
+                    // support MEM_LARGE_PAGES together with the placeholder
+                    // reservations that sparse_mmap relies on, so we leave it
+                    // out for now.
                     sparse_mmap::alloc_shared_memory_hugetlb(
                         backing_size,
                         &name,
                         Some(hugepage_size),
+                        req.host_numa_node,
                     )
                     .map_err(|error| MemoryBuildError::HugepageAllocationFailed {
                         size: MemorySize(size),
@@ -522,8 +527,17 @@ impl GuestMemoryBuilder {
             backings.push(RamBacking {
                 mappable: Some(mappable),
                 ranges: req.ranges,
-                prefetch: req.prefetch,
-                transparent_hugepages: false,
+                // On Windows, hugepage (SEC_LARGE_PAGES) backing only yields 2 MB
+                // SLAT entries when the SLAT is populated in >= 512-page batches;
+                // lazy per-page demand faults produce 4 KB entries. Prefetching
+                // populates each region up front in large contiguous batches, so
+                // force it on for hugepage-backed RAM. (Linux hugetlb faults the
+                // whole large page on first touch, so this is not needed there.)
+                prefetch: req.prefetch || (cfg!(windows) && req.hugepages),
+                // Transparent huge pages are advisory and best-effort; they
+                // apply to shmem (memfd) mappings on Linux. Explicit hugetlb
+                // backings are already huge, so suppress THP there.
+                transparent_hugepages: req.transparent_hugepages && !req.hugepages,
                 host_numa_node: req.host_numa_node,
             });
         }
@@ -601,16 +615,17 @@ impl GuestMemoryBuilder {
                             mappable: mappable.clone(),
                             file_offset,
                         },
-                        None => MappingBacking::Private {
-                            transparent_hugepages: backing.transparent_hugepages,
-                        },
+                        None => MappingBacking::Private,
                     };
                     region
                         .add_mapping(
                             MemoryRange::new(0..sub_range.len()),
                             backing_kind,
                             true,
-                            backing.host_numa_node,
+                            MemoryPolicy {
+                                numa_node: backing.host_numa_node,
+                                transparent_hugepages: backing.transparent_hugepages,
+                            },
                         )
                         .await
                         .map_err(|error| MemoryBuildError::RamMapping {
@@ -622,7 +637,7 @@ impl GuestMemoryBuilder {
                         .map(MapParams {
                             writable: true,
                             executable: true,
-                            prefetch: backing.prefetch && backing.mappable.is_some(),
+                            prefetch: backing.prefetch,
                         })
                         .await
                         .map_err(|error| MemoryBuildError::RamRegionEnable {
@@ -870,6 +885,7 @@ impl RamVisibilityControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::async_test;
     use std::error::Error as _;
 
     /// Build a GuestMemoryManager with the given backing range groups,
@@ -891,6 +907,24 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    #[async_test]
+    async fn test_hugepages_with_existing_backing_rejected() {
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let mappable = sparse_mmap::alloc_shared_memory(SIZE as usize, "test").unwrap();
+        let backing = RamBackingRequest::new(vec![MemoryRange::new(0..SIZE)])
+            .hugepages(None)
+            .existing_mappable(mappable.into());
+        let err = GuestMemoryBuilder::new()
+            .add_backing(backing)
+            .build(SIZE)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MemoryBuildError::HugepagesWithExistingBacking
+        ));
     }
 
     #[test]

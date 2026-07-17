@@ -369,7 +369,7 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequestVersion {
                 found: request.request_data.version,
                 expected: IGVM_ATTEST_REQUEST_CURRENT_VERSION,
-            })?;
+            });
         }
 
         // The runtime claims are appended after the fixed-size IgvmAttestRequestBase and IgvmAttestRequestDataExt structures.

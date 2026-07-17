@@ -344,7 +344,7 @@ mod tests {
             data3: 0x41e4,
             data4: [0x9b, 0x1e, 0x51, 0x3e, 0x8a, 0x89, 0x14, 0x7d],
         };
-        assert_eq!(format!("{}", &guid), "cf127acc-c960-41e4-9b1e-513e8a89147d");
+        assert_eq!(format!("{}", guid), "cf127acc-c960-41e4-9b1e-513e8a89147d");
     }
 
     #[test]
