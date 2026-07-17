@@ -58,66 +58,27 @@ impl<C> PolledChild<C> {
     }
 }
 
-/// Polls the wait backend for exit, then reaps via `try_wait`.
+/// Polls the wait backend for the exit notification, then reaps the child.
 ///
-/// Backend readiness does not universally imply reapability:
-/// - Linux (pidfd) and Windows (handle) report ready only once reapable.
-/// - macOS (kqueue `NOTE_EXIT`) can fire *before* the child is reapable via
-///   `waitpid`, so `try_wait` briefly returns `None`.
+/// `reap` performs a *blocking* wait. On Linux (pidfd) and Windows (handle)
+/// the backend only signals once the child is reapable, so the wait returns
+/// immediately. On macOS the kqueue `NOTE_EXIT` notification can arrive a few
+/// microseconds before `waitpid` can reap the child, so the wait blocks for
+/// that brief, kernel-bounded window (XNU delivers `NOTE_EXIT` while the
+/// process is exiting, with only a few non-blocking teardown steps remaining)
+/// rather than spinning on a non-blocking `try_wait`.
 ///
-/// Backends latch their one-shot exit event, so on that race we re-poll to
-/// completion rather than panicking.
+/// This is the shared implementation of `PolledChild::poll_wait` for all
+/// child-process types.
 fn poll_child_exit(
     cx: &mut Context<'_>,
-    mut poll_exit: impl FnMut(&mut Context<'_>) -> Poll<io::Result<()>>,
-    mut try_wait: impl FnMut() -> io::Result<Option<std::process::ExitStatus>>,
+    wait: &mut Option<crate::sys::process::WaitInner>,
+    reap: impl FnOnce() -> io::Result<std::process::ExitStatus>,
 ) -> Poll<io::Result<std::process::ExitStatus>> {
-    ready!(poll_exit(cx))?;
-    match try_wait()? {
-        Some(status) => Poll::Ready(Ok(status)),
-        // macOS: signaled but not yet reapable; re-poll (the backend stays latched).
-        None => {
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
+    if let Some(w) = wait {
+        ready!(w.poll_exit(cx))?;
     }
-}
-
-/// Generates the `poll_wait`/`wait` surface for a concrete child type.
-///
-/// `PolledChild<C>` is generic, but its two child types --
-/// [`std::process::Child`] and `pal::unix::process::Child` -- share only a
-/// compatible inherent `try_wait`, not a common trait, so the (otherwise
-/// identical) wait logic is stamped out per type rather than written
-/// generically.
-macro_rules! impl_polled_child_wait {
-    ($child:ty) => {
-        impl PolledChild<$child> {
-            /// Polls for the child process to exit.
-            pub fn poll_wait(
-                &mut self,
-                cx: &mut Context<'_>,
-            ) -> Poll<io::Result<std::process::ExitStatus>> {
-                let wait = &mut self.wait;
-                let child = &mut self.child;
-                poll_child_exit(
-                    cx,
-                    |cx| match wait {
-                        Some(w) => w.poll_exit(cx),
-                        None => Poll::Ready(Ok(())),
-                    },
-                    || child.try_wait(),
-                )
-            }
-
-            /// Waits for the child process to exit.
-            pub fn wait(
-                &mut self,
-            ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
-                poll_fn(move |cx| self.poll_wait(cx))
-            }
-        }
-    };
+    Poll::Ready(reap())
 }
 
 // --- std::process::Child ---
@@ -127,9 +88,22 @@ impl PolledChild<std::process::Child> {
     pub fn new(driver: &(impl ?Sized + Driver), child: std::process::Child) -> io::Result<Self> {
         Self::new_inner(driver, child)
     }
-}
 
-impl_polled_child_wait!(std::process::Child);
+    /// Polls for the child process to exit.
+    pub fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<std::process::ExitStatus>> {
+        poll_child_exit(cx, &mut self.wait, || self.child.wait())
+    }
+
+    /// Waits for the child process to exit.
+    pub fn wait(
+        &mut self,
+    ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
+        poll_fn(move |cx| self.poll_wait(cx))
+    }
+}
 
 // --- pal::unix::process::Child ---
 
@@ -142,10 +116,22 @@ impl PolledChild<pal::unix::process::Child> {
     ) -> io::Result<Self> {
         Self::new_inner(driver, child)
     }
-}
 
-#[cfg(unix)]
-impl_polled_child_wait!(pal::unix::process::Child);
+    /// Polls for the child process to exit.
+    pub fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<std::process::ExitStatus>> {
+        poll_child_exit(cx, &mut self.wait, || self.child.wait())
+    }
+
+    /// Waits for the child process to exit.
+    pub fn wait(
+        &mut self,
+    ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
+        poll_fn(move |cx| self.poll_wait(cx))
+    }
+}
 
 // --- pal::windows::Process ---
 
@@ -339,113 +325,5 @@ mod windows {
                 child,
             })
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-    use std::task::Wake;
-    use std::task::Waker;
-
-    struct CountingWaker(AtomicUsize);
-
-    impl Wake for CountingWaker {
-        fn wake(self: Arc<Self>) {
-            self.wake_by_ref();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// A successful `ExitStatus` without spawning a process: `from_raw(0)` is a
-    /// zero wait-status on unix and exit code 0 on windows.
-    fn success_status() -> std::process::ExitStatus {
-        #[cfg(unix)]
-        use std::os::unix::process::ExitStatusExt;
-        #[cfg(windows)]
-        use std::os::windows::process::ExitStatusExt;
-        std::process::ExitStatus::from_raw(0)
-    }
-
-    /// macOS `NOTE_EXIT` can fire before `waitpid` can reap, so `try_wait`
-    /// transiently returns `None`. The shared poll must re-poll (Pending +
-    /// wake) rather than panic, then complete once the reap succeeds.
-    #[test]
-    fn ready_but_unreapable_repolls_then_completes() {
-        let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let task_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&task_waker);
-
-        let mut poll_exit = |_: &mut Context<'_>| Poll::Ready(Ok(()));
-        let mut try_calls = 0;
-        let mut try_wait = || {
-            try_calls += 1;
-            Ok((try_calls > 1).then(success_status))
-        };
-
-        // First poll: signaled but not yet reapable -> Pending + wake.
-        assert!(poll_child_exit(&mut cx, &mut poll_exit, &mut try_wait).is_pending());
-        assert_eq!(waker.0.load(Ordering::Relaxed), 1);
-
-        // Second poll: reap now succeeds.
-        match poll_child_exit(&mut cx, &mut poll_exit, &mut try_wait) {
-            Poll::Ready(Ok(status)) => assert!(status.success()),
-            other => panic!("expected ready success, got {other:?}"),
-        }
-    }
-
-    /// Linux/Windows: ready implies reapable, so this completes on the first
-    /// poll with no self-wake.
-    #[test]
-    fn ready_and_reapable_completes_without_repoll() {
-        let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let task_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&task_waker);
-
-        let mut poll_exit = |_: &mut Context<'_>| Poll::Ready(Ok(()));
-        let mut try_wait = || Ok(Some(success_status()));
-
-        match poll_child_exit(&mut cx, &mut poll_exit, &mut try_wait) {
-            Poll::Ready(Ok(status)) => assert!(status.success()),
-            other => panic!("expected ready success, got {other:?}"),
-        }
-        assert_eq!(
-            waker.0.load(Ordering::Relaxed),
-            0,
-            "a reapable child must not trigger a re-poll"
-        );
-    }
-
-    /// Until the backend signals exit, poll stays Pending: no reap is attempted
-    /// and the task is not self-woken (the backend owns the wakeup).
-    #[test]
-    fn pending_before_exit_does_not_reap() {
-        let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let task_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&task_waker);
-
-        let mut poll_exit = |_: &mut Context<'_>| Poll::Pending;
-        let try_calls = AtomicUsize::new(0);
-        let mut try_wait = || {
-            try_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(Some(success_status()))
-        };
-
-        assert!(poll_child_exit(&mut cx, &mut poll_exit, &mut try_wait).is_pending());
-        assert_eq!(
-            try_calls.load(Ordering::Relaxed),
-            0,
-            "must not reap before the backend signals exit"
-        );
-        assert_eq!(
-            waker.0.load(Ordering::Relaxed),
-            0,
-            "the backend owns the wakeup while pending"
-        );
     }
 }
