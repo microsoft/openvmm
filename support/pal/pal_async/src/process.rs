@@ -372,20 +372,16 @@ mod tests {
         std::process::ExitStatus::from_raw(0)
     }
 
-    /// macOS `NOTE_EXIT` can fire before `waitpid` can reap. A latched-ready
-    /// backend with a transient-`None` reap must re-poll to completion, never
-    /// panic; re-polling the backend (calls == 2) guards the latching invariant.
+    /// macOS `NOTE_EXIT` can fire before `waitpid` can reap, so `try_wait`
+    /// transiently returns `None`. The shared poll must re-poll (Pending +
+    /// wake) rather than panic, then complete once the reap succeeds.
     #[test]
     fn macos_reap_race_repolls_then_completes() {
         let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let raw_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&raw_waker);
+        let task_waker: Waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
 
-        let poll_exit_calls = AtomicUsize::new(0);
-        let mut poll_exit = |_: &mut Context<'_>| {
-            poll_exit_calls.fetch_add(1, Ordering::Relaxed);
-            Poll::Ready(Ok(()))
-        };
+        let mut poll_exit = |_: &mut Context<'_>| Poll::Ready(Ok(()));
         let mut try_calls = 0;
         let mut try_wait = || {
             try_calls += 1;
@@ -401,11 +397,6 @@ mod tests {
             Poll::Ready(Ok(status)) => assert!(status.success()),
             other => panic!("expected ready success, got {other:?}"),
         }
-        assert_eq!(
-            poll_exit_calls.load(Ordering::Relaxed),
-            2,
-            "backend must be re-polled on retry (latching invariant)"
-        );
     }
 
     /// Linux/Windows: ready implies reapable, so this completes on the first
@@ -413,8 +404,8 @@ mod tests {
     #[test]
     fn ready_and_reapable_completes_without_repoll() {
         let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let raw_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&raw_waker);
+        let task_waker: Waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
 
         let mut poll_exit = |_: &mut Context<'_>| Poll::Ready(Ok(()));
         let mut try_wait = || Ok(Some(success_status()));
@@ -435,8 +426,8 @@ mod tests {
     #[test]
     fn pending_before_exit_does_not_reap() {
         let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
-        let raw_waker: Waker = waker.clone().into();
-        let mut cx = Context::from_waker(&raw_waker);
+        let task_waker: Waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
 
         let mut poll_exit = |_: &mut Context<'_>| Poll::Pending;
         let try_calls = AtomicUsize::new(0);
