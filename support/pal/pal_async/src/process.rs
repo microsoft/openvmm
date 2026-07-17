@@ -376,7 +376,7 @@ mod tests {
     /// transiently returns `None`. The shared poll must re-poll (Pending +
     /// wake) rather than panic, then complete once the reap succeeds.
     #[test]
-    fn macos_reap_race_repolls_then_completes() {
+    fn ready_but_unreapable_repolls_then_completes() {
         let waker = Arc::new(CountingWaker(AtomicUsize::new(0)));
         let task_waker: Waker = waker.clone().into();
         let mut cx = Context::from_waker(&task_waker);
