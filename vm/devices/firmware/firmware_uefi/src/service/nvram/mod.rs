@@ -84,7 +84,9 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            nvram.inject_vars_on_first_boot(custom_vars).await?;
+            nvram
+                .inject_vars_on_first_boot(custom_vars, secure_boot_enabled)
+                .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
         }
@@ -104,6 +106,7 @@ impl NvramServices {
     async fn inject_vars_on_first_boot(
         &mut self,
         custom_vars: CustomVars,
+        secure_boot_enabled: bool,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -160,6 +163,9 @@ impl NvramServices {
         }
 
         self.inject_custom_vars(custom_vars).await?;
+        if secure_boot_enabled {
+            self.services.after_custom_vars_injected();
+        }
 
         Ok(())
     }

@@ -116,6 +116,9 @@ pub trait NvramStorage: Send + Sync {
             NextVariable::EndOfList
         ))
     }
+
+    /// Called after custom UEFI variables are injected on first boot.
+    fn after_custom_vars_injected(&self) {}
 }
 
 #[async_trait::async_trait]
@@ -166,6 +169,10 @@ impl NvramStorage for Box<dyn NvramStorage> {
         name_vendor: Option<(&Ucs2LeSlice, Guid)>,
     ) -> Result<NextVariable, NvramStorageError> {
         (**self).next_variable(name_vendor).await
+    }
+
+    fn after_custom_vars_injected(&self) {
+        (**self).after_custom_vars_injected()
     }
 }
 
@@ -235,6 +242,10 @@ mod save_restore {
             name_vendor: Option<(&Ucs2LeSlice, Guid)>,
         ) -> Result<NextVariable, NvramStorageError> {
             (**self).next_variable(name_vendor).await
+        }
+
+        fn after_custom_vars_injected(&self) {
+            (**self).after_custom_vars_injected()
         }
     }
 

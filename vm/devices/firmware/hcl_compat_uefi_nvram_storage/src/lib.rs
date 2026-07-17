@@ -617,6 +617,10 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
 
         self.in_memory.next_variable(name_vendor).await
     }
+
+    fn after_custom_vars_injected(&self) {
+        HclCompatNvram::report_secure_boot_base_template_presence(self)
+    }
 }
 
 /// Parse a serialized Secure Boot variable into a comparable set of signatures.

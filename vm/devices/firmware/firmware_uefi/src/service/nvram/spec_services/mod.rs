@@ -242,6 +242,11 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         self.storage.is_empty().await
     }
 
+    /// Called after custom UEFI variables are injected on first boot.
+    pub fn after_custom_vars_injected(&self) {
+        self.storage.after_custom_vars_injected()
+    }
+
     /// Update "SetupMode" based on the current value of "PK"
     ///
     /// From UEFI spec section 32.3
