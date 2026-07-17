@@ -22,14 +22,23 @@ use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
-use std::fmt::Debug;
+use std::collections::BTreeSet;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
+use uefi_nvram_specvars::signature_list::ParseError as SignatureListParseError;
+use uefi_nvram_specvars::signature_list::ParseSignatureList;
+use uefi_nvram_specvars::signature_list::ParseSignatureLists;
 use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::in_memory;
+use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
+use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
+use uefi_specs::uefi::nvram::vars;
+use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
+use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -42,6 +51,9 @@ const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
 // TODO: how big required for secure boot with db/dbx?
 const INITIAL_NVRAM_SIZE: usize = 32768;
 const MAXIMUM_NVRAM_SIZE: usize = INITIAL_NVRAM_SIZE * 4;
+const WIN_CERT_REVISION_2_0: u16 = 0x0200;
+
+type SignatureSet = BTreeSet<(EFI_SIGNATURE_DATA, Vec<u8>)>;
 
 /// Base Secure Boot template variable contents expected to be present in loaded NVRAM.
 #[derive(Clone, Debug)]
@@ -58,6 +70,7 @@ impl BaseSecureBootTemplateVariables {
         Self { pk, kek, db, dbx }
     }
 
+    /// Return whether there are no base Secure Boot template variables to track.
     fn is_empty(&self) -> bool {
         self.pk.is_empty() && self.kek.is_empty() && self.db.is_empty() && self.dbx.is_empty()
     }
@@ -178,6 +191,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             .await
             .map_err(|e| NvramStorageError::Load(e.into()))?
             .unwrap_or_default();
+        let loaded_existing_state = !nvram_buf.is_empty();
 
         if nvram_buf.len() > MAXIMUM_NVRAM_SIZE {
             return Err(NvramStorageError::Load(
@@ -311,7 +325,116 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         }
 
         self.loaded = true;
+        if loaded_existing_state {
+            self.report_secure_boot_base_template_presence();
+        }
         Ok(())
+    }
+
+    /// Report whether each base Secure Boot template variable is present in loaded NVRAM.
+    fn report_secure_boot_base_template_presence(&self) {
+        let Some(template) = &self.base_secure_boot_template_variables else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                "no base secure boot template variables to check"
+            );
+            return;
+        };
+
+        for (variable, (vendor, name), base_template_variable) in [
+            ("PK", vars::PK(), template.pk.as_slice()),
+            ("KEK", vars::KEK(), template.kek.as_slice()),
+            ("db", vars::DB(), template.db.as_slice()),
+            ("dbx", vars::DBX(), template.dbx.as_slice()),
+        ] {
+            // Load the variable from NVRAM.
+            let loaded_variable = match self
+                .in_memory
+                .iter()
+                .find(|entry| entry.vendor == vendor && entry.name.as_bytes() == name.as_bytes())
+                .map(|entry| entry.data)
+            {
+                Some(loaded_variable) if !loaded_variable.is_empty() => loaded_variable,
+                loaded_variable => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        variable,
+                        loaded_variable_bytes = loaded_variable.map_or(0, |data| data.len()),
+                        "base secure boot template variable is missing in NVRAM"
+                    );
+                    continue;
+                }
+            };
+
+            // Parse the loaded variable into a set of signatures.
+            let loaded_variable_bytes = loaded_variable.len();
+            let loaded_signatures = match collect_signature_set(loaded_variable) {
+                Ok(signatures) => signatures,
+                Err(error) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        variable,
+                        error = &error as &dyn std::error::Error,
+                        "failed to parse loaded secure boot variable"
+                    );
+                    continue;
+                }
+            };
+            let loaded_entries = loaded_signatures.len();
+
+            // Parse the base template variable into a set of signatures.
+            let base_template_bytes = base_template_variable.len();
+            let base_template_signatures = match collect_signature_set(base_template_variable) {
+                Ok(signatures) if !signatures.is_empty() => signatures,
+                Ok(_) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        variable,
+                        "base secure boot template variable contains no signatures"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        variable,
+                        error = &error as &dyn std::error::Error,
+                        "failed to parse base secure boot template variable"
+                    );
+                    continue;
+                }
+            };
+            let base_template_entries = base_template_signatures.len();
+
+            // Count how many base template signatures are missing from the loaded variable.
+            let missing_entries = base_template_signatures
+                .difference(&loaded_signatures)
+                .count();
+
+            if missing_entries == 0 {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    variable,
+                    base_template_entries,
+                    loaded_entries,
+                    missing_entries,
+                    base_template_bytes,
+                    loaded_variable_bytes,
+                    "base secure boot template variable is present"
+                );
+            } else {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    variable,
+                    base_template_entries,
+                    loaded_entries,
+                    missing_entries,
+                    base_template_bytes,
+                    loaded_variable_bytes,
+                    "base secure boot template variable is missing"
+                );
+            }
+        }
     }
 
     /// Dump in-memory nvram to the underlying storage device.
@@ -496,6 +619,52 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
     }
 }
 
+/// Parse a serialized Secure Boot variable into a comparable set of signatures.
+fn collect_signature_set(data: &[u8]) -> Result<SignatureSet, SignatureListParseError> {
+    let mut signatures = BTreeSet::new();
+
+    for list in ParseSignatureLists::new(signature_list_payload(data)) {
+        match list? {
+            ParseSignatureList::X509(certs) => {
+                for cert in certs {
+                    let cert = cert?;
+                    signatures.insert((cert.header, cert.data.0.as_ref().to_vec()));
+                }
+            }
+            ParseSignatureList::Sha256(digests) => {
+                for digest in digests {
+                    let digest = digest?;
+                    signatures.insert((digest.header, digest.data.0.as_ref().to_vec()));
+                }
+            }
+        }
+    }
+
+    Ok(signatures)
+}
+
+/// Return the `EFI_SIGNATURE_LIST` payload, skipping a valid auth header if present.
+fn signature_list_payload(data: &[u8]) -> &[u8] {
+    let Ok((auth, _)) = EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data) else {
+        return data;
+    };
+
+    if auth.auth_info.header.revision != WIN_CERT_REVISION_2_0
+        || auth.auth_info.header.certificate_type != WIN_CERT_TYPE_EFI_GUID
+        || auth.auth_info.cert_type != EFI_CERT_TYPE_PKCS7_GUID
+    {
+        return data;
+    }
+
+    let cert_len = auth.auth_info.header.length as usize;
+    if cert_len < size_of::<WIN_CERTIFICATE_UEFI_GUID>() {
+        return data;
+    }
+
+    let auth_len = size_of_val(&auth.timestamp) + cert_len;
+    data.get(auth_len..).unwrap_or(data)
+}
+
 #[cfg(feature = "save_restore")]
 mod save_restore {
     use super::*;
@@ -526,9 +695,45 @@ mod test {
     use super::storage_backend::StorageBackendError;
     use super::*;
     use pal_async::async_test;
+    use std::borrow::Cow;
     use ucs2::Ucs2LeVec;
+    use uefi_nvram_specvars::signature_list::SignatureData;
+    use uefi_nvram_specvars::signature_list::SignatureList;
     use uefi_nvram_storage::in_memory::impl_agnostic_tests;
     use wchar::wchz;
+
+    const TEST_OWNER: Guid = Guid {
+        data1: 1,
+        data2: 0,
+        data3: 0,
+        data4: [0; 8],
+    };
+
+    fn x509_variable(certs: &[&'static [u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        for cert in certs {
+            SignatureList::X509(SignatureData::new_x509(TEST_OWNER, Cow::Borrowed(*cert)))
+                .extend_as_spec_signature_list(&mut data);
+        }
+        data
+    }
+
+    fn signature_set(data: &[u8]) -> SignatureSet {
+        collect_signature_set(data).unwrap()
+    }
+
+    #[test]
+    fn base_secure_boot_template_variable_counts_missing_entries() {
+        let base_data = x509_variable(&[b"cert1", b"cert2"]);
+        let loaded_data = x509_variable(&[b"cert1", b"cert3"]);
+        let base = signature_set(&base_data);
+        let loaded = signature_set(&loaded_data);
+        let missing_entries = base.difference(&loaded).count();
+
+        assert_eq!(base.len(), 2);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(missing_entries, 1);
+    }
 
     /// An ephemeral implementation of [`StorageBackend`] backed by an in-memory
     /// buffer. Useful for tests, stateless VM scenarios.
