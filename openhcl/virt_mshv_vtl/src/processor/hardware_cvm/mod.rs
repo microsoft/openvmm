@@ -978,7 +978,6 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
                 tracing::error!(
                     CVM_ALLOWED,
                     reg = ?reg.name,
-                    value = ?reg.value,
                     "guest invoked SetVpRegisters with unsupported register",
                 );
                 Err(HvError::InvalidParameter)
