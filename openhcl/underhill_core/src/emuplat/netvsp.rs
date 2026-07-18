@@ -687,10 +687,7 @@ impl HclNetworkVFManagerWorker {
     /// RPC succeeds; otherwise the worker state is left unchanged.
     async fn add_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
-        if matches!(
-            vtl2_device_state,
-            Vtl2DeviceState::Missing | Vtl2DeviceState::Reconfiguring
-        ) {
+        if !matches!(vtl2_device_state, Vtl2DeviceState::Present) {
             tracing::info!(
                 vtl2_vfid,
                 vtl2_device_state = ?vtl2_device_state,
@@ -815,6 +812,9 @@ impl HclNetworkVFManagerWorker {
     ///
     /// Generally called when not in shutdown, but it's not assumed here.
     async fn remove_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
+        // VTL0 VF revoke will no-op when VTL2 is absent. Once the VTL2 device
+        // returns `startup_vtl2_device` will notify the netvsp cooridnator of
+        // the arrival, which will send a fresh `RemoveVtl0VF`.
         self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent, vtl2_device_state)
             .await;
     }
@@ -896,6 +896,12 @@ impl HclNetworkVFManagerWorker {
                     // VTL0 VF stays offered while bus is `PendingRevoke`.
                     // In `startup_vtl2_device` once the VTL2 has returned,
                     // the VTL0 VF will be revoked.
+                    //
+                    // TODO: Known limitation - two `UpdateVtl0VF` messages in
+                    // the same VTL2-absent window (a remove that parks
+                    // `PendingRevoke`, then an add before VTL2 returns)
+                    // overwrites the parked handle. The first VF is never
+                    // gets revoked, so the Guest will not be offered the new VF.
                     if is_offered_to_guest {
                         if let Vtl0Bus::Present(bus_control) = old_bus_control {
                             self.vtl0_bus_control = Vtl0Bus::PendingRevoke(bus_control);
