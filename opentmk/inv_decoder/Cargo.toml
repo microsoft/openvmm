@@ -1,0 +1,13 @@
+[package]
+name = "inv_decoder"
+version = "0.3.0"
+authors = ["VRTD <vrtd@microsoft.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow.workspace = true
+num-traits.workspace = true
+spin.workspace = true
+zerocopy.workspace = true

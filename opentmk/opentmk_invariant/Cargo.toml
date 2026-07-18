@@ -1,0 +1,21 @@
+[package]
+name = "tmk_invariant"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hvdef.workspace = true
+log.workspace = true
+opentmk_core.workspace = true
+spin.workspace = true
+zerocopy.workspace = true
+serde = { workspace = true, features = ["derive"]}
+postcard = { workspace = true, features = ["alloc"] }
+inv_packet.workspace = true
+inv_decoder.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true
