@@ -109,6 +109,7 @@ fn valid_packet_deserialize() {
     // Case: a correctly framed packet is deserialized into the original packet payload.
     let expected = OpenTMKPacket::Error(OpenTMKErrorPacket {
         message: String::from("boom"),
+        fatal: false,
     });
 
     let mut comms =
