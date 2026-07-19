@@ -412,21 +412,46 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 ### SMMU (aarch64 only)
 
-`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
-root complex. The flag is repeatable — use one `--smmu` per root complex
-that should have an SMMU. Devices behind a covered root complex get
-software IOVA→GPA translation for DMA and MSI addresses.
+`--smmu` enables an emulated Arm SMMUv3 IOMMU for a named PCIe root
+complex. The flag is repeatable — use one `--smmu` per root complex that
+should have an SMMU. Devices behind a covered root complex get software
+IOVA→GPA translation for DMA and MSI addresses.
+
+The syntax is a comma-separated key/value list:
 
 ```sh
-# Enable SMMU on root complex rc0
---smmu rc0
-
-# Multiple root complexes
---smmu rc0 --smmu rc1
+--smmu rc=<name>[,accel][,oas=auto|N]
 ```
 
-VFIO devices cannot currently be placed behind an SMMU-covered root
-complex because iommufd nested translation is not yet available.
+- `rc=<name>` (required): the PCIe root complex this SMMU covers.
+- `accel` (optional): enable hardware-accelerated (iommufd-nested)
+  translation, delegating stage-1 walks to the host IOMMU. See the note
+  below — this is not yet wired up and currently fails at startup.
+- `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
+  `auto` (the default) picks a fixed size large enough to cover any guest
+  physical address space. A fixed `N` must be one of the SMMUv3-legal
+  encodings: `32`, `36`, `40`, `42`, `44`, `48`, or `52`.
+
+```sh
+# Enable an emulated SMMU on root complex rc0
+--smmu rc=rc0
+
+# Multiple root complexes
+--smmu rc=rc0 --smmu rc=rc1
+
+# Pin the output address size to 48 bits
+--smmu rc=rc0,oas=48
+```
+
+```admonish warning
+`accel` is accepted by the parser but the acceleration backend is not yet
+implemented: requesting it fails during SMMU setup rather than silently
+falling back to emulated translation.
+
+VFIO devices therefore cannot currently be placed behind an SMMU-covered
+root complex, because host passthrough requires the (not-yet-available)
+iommufd nested translation path.
+```
 
 ### AMD IOMMU (x86_64 only)
 

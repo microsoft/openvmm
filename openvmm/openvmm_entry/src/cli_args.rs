@@ -569,10 +569,12 @@ options:
     #[clap(long, default_value = "auto")]
     pub gic_msi: GicMsiCli,
 
-    /// enable SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable, e.g. --smmu rc0 --smmu rc1)
+    /// configure SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable).
+    ///
+    /// Syntax: `rc=<name>[,accel][,oas=auto|N]`.
     #[cfg(guest_arch = "aarch64")]
-    #[clap(long, value_name = "RC_NAME")]
-    pub smmu: Vec<String>,
+    #[clap(long, value_name = "SMMU_CONFIG")]
+    pub smmu: Vec<SmmuCli>,
 
     /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
     /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
@@ -3510,6 +3512,83 @@ impl FromStr for VfioDeviceCli {
             pci_id,
             iommu,
             bar_pt,
+        })
+    }
+}
+
+/// CLI configuration for an SMMUv3 instance.
+///
+/// Syntax: `rc=<name>[,accel][,oas=auto|N]`. `oas` defaults to `auto`.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Debug)]
+pub struct SmmuCli {
+    /// Name of the PCIe root complex this SMMU covers.
+    pub rc_name: String,
+    /// Enable HW-accelerated nested translation (iommufd).
+    pub accel: bool,
+    /// Output address size policy.
+    pub oas: SmmuOasCli,
+}
+
+/// Output address size (OAS) policy parsed from `--smmu`.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Copy, Debug)]
+pub enum SmmuOasCli {
+    /// Resolve automatically to a fixed default covering the guest physical
+    /// address space.
+    Auto,
+    /// Fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+    Fixed(u8),
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl FromStr for SmmuCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut rc_name: Option<String> = None;
+        let mut accel = false;
+        let mut oas = SmmuOasCli::Auto;
+
+        for part in s.split(',') {
+            if let Some((key, value)) = part.split_once('=') {
+                match key {
+                    "rc" => {
+                        if rc_name.is_some() {
+                            anyhow::bail!("duplicate --smmu key: 'rc'");
+                        }
+                        if value.is_empty() {
+                            anyhow::bail!("--smmu: 'rc=' value cannot be empty");
+                        }
+                        rc_name = Some(value.to_string());
+                    }
+                    "oas" => {
+                        oas = if value == "auto" {
+                            SmmuOasCli::Auto
+                        } else {
+                            let bits: u8 = value
+                                .parse()
+                                .context("--smmu: oas must be 'auto' or a number")?;
+                            SmmuOasCli::Fixed(bits)
+                        };
+                    }
+                    _ => anyhow::bail!("unknown --smmu key: '{key}'"),
+                }
+            } else {
+                // Boolean flag (no '=')
+                match part {
+                    "accel" => accel = true,
+                    _ => anyhow::bail!("unknown --smmu flag: '{part}'"),
+                }
+            }
+        }
+
+        let rc_name = rc_name.context("--smmu: 'rc=' is required")?;
+
+        Ok(SmmuCli {
+            rc_name,
+            accel,
+            oas,
         })
     }
 }
