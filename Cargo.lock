@@ -9203,6 +9203,7 @@ dependencies = [
  "memory_range",
  "nix 0.30.1",
  "pal_async",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vfio-bindings",

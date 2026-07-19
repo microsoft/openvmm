@@ -852,6 +852,16 @@ impl Device {
         }
         Ok(())
     }
+
+    /// Returns the underlying device file, for direct positional I/O on config
+    /// space and BAR regions (`read_at`/`write_at`).
+    ///
+    /// Prefer this over `AsRef::<File>::as_ref` when the `Device` is held
+    /// behind an `Arc`: `Arc<Device>` also implements `AsRef<Device>`, so a
+    /// bare `.as_ref()` there would resolve to `&Device` rather than `&File`.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
 }
 
 /// Walk the VFIO capability chain in a region info buffer and extract sparse
