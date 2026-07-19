@@ -17,6 +17,7 @@ use crate::bus_range::AssignedBusRange;
 use crate::msi::MsiConnection;
 use crate::msi::MsiTarget;
 use guestmem::GuestMemory;
+use std::any::Any;
 use std::sync::Arc;
 
 /// A trait for IOMMU backends that produce per-device guest memory.
@@ -32,6 +33,38 @@ pub trait DmaTargetIommu: Send + Sync + 'static {
     /// offset in `0..=0xff`; SR-IOV VFs use larger offsets that carry into
     /// the bus byte.
     fn guest_memory_for_rid_offset(&self, rid_offset: u16) -> GuestMemory;
+}
+
+/// How a device's DMA relates to host passthrough (VFIO assignment).
+///
+/// This is the only IOMMU-related view exposed to consumers of
+/// [`DmaTarget`]. It deliberately says nothing about how guest memory is
+/// translated (that is the private [`DmaTargetIommu`] factory); it only
+/// answers "can this device be handed to the host for passthrough, and if
+/// so, how does the assignment backend attach to the IOMMU?".
+pub enum DmaPassthrough<'a> {
+    /// No IOMMU, or none relevant to passthrough — host assignment allowed.
+    Allowed,
+    /// Behind a software/emulated IOMMU that cannot program the host IOMMU
+    /// for passthrough DMA — host assignment rejected.
+    SoftwareBlocked,
+    /// Behind a hardware-nestable IOMMU — host assignment allowed. The
+    /// opaque handle lets the assignment backend (which knows the concrete
+    /// IOMMU type) downcast and attach to the emulated IOMMU for nested
+    /// stage-1 translation.
+    HardwareNestable(&'a (dyn Any + Send + Sync)),
+}
+
+/// Private representation of a [`DmaTarget`]'s passthrough disposition.
+#[derive(Clone)]
+enum Passthrough {
+    /// Host assignment allowed (no IOMMU, or none relevant).
+    Allowed,
+    /// Behind a software/emulated IOMMU — host assignment rejected.
+    SoftwareBlocked,
+    /// Behind a hardware-nestable IOMMU — the opaque handle is downcast by
+    /// the assignment backend to its arch-specific nesting context.
+    HardwareNestable(Arc<dyn Any + Send + Sync>),
 }
 
 /// Everything a PCI device needs for bus-mastered transactions: DMA
@@ -51,9 +84,8 @@ pub struct DmaTarget {
     /// When an IOMMU is present, produces per-device GuestMemory
     /// instances with distinct stream/context table entries.
     iommu: Option<Arc<dyn DmaTargetIommu>>,
-    /// Whether the device is behind a software IOMMU (e.g., emulated
-    /// SMMU) that cannot program the host IOMMU for passthrough DMA.
-    software_iommu: bool,
+    /// The device's host-passthrough disposition (see [`DmaPassthrough`]).
+    passthrough: Passthrough,
 }
 
 impl DmaTarget {
@@ -76,7 +108,7 @@ impl DmaTarget {
             guest_memory,
             msi_target,
             iommu: None,
-            software_iommu: false,
+            passthrough: Passthrough::Allowed,
         }
     }
 
@@ -99,7 +131,7 @@ impl DmaTarget {
             guest_memory,
             msi_target,
             iommu: Some(iommu),
-            software_iommu: true,
+            passthrough: Passthrough::SoftwareBlocked,
         }
     }
 
@@ -113,10 +145,34 @@ impl DmaTarget {
         &self.msi_target
     }
 
-    /// Whether the device is behind a software IOMMU that cannot
-    /// program the host IOMMU for passthrough DMA.
-    pub fn software_iommu(&self) -> bool {
-        self.software_iommu
+    /// The device's host-passthrough disposition.
+    ///
+    /// Used by host-assignment backends (e.g. the VFIO resolver) to decide
+    /// whether the device may be passed through and, when it is behind a
+    /// hardware-nestable IOMMU, to obtain the opaque handle they downcast to
+    /// attach to the emulated IOMMU.
+    pub fn passthrough(&self) -> DmaPassthrough<'_> {
+        match &self.passthrough {
+            Passthrough::Allowed => DmaPassthrough::Allowed,
+            Passthrough::SoftwareBlocked => DmaPassthrough::SoftwareBlocked,
+            Passthrough::HardwareNestable(handle) => {
+                DmaPassthrough::HardwareNestable(handle.as_ref())
+            }
+        }
+    }
+
+    /// Marks this target as behind a hardware-nestable IOMMU, attaching an
+    /// opaque `handle` that the assignment backend downcasts to its
+    /// arch-specific nesting context.
+    ///
+    /// Accel-capable IOMMUs (e.g. an SMMU that programs the host IOMMU for
+    /// nested stage-1 translation) call this to permit VFIO passthrough
+    /// despite wrapping guest memory with a translating target. The handle
+    /// carries everything the backend needs to wire the device into the
+    /// emulated IOMMU.
+    pub fn with_hardware_nesting(mut self, handle: Arc<dyn Any + Send + Sync>) -> Self {
+        self.passthrough = Passthrough::HardwareNestable(handle);
+        self
     }
 
     /// Derives a DMA target offset by `delta` from this one in RID space.
@@ -137,7 +193,7 @@ impl DmaTarget {
             },
             msi_target: self.msi_target.with_rid_offset(rid_offset),
             iommu: self.iommu.clone(),
-            software_iommu: self.software_iommu,
+            passthrough: self.passthrough.clone(),
         }
     }
 }
@@ -202,7 +258,7 @@ mod tests {
     fn new_has_no_iommu() {
         let msi_conn = MsiConnection::new();
         let target = DmaTarget::new(AssignedBusRange::new(), 0, GuestMemory::empty(), &msi_conn);
-        assert!(!target.software_iommu());
+        assert!(matches!(target.passthrough(), DmaPassthrough::Allowed));
         assert!(target.iommu.is_none());
     }
 
@@ -227,7 +283,7 @@ mod tests {
         assert_eq!(buf[0], 0xAB);
 
         // The MSI identity is derived from the offset: bus 5 (secondary) | offset.
-        assert!(!derived.software_iommu());
+        assert!(matches!(derived.passthrough(), DmaPassthrough::Allowed));
         derived.msi_target().signal_msi(0xFEE0_0000, 0);
         assert_eq!(recorder.pop().unwrap(), (5 << 8) | 0x18);
     }
@@ -258,7 +314,10 @@ mod tests {
 
         let iommu = RecordingIommu::new();
         let target = DmaTarget::with_iommu(bus_range.clone(), 0, iommu.clone(), &msi_conn);
-        assert!(target.software_iommu());
+        assert!(matches!(
+            target.passthrough(),
+            DmaPassthrough::SoftwareBlocked
+        ));
 
         let derived = target.with_rid_offset(0x18);
 
@@ -271,7 +330,10 @@ mod tests {
         let mut buf = [0u8];
         derived.guest_memory().read_at(0x1500, &mut buf).unwrap();
         assert_eq!(buf[0], 0xCD);
-        assert!(derived.software_iommu());
+        assert!(matches!(
+            derived.passthrough(),
+            DmaPassthrough::SoftwareBlocked
+        ));
 
         derived.msi_target().signal_msi(0xFEE0_0000, 0);
         assert_eq!(recorder.pop().unwrap(), (5 << 8) | 0x18);
@@ -300,9 +362,51 @@ mod tests {
         let mut buf = [0u8];
         derived.guest_memory().read_at(0x1500, &mut buf).unwrap();
         assert_eq!(buf[0], 0xCD);
-        assert!(derived.software_iommu());
+        assert!(matches!(
+            derived.passthrough(),
+            DmaPassthrough::SoftwareBlocked
+        ));
 
         derived.msi_target().signal_msi(0xFEE0_0000, 0);
         assert_eq!(recorder.pop().unwrap(), (7 << 8) | 0x0A);
+    }
+
+    /// An opaque nesting context behind the `HardwareNestable` handle, of the
+    /// kind an IOMMU backend crate would define.
+    #[derive(Debug, PartialEq)]
+    struct FakeNestingContext {
+        id: u32,
+    }
+
+    #[test]
+    fn with_hardware_nesting_exposes_downcastable_handle() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new();
+
+        let iommu = RecordingIommu::new();
+        let target = DmaTarget::with_iommu(bus_range.clone(), 0, iommu, &msi_conn)
+            .with_hardware_nesting(Arc::new(FakeNestingContext { id: 0x1234 }));
+
+        // The base target accepts passthrough and hands back the context.
+        match target.passthrough() {
+            DmaPassthrough::HardwareNestable(handle) => {
+                let ctx = handle.downcast_ref::<FakeNestingContext>().unwrap();
+                assert_eq!(ctx, &FakeNestingContext { id: 0x1234 });
+            }
+            _ => panic!("expected HardwareNestable"),
+        }
+
+        // The nesting disposition (and handle) survives VF derivation.
+        let derived = target.with_rid_offset(0x18);
+        match derived.passthrough() {
+            DmaPassthrough::HardwareNestable(handle) => {
+                assert_eq!(
+                    handle.downcast_ref::<FakeNestingContext>().unwrap().id,
+                    0x1234
+                );
+            }
+            _ => panic!("expected HardwareNestable on derived target"),
+        }
     }
 }

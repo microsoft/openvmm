@@ -67,7 +67,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             bar_pt,
         } = resource;
 
-        if input.dma_target.software_iommu() {
+        if let pci_core::dma::DmaPassthrough::SoftwareBlocked = input.dma_target.passthrough() {
             anyhow::bail!(
                 "VFIO device {pci_id} is behind a software IOMMU that cannot \
                  program the host IOMMU for passthrough DMA. Place the device \
