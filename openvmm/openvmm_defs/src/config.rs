@@ -134,18 +134,7 @@ pub enum LoadMode {
     },
     Uefi {
         firmware: File,
-        enable_debugging: bool,
-        enable_memory_protections: bool,
-        disable_frontpage: bool,
-        enable_tpm: bool,
-        enable_battery: bool,
-        enable_serial: bool,
-        enable_vpci_boot: bool,
-        uefi_console_mode: Option<UefiConsoleMode>,
-        default_boot_always_attempt: bool,
-        bios_guid: Guid,
-        enable_vmbus: bool,
-        force_dma_bounce: bool,
+        config: UefiConfig,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -156,8 +145,26 @@ pub enum LoadMode {
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
         com_serial: Option<SerialInformation>,
+        /// Whether the IGVM contains UEFI firmware running directly in VTL0.
+        uefi: bool,
     },
     None,
+}
+
+#[derive(MeshPayload, Debug, Clone, Copy)]
+pub struct UefiConfig {
+    pub enable_debugging: bool,
+    pub enable_memory_protections: bool,
+    pub disable_frontpage: bool,
+    pub enable_tpm: bool,
+    pub enable_battery: bool,
+    pub enable_serial: bool,
+    pub enable_vpci_boot: bool,
+    pub uefi_console_mode: Option<UefiConsoleMode>,
+    pub default_boot_always_attempt: bool,
+    pub bios_guid: Guid,
+    pub enable_vmbus: bool,
+    pub force_dma_bounce: bool,
 }
 
 #[derive(Debug, Clone, Copy, MeshPayload)]

@@ -78,6 +78,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::UefiConfig;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
@@ -173,6 +174,27 @@ use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
+
+fn uefi_load_settings(
+    config: UefiConfig,
+    guest_watchdog: bool,
+) -> super::vm_loaders::uefi::UefiLoadSettings {
+    super::vm_loaders::uefi::UefiLoadSettings {
+        debugging: config.enable_debugging,
+        battery: config.enable_battery,
+        memory_protections: config.enable_memory_protections,
+        frontpage: !config.disable_frontpage,
+        tpm: config.enable_tpm,
+        guest_watchdog,
+        vpci_boot: config.enable_vpci_boot,
+        serial: config.enable_serial,
+        uefi_console_mode: config.uefi_console_mode,
+        default_boot_always_attempt: config.default_boot_always_attempt,
+        bios_guid: config.bios_guid,
+        vmbus: config.enable_vmbus,
+        force_dma_bounce: config.force_dma_bounce,
+    }
+}
 
 #[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
@@ -1481,7 +1503,7 @@ impl InitializedVm {
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
         match &cfg.load_mode {
-            LoadMode::Uefi { .. } => {
+            LoadMode::Uefi { .. } | LoadMode::Igvm { uefi: true, .. } => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
                 // device.
@@ -3207,18 +3229,7 @@ impl LoadedVmInner {
             }
             &LoadMode::Uefi {
                 ref firmware,
-                enable_debugging,
-                enable_memory_protections,
-                disable_frontpage,
-                enable_tpm,
-                enable_battery,
-                enable_serial,
-                enable_vpci_boot,
-                uefi_console_mode,
-                default_boot_always_attempt,
-                bios_guid,
-                enable_vmbus,
-                force_dma_bounce,
+                config,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3241,21 +3252,8 @@ impl LoadedVmInner {
                 let acpi_tables: Vec<_> =
                     acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
 
-                let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
-                    debugging: enable_debugging,
-                    memory_protections: enable_memory_protections,
-                    frontpage: !disable_frontpage,
-                    tpm: enable_tpm,
-                    battery: enable_battery,
-                    guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
-                    vpci_boot: enable_vpci_boot,
-                    serial: enable_serial,
-                    uefi_console_mode,
-                    default_boot_always_attempt,
-                    bios_guid,
-                    vmbus: enable_vmbus,
-                    force_dma_bounce,
-                };
+                let load_settings =
+                    uefi_load_settings(config, self.chipset_capabilities.with_guest_watchdog);
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
                         firmware,
@@ -3287,6 +3285,7 @@ impl LoadedVmInner {
                 ref cmdline,
                 vtl2_base_address,
                 com_serial,
+                ..
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();

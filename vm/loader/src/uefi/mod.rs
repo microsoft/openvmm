@@ -315,6 +315,8 @@ mod igvm {
         pub maximum_processor_count: u32,
         pub uefi_memory_map_offset: u32,
         pub uefi_memory_map_page_count: u32,
+        pub uefi_igvm_configuration_flags: u32,
+        pub secrets_page_offset: u32,
     }
 
     pub const UEFI_IGVM_LOADER_BLOCK_NUMBER_OF_PROCESSORS_FIELD_OFFSET: usize = 0;
@@ -677,8 +679,19 @@ pub mod x86_64 {
         parameter_info.uefi_memory_map_offset = allocator.allocate(table_page_count);
         parameter_info.uefi_memory_map_page_count = table_page_count;
 
-        // If this is an SNP image with no paravisor, then reserve additional pages as required.
         let isolation = importer.isolation_config();
+
+        // Pass the parameter info block to SEC. This also identifies the
+        // configuration format to firmware for non-isolated IGVM images. TDX
+        // cannot encode R12 in its initial context, so firmware retains its
+        // isolation-based fallback for that profile.
+        if isolation.isolation_type != IsolationType::Tdx {
+            importer
+                .import_vp_register(X86Register::R12(config_area_base_page * HV_PAGE_SIZE))
+                .map_err(Error::Importer)?;
+        }
+
+        // If this is an SNP image with no paravisor, then reserve additional pages as required.
         if isolation.isolation_type == IsolationType::Snp {
             // NOTE: Currently UEFI expects this parameter load style to have no paravisor. Disallow that here.
             if isolation.paravisor_present {
@@ -686,12 +699,6 @@ pub mod x86_64 {
                     "IGVM ConfigType specified but paravisor is present.".into(),
                 ));
             }
-
-            // Supply the address of the parameter info block so it can be used
-            // before PEI parses the config information.
-            importer
-                .import_vp_register(X86Register::R12(config_area_base_page * HV_PAGE_SIZE))
-                .map_err(Error::Importer)?;
 
             // Reserve two pages to hold CPUID information. The first CPUID page
             // contains initialized data to query CPUID leaves. The second page

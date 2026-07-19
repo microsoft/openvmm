@@ -661,8 +661,15 @@ options:
     pub pcat_firmware: Option<PathBuf>,
 
     /// boot IGVM file
-    #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
-    pub igvm: Option<PathBuf>,
+    ///
+    /// Use `--igvm FILE` for the legacy OpenHCL IGVM path, or
+    /// `--igvm type=uefi,path=FILE` for a fixed-address UEFI firmware IGVM.
+    #[clap(
+        long,
+        conflicts_with("kernel"),
+        value_name = "FILE|type=TYPE,path=FILE"
+    )]
+    pub igvm: Option<IgvmCli>,
 
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
@@ -1265,6 +1272,65 @@ impl Options {
             anyhow::bail!("--memory shared=on conflicts with --private-memory");
         }
         Ok(())
+    }
+
+    /// Validates IGVM-specific option combinations.
+    pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
+        if self.igvm.as_ref().is_some_and(|igvm| igvm.uefi)
+            && !matches!(self.igvm_vtl2_relocation_type, Vtl2BaseAddressType::File)
+        {
+            anyhow::bail!("--igvm type=uefi requires --igvm-vtl2-relocation-type disable");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IgvmCli {
+    pub path: PathBuf,
+    pub uefi: bool,
+}
+
+impl FromStr for IgvmCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !s.starts_with("type=") && !s.starts_with("path=") {
+            return Ok(Self {
+                path: s
+                    .parse()
+                    .map_err(|err| format!("invalid IGVM path: {err}"))?,
+                uefi: false,
+            });
+        }
+
+        let mut path = None;
+        let mut uefi = false;
+        for part in s.split(',') {
+            let (key, value) = part
+                .split_once('=')
+                .ok_or_else(|| format!("invalid IGVM option `{part}`"))?;
+            match key {
+                "type" => match value {
+                    "uefi" => uefi = true,
+                    other => return Err(format!("unsupported IGVM type `{other}`")),
+                },
+                "path" => {
+                    if value.is_empty() {
+                        return Err("`path=` requires a file path".into());
+                    }
+                    path = Some(
+                        value
+                            .parse()
+                            .map_err(|err| format!("invalid IGVM path: {err}"))?,
+                    );
+                }
+                other => return Err(format!("unknown IGVM option `{other}`")),
+            }
+        }
+
+        let path = path.ok_or_else(|| "`path=` is required".to_string())?;
+        Ok(Self { path, uefi })
     }
 }
 
@@ -3736,6 +3802,28 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn test_igvm_cli_legacy_path() {
+        let igvm = IgvmCli::from_str("openhcl.bin").unwrap();
+        assert_eq!(igvm.path, Path::new("openhcl.bin"));
+        assert!(!igvm.uefi);
+    }
+
+    #[test]
+    fn test_igvm_cli_uefi_type() {
+        let igvm = IgvmCli::from_str("type=uefi,path=openhcl-uefi.bin").unwrap();
+        assert_eq!(igvm.path, Path::new("openhcl-uefi.bin"));
+        assert!(igvm.uefi);
+    }
+
+    #[test]
+    fn test_igvm_cli_errors() {
+        assert!(IgvmCli::from_str("type=openhcl,path=openhcl.bin").is_err());
+        assert!(IgvmCli::from_str("type=uefi").is_err());
+        assert!(IgvmCli::from_str("type=uefi,path=").is_err());
+        assert!(IgvmCli::from_str("type=uefi,path=openhcl.bin,foo=bar").is_err());
+    }
 
     #[test]
     fn test_parse_file_opts() {

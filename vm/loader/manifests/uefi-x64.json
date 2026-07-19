@@ -4,6 +4,16 @@
         {
             "guest_svn": 1,
             "max_vtl": 0,
+            "isolation_type": "none",
+            "image": {
+                "uefi": {
+                    "config_type": "igvm"
+                }
+            }
+        },
+        {
+            "guest_svn": 1,
+            "max_vtl": 0,
             "isolation_type": {
                 "tdx": {
                     "enable_debug": false,

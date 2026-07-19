@@ -29,6 +29,16 @@ struct NvmeRelayTestParams {
     expected_props: Option<ExpectedNvmeDeviceProperties>,
 }
 
+/// Test that OpenVMM can load a UEFI IGVM generated from the x64 UEFI manifest
+/// used by the local build-igvm override-manifest path.
+#[vmm_test_with(noagent, configs(openvmm_uefi_igvm_custom_x64(none)))]
+async fn boot_uefi_custom_igvm(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let _vm = config.with_uefi_frontpage(true).run_without_agent().await?;
+    Ok(())
+}
+
 /// Helper to run a scenario where we boot an OpenHCL UEFI VM with a NVME
 /// disk assigned to VTL2.
 ///
