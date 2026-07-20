@@ -18,7 +18,7 @@
 //!   of notifying processes that rarely access certain mappings (e.g.,
 //!   device-emulation processes with virtio-fs DAX).
 //!
-//! In both modes, private memory ranges use commit-on-fault (Windows) or are
+//! In both modes, private memory ranges are committed up front (Windows) or
 //! handled transparently by the kernel (Linux).
 //!
 //! On Windows, the **primary** (local) mapper's writable THP-eligible guest RAM
@@ -35,9 +35,7 @@
 //! When such a range is also *prefetched*, it is populated eagerly at build
 //! time instead: it stays read-write (the build-time populate cannot access a
 //! read-only mapping) and its per-window first-fault bitmap starts fully set, so
-//! `resolve` treats every window as already attempted. The bitmap is still
-//! allocated, so windows freed later (e.g. via free-page reporting, which clears
-//! their bits) re-fault and rebuild through the lazy path.
+//! `resolve` treats every window as already attempted.
 
 // UNSAFETY: Implementing the unsafe GuestMemoryAccess trait by calling unsafe
 // low level memory manipulation functions.
@@ -102,9 +100,6 @@ enum FaultError {
     /// pages).
     #[error("failed to raise window {0} to read-write")]
     Protect(MemoryRange, #[source] std::io::Error),
-    /// Committing private RAM failed (e.g. recommit after decommit).
-    #[error("failed to commit private RAM window {0}")]
-    Commit(MemoryRange, #[source] std::io::Error),
 }
 
 /// The role of a [`VaMapper`].
@@ -133,7 +128,7 @@ pub(crate) enum MapperRole {
 /// without a static snapshot of the RAM layout.
 #[derive(Debug)]
 struct MappingProps {
-    /// Backed by private anonymous memory (committed on fault) rather than a
+    /// Backed by private anonymous memory (committed up front) rather than a
     /// shared file/section mapping.
     private: bool,
     /// General per-mapping fault counters, always present. See [`FaultStats`].
@@ -391,10 +386,7 @@ impl MapperTask {
         // fault) drives the *lazy* soft-LP path. When the range is prefetched it
         // is populated *eagerly* at build time instead, so it stays read-write
         // (the build-time populate cannot access a read-only mapping) and its
-        // 2 MB windows start already-attempted. The first-fault bitmap is still
-        // allocated in the prefetch case, so windows freed later (e.g. via
-        // free-page reporting, which clears their bits) re-fault and rebuild
-        // through the lazy path.
+        // 2 MB windows start already-attempted.
         let prefetch = soft_lp && params.policy.prefetch;
         let deferred_protect = soft_lp && !prefetch;
 
@@ -849,15 +841,6 @@ impl VaMapper {
         })
     }
 
-    /// Returns true if `addr` falls within a private range.
-    fn is_private(&self, addr: u64) -> bool {
-        self.inner
-            .mappings
-            .read()
-            .get(&addr)
-            .is_some_and(|p| p.private)
-    }
-
     /// Returns the base pointer of the VA reservation.
     pub fn as_ptr(&self) -> *mut u8 {
         self.inner.mapping.as_ptr().cast()
@@ -881,41 +864,6 @@ impl VaMapper {
     /// Returns the remote process, if this mapper maps into a remote process.
     pub fn process(&self) -> Option<&RemoteProcess> {
         self.process.as_ref()
-    }
-
-    /// Decommits a range of private RAM, releasing physical pages back to the
-    /// host.
-    ///
-    /// The caller must ensure this is only called on ranges backed by
-    /// private anonymous memory.
-    #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
-    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        // Verify the range is private and reset its first-fault state (so the
-        // freed 2 MB regions can widen again on the next fault) under a single
-        // lock acquisition.
-        //
-        // Ordering: the first-fault bits are a best-effort widening *hint*, not
-        // a record of page state, so clearing them before the decommit syscall
-        // is safe. Both this path and `resolve` touch the bits under a *read*
-        // lock, which does not serialize them against each other. A concurrent
-        // `resolve` on the same region can thus interleave — committing a 2 MB
-        // window we then decommit, or leaving a bit set over freshly-decommitted
-        // pages — but both only cost a large page, never correctness, since the
-        // guest re-faults and repopulates. If the bitmap were ever repurposed to
-        // authoritatively mean "this 2 MB chunk is zero" (to skip zeroing / drive
-        // protections), this would have to flip and tighten: decommit first, then
-        // mark, with the page-state change and the bit update held under a write
-        // lock shared with `resolve`.
-        {
-            let mappings = self.inner.mappings.read();
-            assert!(
-                mappings.get(&(offset as u64)).is_some_and(|p| p.private),
-                "decommit called on non-private range"
-            );
-            clear_first_fault(&mappings, offset as u64, len as u64);
-        }
-        self.inner.mapping.decommit(offset, len)?;
-        Ok(())
     }
 }
 
@@ -996,36 +944,6 @@ unsafe impl GuestMemoryAccess for VaMapper {
                     }
                     return PageFaultAction::Retry;
                 }
-            }
-        }
-
-        if self.is_private(address) {
-            // Private RAM: commit the page(s) directly (e.g. recommit after
-            // decommit).
-            #[cfg(windows)]
-            {
-                // Commit in 64KB-aligned chunks to amortize overhead.
-                let commit_start = address & !0xFFFF; // round down to 64KB
-                let commit_end = ((address + len as u64) + 0xFFFF) & !0xFFFF; // round up
-                let commit_end = commit_end.min(self.inner.mapping.len() as u64);
-                let commit_len = (commit_end - commit_start) as usize;
-
-                if let Err(err) = self.inner.mapping.commit(commit_start as usize, commit_len) {
-                    return PageFaultAction::Fail(PageFaultError::new(
-                        GuestMemoryErrorKind::Other,
-                        FaultError::Commit(MemoryRange::new(commit_start..commit_end), err),
-                    ));
-                }
-                return PageFaultAction::Retry;
-            }
-            #[cfg(unix)]
-            {
-                // On Linux, the kernel handles page faults transparently.
-                // If we get here, something is wrong.
-                return PageFaultAction::Fail(PageFaultError::new(
-                    GuestMemoryErrorKind::Other,
-                    UnexpectedPageFault,
-                ));
             }
         }
 
@@ -1185,29 +1103,10 @@ fn large_region_count(range: MemoryRange) -> u64 {
     (range.end() - 1) / LARGE_PAGE_SIZE - range.start() / LARGE_PAGE_SIZE + 1
 }
 
-/// Clears the first-fault bits for all 2 MB regions overlapping
-/// `[offset, offset + len)`, so a re-populated region can widen again. Takes the
-/// already-locked mapping index so the caller can reuse a single acquisition.
-fn clear_first_fault(mappings: &RangeMap<u64, MappingProps>, offset: u64, len: u64) {
-    if len == 0 {
-        return;
-    }
-    let first = offset / LARGE_PAGE_SIZE;
-    let last = (offset + len - 1) / LARGE_PAGE_SIZE;
-    for region in first..=last {
-        if let Some(&(start, _, ref props)) = mappings.get_entry(&(region * LARGE_PAGE_SIZE)) {
-            if let Some(sl) = &props.soft_lp {
-                sl.first_fault.clear(region - start / LARGE_PAGE_SIZE);
-            }
-        }
-    }
-}
-
 /// Per-2 MB-region first-fault bitmap for a single THP-eligible mapping (Windows
 /// soft large pages). A set bit means the region has already made its one
 /// soft-large-page widening attempt; later faults resolve to a single page to
-/// avoid a hard-fault storm. Cleared by [`VaMapper::decommit`] so a re-populated
-/// region can widen again.
+/// avoid a hard-fault storm.
 ///
 /// Allocated per range and only for THP RAM on Windows, so guests without THP —
 /// and every non-Windows guest — pay nothing.
@@ -1228,9 +1127,9 @@ impl FirstFault {
 
     /// Allocates a bitmap covering `regions` 2 MB regions with every window
     /// already marked attempted. Used for prefetched ranges: the large pages
-    /// are built eagerly at build time, so the lazy `resolve` path should not
-    /// re-widen a window until it is freed and its bit reset. Bits past
-    /// `regions` in the final word are set too, but are never indexed.
+    /// are built eagerly at build time, so the lazy `resolve` path never
+    /// re-widens a window. Bits past `regions` in the final word are set too,
+    /// but are never indexed.
     fn new_all_claimed(regions: u64) -> Self {
         let words = regions.div_ceil(64);
         Self(
@@ -1249,15 +1148,6 @@ impl FirstFault {
         match self.0.get(word) {
             Some(slot) => slot.fetch_or(bit, Ordering::Relaxed) & bit == 0,
             None => false,
-        }
-    }
-
-    /// Clears the bit for `region`.
-    fn clear(&self, region: u64) {
-        let word = (region / 64) as usize;
-        let bit = 1u64 << (region % 64);
-        if let Some(slot) = self.0.get(word) {
-            slot.fetch_and(!bit, Ordering::Relaxed);
         }
     }
 }
@@ -1291,68 +1181,6 @@ mod tests {
             zero_buf.iter().all(|&b| b == 0),
             "untouched committed memory should be zeros"
         );
-    }
-
-    /// Tests that decommitting pages releases their contents (zeros on re-read on Linux).
-    #[test]
-    fn test_private_ram_decommit_zeros() {
-        let page_size = SparseMapping::page_size();
-        let mapping = SparseMapping::new(4 * page_size).unwrap();
-
-        // Commit and write data.
-        mapping.alloc(0, 2 * page_size).unwrap();
-        let pattern = vec![0xABu8; 64];
-        mapping.write_at(0, &pattern).unwrap();
-        mapping.write_at(page_size, &pattern).unwrap();
-
-        // Decommit first page.
-        mapping.decommit(0, page_size).unwrap();
-
-        // On Linux, decommitted pages read as zeros.
-        #[cfg(unix)]
-        {
-            let mut buf = vec![0xFFu8; 64];
-            mapping.read_at(0, &mut buf).unwrap();
-            assert!(
-                buf.iter().all(|&b| b == 0),
-                "decommitted page should be zeros on Linux"
-            );
-        }
-
-        // Second page should still have its data.
-        let mut buf2 = vec![0u8; 64];
-        mapping.read_at(page_size, &mut buf2).unwrap();
-        assert_eq!(buf2, pattern);
-    }
-
-    /// Tests that recommitting pages after decommit provides zeroed memory.
-    #[test]
-    fn test_private_ram_recommit_after_decommit() {
-        let page_size = SparseMapping::page_size();
-        let mapping = SparseMapping::new(4 * page_size).unwrap();
-
-        // Commit, write, decommit, recommit.
-        mapping.alloc(0, page_size).unwrap();
-        let pattern = vec![0xCDu8; 64];
-        mapping.write_at(0, &pattern).unwrap();
-
-        mapping.decommit(0, page_size).unwrap();
-        mapping.commit(0, page_size).unwrap();
-
-        // After recommit, the page should be zeros (old data is gone).
-        let mut buf = vec![0xFFu8; 64];
-        mapping.read_at(0, &mut buf).unwrap();
-        assert!(
-            buf.iter().all(|&b| b == 0),
-            "recommitted page should be zeros"
-        );
-
-        // Can write and read new data.
-        let new_data = vec![0xEFu8; 64];
-        mapping.write_at(0, &new_data).unwrap();
-        let mut buf2 = vec![0u8; 64];
-        mapping.read_at(0, &mut buf2).unwrap();
-        assert_eq!(buf2, new_data);
     }
 
     /// Tests that commit is idempotent (committing already-committed pages is
