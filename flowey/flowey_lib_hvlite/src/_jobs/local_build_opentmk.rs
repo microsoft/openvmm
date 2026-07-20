@@ -81,6 +81,9 @@ impl SimpleFlowNode for Node {
                 } else {
                     opentmk_disk::build_opentmk_vhd(&efi_bytes, disk_arch)?
                 };
+                if vhd_path.exists() {
+                    fs_err::remove_file(&vhd_path)?;
+                }
                 image.persist(&vhd_path)?;
 
                 fs_err::copy(&efi, output_dir.join(format!("{name}.efi")))?;

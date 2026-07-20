@@ -40,7 +40,7 @@ const _: () = {
 };
 
 /// Build-time-patchable config region embedded in the binary.
-/// Fixed layout (`magic` | `json_len` | `json`) and alignment 1 let host tooling patch raw bytes.
+/// Fixed layout (`magic` | `json_len` | `json`) and alignment let host tooling patch raw bytes.
 #[repr(C)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenTmkConfig {
