@@ -520,7 +520,7 @@ jobs:
   job3:
     name: publish openvmm.dev
     concurrency:
-      group: openvmm.dev
+      group: publish-openvmm.dev
       cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
