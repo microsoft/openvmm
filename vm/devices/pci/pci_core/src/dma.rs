@@ -39,7 +39,7 @@ pub trait DmaTargetIommu: Send + Sync + 'static {
 ///
 /// This is the only IOMMU-related view exposed to consumers of
 /// [`DmaTarget`]. It deliberately says nothing about how guest memory is
-/// translated (that is the private [`DmaTargetIommu`] factory); it only
+/// translated (that is the underlying [`DmaTargetIommu`] factory); it only
 /// answers "can this device be handed to the host for passthrough, and if
 /// so, how does the assignment backend attach to the IOMMU?".
 pub enum DmaPassthrough<'a> {
@@ -112,17 +112,65 @@ impl DmaTarget {
         }
     }
 
-    /// Creates a DMA target backed by an IOMMU.
+    /// Creates a DMA target backed by a software/emulated IOMMU.
     ///
     /// The base (function-`devfn`) translating guest memory is derived from
     /// `iommu`; per-VF memory is produced by
     /// [`with_rid_offset`](Self::with_rid_offset). The MSI backend is taken
     /// (late-bound) from `msi`.
+    ///
+    /// The device is marked [`DmaPassthrough::SoftwareBlocked`]: a
+    /// software/emulated IOMMU cannot program the host IOMMU, so host
+    /// passthrough (VFIO assignment) is rejected. Use
+    /// [`with_nestable_iommu`](Self::with_nestable_iommu) for a
+    /// hardware-nestable IOMMU that permits passthrough.
     pub fn with_iommu(
         bus_range: AssignedBusRange,
         devfn: u8,
         iommu: Arc<dyn DmaTargetIommu>,
         msi: &MsiConnection,
+    ) -> Self {
+        Self::iommu_backed(bus_range, devfn, iommu, msi, Passthrough::SoftwareBlocked)
+    }
+
+    /// Creates a DMA target backed by a hardware-nestable IOMMU.
+    ///
+    /// Like [`with_iommu`](Self::with_iommu), but marks the device
+    /// [`DmaPassthrough::HardwareNestable`] with an opaque `handle` that the
+    /// host-assignment backend downcasts to its arch-specific nesting context.
+    /// Accel-capable IOMMUs (e.g. an SMMU that programs the host IOMMU for
+    /// nested stage-1 translation) use this to permit VFIO passthrough despite
+    /// wrapping guest memory with a translating target; the `handle` carries
+    /// everything the backend needs to wire the device into the emulated IOMMU.
+    ///
+    /// Supplying the nesting `handle` together with the `iommu` is what makes a
+    /// [`DmaPassthrough::HardwareNestable`] target impossible to construct
+    /// without a backing IOMMU.
+    pub fn with_nestable_iommu(
+        bus_range: AssignedBusRange,
+        devfn: u8,
+        iommu: Arc<dyn DmaTargetIommu>,
+        handle: Arc<dyn Any + Send + Sync>,
+        msi: &MsiConnection,
+    ) -> Self {
+        Self::iommu_backed(
+            bus_range,
+            devfn,
+            iommu,
+            msi,
+            Passthrough::HardwareNestable(handle),
+        )
+    }
+
+    /// Shared constructor for the IOMMU-backed cases: derives the base
+    /// translating memory and MSI identity, then stamps the passthrough
+    /// disposition.
+    fn iommu_backed(
+        bus_range: AssignedBusRange,
+        devfn: u8,
+        iommu: Arc<dyn DmaTargetIommu>,
+        msi: &MsiConnection,
+        passthrough: Passthrough,
     ) -> Self {
         let guest_memory = iommu.guest_memory_for_rid_offset(devfn as u16);
         let msi_target = msi.msi_target(bus_range, devfn);
@@ -131,7 +179,7 @@ impl DmaTarget {
             guest_memory,
             msi_target,
             iommu: Some(iommu),
-            passthrough: Passthrough::SoftwareBlocked,
+            passthrough,
         }
     }
 
@@ -159,20 +207,6 @@ impl DmaTarget {
                 DmaPassthrough::HardwareNestable(handle.as_ref())
             }
         }
-    }
-
-    /// Marks this target as behind a hardware-nestable IOMMU, attaching an
-    /// opaque `handle` that the assignment backend downcasts to its
-    /// arch-specific nesting context.
-    ///
-    /// Accel-capable IOMMUs (e.g. an SMMU that programs the host IOMMU for
-    /// nested stage-1 translation) call this to permit VFIO passthrough
-    /// despite wrapping guest memory with a translating target. The handle
-    /// carries everything the backend needs to wire the device into the
-    /// emulated IOMMU.
-    pub fn with_hardware_nesting(mut self, handle: Arc<dyn Any + Send + Sync>) -> Self {
-        self.passthrough = Passthrough::HardwareNestable(handle);
-        self
     }
 
     /// Derives a DMA target offset by `delta` from this one in RID space.
@@ -379,14 +413,19 @@ mod tests {
     }
 
     #[test]
-    fn with_hardware_nesting_exposes_downcastable_handle() {
+    fn with_nestable_iommu_exposes_downcastable_handle() {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
         let msi_conn = MsiConnection::new();
 
         let iommu = RecordingIommu::new();
-        let target = DmaTarget::with_iommu(bus_range.clone(), 0, iommu, &msi_conn)
-            .with_hardware_nesting(Arc::new(FakeNestingContext { id: 0x1234 }));
+        let target = DmaTarget::with_nestable_iommu(
+            bus_range.clone(),
+            0,
+            iommu,
+            Arc::new(FakeNestingContext { id: 0x1234 }),
+            &msi_conn,
+        );
 
         // The base target accepts passthrough and hands back the context.
         match target.passthrough() {
