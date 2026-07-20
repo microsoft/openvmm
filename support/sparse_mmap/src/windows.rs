@@ -539,9 +539,6 @@ impl SparseMapping {
         }
     }
 
-    /// Materializes a committed range into the working set, faulting the whole
-    /// range in with a single call.
-    ///
     /// Prefetches a committed range into the working set, faulting the whole
     /// range in with a single call.
     ///
