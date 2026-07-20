@@ -29,10 +29,10 @@ use vmotherboard::ChipsetBuilder;
 /// enough RAM size, or an explicitly pinned high MMIO/ECAM base, can place
 /// addresses above 256 TiB (up to the host IPA width). Such a configuration
 /// must pass an explicit `oas=` (e.g. `oas=52`) rather than relying on `auto`.
+///
+/// For accelerated SMMUs this is only a provisional value, replaced by the
+/// host SMMU's OAS when a device attaches.
 const DEFAULT_AUTO_OAS_BITS: u8 = 48;
-
-/// Valid SMMUv3 output address sizes (IDR5.OAS encodings), in bits.
-const VALID_OAS_BITS: [u8; 7] = [32, 36, 40, 42, 44, 48, 52];
 
 /// Resolved resources for a single SMMUv3 instance, combining MMIO and SPI
 /// allocations.
@@ -80,7 +80,7 @@ pub(super) struct SmmuDevicesResult {
 pub(super) fn setup_smmu(
     root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
     resolved_smmu_resources: &[ResolvedSmmuResources],
-    pcie_host_bridges: &[PcieHostBridge],
+    pcie_host_bridges: &mut [PcieHostBridge],
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
 ) -> anyhow::Result<SmmuDevicesResult> {
@@ -101,36 +101,35 @@ pub(super) fn setup_smmu(
         });
 
     for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
-        // Accelerated (iommufd-nested) SMMUs are not yet wired up. Reject the
-        // request explicitly rather than silently falling back to emulated
-        // translation.
-        anyhow::ensure!(
-            !accel,
-            "SMMU on root complex {}: accelerated translation is not yet supported",
-            rc.name
-        );
-
-        // Resolve the requested OAS into a concrete advertised value.
-        let oas_bits = match oas {
-            openvmm_defs::config::SmmuOas::Auto => DEFAULT_AUTO_OAS_BITS,
-            openvmm_defs::config::SmmuOas::Fixed(bits) => {
-                anyhow::ensure!(
-                    VALID_OAS_BITS.contains(&bits),
-                    "SMMU on root complex {}: OAS {bits} is not a valid SMMUv3 output \
-                     address size (expected one of {:?})",
-                    rc.name,
-                    VALID_OAS_BITS
-                );
-                bits
-            }
-        };
-
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);
+
+        // Resolve the requested OAS into a backend policy. Both policy variants
+        // carry a concrete OAS: `Fixed` the requested value, `Auto` the
+        // provisional default (see `DEFAULT_AUTO_OAS_BITS`) advertised until,
+        // for accel, the host SMMU's OAS is adopted at device attach.
+        let oas_policy = match oas {
+            openvmm_defs::config::SmmuOas::Auto => smmu::SmmuOasPolicy::Auto {
+                provisional: DEFAULT_AUTO_OAS_BITS,
+            },
+            openvmm_defs::config::SmmuOas::Fixed(bits) => {
+                if !smmu::VALID_OAS_BITS.contains(&bits) {
+                    anyhow::bail!(
+                        "SMMU on root complex {}: OAS {bits} is not a valid SMMUv3 output \
+                         address size (expected one of {:?})",
+                        rc.name,
+                        smmu::VALID_OAS_BITS
+                    );
+                }
+                smmu::SmmuOasPolicy::Fixed(bits)
+            }
+        };
+
         let smmu_config = smmu::SmmuConfig {
             sidsize: 16,
-            oas: oas_bits,
+            oas_policy,
+            accel,
         };
         let smmu_device =
             chipset_builder
@@ -148,12 +147,29 @@ pub(super) fn setup_smmu(
                 })?;
 
         shared_states[rc_pos] = Some(smmu_device.lock().shared_state().clone());
+        // When the SMMU is in accel mode (iommufd nested), the L1
+        // kernel's MSI reserved IOVA window must be identity-mapped in
+        // the L2 guest's S1 page tables. The window is 128MB–129MB
+        // (0x800_0000–0x810_0000), which is the default ARM IOMMU MSI
+        // reserved region.
+        let reserved_iova_ranges = if accel {
+            // These reserved IOVA ranges become IORT RMR entries. Mark the
+            // root complex so the SSDT emits a PCI Firmware _DSM (function 5,
+            // preserve boot config); Linux skips RMR entries for root
+            // complexes without this flag.
+            pcie_host_bridges[rc_pos].preserve_boot_config = true;
+            vec![memory_range::MemoryRange::new(0x800_0000..0x810_0000)]
+        } else {
+            Vec::new()
+        };
+
         configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
             rc_index: pcie_host_bridges[rc_pos].index,
             segment: pcie_host_bridges[rc_pos].segment,
             base: smmu.base,
             event_gsiv: smmu.evtq_intid,
             gerr_gsiv: smmu.gerr_intid,
+            reserved_iova_ranges,
         });
     }
 

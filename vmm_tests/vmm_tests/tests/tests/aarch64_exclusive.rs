@@ -85,15 +85,17 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     Ok(())
 }
 
-/// Boot an aarch64 guest with no VMBus via linux direct boot,
-/// and assign a VFIO device from the incubator into the guest.
+/// Boot an aarch64 guest with no VMBus via linux direct boot, and assign a
+/// VFIO device from the incubator into the guest behind an accelerated SMMU.
 ///
 /// This test is intended to run inside a QEMU TCG incubator with KVM.
 /// The incubator profile sets up a virtio-blk device bound to vfio-pci,
 /// and publishes its BDF under the profile name `test-disk` (see
 /// [`incubator_vfio_bdf`]). The test assigns that device into the L2 guest
-/// and verifies it appears as a block device, then reads from it to exercise
-/// DMA and interrupts.
+/// behind an accelerated (iommufd-nested) SMMU — forcing translating stage-1
+/// domains with `iommu.passthrough=0` so the nested-HWPT path is exercised —
+/// verifies it appears as a block device, then reads from it to exercise DMA
+/// and interrupts through the accelerated SMMU's nested HWPT.
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
 /// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
@@ -140,20 +142,41 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
             ..Default::default()
         })
         .modify_backend(move |b| {
-            b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
-                c.hypervisor.with_hv = false;
-                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                    port_name: "s0rc0rp1".into(),
-                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                        pci_id: vfio_bdf,
-                        cdev,
-                        iommufd,
-                        iommu_id: "iommu0".into(),
-                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+            // Single root complex s0rc0 with an accelerated (iommufd-nested)
+            // SMMU, so the assigned device's stage-1 translation is honored
+            // via a host nested HWPT.
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_smmu_accel(&["s0rc0"])
+                .with_custom_config(move |c| {
+                    c.hypervisor.with_hv = false;
+                    // Force the guest to use translating (not passthrough)
+                    // SMMU stage-1 domains, so the accelerated nested-HWPT
+                    // path is actually exercised rather than bypass.
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" iommu.passthrough=0");
                     }
-                    .into_resource(),
-                });
-            })
+                    // Real ACS bits on the SMMU root complex's ports so Linux
+                    // places the assigned device in its own IOMMU group.
+                    for rc in &mut c.pcie_root_complexes {
+                        if rc.name == "s0rc0" {
+                            for port in &mut rc.ports {
+                                port.acs_capabilities_supported = Some(0x5D);
+                            }
+                        }
+                    }
+                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: vfio_bdf,
+                            cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        }
+                        .into_resource(),
+                    });
+                })
         })
         .run()
         .await?;
@@ -185,6 +208,37 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
     anyhow::ensure!(
         dd_output.contains("16+0 records"),
         "expected 16 records read, got: {dd_output}"
+    );
+
+    // Validate that stage-1 SMMU translation is actually in effect (not
+    // bypass/identity). Resolve /dev/vda to its PCI device and read the
+    // default-domain type of its IOMMU group.
+    //
+    // For a passthrough (VFIO-assigned) device the emulator is not in the DMA
+    // data path, so the device's DMA can only reach the correct guest pages if
+    // the host honors the guest's stage-1 tables via the accelerated nested
+    // HWPT. Two facts together prove translation is in effect:
+    //   1. The group's default domain type is `DMA`/`DMA-FQ` (translating),
+    //      not `identity` — so the guest programmed non-identity IOVAs, and
+    //   2. the `dd` read above succeeded — so those translated IOVAs resolved
+    //      to the right physical pages through the nested HWPT.
+    // If the SMMU were bypassed the type would be `identity`; if the nested
+    // HWPT were mis-programmed the read would have faulted or returned garbage.
+    let dev_path = cmd!(sh, "readlink -f /sys/block/vda/device").read().await?;
+    let dev_path = dev_path.trim();
+    let group_type = sh
+        .read_file(format!("{dev_path}/../iommu_group/type"))
+        .await?;
+    let group_type = group_type.trim();
+    tracing::info!(
+        dev_path,
+        group_type,
+        "assigned device IOMMU group default-domain type"
+    );
+    anyhow::ensure!(
+        group_type == "DMA" || group_type == "DMA-FQ",
+        "expected the assigned device to be in a translating SMMU domain \
+         (DMA/DMA-FQ), got {group_type:?}: stage-1 translation is not in effect"
     );
 
     agent.power_off().await?;

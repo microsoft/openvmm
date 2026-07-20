@@ -4,6 +4,8 @@
 //! SMMUv3 device emulator — register file and MMIO dispatch.
 
 use crate::shared::SmmuSharedState;
+use crate::spec::commands::CmdCfgiCd;
+use crate::spec::commands::CmdCfgiSte;
 use crate::spec::commands::CmdEntry;
 use crate::spec::commands::CmdOpcode;
 use crate::spec::commands::CmdSync;
@@ -24,23 +26,92 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 
+/// Output address size (OAS) resolution policy for the SMMU.
+///
+/// The OAS the SMMU advertises in IDR5 is resolved in two stages. The initial
+/// advertised value is carried by this policy up front. For accelerated SMMUs
+/// the final value also depends on the physical SMMU backing the device, which
+/// is only known once a VFIO device is bound to iommufd — see
+/// [`SmmuSharedState::resolve_host_caps`].
+///
+/// Both variants carry a concrete OAS supplied by the caller. This crate
+/// deliberately defines no default, so that the choice for `auto` is made once
+/// by the wiring layer and every SMMU backend advertises the same value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmmuOasPolicy {
+    /// Advertise `provisional` initially. For non-accel SMMUs this is the final
+    /// advertised OAS. For accel SMMUs it is a provisional value that is
+    /// replaced by the host SMMU's OAS when a device attaches.
+    Auto {
+        /// Initial advertised OAS in bits, used until (for accel) the host
+        /// SMMU's OAS is adopted at device attach.
+        provisional: u8,
+    },
+    /// Use a fixed OAS in bits. For accel, this is an upper bound that must
+    /// not exceed the host SMMU's OAS (attach fails otherwise).
+    Fixed(u8),
+}
+
+/// Capabilities of the physical SMMUv3 backing an accelerated vSMMU.
+///
+/// Decoded from a host SMMUv3's `IDR0..IDR5` register values (as returned by
+/// `IOMMU_GET_HW_INFO`) via [`HostSmmuCaps::from_idr`], and handed to
+/// [`SmmuSharedState::resolve_host_caps`], which finalizes the host-derived
+/// vSMMU parameters and validates host/guest compatibility the first time a
+/// VFIO device binds. Keeping this a plain value type (with the IDR decoding
+/// owned by this crate) avoids a dependency from the `smmu` crate on the
+/// iommufd bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostSmmuCaps {
+    /// Host SMMUv3 output address size (IDR5.OAS field). Resolved to a bit
+    /// width (and validated) in [`SmmuSharedState::resolve_host_caps`], since
+    /// the encoding may be one the architecture reserves.
+    pub(crate) oas: crate::spec::cd::Ips,
+    /// Host translation table format support (IDR0.TTF).
+    pub(crate) ttf: registers::Idr0Ttf,
+    /// Host translation table endianness support (IDR0.TTENDIAN).
+    pub(crate) ttendian: registers::Idr0TtEndian,
+    /// Host 4KB translation granule support (IDR5.GRAN4K).
+    pub(crate) gran4k: bool,
+}
+
+impl HostSmmuCaps {
+    /// Decodes the host SMMUv3's capabilities from its `IDR0..IDR5` register
+    /// values, as returned by `IOMMU_GET_HW_INFO` (`idr[n]` is `IDRn`).
+    ///
+    /// The caller (the VFIO layer) supplies the raw register array; this
+    /// crate owns the register layout, so decoding lives here rather than in
+    /// the iommufd bindings. This decode is total — the only field whose value
+    /// may be unrecognized is OAS, whose `Ips` encoding is interpreted in
+    /// [`SmmuSharedState::resolve_host_caps`].
+    pub fn from_idr(idr: [u32; 6]) -> Self {
+        let idr0 = registers::Idr0::from(idr[0]);
+        let idr5 = registers::Idr5::from(idr[5]);
+
+        Self {
+            oas: crate::spec::cd::Ips(idr5.oas()),
+            ttf: registers::Idr0Ttf::from(idr0.ttf()),
+            ttendian: registers::Idr0TtEndian(idr0.ttendian()),
+            gran4k: idr5.gran4k(),
+        }
+    }
+}
+
 /// SMMUv3 device configuration.
 #[derive(Debug, Clone)]
 pub struct SmmuConfig {
     /// Number of StreamID bits (max 32, typically 16).
     pub sidsize: u8,
-    /// Output address size in bits (e.g., 40 for 40-bit physical addresses).
-    /// Must be one of: 32, 36, 40, 42, 44, 48, 52.
-    pub oas: u8,
-}
-
-impl Default for SmmuConfig {
-    fn default() -> Self {
-        Self {
-            sidsize: 16,
-            oas: 40,
-        }
-    }
+    /// How the advertised OAS is resolved. Also carries the initial advertised
+    /// OAS bits: the fixed value for [`SmmuOasPolicy::Fixed`], or the
+    /// provisional value for [`SmmuOasPolicy::Auto`].
+    pub oas_policy: SmmuOasPolicy,
+    /// Enable HW-accelerated nested S1 translation (iommufd).
+    ///
+    /// When true, VFIO cdev devices behind this SMMU use hardware-
+    /// accelerated translation. The SMMU still emulates registers
+    /// and dispatches CMDQ commands to iommufd backends.
+    pub accel: bool,
 }
 
 /// Per-queue MSI configuration registers.
@@ -111,6 +182,14 @@ pub struct SmmuDevice {
     cmdq_prod: u32,
     cmdq_cons: registers::CmdqCons,
 
+    // Reusable scratch buffer for accumulating consecutive forwardable
+    // invalidation commands during CMDQ processing. Flushed to the host as a
+    // single batched `IOMMU_HWPT_INVALIDATE` at each synchronization or
+    // configuration boundary. Cleared (not reallocated) on each flush so
+    // batching adds no per-command allocation.
+    #[inspect(skip)]
+    invalidation_batch: Vec<[u64; 2]>,
+
     // Event queue base register (raw value for MMIO read/write).
     // EVTQ producer/consumer state lives in SmmuSharedState.
     #[inspect(hex)]
@@ -140,36 +219,82 @@ impl SmmuDevice {
         let idr0 = registers::Idr0::new()
             .with_s1p(true)
             .with_s2p(false)
-            .with_ttf(0b10) // AArch64 only
+            // AArch64 page tables only.
+            .with_ttf(registers::Idr0Ttf::new().with_aarch64(true).into())
             .with_cohacc(true)
             .with_asid16(true)
             .with_msi(false)
-            .with_ttendian(0b10) // Little-endian
+            .with_ttendian(registers::Idr0TtEndian::LE.0) // Little-endian only
             .with_stall_model(0b01) // Stall not supported
             .with_term_model(true) // Terminate faults (no stall)
+            // TODO: support 2-level stream tables (ST_LEVEL=0b01) so guests
+            // with large SIDSIZE need not allocate one contiguous table. When
+            // advertised, the host's stream table format is independent and
+            // need not be validated (the guest table is never seen by the host
+            // in the nested path).
             .with_st_level(0b00); // Linear stream table only
 
         let idr1 = registers::Idr1::new()
             .with_sidsize(config.sidsize)
+            // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the
+            // accel path must validate the host SMMU's SSIDSIZE >= the
+            // advertised value in resolve_host_caps.
             .with_ssidsize(0)
             .with_cmdqs(8) // 256 entries max
             .with_eventqs(8) // 256 entries max
-            .with_attr_types_ovr(true)
+            // ATTR_TYPES_OVR / ATTR_PERMS_OVR are left 0: this SMMU does not
+            // support overriding incoming memory attributes/permissions. Per
+            // the SMMUv3 spec that makes STE.{MTCFG, MemAttr, SHCFG, ALLOCCFG,
+            // NSCFG, PRIVCFG, INSTCFG} RES 0 ("use incoming"), which the
+            // accel path already strips from the nested STE and neither the
+            // emulated nor accelerated translation path honors.
             .with_tables_preset(false)
             .with_queues_preset(false)
             .with_rel(false);
 
+        // IDR3 is left at 0. TODO: support range invalidation (RIL). When
+        // advertised (IDR3.RIL=1), the accel path must validate the host
+        // SMMU supports RIL in resolve_host_caps.
+
+        // The initial advertised OAS before any host resolution. For
+        // non-accelerated SMMUs this is final; for accelerated SMMUs it is a
+        // provisional value that may be raised or validated against the host
+        // SMMU's OAS at device attach (see `resolve_host_caps`). The concrete
+        // value is supplied by the caller in both cases.
+        let oas_bits = match config.oas_policy {
+            SmmuOasPolicy::Auto { provisional } => provisional,
+            SmmuOasPolicy::Fixed(bits) => bits,
+        };
+
         let idr5 = registers::Idr5::new()
-            .with_oas(crate::spec::cd::Ips::from_bits(config.oas).0)
+            .with_oas(crate::spec::cd::Ips::from_bits(oas_bits).0)
             .with_gran4k(true)
+            // TODO: support 16K/64K translation granules. When advertised, the
+            // accel path must validate the host SMMU's GRAN16K/GRAN64K bits in
+            // resolve_host_caps (host must support each granule the guest may
+            // use).
             .with_gran16k(false)
             .with_gran64k(false);
 
-        // GBPA defaults to ABORT=1 (abort all transactions when SMMU is disabled).
-        let gbpa = registers::Gbpa::new().with_abort(true);
+        // GBPA resets to ABORT=0, so DMA bypasses (IOVA = GPA) while the SMMU
+        // is disabled. This preserves boot-time passthrough for direct-boot
+        // and UEFI, which use assigned devices before the guest enables the
+        // SMMU. The non-accel translate path and the accel policy computation
+        // both consult GBPA.ABORT for the disabled state, so leaving it set
+        // here would fail-close at boot.
+        let gbpa = registers::Gbpa::new().with_abort(false);
 
-        let shared_state =
-            SmmuSharedState::new(guest_memory.clone(), config.oas, evtq_irq, gerror_irq);
+        let shared_state = SmmuSharedState::new(
+            guest_memory.clone(),
+            oas_bits,
+            config.oas_policy,
+            config.accel,
+            evtq_irq,
+            gerror_irq,
+        );
+        // Keep the shared state's mirror of GBPA.ABORT in sync with the
+        // register's reset value.
+        shared_state.set_gbpa_abort(gbpa.abort());
 
         SmmuDevice {
             mmio_region: (
@@ -205,6 +330,8 @@ impl SmmuDevice {
             cmdq_prod: 0,
             cmdq_cons: registers::CmdqCons::new(),
 
+            invalidation_batch: Vec::new(),
+
             evtq_base: 0,
 
             gerror_msi: MsiConfig::default(),
@@ -226,7 +353,14 @@ impl SmmuDevice {
             registers::IDR2 => self.idr2,
             registers::IDR3 => self.idr3,
             registers::IDR4 => self.idr4,
-            registers::IDR5 => self.idr5.into(),
+            registers::IDR5 => {
+                // OAS is resolved dynamically (accel finalizes it against the
+                // host SMMU at device-attach time); the granule bits are fixed.
+                let oas = self.shared_state.oas_bits();
+                self.idr5
+                    .with_oas(crate::spec::cd::Ips::from_bits(oas).0)
+                    .into()
+            }
             registers::IIDR => self.iidr,
             registers::AIDR => self.aidr,
 
@@ -299,9 +433,12 @@ impl SmmuDevice {
                 self.cr0 = registers::Cr0::from(value);
                 // Immediate acknowledge — no async enable sequence.
                 self.cr0ack = self.cr0;
-                // Sync enable state to shared state for per-device wrappers.
-                self.shared_state.set_enabled(self.cr0.smmuen());
                 self.shared_state.set_evtq_enabled(self.cr0.eventqen());
+                // Sync enable state to shared state for per-device wrappers.
+                // This atomically re-drives accelerated backends, since a
+                // SMMUEN change flips the disabled-state policy (bypass/abort)
+                // to/from the per-stream STE policy.
+                self.shared_state.set_enabled(self.cr0.smmuen());
             }
             registers::CR1 => {
                 self.cr1 = registers::Cr1::from(value);
@@ -315,6 +452,11 @@ impl SmmuDevice {
                 let mut gbpa = registers::Gbpa::from(value);
                 gbpa.set_update(false);
                 self.gbpa = gbpa;
+                // GBPA.ABORT selects bypass vs abort while the SMMU is
+                // disabled. Mirror it into shared state (consulted by the
+                // non-accel translate path and the accel policy computation);
+                // this atomically re-drives accelerated backends.
+                self.shared_state.set_gbpa_abort(self.gbpa.abort());
             }
             registers::IRQ_CTRL => {
                 self.irq_ctrl = registers::IrqCtrl::from(value);
@@ -521,6 +663,12 @@ impl SmmuDevice {
         let mut cons = self.cmdq_cons.rd();
         let prod = self.cmdq_prod & index_mask;
 
+        // CMDQ index (with wrap bit) of the first entry in the currently
+        // accumulating invalidation batch. Only meaningful while the batch is
+        // non-empty; used to place CMDQ_CONS at the offending command if the
+        // host rejects part of a flushed batch.
+        let mut batch_start_cons = cons;
+
         // Limit iterations to prevent infinite loops on malformed state.
         let mut iterations = 0u32;
 
@@ -545,27 +693,122 @@ impl SmmuDevice {
                         entry_addr,
                         "smmu: failed to read CMDQ entry from guest memory"
                     );
+                    // Forward any already-validated commands preceding the
+                    // faulting entry before aborting (program order); the
+                    // abort is the reported error.
+                    let _ = self.flush_invalidation_batch();
                     // Set CMDQ error: abort.
                     self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
                     break;
                 }
             };
 
-            match entry.opcode() {
-                // Configuration invalidation commands — no-op (no cache yet).
-                CmdOpcode::PREFETCH_CFG
-                | CmdOpcode::CFGI_STE
-                | CmdOpcode::CFGI_STE_RANGE
-                | CmdOpcode::CFGI_CD
-                | CmdOpcode::CFGI_CD_ALL => {}
+            let opcode = entry.opcode();
 
-                // TLB invalidation commands — no-op (no TLB yet).
+            // Forwardable invalidation commands accumulate into a single
+            // ordered batch forwarded to the host at the next flush boundary.
+            // `ATC_INV` is only forwardable once ATS is enabled (`IDR0.ATS=1`);
+            // while ATS is off it is illegal and falls through to the
+            // illegal-opcode arm below.
+            let forwardable = matches!(
+                opcode,
                 CmdOpcode::TLBI_NH_ALL
-                | CmdOpcode::TLBI_NH_ASID
-                | CmdOpcode::TLBI_NH_VA
-                | CmdOpcode::TLBI_NH_VAA
-                | CmdOpcode::TLBI_S12_VMALL
-                | CmdOpcode::TLBI_NSNH_ALL => {}
+                    | CmdOpcode::TLBI_NH_ASID
+                    | CmdOpcode::TLBI_NH_VA
+                    | CmdOpcode::TLBI_NH_VAA
+                    | CmdOpcode::TLBI_NSNH_ALL
+                    | CmdOpcode::CFGI_CD
+                    | CmdOpcode::CFGI_CD_ALL
+            ) || (opcode == CmdOpcode::ATC_INV && self.idr0.ats());
+
+            if forwardable {
+                // SID-based invalidations (CFGI_CD/CFGI_CD_ALL, and ATC_INV
+                // once ATS is on) target one stream and carry its StreamID at
+                // qw0[63:32]. They only affect host state while the stream is
+                // translating (S1_TRANS): they invalidate the context-
+                // descriptor cache, and the device's ATS cache, which exist on
+                // the host only for an attached nested domain. Skip (consume as
+                // a no-op) any such command for a stream that is not currently
+                // translating: there is nothing on the host to invalidate, no
+                // vDevice is bound (it is allocated on the translate attach),
+                // and forwarding would hit -EIO and surface as a spurious
+                // CERROR_ILL. Because the guest writes the context descriptor
+                // (issuing CFGI_CD) before installing the translating STE
+                // (CFGI_STE), this also skips that first premature CFGI_CD.
+                // Mirrors QEMU's smmuv3_accel_issue_inv_cmd.
+                let sid_based = matches!(
+                    opcode,
+                    CmdOpcode::CFGI_CD | CmdOpcode::CFGI_CD_ALL | CmdOpcode::ATC_INV
+                );
+                if sid_based
+                    && !self
+                        .shared_state
+                        .sid_invalidation_forwardable(CmdCfgiCd::from(entry.qw0).sid())
+                {
+                    // Flush the pending batch first so its CMDQ indices stay
+                    // contiguous (the partial-failure → CMDQ_CONS mapping
+                    // assumes no gaps), then consume this command as a no-op.
+                    if let Err(failed_index) = self.flush_invalidation_batch() {
+                        cons = (batch_start_cons + failed_index as u32) & index_mask;
+                        self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                        break;
+                    }
+                    cons = (cons + 1) & index_mask;
+                    continue;
+                }
+                if self.invalidation_batch.is_empty() {
+                    batch_start_cons = cons;
+                }
+                self.invalidation_batch.push([entry.qw0, entry.qw1]);
+                cons = (cons + 1) & index_mask;
+                continue;
+            }
+
+            // Non-forwardable command: flush the pending batch first so prior
+            // invalidations complete before this barrier/config command, and
+            // so `CMD_SYNC` keeps its "all prior commands complete" guarantee.
+            // The host processes the array in order, so program order is
+            // preserved. On partial failure, stop at the offending command.
+            if let Err(failed_index) = self.flush_invalidation_batch() {
+                cons = (batch_start_cons + failed_index as u32) & index_mask;
+                self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                break;
+            }
+
+            match opcode {
+                // Configuration invalidation: CFGI_STE — re-drive the
+                // backend (if any) to the stream's current policy.
+                CmdOpcode::CFGI_STE => {
+                    let cmd = CmdCfgiSte::from(entry.qw0);
+                    // Emulated devices: no-op (no STE cache). Accelerated
+                    // streams: the emulator re-reads and re-applies the STE.
+                    self.shared_state.apply_stream_config(cmd.sid());
+                }
+
+                // CFGI_STE_RANGE: re-drive every registered backend.
+                CmdOpcode::CFGI_STE_RANGE => {
+                    // When Range=31 (CFGI_ALL), all backends get notified.
+                    // For other ranges, we'd need to iterate the SID range,
+                    // but Range=31 is the only value Linux uses at init.
+                    // For now, treat all ranges as broadcast to all backends.
+                    // Empty for emulated-only configurations (loop is a no-op).
+                    self.shared_state.apply_all_stream_configs();
+                }
+
+                // Prefetch hint — no-op (no caching to warm).
+                CmdOpcode::PREFETCH_CFG => {}
+
+                // TLBI_S12_VMALL is a stage-2 invalidation. This vSMMU
+                // advertises IDR0.S2P=0 (stage-1 only), so per SMMUv3 §4.4.3.2
+                // the command is illegal and must raise CERROR_ILL rather than
+                // be forwarded (the host kernel also rejects it).
+                CmdOpcode::TLBI_S12_VMALL => {
+                    tracelimit::warn_ratelimited!(
+                        "smmu: TLBI_S12_VMALL is illegal on a stage-1-only SMMU"
+                    );
+                    self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                    break;
+                }
 
                 // Synchronization command.
                 CmdOpcode::CMD_SYNC => {
@@ -586,8 +829,39 @@ impl SmmuDevice {
             cons = (cons + 1) & index_mask;
         }
 
+        // Flush any trailing forwardable commands (queue drained with no
+        // following boundary command). Every error-break path above already
+        // flushed the batch, so this only forwards a tail run on a clean drain.
+        if let Err(failed_index) = self.flush_invalidation_batch() {
+            cons = (batch_start_cons + failed_index as u32) & index_mask;
+            self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+        }
+
         // Update the stored CMDQ_CONS (preserve error field, update rd).
         self.cmdq_cons.set_rd(cons);
+    }
+
+    /// Flushes the accumulated invalidation batch to the host sink as a single
+    /// `IOMMU_HWPT_INVALIDATE`.
+    ///
+    /// Returns `Ok(())` on full success, an empty batch, or an emulated-only
+    /// SMMU (no host sink), with the scratch buffer cleared. On a host failure
+    /// returns `Err(failed_index)` — the offset within the batch of the first
+    /// command the host did not handle — so the caller stops draining at that
+    /// command. The sink owns mapping the host's reported handled-count to this
+    /// index (including its unreliable corners), so this is always a valid
+    /// offset within the batch.
+    fn flush_invalidation_batch(&mut self) -> Result<(), usize> {
+        if self.invalidation_batch.is_empty() {
+            return Ok(());
+        }
+        let result = match self.shared_state.invalidation_sink() {
+            Some(sink) => sink.invalidate(&self.invalidation_batch),
+            // Emulated-only SMMU: no host to forward to.
+            None => Ok(()),
+        };
+        self.invalidation_batch.clear();
+        result
     }
 
     /// Handle a CMD_SYNC command.
@@ -695,6 +969,9 @@ impl ChangeDeviceState for SmmuDevice {
             cmdq_prod,
             cmdq_cons,
 
+            // Scratch batch buffer — transient; cleared on reset.
+            invalidation_batch,
+
             // Event queue base register.
             evtq_base,
 
@@ -708,7 +985,9 @@ impl ChangeDeviceState for SmmuDevice {
         *cr0ack = registers::Cr0::new();
         *cr1 = registers::Cr1::new();
         *cr2 = registers::Cr2::new();
-        *gbpa = registers::Gbpa::new().with_abort(true);
+        // GBPA resets to ABORT=0 (disabled-state DMA bypasses), matching the
+        // power-on default and preserving boot-time passthrough.
+        *gbpa = registers::Gbpa::new().with_abort(false);
 
         *irq_ctrl = registers::IrqCtrl::new();
         *irq_ctrlack = registers::IrqCtrl::new();
@@ -720,16 +999,18 @@ impl ChangeDeviceState for SmmuDevice {
         *cmdq_prod = 0;
         *cmdq_cons = registers::CmdqCons::new();
 
+        invalidation_batch.clear();
+
         *evtq_base = 0;
 
         *gerror_msi = MsiConfig::default();
         *evtq_msi = MsiConfig::default();
         *cmdq_msi = MsiConfig::default();
 
-        // Sync disabled state to shared state so per-device wrappers
-        // bypass translation immediately.
-        shared_state.set_enabled(false);
-        shared_state.set_strtab(0, 0);
+        // Atomically reset the policy-relevant translation state (disabled,
+        // GBPA.ABORT=0 so DMA bypasses, stream table cleared) and re-drive
+        // accelerated backends to the post-reset policy (bypass).
+        shared_state.sync_translation_state(false, false, 0, 0);
         // Reset EVTQ state (prod, cons, config, enabled).
         // Reset GERROR state and deassert interrupt.
         shared_state.reset_queue_state();
@@ -776,6 +1057,10 @@ impl SaveRestore for SmmuDevice {
             cmdq_base,
             cmdq_prod,
             cmdq_cons,
+
+            // Scratch batch buffer — transient, fully drained between CMDQ
+            // processing passes, so there is nothing to save.
+            invalidation_batch: _,
 
             // Event queue base register.
             evtq_base,
@@ -854,9 +1139,18 @@ impl SaveRestore for SmmuDevice {
         self.evtq_msi = evtq_msi.restore();
         self.cmdq_msi = cmdq_msi.restore();
 
-        // Re-sync derived state in SmmuSharedState.
-        self.shared_state.set_enabled(self.cr0.smmuen());
-        self.sync_strtab_to_shared();
+        // Re-sync derived state in SmmuSharedState. Apply the policy-relevant
+        // translation state (enable, GBPA.ABORT, stream table) as one atomic
+        // transition, which also re-drives accelerated backends to the
+        // restored policy.
+        let strtab_base = registers::StrtabBase::from(self.strtab_base).addr();
+        let strtab_log2size = self.strtab_base_cfg.log2size();
+        self.shared_state.sync_translation_state(
+            self.cr0.smmuen(),
+            self.gbpa.abort(),
+            strtab_base,
+            strtab_log2size,
+        );
         self.sync_evtq_to_shared();
         self.shared_state.set_evtq_enabled(self.cr0.eventqen());
         self.shared_state
@@ -1024,9 +1318,20 @@ mod tests {
 
     const TEST_MMIO_BASE: u64 = 0x0900_0000;
 
+    /// A minimal non-accelerated `SmmuConfig` for tests: 16-bit StreamIDs and a
+    /// fixed 40-bit OAS. Tests that need other values construct `SmmuConfig`
+    /// directly.
+    fn test_config() -> SmmuConfig {
+        SmmuConfig {
+            sidsize: 16,
+            oas_policy: SmmuOasPolicy::Fixed(40),
+            accel: false,
+        }
+    }
+
     fn make_test_device() -> SmmuDevice {
         let gm = GuestMemory::empty();
-        SmmuDevice::new(TEST_MMIO_BASE, gm, &SmmuConfig::default(), None, None)
+        SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None)
     }
 
     /// Helper to read a 32-bit register.
@@ -1105,12 +1410,12 @@ mod tests {
         assert_eq!(idr0.ttendian(), 0b10);
         assert_eq!(idr0.st_level(), 0b00);
 
-        // IDR1: SIDSIZE=16, CMDQS=8, EVTQS=8, ATTR_TYPES_OVR=1
+        // IDR1: SIDSIZE=16, CMDQS=8, EVTQS=8, ATTR_TYPES_OVR=0
         let idr1 = Idr1::from(read32(&mut dev, IDR1));
         assert_eq!(idr1.sidsize(), 16);
         assert_eq!(idr1.cmdqs(), 8);
         assert_eq!(idr1.eventqs(), 8);
-        assert!(idr1.attr_types_ovr());
+        assert!(!idr1.attr_types_ovr());
         assert!(!idr1.tables_preset());
         assert!(!idr1.queues_preset());
         assert!(!idr1.rel());
@@ -1404,7 +1709,7 @@ mod tests {
     fn make_cmdq_test_device() -> SmmuDevice {
         // Allocate enough guest memory for CMDQ + MSI target page.
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &SmmuConfig::default(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
 
         // Program CMDQ_BASE: address + log2size.
         let cmdq_base = QueueBase::new()
@@ -1572,7 +1877,7 @@ mod tests {
     #[test]
     fn test_cmdq_log2size_clamped_to_idr1() {
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &SmmuConfig::default(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
 
         // IDR1.CMDQS = 8, IDR1.EVENTQS = 8. Program a larger value (20).
         let cmdq_base = QueueBase::new()
@@ -1695,7 +2000,7 @@ mod tests {
     fn test_cmdq_disabled() {
         // Create device but do NOT enable CMDQEN.
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &SmmuConfig::default(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
 
         let cmdq_base = QueueBase::new()
             .with_log2size(TEST_CMDQ_LOG2SIZE)
@@ -1719,6 +2024,374 @@ mod tests {
     }
 
     // =========================================================================
+    // Accelerated invalidation batching tests
+    // =========================================================================
+
+    /// A mock invalidation sink that records each flushed batch and can be
+    /// configured to fail after accepting a fixed number of entries (to
+    /// exercise the partial-failure path).
+    struct MockInvalidationSink {
+        /// Each flushed batch, recorded in order as a list of `[qw0, qw1]`
+        /// command pairs.
+        batches: parking_lot::Mutex<Vec<Vec<[u64; 2]>>>,
+        /// If `Some(n)`, every `invalidate` accepts at most `n` entries,
+        /// returning a short count to simulate a host rejection.
+        accept_limit: parking_lot::Mutex<Option<usize>>,
+    }
+
+    impl MockInvalidationSink {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                batches: parking_lot::Mutex::new(Vec::new()),
+                accept_limit: parking_lot::Mutex::new(None),
+            })
+        }
+
+        fn set_accept_limit(&self, limit: usize) {
+            *self.accept_limit.lock() = Some(limit);
+        }
+
+        fn batches(&self) -> Vec<Vec<[u64; 2]>> {
+            self.batches.lock().clone()
+        }
+    }
+
+    impl crate::shared::AcceleratedInvalidationSink for MockInvalidationSink {
+        fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
+            self.batches.lock().push(entries.to_vec());
+            match *self.accept_limit.lock() {
+                // Simulate the host rejecting the entry at index `limit`.
+                Some(limit) if limit < entries.len() => Err(limit),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// A mock per-stream accel backend. Whether SID-based invalidations are
+    /// forwarded is decided by the emulator from the stream's config, not by
+    /// the backend.
+    struct MockStreamBackend;
+
+    impl crate::shared::AcceleratedStreamBackend for MockStreamBackend {
+        fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Stream table base/size used to set up a translating stream in tests.
+    const TEST_STRTAB_GPA: u64 = 0x3_0000;
+    const TEST_STRTAB_LOG2SIZE: u8 = 9; // 512 entries, covers SID 0x100
+
+    /// Register a per-stream accel backend for a device on `secondary_bus`
+    /// (stream_id_base 0), returning the resulting StreamID. The SMMU is left
+    /// disabled, so the stream's policy is bypass — SID-based invalidations
+    /// for it are not forwarded.
+    fn register_test_stream(dev: &SmmuDevice, secondary_bus: u8) -> u32 {
+        use pci_core::bus_range::AssignedBusRange;
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(secondary_bus, secondary_bus);
+        dev.shared_state
+            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend));
+        (secondary_bus as u32) << 8
+    }
+
+    /// Like [`register_test_stream`], but drives the stream to `S1_TRANS` (sets
+    /// up the stream table + a translating STE and enables the SMMU) so
+    /// SID-based invalidations for it are forwarded.
+    fn register_translating_stream(dev: &SmmuDevice, secondary_bus: u8) -> u32 {
+        use crate::spec::ste::STE_SIZE;
+        use crate::spec::ste::Ste;
+        use crate::spec::ste::SteConfig;
+        use crate::spec::ste::SteDw0;
+        use crate::spec::ste::SteDw1;
+
+        let sid = (secondary_bus as u32) << 8;
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+        let ste = Ste {
+            qw0: SteDw0::new()
+                .with_v(true)
+                .with_config(SteConfig::S1_TRANS.0),
+            qw1: SteDw1::new(),
+            _qw2_7: [0; 6],
+        };
+        let ste_addr = TEST_STRTAB_GPA + sid as u64 * STE_SIZE as u64;
+        dev.guest_memory
+            .write_plain(ste_addr, &ste)
+            .expect("write STE");
+        register_test_stream(dev, secondary_bus)
+    }
+
+    /// Build a SID-based `CFGI_CD`/`CFGI_CD_ALL` entry for `sid`.
+    fn cfgi_cd_entry(opcode: CmdOpcode, sid: u32, qw1: u64) -> CmdEntry {
+        CmdEntry {
+            qw0: CmdCfgiCd::new().with_opcode(opcode.0).with_sid(sid).into(),
+            qw1,
+        }
+    }
+
+    /// Build a `CMD_SYNC(SIG_SEV)` entry.
+    fn sync_entry() -> CmdEntry {
+        let sync = CmdSync::new()
+            .with_opcode(CmdOpcode::CMD_SYNC.0)
+            .with_cs(SyncCs::SIG_SEV.0);
+        CmdEntry {
+            qw0: sync.into(),
+            qw1: 0,
+        }
+    }
+
+    /// Build a forwardable TLBI entry with the given opcode and operand.
+    fn tlbi_entry(opcode: CmdOpcode, qw1: u64) -> CmdEntry {
+        CmdEntry {
+            qw0: opcode.0 as u64,
+            qw1,
+        }
+    }
+
+    fn make_accel_cmdq_test_device() -> (SmmuDevice, Arc<MockInvalidationSink>) {
+        let dev = make_cmdq_test_device();
+        let sink = MockInvalidationSink::new();
+        dev.shared_state.register_invalidation_sink(sink.clone());
+        (dev, sink)
+    }
+
+    /// A run of forwardable commands is flushed as one batch at `CMD_SYNC`.
+    #[test]
+    fn test_cmdq_batch_flush_on_sync() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xA));
+        write_cmdq_entry(&dev, 1, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xB));
+        write_cmdq_entry(&dev, 2, &tlbi_entry(CmdOpcode::TLBI_NH_ASID, 0xC));
+        write_cmdq_entry(&dev, 3, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 4);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 4);
+        assert_eq!(cons.err(), 0);
+
+        // A single batch of three entries, in program order.
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0],
+            vec![
+                [CmdOpcode::TLBI_NH_VA.0 as u64, 0xA],
+                [CmdOpcode::TLBI_NH_VA.0 as u64, 0xB],
+                [CmdOpcode::TLBI_NH_ASID.0 as u64, 0xC],
+            ]
+        );
+    }
+
+    /// A configuration command between two invalidation runs forces a flush, so
+    /// the runs land in separate batches.
+    #[test]
+    fn test_cmdq_batch_flush_on_config() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xA));
+        write_cmdq_entry(&dev, 1, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xB));
+        // CFGI_STE is a boundary: flush before it. With no backend registered
+        // for the SID it is otherwise a no-op.
+        write_cmdq_entry(
+            &dev,
+            2,
+            &CmdEntry {
+                qw0: CmdOpcode::CFGI_STE.0 as u64,
+                qw1: 0,
+            },
+        );
+        write_cmdq_entry(&dev, 3, &tlbi_entry(CmdOpcode::TLBI_NH_VAA, 0xC));
+        write_cmdq_entry(&dev, 4, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 5);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 5);
+        assert_eq!(cons.err(), 0);
+
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].len(), 2);
+        assert_eq!(batches[1], vec![[CmdOpcode::TLBI_NH_VAA.0 as u64, 0xC]]);
+    }
+
+    /// A trailing invalidation run with no following barrier is flushed at
+    /// queue drain.
+    #[test]
+    fn test_cmdq_batch_flush_on_drain() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_ALL, 0));
+        write_cmdq_entry(&dev, 1, &tlbi_entry(CmdOpcode::TLBI_NH_ALL, 0));
+
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 2);
+        assert_eq!(cons.err(), 0);
+
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2);
+    }
+
+    /// `CFGI_CD` / `CFGI_CD_ALL` are forwarded to the host (in-place CD edits
+    /// must invalidate the host's cached CD) once the stream is translating.
+    #[test]
+    fn test_cmdq_cfgi_cd_forwarded() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        // SID-based invalidations only forward once the stream is translating
+        // (the guest has driven its STE to an `S1_TRANS` config).
+        let sid = register_translating_stream(&dev, 1);
+
+        let cfgi_cd = cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0x1234);
+        let cfgi_cd_all = cfgi_cd_entry(CmdOpcode::CFGI_CD_ALL, sid, 0);
+        write_cmdq_entry(&dev, 0, &cfgi_cd);
+        write_cmdq_entry(&dev, 1, &cfgi_cd_all);
+        write_cmdq_entry(&dev, 2, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 3);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 3);
+        assert_eq!(cons.err(), 0);
+
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0],
+            vec![[cfgi_cd.qw0, 0x1234], [cfgi_cd_all.qw0, 0]]
+        );
+    }
+
+    /// A SID-based invalidation for a stream that is not translating (e.g. the
+    /// guest's `CFGI_CD` before it installs the translating STE) is skipped
+    /// — consumed as a no-op, not forwarded, and never raises `CERROR_ILL`.
+    #[test]
+    fn test_cmdq_cfgi_cd_skipped_when_not_translating() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        let sid = register_test_stream(&dev, 1);
+
+        write_cmdq_entry(&dev, 0, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0x1234));
+        write_cmdq_entry(&dev, 1, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 2); // both consumed
+        assert_eq!(cons.err(), 0); // no CMDQ error
+
+        // Nothing forwarded (the batch was empty at the CMD_SYNC flush).
+        assert!(sink.batches().is_empty());
+    }
+
+    /// A skipped SID-based invalidation flushes any pending batch first, so the
+    /// partial-failure → `CMDQ_CONS` index mapping stays correct (no gaps).
+    #[test]
+    fn test_cmdq_skip_flushes_pending_batch() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        let sid = register_test_stream(&dev, 1); // not translating → CFGI_CD skipped
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_ALL, 0xA));
+        write_cmdq_entry(&dev, 1, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0));
+        write_cmdq_entry(&dev, 2, &tlbi_entry(CmdOpcode::TLBI_NH_ALL, 0xB));
+        write_cmdq_entry(&dev, 3, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 4);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 4);
+        assert_eq!(cons.err(), 0);
+
+        // The leading TLBI flushed as its own batch (before the skip), then the
+        // trailing TLBI flushed at CMD_SYNC.
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0], vec![[CmdOpcode::TLBI_NH_ALL.0 as u64, 0xA]]);
+        assert_eq!(batches[1], vec![[CmdOpcode::TLBI_NH_ALL.0 as u64, 0xB]]);
+    }
+
+    /// `TLBI_S12_VMALL` is illegal on a stage-1-only SMMU and raises
+    /// `CERROR_ILL`, stopping at the offending command — it is never forwarded.
+    #[test]
+    fn test_cmdq_s12_vmall_illegal() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xA));
+        write_cmdq_entry(
+            &dev,
+            1,
+            &CmdEntry {
+                qw0: CmdOpcode::TLBI_S12_VMALL.0 as u64,
+                qw1: 0,
+            },
+        );
+        write_cmdq_entry(&dev, 2, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 3);
+
+        // Processing stops at the illegal command (index 1).
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 1);
+        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
+
+        // The preceding forwardable command was flushed before the illegal one.
+        let batches = sink.batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], vec![[CmdOpcode::TLBI_NH_VA.0 as u64, 0xA]]);
+    }
+
+    /// `ATC_INV` is illegal while ATS is disabled (`IDR0.ATS=0`) and raises
+    /// `CERROR_ILL` instead of being forwarded.
+    #[test]
+    fn test_cmdq_atc_inv_illegal_when_ats_disabled() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        assert!(!dev.idr0.ats());
+
+        write_cmdq_entry(
+            &dev,
+            0,
+            &CmdEntry {
+                qw0: CmdOpcode::ATC_INV.0 as u64,
+                qw1: 0,
+            },
+        );
+        write_cmdq_entry(&dev, 1, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 0);
+        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
+        assert!(sink.batches().is_empty());
+    }
+
+    /// On a partial host failure, `CMDQ_CONS` lands on the offending entry
+    /// (batch start + processed count) and `CERROR_ILL` is raised.
+    #[test]
+    fn test_cmdq_partial_failure_cons() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        // The host accepts only the first entry of any batch.
+        sink.set_accept_limit(1);
+
+        write_cmdq_entry(&dev, 0, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xA));
+        write_cmdq_entry(&dev, 1, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xB));
+        write_cmdq_entry(&dev, 2, &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xC));
+        write_cmdq_entry(&dev, 3, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 4);
+
+        // Batch started at index 0, host processed 1 → offending entry = 1.
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 1);
+        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
+    }
+
+    // =========================================================================
     // EVTQ tests
     // =========================================================================
 
@@ -1732,7 +2405,7 @@ mod tests {
     /// Create a device with EVTQ configured and enabled.
     fn make_evtq_test_device() -> SmmuDevice {
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &SmmuConfig::default(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
 
         // Program EVTQ_BASE.
         let evtq_base = QueueBase::new()
@@ -1955,13 +2628,7 @@ mod tests {
         // =====================================================================
 
         let gm = GuestMemory::allocate(0x80_0000); // 8 MiB
-        let mut dev = SmmuDevice::new(
-            TEST_MMIO_BASE,
-            gm.clone(),
-            &SmmuConfig::default(),
-            None,
-            None,
-        );
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
 
         // =====================================================================
         // Step 1: Probe — read IDR registers (arm_smmu_device_hw_probe)
@@ -2412,13 +3079,7 @@ mod tests {
         const STREAM_ID: u32 = (BUS as u32) << 8;
 
         let gm = GuestMemory::allocate(0x80_0000);
-        let mut dev = SmmuDevice::new(
-            TEST_MMIO_BASE,
-            gm.clone(),
-            &SmmuConfig::default(),
-            None,
-            None,
-        );
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
 
         // Set up stream table, CD, and page tables in guest memory.
         let ste = Ste {
@@ -2619,13 +3280,7 @@ mod tests {
     #[test]
     fn test_cmdq_cons_writable_when_disabled() {
         let gm = GuestMemory::allocate(0x40_0000);
-        let mut dev = SmmuDevice::new(
-            TEST_MMIO_BASE,
-            gm.clone(),
-            &SmmuConfig::default(),
-            None,
-            None,
-        );
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
 
         // CMDQEN is 0 at reset — CMDQ_CONS should be writable.
         assert!(!Cr0::from(read32(&mut dev, CR0)).cmdqen());
@@ -2666,13 +3321,7 @@ mod tests {
         use crate::spec::commands::CmdSync;
 
         let gm = GuestMemory::allocate(0x40_0000);
-        let mut dev = SmmuDevice::new(
-            TEST_MMIO_BASE,
-            gm.clone(),
-            &SmmuConfig::default(),
-            None,
-            None,
-        );
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
 
         const CMDQ_GPA: u64 = 0x20_0000;
 

@@ -2308,6 +2308,9 @@ impl InitializedVm {
             // Register the VFIO cdev + iommufd resolver for devices opened
             // via the cdev interface. Spawns a VfioCdevManager task that
             // shares IOAS contexts across devices with the same --iommu ID.
+            // Devices behind an accel-capable SMMU carry their nesting
+            // context in the per-device DmaTarget, so no separate side-channel
+            // is needed.
             let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
                 driver_source.builder().build("vfio-cdev-mgr"),
                 dma_mapper_client,
@@ -2336,7 +2339,7 @@ impl InitializedVm {
             smmu_wiring::setup_smmu(
                 &cfg.pcie_root_complexes,
                 resolved,
-                &pcie_host_bridges,
+                &mut pcie_host_bridges,
                 &chipset_builder,
                 &gm,
             )?

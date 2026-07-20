@@ -112,6 +112,14 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
 ///
 /// Spawns a `VfioCdevManager` task internally and communicates with it via RPC
 /// to share IOAS contexts across devices referencing the same iommu ID.
+///
+/// Devices whose [`DmaTarget`](pci_core::dma::DmaTarget) reports
+/// [`DmaPassthrough::HardwareNestable`](pci_core::dma::DmaPassthrough::HardwareNestable)
+/// (an accel-capable SMMU) get iommufd nested S1 translation: the resolver
+/// downcasts the opaque nesting handle to a [`smmu::SmmuNestingContext`],
+/// allocates the S2 parent HWPT, creates the per-SMMU accel state and
+/// per-device stream backend, and registers the backend with the SMMU shared
+/// state.
 pub struct VfioCdevDeviceResolver {
     client: crate::manager::VfioCdevManagerClient,
     _task: pal_async::task::Task<()>,
@@ -159,39 +167,98 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             bar_addresses,
         } = resource;
 
-        // The cdev/iommufd path currently attaches devices to an identity
-        // IOAS; nested stage-1 translation is not yet wired up here. Match
-        // exhaustively so a new disposition can't silently slip through.
-        match input.dma_target.passthrough() {
-            pci_core::dma::DmaPassthrough::Allowed => {}
+        // Inspect the device's passthrough disposition. A software/emulated
+        // IOMMU cannot program the host IOMMU, so reject. A hardware-nestable
+        // IOMMU hands us an opaque handle we downcast to the SMMU nesting
+        // context and wire up below; a plain (allowed) target needs no
+        // nesting.
+        let nesting_ctx: Option<smmu::SmmuNestingContext> = match input.dma_target.passthrough() {
             pci_core::dma::DmaPassthrough::SoftwareBlocked => {
-                anyhow::bail!("VFIO device {pci_id} is behind a software IOMMU")
+                anyhow::bail!(
+                    "VFIO device {pci_id} is behind a software IOMMU that cannot \
+                     program the host IOMMU for passthrough DMA"
+                );
             }
-            pci_core::dma::DmaPassthrough::HardwareNestable(_) => {
-                anyhow::bail!("VFIO device {pci_id}: iommufd nested translation not yet supported")
-            }
-        }
+            pci_core::dma::DmaPassthrough::Allowed => None,
+            pci_core::dma::DmaPassthrough::HardwareNestable(handle) => Some(
+                handle
+                    .downcast_ref::<smmu::SmmuNestingContext>()
+                    .context("hardware-nestable DMA target was not an SMMU nesting context")?
+                    .clone(),
+            ),
+        };
 
-        tracing::info!(pci_id, iommu_id, "opening VFIO cdev device with iommufd");
+        // The manager shares one vIOMMU per emulated SMMU, matched by the
+        // identity (`Arc::ptr_eq`) of the SMMU's shared state. Hand it the
+        // `Arc` directly; `None` signals the plain identity-DMA path (no
+        // nesting).
+        let vsmmu = nesting_ctx.as_ref().map(|ctx| ctx.shared.clone());
 
-        let resp = self
+        tracing::info!(
+            pci_id,
+            iommu_id,
+            needs_nesting = nesting_ctx.is_some(),
+            "opening VFIO cdev device with iommufd"
+        );
+
+        let mut resp = self
             .client
             .prepare_device(crate::manager::CdevPrepareRequest {
                 pci_id: pci_id.clone(),
                 cdev,
                 iommufd,
                 iommu_id,
+                vsmmu,
             })
             .await
             .context("VFIO cdev manager failed")?;
 
-        let cdev_binding = crate::manager::VfioCdevBinding::from_response(resp, pci_id.clone());
+        // One owned handle to the VFIO device, shared (via `Arc`) by the PCI
+        // emulation and, for a nested device, the iommufd stream backend — so a
+        // single fd serves both, with no `dup` (mirroring QEMU's one
+        // `vbasedev->fd`).
+        let nesting = resp.nesting.take();
+        let iommufd_devid = resp.iommufd_devid;
+        let (device, cdev_binding) =
+            crate::manager::VfioCdevBindingState::from_response(resp, pci_id.clone());
+
+        // If the device is nested, wire the manager's iommufd objects into
+        // the emulated SMMU: finalize host-derived parameters and register
+        // the per-device stream backend. The manager already created (or
+        // reused) the shared vIOMMU and queried host capabilities.
+        if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
+            // Finalize the vSMMU's host-derived parameters (OAS, ...) against
+            // the physical SMMU backing this device. Runs once per vSMMU; a
+            // later device on a different physical SMMU is rejected here.
+            ctx.shared
+                .resolve_host_caps(nesting.host_caps)
+                .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
+
+            // Register the per-vIOMMU invalidation sink. All devices behind
+            // this emulated SMMU share one `SmmuAccelState` (vIOMMU), so this
+            // registers the sink once; subsequent devices' registrations are
+            // ignored by the SMMU.
+            ctx.shared
+                .register_invalidation_sink(nesting.accel_state.clone());
+
+            let backend = Arc::new(crate::iommufd_nesting::IommufdStreamBackend::new(
+                nesting.accel_state,
+                iommufd_devid,
+                device.clone(),
+            ));
+
+            ctx.shared
+                .register_accel_device(ctx.bus_range.clone(), ctx.stream_id_base, backend);
+
+            tracing::info!(pci_id, "registered iommufd nesting backend with SMMU");
+        }
 
         let memory_mapper = input
             .shared_mem_mapper
             .context("memory mapper is required for VFIO device assignment")?;
 
-        let device = VfioAssignedPciDevice::from_cdev(
+        let assigned = VfioAssignedPciDevice::from_cdev(
+            device,
             cdev_binding,
             pci_id,
             input.register_mmio,
@@ -201,6 +268,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         )
         .await?;
 
-        Ok(device.into())
+        Ok(assigned.into())
     }
 }

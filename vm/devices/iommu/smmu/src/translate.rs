@@ -23,12 +23,20 @@ use guestmem::GuestMemory;
 /// Result of an STE config dispatch.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SteAction {
-    /// Abort all transactions for this stream.
+    /// Abort the transaction with **no event recorded**. Produced for the
+    /// `STE.Config` encodings with `Config[2] == 0`: the `0b000` (abort)
+    /// encoding and the reserved `0b001`/`0b010`/`0b011` encodings, which the
+    /// SMMUv3 `STE.Config` table defines to "behave as `0b000`".
     Abort,
     /// Bypass translation (identity IOVA=GPA).
     Bypass,
     /// Stage 1 translation — proceed to CD lookup.
     S1Translate,
+    /// The `STE.Config` selects a translation stage this SMMU does not
+    /// implement (`0b110`/`0b111` while `IDR0.S2P == 0`). Per SMMUv3 such an
+    /// STE is ILLEGAL and "behaves as described for `STE.V == 0`": the
+    /// transaction is terminated and a `C_BAD_STE` event is recorded.
+    Illegal,
 }
 
 /// Parameters for walking an AArch64 stage 1 page table, extracted from
@@ -118,12 +126,19 @@ pub fn lookup_ste(
 }
 
 /// Determine the translation action from an STE's Config field.
-pub fn ste_config_action(ste: &Ste) -> Result<SteAction, SteConfig> {
+///
+/// This SMMU is stage-1 only (`IDR0.S2P == 0`), so any `Config` that selects
+/// stage 2 (`0b110`/`0b111`) is ILLEGAL and must fault with `C_BAD_STE`. Per
+/// the SMMUv3 `STE.Config` table, `Config[2] == 0` (the `0b000` encoding and
+/// the reserved `0b0xx` encodings) aborts the transaction with **no** event.
+pub fn ste_config_action(ste: &Ste) -> SteAction {
     match ste.config() {
-        SteConfig::ABORT => Ok(SteAction::Abort),
-        SteConfig::BYPASS => Ok(SteAction::Bypass),
-        SteConfig::S1_TRANS => Ok(SteAction::S1Translate),
-        other => Err(other),
+        SteConfig::BYPASS => SteAction::Bypass,
+        SteConfig::S1_TRANS => SteAction::S1Translate,
+        SteConfig::S2_TRANS | SteConfig::S1S2_TRANS => SteAction::Illegal,
+        // 0b000 and the reserved 0b001/0b010/0b011 encodings ("behave as
+        // 0b000"): abort with no event recorded.
+        _ => SteAction::Abort,
     }
 }
 
@@ -162,12 +177,26 @@ pub fn lookup_cd(
         s1_context_ptr.wrapping_add((ssid as u64) * (crate::spec::cd::CD_SIZE as u64)) & oas_mask;
     let cd: Cd = gm.read_plain(cd_addr).map_err(|_| SmmuFault::bad_cd(sid))?;
 
+    tracelimit::info_ratelimited!(
+        sid,
+        cd_addr = format_args!("{:#x}", cd_addr),
+        cd_dw0 = format_args!("{:#018x}", u64::from(cd.qw0)),
+        cd_dw1 = format_args!("{:#018x}", u64::from(cd.qw1)),
+        "lookup_cd: read CD from guest memory"
+    );
+
     if !cd.valid() {
+        tracelimit::warn_ratelimited!(
+            sid,
+            cd_addr = format_args!("{:#x}", cd_addr),
+            "lookup_cd: CD not valid"
+        );
         return Err(SmmuFault::bad_cd(sid));
     }
 
     // Only AArch64 page tables are supported.
     if !cd.aa64() {
+        tracelimit::warn_ratelimited!(sid, "lookup_cd: CD not AA64");
         return Err(SmmuFault::bad_cd(sid));
     }
 
@@ -175,6 +204,7 @@ pub fn lookup_cd(
     // (no stall) and TERM_MODEL=1 (terminate on fault), an access flag
     // fault would be unrecoverable, so the guest must pre-set A=1.
     if !cd.qw0.a() {
+        tracelimit::warn_ratelimited!(sid, "lookup_cd: CD.A not set (TERM_MODEL=1 requires A=1)");
         return Err(SmmuFault::bad_cd(sid));
     }
 
@@ -539,30 +569,45 @@ mod tests {
     #[test]
     fn test_ste_config_abort() {
         let ste = make_abort_ste();
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::Abort));
+        assert_eq!(ste_config_action(&ste), SteAction::Abort);
     }
 
     #[test]
     fn test_ste_config_bypass() {
         let ste = make_bypass_ste();
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::Bypass));
+        assert_eq!(ste_config_action(&ste), SteAction::Bypass);
     }
 
     #[test]
     fn test_ste_config_s1_trans() {
         let ste = make_s1_ste(CD_BASE);
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::S1Translate));
+        assert_eq!(ste_config_action(&ste), SteAction::S1Translate);
     }
 
     #[test]
-    fn test_ste_config_unknown() {
-        // Config = 0b010 is not a valid configuration.
+    fn test_ste_config_reserved_aborts() {
+        // Config = 0b010 is a reserved encoding. Per the SMMUv3 STE.Config
+        // table it "behaves as 0b000": abort with no event recorded.
         let ste = Ste {
             qw0: SteDw0::new().with_v(true).with_config(0b010),
             qw1: SteDw1::new(),
             _qw2_7: [0; 6],
         };
-        assert!(ste_config_action(&ste).is_err());
+        assert_eq!(ste_config_action(&ste), SteAction::Abort);
+    }
+
+    #[test]
+    fn test_ste_config_stage2_is_illegal() {
+        // This SMMU advertises IDR0.S2P=0, so Config values that select stage 2
+        // (0b110 S2-only and 0b111 nested) are ILLEGAL and must fault.
+        for config in [SteConfig::S2_TRANS.0, SteConfig::S1S2_TRANS.0] {
+            let ste = Ste {
+                qw0: SteDw0::new().with_v(true).with_config(config),
+                qw1: SteDw1::new(),
+                _qw2_7: [0; 6],
+            };
+            assert_eq!(ste_config_action(&ste), SteAction::Illegal);
+        }
     }
 
     // =========================================================================
