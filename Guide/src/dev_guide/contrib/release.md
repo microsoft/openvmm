@@ -1,16 +1,33 @@
-# Release Management
+# OpenHCL Release Management
 
-Occasionally, the OpenVMM project will declare upcoming release milestones. We
+This page describes the OpenHCL release branch, stabilization, and servicing
+process.
+
+```admonish note title="See also"
+[OpenVMM Release Model and Support](./openvmm_release.md) describes standalone
+OpenVMM releases. OpenVMM tags and versions are independent from the OpenHCL
+release branches described below.
+```
+
+```admonish warning
+The `release/*` branches on this page service OpenHCL. They are not standalone
+OpenVMM release branches. Pre-1.0 OpenVMM fixes ship from `main` in the next
+rolling OpenVMM release instead of being backported here.
+```
+Occasionally, the OpenHCL project will declare upcoming release milestones. We
+Occasionally, the OpenHCL project will declare upcoming release milestones. We
 stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
 named for the YYMM when the branch was forked. Future references to the release
 number will be shortened to `<RELEASE>` in this doc. We expect a high quality
-bar for all code that goes into the OpenVMM main branch, and we ask developers
-to hold these release branches to the highest quality standards. The OpenVMM
-maintainers will gradually slow the rate of churn into these branches as we get
-closer to a close date.
+bar for all code that goes into the repository's main branch, and we ask
+developers to hold these release branches to the highest quality standards. The
+OpenHCL maintainers will gradually slow the rate of churn into these branches as
+we get closer to a close date.
 
-> **Note:** Some older release branches use the format `release/<YYMM>` without
-> the major and minor version numbers (e.g., `release/2411`, `release/2505`).
+```admonish note
+Some older release branches use the format `release/<YYMM>` without the major
+and minor version numbers, such as `release/2411` and `release/2505`.
+```
 
 This process should not impact your typical workflow; all new work should go
 into the `main` branch. But, to ease the cherry-picks, we may ask that you hold
@@ -19,7 +36,7 @@ process.
 
 ## Marking, Approval Process, Code Flow
 
-The OpenVMM maintainers will publish various dates for the upcoming releases.
+The OpenHCL maintainers will publish various dates for upcoming releases.
 Currently, these dates are driven by a Microsoft-internal process and can, and
 do, often change. Microsoft does not mean to convey any new product launches by
 choices of these dates.
@@ -42,7 +59,9 @@ We track the state of candidates for a given release by tagging the PRs with the
   * N.B.: A maintainer will _remove_ this tag if the fix is not accepted into the release.
 * `backported_<RELEASE>`: This PR (to `main`) has been cherry-picked to the release branch.
 
-The [`repo_support/relabel_backported.py`](https://github.com/microsoft/openvmm/blob/main/repo_support/relabel_backported.py) script can be used to automatically transition PRs from `backport_<RELEASE>` to `backported_<RELEASE>` once they have been cherry-picked to the release branch.
+The [`repo_support/relabel_backported.py`][relabel-backported] script can
+automatically transition PRs from `backport_<RELEASE>` to
+`backported_<RELEASE>` once they have been cherry-picked to the release branch.
 
 #### Seeking Approval for Backport
 
@@ -66,7 +85,7 @@ When creating a backport PR to a release branch:
   resolution or additional modifications), clearly indicate this in the PR
   description. This signals to the reviewer that extra care is needed during
   the review process.
-  
+
 ## Existing Release Branches
 
 | Release          | Phase              | Notes                                                                                |
@@ -81,3 +100,5 @@ When creating a backport PR to a release branch:
 
 We welcome feedback, especially if you would like to depend on a reliable
 release process. Please reach out!
+
+[relabel-backported]: https://github.com/microsoft/openvmm/blob/main/repo_support/relabel_backported.py
