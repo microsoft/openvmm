@@ -869,6 +869,7 @@ impl HclNetworkVFManagerWorker {
                     | Vtl2DeviceState::DeviceEnumerated,
                     _,
                 ) => {
+                    *self.guest_state.vtl0_vfid.lock().await = None;
                     let old_bus_control = std::mem::replace(
                         &mut self.vtl0_bus_control,
                         bus_control
