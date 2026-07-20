@@ -299,6 +299,8 @@ fn build_dt(
     let p_iommu_cells = builder.add_string("#iommu-cells")?;
     let p_iommu_map = builder.add_string("iommu-map")?;
     let p_linux_pci_probe_only = builder.add_string("linux,pci-probe-only")?;
+    let p_no_map = builder.add_string("no-map")?;
+    let p_iommu_addresses = builder.add_string("iommu-addresses")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
@@ -462,6 +464,51 @@ fn build_dt(
             .add_u32(p_phandle, phandle)?
             .add_null(p_dma_coherent)?
             .end_node()?;
+    }
+
+    // Reserved memory nodes for SMMU MSI reserved IOVA ranges.
+    // These tell the guest kernel to identity-map the host IOMMU's MSI
+    // windows in S1 page tables, enabling MSI delivery through nested
+    // translation.
+    let has_rmr = smmu_configs
+        .iter()
+        .any(|cfg| !cfg.reserved_iova_ranges.is_empty());
+    if has_rmr {
+        let mut resv_builder = root_builder
+            .start_node("reserved-memory")?
+            .add_u32(p_address_cells, 2)?
+            .add_u32(p_size_cells, 2)?
+            .add_null(p_ranges)?;
+
+        for (smmu_idx, smmu) in smmu_configs.iter().enumerate() {
+            if smmu.reserved_iova_ranges.is_empty() {
+                continue;
+            }
+            let phandle = PHANDLE_SMMU_BASE + smmu_idx as u32;
+            for (range_idx, &range) in smmu.reserved_iova_ranges.iter().enumerate() {
+                let start = range.start();
+                let length = range.len();
+                let name = format!("msi-reserved@{:x}-{}", start, range_idx);
+                // iommu-addresses: <&smmu_phandle stream_id
+                //                   base_hi base_lo size_hi size_lo>
+                // stream_id 0 with full BDF range coverage.
+                let iommu_addrs: Vec<u32> = vec![
+                    phandle,
+                    0, // stream_id (applies to all streams)
+                    (start >> 32) as u32,
+                    start as u32,
+                    (length >> 32) as u32,
+                    length as u32,
+                ];
+                resv_builder = resv_builder
+                    .start_node(name.as_str())?
+                    .add_u64_array(p_reg, &[start, length])?
+                    .add_null(p_no_map)?
+                    .add_u32_array(p_iommu_addresses, &iommu_addrs)?
+                    .end_node()?;
+            }
+        }
+        root_builder = resv_builder.end_node()?;
     }
 
     // ARM64 Architectural Timer.

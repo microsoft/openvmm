@@ -179,14 +179,36 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
     // availability.
     #[cfg(guest_arch = "aarch64")]
     if let Some(shared) = params.smmu {
-        let dma_target = iommu_common::new_dma_target(
-            "smmu",
-            shared.translator(0),
-            params.bus_range.clone(),
-            0,
-            params.guest_memory.clone(),
-            params.msi,
-        );
+        // Accel SMMUs program the host IOMMU for nested stage-1 translation,
+        // so they permit VFIO passthrough: build a hardware-nestable DMA
+        // target carrying an opaque nesting context the VFIO resolver
+        // downcasts to wire the device into this SMMU. Non-accel SMMUs use a
+        // software-blocked translating target, so the resolver rejects
+        // passthrough (host IOMMU can't honor the emulated S1 tables).
+        let dma_target = if shared.is_accel() {
+            iommu_common::new_nestable_dma_target(
+                "smmu",
+                shared.translator(0),
+                params.bus_range.clone(),
+                0,
+                params.guest_memory.clone(),
+                Arc::new(smmu::SmmuNestingContext {
+                    shared: shared.clone(),
+                    bus_range: params.bus_range.clone(),
+                    stream_id_base: 0,
+                }),
+                params.msi,
+            )
+        } else {
+            iommu_common::new_dma_target(
+                "smmu",
+                shared.translator(0),
+                params.bus_range.clone(),
+                0,
+                params.guest_memory.clone(),
+                params.msi,
+            )
+        };
         let smmu_msi = msi.signal_msi.map(|inner_msi| {
             Arc::new(smmu::SmmuSignalMsi::new(shared.clone(), 0, inner_msi))
                 as Arc<dyn pci_core::msi::SignalMsi>

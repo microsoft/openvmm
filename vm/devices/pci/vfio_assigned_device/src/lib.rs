@@ -14,6 +14,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod iommufd_nesting;
 pub mod manager;
 pub mod resolver;
 
@@ -41,6 +42,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
+use std::sync::Arc;
 use vfio_assigned_device_resources::BarAddressConfig;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
@@ -213,8 +215,11 @@ pub(crate) struct VfioAssignedPciDevice {
 #[derive(Inspect)]
 struct VfioPciDevice {
     /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
+    ///
+    /// Held behind an `Arc` so the same fd can be shared with the iommufd
+    /// stream backend (nested path) without duplicating it.
     #[inspect(skip)]
-    device: vfio_sys::Device,
+    device: Arc<vfio_sys::Device>,
 
     /// Offset into the VFIO device fd where the PCI config region starts.
     #[inspect(hex)]
@@ -236,7 +241,7 @@ impl ConfigSpaceRead for VfioPciDevice {
         }
         let n = self
             .device
-            .as_ref()
+            .file()
             .read_at(
                 value.into_valid_byte_slice(),
                 self.config_offset + cfg_offset,
@@ -261,7 +266,7 @@ impl VfioPciDevice {
         }
         let n = self
             .device
-            .as_ref()
+            .file()
             .write_at(value.as_valid_byte_slice(), self.config_offset + cfg_offset)?;
         anyhow::ensure!(
             n == len,
@@ -291,7 +296,7 @@ impl VfioAssignedPciDevice {
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
         Self::from_device(
-            vfio_device,
+            Arc::new(vfio_device),
             manager::VfioBinding::Group(binding),
             pci_id,
             register_mmio,
@@ -302,16 +307,16 @@ impl VfioAssignedPciDevice {
         .await
     }
 
-    /// Create from a pre-opened VFIO device and a cdev binding.
+    /// Create from a shared VFIO device handle and a cdev binding.
     pub async fn from_cdev(
-        cdev_binding: manager::VfioCdevBinding,
+        device: Arc<vfio_sys::Device>,
+        binding: manager::VfioCdevBindingState,
         pci_id: String,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
     ) -> anyhow::Result<Self> {
-        let (device, binding) = cdev_binding.into_parts();
         Self::from_device(
             device,
             manager::VfioBinding::Cdev(binding),
@@ -325,7 +330,7 @@ impl VfioAssignedPciDevice {
     }
 
     async fn from_device(
-        vfio_device: vfio_sys::Device,
+        vfio_device: Arc<vfio_sys::Device>,
         mut binding: manager::VfioBinding,
         pci_id: String,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
@@ -476,7 +481,7 @@ impl VfioAssignedPciDevice {
                 mapped_region
                     .map(
                         0,
-                        &vfio_device.device,
+                        &*vfio_device.device,
                         region.vfio_offset + area.start(),
                         area.len() as usize,
                         true,
@@ -1503,7 +1508,7 @@ impl MmioIntercept for VfioAssignedPciDevice {
                     match self
                         .vfio_device
                         .device
-                        .as_ref()
+                        .file()
                         .read_at(data, region.vfio_offset + offset)
                     {
                         Ok(n) if n == data.len() => return IoResult::Ok,
@@ -1547,7 +1552,7 @@ impl MmioIntercept for VfioAssignedPciDevice {
                     match self
                         .vfio_device
                         .device
-                        .as_ref()
+                        .file()
                         .write_at(data, region.vfio_offset + offset)
                     {
                         Ok(n) if n == data.len() => return IoResult::Ok,

@@ -9325,6 +9325,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "pci_resources",
+ "smmu",
  "test_with_tracing",
  "tracelimit",
  "tracing",

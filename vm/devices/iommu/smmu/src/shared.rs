@@ -29,23 +29,241 @@ use guestmem::GuestMemory;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
 
+/// The context a host-assignment backend needs to wire a VFIO device into
+/// this emulated SMMU for hardware-accelerated nested stage-1 translation.
+///
+/// This is the concrete type carried (type-erased) by
+/// [`DmaPassthrough::HardwareNestable`](pci_core::dma::DmaPassthrough::HardwareNestable)
+/// for devices behind an accel-capable SMMU. The VFIO resolver downcasts the
+/// opaque handle to this type and runs the one-shot nesting handshake
+/// (`resolve_host_caps` → build a stream backend → [`register_accel_device`]).
+///
+/// [`register_accel_device`]: SmmuSharedState::register_accel_device
+#[derive(Clone)]
+pub struct SmmuNestingContext {
+    /// Shared state of the emulated SMMU this device sits behind.
+    pub shared: Arc<SmmuSharedState>,
+    /// The device's assigned bus range, used to derive its stream ID.
+    pub bus_range: AssignedBusRange,
+    /// Offset into the SMMU's stream table (0 for a 1:1 SMMU-per-root-complex
+    /// topology).
+    pub stream_id_base: u32,
+}
+
+/// Backend for a single VFIO device's stream, bridging SMMU CMDQ commands
+/// to iommufd nested HWPT operations.
+///
+/// The SMMU emulator dispatches CMDQ commands to registered backends on a
+/// per-stream-ID basis. Streams without a registered backend use the
+/// software page table walk path (emulated devices). Streams with a backend
+/// use hardware-accelerated translation via iommufd.
+///
+/// The SMMU emulator owns the SMMUv3 spec: it parses and validates the guest
+/// STE and dispatches a decoded [`StreamConfig`] to the backend, which only
+/// maps each variant onto host IOMMU operations.
+///
+/// This trait is per-device (one instance per VFIO device). Invalidation,
+/// which is vIOMMU-scoped, lives on [`AcceleratedInvalidationSink`] instead.
+pub trait AcceleratedStreamBackend: Send + Sync {
+    /// The guest reconfigured this stream's STE (via `CFGI_STE`), or the
+    /// emulator recomputed the stream's policy (e.g. on a `GBPA` write or
+    /// `SMMUEN` transition). The emulator has already parsed and validated
+    /// the STE into `config`. Only [`StreamConfig::Translate`] carries a
+    /// stream ID (for lazy vDevice allocation); the bypass and abort cases
+    /// have no per-stream identity to act on.
+    fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()>;
+}
+
+/// Sink that forwards a guest's invalidation commands to the host as a single
+/// ordered, batched stream per emulated SMMU.
+///
+/// Invalidation is **vIOMMU-scoped**, not device-scoped: a vIOMMU-scoped
+/// invalidate already covers every stream behind the emulated SMMU, and the
+/// host kernel offers no per-device invalidate ioctl for the nested path. So
+/// there is exactly one sink per accelerated SMMU, and a guest invalidation is
+/// forwarded **once** (not once per device), eliminating the per-device
+/// fan-out that would otherwise turn one guest command into M identical host
+/// syscalls for M devices.
+///
+/// The emulator accumulates consecutive forwardable CMDQ commands and flushes
+/// them to this sink as one batch (one `IOMMU_HWPT_INVALIDATE`) at each
+/// synchronization or configuration boundary, collapsing a shootdown burst of
+/// N commands from N syscalls to one.
+///
+/// Each entry is the raw 128-bit CMDQ command as a little-endian `[qw0, qw1]`
+/// quadword pair; the host kernel parses the opcode and operands. Keeping the
+/// interface a plain `[u64; 2]` keeps this crate free of any host-IOMMU binding
+/// types.
+pub trait AcceleratedInvalidationSink: Send + Sync {
+    /// Forward `entries` to the host as one ordered batch, preserving program
+    /// order.
+    ///
+    /// Returns `Ok(())` if the host handled the entire batch. Returns
+    /// `Err(handled)` if it did not, where `handled` is the number of leading
+    /// entries the host accepted — so the command at index `handled` is the
+    /// first one that failed, and the emulator stops draining there and raises
+    /// a CMDQ error. `handled` is always `< entries.len()` on the `Err` path.
+    fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize>;
+}
+
+/// A decoded stream (STE) configuration the SMMU emulator dispatches to an
+/// [`AcceleratedStreamBackend`].
+///
+/// The emulator decodes the guest's STE (validity and `STE.Config`) into one
+/// of these variants so the backend never has to interpret raw STE bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamConfig {
+    /// Abort all transactions. Produced for an invalid STE (`V=0`),
+    /// `Config=ABORT`, or any config the emulator does not support in
+    /// accelerated mode.
+    Abort,
+    /// Bypass translation (`Config=BYPASS`) — identity GPA→HPA via the
+    /// nesting parent (S2) HWPT.
+    Bypass,
+    /// Stage-1 translation (`Config=S1_TRANS`). Carries the stream ID (for
+    /// lazy vDevice allocation) and the raw stage-1 STE double-words.
+    Translate {
+        /// Stream ID this configuration applies to. Used by the backend to
+        /// allocate the iommufd vDevice (the virtual stream ID is not known
+        /// at backend construction time).
+        sid: u32,
+        /// Canonical stage-1 STE double-words `[DW0, DW1]`: the guest STE
+        /// reduced to the fields that are architecturally meaningful under this
+        /// vSMMU's advertised capabilities, with every RES0/IGNORED field
+        /// zeroed (see [`canonical_s1_ste_dwords`]). A host nesting binding can
+        /// consume these as-is; no further masking is required, because the
+        /// canonical set is validated against the host at attach time.
+        ste_dwords: [u64; 2],
+    },
+}
+
+/// Reduce a guest stage-1 STE to the double-words that are architecturally
+/// meaningful under this vSMMU's advertised capabilities, zeroing every field
+/// that is RES0 or IGNORED.
+///
+/// This is **architectural canonicalization**, not host-ABI masking: which
+/// fields survive is a consequence of the SMMUv3 architecture plus the
+/// capabilities this emulator advertises, so it belongs to the emulator rather
+/// than any host binding. Under the current fixed capabilities the dropped
+/// fields are all RES0/IGNORED:
+///
+/// - `S2P=0` → all stage-2 fields (S2FWB, S2HWU) are RES0;
+/// - `ATTR_TYPES_OVR=0` → MTCFG, MemAttr, SHCFG, ALLOCCFG are RES0;
+/// - `ATTR_PERMS_OVR=0` → NSCFG, PRIVCFG, INSTCFG are RES0;
+/// - `HYP=0` → STRW is fixed to NS-EL1 (0);
+/// - unadvertised optional features (S1PIE, S1MPAM, CONT, DCP, DRE, PPAR, MEV)
+///   are RES0/IGNORED; the SW bits have no hardware effect.
+///
+/// Retained — DW0: V, Config, S1Fmt, S1ContextPtr, S1CDMax;
+/// DW1: S1DSS, S1CIR, S1COR, S1CSH, S1STALLD, EATS. Rebuilding the words through
+/// the typed field setters keeps the selection tied to the spec definitions.
+///
+/// NOTE: if this emulator ever advertises one of the above features, the
+/// retained set must grow to match (and attach-time capability resolution must
+/// gate the new field against the host SMMU).
+fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste) -> [u64; 2] {
+    use crate::spec::ste::SteDw0;
+    use crate::spec::ste::SteDw1;
+
+    let dw0 = SteDw0::new()
+        .with_v(ste.qw0.v())
+        .with_config(ste.qw0.config())
+        .with_s1_fmt(ste.qw0.s1_fmt())
+        .with_s1_context_ptr(ste.qw0.s1_context_ptr())
+        .with_s1_cd_max(ste.qw0.s1_cd_max());
+
+    let dw1 = SteDw1::new()
+        .with_s1_dss(ste.qw1.s1_dss())
+        .with_s1_cir(ste.qw1.s1_cir())
+        .with_s1_cor(ste.qw1.s1_cor())
+        .with_s1_csh(ste.qw1.s1_csh())
+        .with_s1stalld(ste.qw1.s1stalld())
+        .with_eats(ste.qw1.eats());
+
+    [dw0.into(), dw1.into()]
+}
+
+/// Registration entry for a VFIO device with iommufd-accelerated translation.
+///
+/// The SID is derived dynamically from the `bus_range` (which holds the
+/// guest-assigned bus number) rather than being fixed at registration time,
+/// because PCIe bus numbers are assigned by the guest during enumeration.
+struct AccelDeviceRegistration {
+    /// The device's assigned bus range (shared with the PCIe port).
+    bus_range: AssignedBusRange,
+    /// Offset into this SMMU's stream table for the device's root complex.
+    stream_id_base: u32,
+    /// The iommufd-backed stream handler.
+    backend: Arc<dyn AcceleratedStreamBackend>,
+    /// The stream ID for which this device is currently attached in
+    /// translating (`S1_TRANS`) mode on the host, or `None` when the most
+    /// recently applied config is bypass/abort (or an apply failed).
+    ///
+    /// This is the exact vSID the backend used to allocate the host vDevice
+    /// and attach the nested HWPT, recorded at apply time rather than
+    /// recomputed at query time, so it matches the host attach state exactly.
+    /// It gates SID-based invalidation forwarding. Read and written only under
+    /// the `accel_devices` lock.
+    translating_sid: Option<u32>,
+}
+
+/// Composes an SMMU-local stream ID from a bus range, a base offset,
+/// and an optional per-device BDF.
+///
+/// The stream ID is `stream_id_base + (bdf & 0xFFFF)`. When `devid`
+/// is `None`, the default BDF `(secondary_bus, dev 0, fn 0)` is used.
+///
+/// Returns `None` if the secondary bus has not been assigned yet
+/// (still 0) or if the BDF's bus number falls outside the port's
+/// assigned range.
+fn compose_stream_id(
+    bus_range: &AssignedBusRange,
+    stream_id_base: u32,
+    devid: Option<u32>,
+) -> Option<u32> {
+    let (secondary, subordinate) = bus_range.bus_range();
+    if secondary == 0 {
+        return None;
+    }
+    let bdf = devid.unwrap_or((secondary as u32) << 8);
+    let bus = (bdf >> 8) as u8;
+    if bus < secondary || bus > subordinate {
+        tracelimit::warn_ratelimited!(bus, secondary, subordinate, "BDF out of port bus range");
+        return None;
+    }
+    Some(stream_id_base + (bdf & 0xFFFF))
+}
+
 /// Result of an SMMU translation attempt.
 #[derive(Debug)]
 enum TranslateResult {
-    /// SMMU disabled or bus not yet assigned — bypass (IOVA = GPA).
+    /// SMMU disabled (with `GBPA.ABORT=0`) or bus not yet assigned — bypass
+    /// (IOVA = GPA).
     Bypass,
     /// Translated GPA.
     Translated(u64),
-    /// Abort — STE says to abort this stream's DMA.
-    Abort(EvtEntry),
-    /// Translation fault — event to queue.
+    /// Global abort: the SMMU is disabled with `GBPA.ABORT=1`. The transaction
+    /// is terminated with an abort and **no** event record is generated (there
+    /// is no stream context to fault against).
+    GlobalAbort,
+    /// STE-driven abort with **no** event: `STE.Config[2] == 0` (the `0b000`
+    /// encoding, and the reserved `0b0xx` encodings which "behave as `0b000`").
+    /// Per the SMMUv3 `STE.Config` table these terminate the transaction
+    /// without recording an event — distinct from an illegal or invalid STE,
+    /// which faults via [`TranslateResult::Fault`].
+    Abort,
+    /// Translation fault, or an invalid (`V=0`) / illegal STE — records the
+    /// carried event (`C_BAD_STE`, `C_BAD_STREAMID`, or a stage-1 walk fault)
+    /// to the EVTQ.
     Fault(EvtEntry),
 }
 
@@ -70,15 +288,61 @@ pub struct SmmuSharedState {
     evtq_irq: Option<LineInterrupt>,
     /// Wired SPI interrupt line for global error signaling.
     gerror_irq: Option<LineInterrupt>,
+    /// Whether this SMMU is in accelerated mode (iommufd nested).
+    ///
+    /// When `true`, VFIO cdev devices behind this SMMU use hardware-
+    /// accelerated S1 translation. When `false`, all devices use the
+    /// software page table walk path.
+    accel: bool,
+    /// How the advertised OAS is resolved against the host SMMU at
+    /// device-attach time (see [`resolve_host_caps`](Self::resolve_host_caps)).
+    oas_policy: crate::SmmuOasPolicy,
+    /// Per-device accelerated backends (VFIO devices with iommufd nested).
+    ///
+    /// Devices not in this list use the software page table walk path.
+    /// The SID is derived dynamically from each entry's `AssignedBusRange`
+    /// because bus numbers are guest-assigned after device construction.
+    ///
+    /// This `Mutex` also serializes "compute current policy + apply to
+    /// backend" for accelerated streams: both device registration
+    /// (resolver/manager thread) and CMDQ-driven re-config (vCPU thread) hold
+    /// it across the policy computation and the backend ioctls, so the two are
+    /// totally ordered and the last-applied stream config always reflects the
+    /// newest guest intent. It is never nested inside the translation `inner`
+    /// lock (the DMA hot path takes `inner` only) and is not on the DMA path.
+    accel_devices: Mutex<Vec<AccelDeviceRegistration>>,
+    /// The per-vIOMMU invalidation sink for accelerated mode.
+    ///
+    /// Set once when the first VFIO device behind this SMMU binds. All devices
+    /// behind a single emulated SMMU share one vIOMMU and therefore a single
+    /// sink, so invalidations are forwarded once per command rather than once
+    /// per device. Unset for emulated-only SMMUs (no host to forward to). A
+    /// `OnceLock` because it is written once and then read lock-free from the
+    /// CMDQ forwarding path.
+    invalidation_sink: OnceLock<Arc<dyn AcceleratedInvalidationSink>>,
 }
 
 struct SharedStateInner {
     /// Whether the SMMU is enabled (CR0.SMMUEN).
     enabled: bool,
+    /// Mirror of `GBPA.ABORT`, kept in sync on GBPA writes. Selects the
+    /// disabled-state policy: when the SMMU is disabled, `true` aborts all
+    /// transactions and `false` bypasses (IOVA = GPA). Consulted by both the
+    /// non-accel translate path and the accel policy computation.
+    gbpa_abort: bool,
     /// Stream table base address.
     strtab_base: u64,
     /// Stream table log2 size (number of entries).
     strtab_log2size: u8,
+    /// Advertised output address size in bits. Reflected in IDR5.OAS and
+    /// used to derive `oas_mask`.
+    oas_bits: u8,
+    /// Host SMMU capabilities, once an accelerated VFIO device has bound and
+    /// [`SmmuSharedState::resolve_host_caps`] has finalized the host-derived
+    /// parameters. `None` until then (and always `None` for non-accel SMMUs).
+    /// A second device reporting different host caps is rejected — a single
+    /// vSMMU cannot be backed by two physical SMMUs.
+    resolved_host_caps: Option<crate::HostSmmuCaps>,
     /// Output address mask: `(1 << oas_bits) - 1`. Computed addresses for
     /// STE/CD/PT fetches are masked with this per SMMUv3 §3.4.
     oas_mask: u64,
@@ -129,12 +393,17 @@ pub(crate) struct SavedQueueState {
 impl SmmuSharedState {
     /// Creates a new shared state with the SMMU disabled.
     ///
-    /// `oas_bits` is the output address size in bits (e.g., 40 for a 40-bit
-    /// physical address space). Computed addresses for STE/CD/PT fetches are
-    /// truncated to this width, matching hardware behavior per SMMUv3 §3.4.
-    pub fn new(
+    /// `oas_bits` is the initial output address size in bits (e.g., 40 for a
+    /// 40-bit physical address space). Computed addresses for STE/CD/PT
+    /// fetches are truncated to this width, matching hardware behavior per
+    /// SMMUv3 §3.4. `oas_policy` controls whether the value is finalized
+    /// against the host SMMU at device-attach time (see
+    /// [`Self::resolve_host_caps`]).
+    pub(crate) fn new(
         guest_memory: GuestMemory,
         oas_bits: u8,
+        oas_policy: crate::SmmuOasPolicy,
+        accel: bool,
         evtq_irq: Option<LineInterrupt>,
         gerror_irq: Option<LineInterrupt>,
     ) -> Arc<Self> {
@@ -142,8 +411,11 @@ impl SmmuSharedState {
         Arc::new(Self {
             inner: RwLock::new(SharedStateInner {
                 enabled: false,
+                gbpa_abort: false,
                 strtab_base: 0,
                 strtab_log2size: 0,
+                oas_bits,
+                resolved_host_caps: None,
                 oas_mask,
             }),
             guest_memory,
@@ -160,17 +432,174 @@ impl SmmuSharedState {
             }),
             evtq_irq,
             gerror_irq,
+            accel,
+            oas_policy,
+            accel_devices: Mutex::new(Vec::new()),
+            invalidation_sink: OnceLock::new(),
         })
     }
 
-    /// Updates the SMMU enable state (called by SmmuDevice on CR0 writes).
-    pub fn set_enabled(&self, enabled: bool) {
+    /// Returns whether this SMMU is in accelerated mode (iommufd nested).
+    pub fn is_accel(&self) -> bool {
+        self.accel
+    }
+
+    /// Returns the currently advertised output address size in bits.
+    pub(crate) fn oas_bits(&self) -> u8 {
+        self.inner.read().oas_bits
+    }
+
+    /// Finalizes the host-derived vSMMU parameters against the physical SMMU
+    /// backing an accelerated device, and validates host/guest compatibility.
+    ///
+    /// Called when an accelerated VFIO device binds to iommufd, at which
+    /// point the backing physical SMMU is first known. Runs once per vSMMU:
+    /// the first device validates compatibility (TTF, TTENDIAN, GRAN4K) and
+    /// applies every host-derived parameter according to its configured
+    /// policy (currently OAS — `auto` adopts the host value; `fixed` is
+    /// validated as an upper bound). Subsequent devices must report identical
+    /// host caps; a mismatch is rejected, since a single vSMMU cannot be
+    /// backed by two different physical SMMUs.
+    ///
+    /// The compatibility checks cover only the features this emulator
+    /// actually advertises that the host hardware must honor when walking the
+    /// guest's page tables. Features the emulator does not advertise
+    /// (SSIDSIZE, ATS, RIL, 16K/64K granules, 2-level stream tables) are
+    /// intentionally not checked — see the TODOs at the IDR advertisement in
+    /// `emulator.rs`. The host stream-ID size (IDR1.SIDSIZE) and stream-table
+    /// format (IDR0.ST_LEVEL) are deliberately *not* validated: in the nested
+    /// path the host never indexes or walks the guest's stream table (the VMM
+    /// emulates it and registers each guest StreamID individually via
+    /// `IOMMU_VDEVICE_ALLOC`), so the host and guest stream-table parameters
+    /// are independent.
+    pub fn resolve_host_caps(&self, caps: crate::HostSmmuCaps) -> anyhow::Result<()> {
+        let mut inner = self.inner.write();
+
+        if let Some(existing) = inner.resolved_host_caps {
+            if existing != caps {
+                anyhow::bail!(
+                    "SMMU already bound to a physical SMMU ({existing:?}), but another \
+                     device reports different host capabilities ({caps:?}); a single \
+                     vSMMU cannot be backed by two physical SMMUs"
+                );
+            }
+            return Ok(());
+        }
+
+        // TTF: the emulator builds AArch64 S1 page tables, so the host must be
+        // able to walk them. TTF is a bitfield, not an ordered value — test
+        // the AArch64 bit rather than comparing.
+        if !caps.ttf.aarch64() {
+            anyhow::bail!(
+                "host SMMU does not support AArch64 translation tables \
+                 (IDR0.TTF={:#05b})",
+                u8::from(caps.ttf)
+            );
+        }
+
+        // TTENDIAN: the emulator uses little-endian table walks. The encoding
+        // is a set of distinct configurations, not an ordered range — test
+        // membership rather than comparing.
+        if !matches!(
+            caps.ttendian,
+            registers::Idr0TtEndian::MIXED | registers::Idr0TtEndian::LE
+        ) {
+            anyhow::bail!(
+                "host SMMU does not support little-endian translation tables \
+                 (IDR0.TTENDIAN={:#04b})",
+                caps.ttendian.0
+            );
+        }
+
+        // GRAN4K: the guest builds 4KB S1 page tables, so the host hardware
+        // must support the 4KB granule.
+        if !caps.gran4k {
+            anyhow::bail!("host SMMU does not support the 4KB translation granule (IDR5.GRAN4K=0)");
+        }
+
+        // OAS: decode the host's IDR5.OAS encoding (may be a reserved value),
+        // then `auto` adopts the host value while `fixed` must not exceed it.
+        let host_oas_bits = caps.oas.bits().ok_or_else(|| {
+            anyhow::anyhow!(
+                "host SMMU reported an unknown OAS encoding ({})",
+                caps.oas.0
+            )
+        })?;
+        match self.oas_policy {
+            crate::SmmuOasPolicy::Auto { .. } => {
+                inner.oas_bits = host_oas_bits;
+                inner.oas_mask = (1u64 << host_oas_bits) - 1;
+            }
+            crate::SmmuOasPolicy::Fixed(oas) => {
+                if oas > host_oas_bits {
+                    anyhow::bail!(
+                        "configured SMMU oas={oas} exceeds host SMMU OAS {host_oas_bits}; \
+                         lower the configured OAS or use oas=auto"
+                    );
+                }
+            }
+        }
+
+        inner.resolved_host_caps = Some(caps);
+        Ok(())
+    }
+
+    /// Updates the SMMU enable state (called by SmmuDevice on CR0 writes) and
+    /// atomically re-drives accelerated backends to the new policy.
+    ///
+    /// The state write and the re-drive happen under a single `accel_devices`
+    /// lock acquisition, so the transition is atomic with respect to device
+    /// registration and other policy changes: a backend can never observe a
+    /// half-updated view and apply a stale policy that then "wins".
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        let mut devices = self.accel_devices.lock();
         self.inner.write().enabled = enabled;
+        self.apply_all_locked(&mut devices);
+    }
+
+    /// Updates the mirrored `GBPA.ABORT` state (called by SmmuDevice on GBPA
+    /// writes) and atomically re-drives accelerated backends to the new
+    /// policy. Selects the disabled-state policy (abort vs bypass).
+    ///
+    /// Like [`set_enabled`](Self::set_enabled), the write and the re-drive are
+    /// a single `accel_devices` lock critical section.
+    pub(crate) fn set_gbpa_abort(&self, abort: bool) {
+        let mut devices = self.accel_devices.lock();
+        self.inner.write().gbpa_abort = abort;
+        self.apply_all_locked(&mut devices);
+    }
+
+    /// Atomically replaces all policy-relevant translation state (enable,
+    /// `GBPA.ABORT`, stream table base/size) and re-drives accelerated
+    /// backends to the resulting policy, in a single `accel_devices` lock
+    /// critical section.
+    ///
+    /// Used on device reset and state restore, where several policy inputs
+    /// change together: applying them as one atomic transition (rather than a
+    /// sequence of single-field updates) avoids transient intermediate
+    /// policies and any ordering fragility around when the final re-drive
+    /// observes fully-consistent state.
+    pub(crate) fn sync_translation_state(
+        &self,
+        enabled: bool,
+        gbpa_abort: bool,
+        strtab_base: u64,
+        strtab_log2size: u8,
+    ) {
+        let mut devices = self.accel_devices.lock();
+        {
+            let mut inner = self.inner.write();
+            inner.enabled = enabled;
+            inner.gbpa_abort = gbpa_abort;
+            inner.strtab_base = strtab_base;
+            inner.strtab_log2size = strtab_log2size;
+        }
+        self.apply_all_locked(&mut devices);
     }
 
     /// Updates the stream table configuration (called by SmmuDevice on
     /// STRTAB_BASE / STRTAB_BASE_CFG writes).
-    pub fn set_strtab(&self, base: u64, log2size: u8) {
+    pub(crate) fn set_strtab(&self, base: u64, log2size: u8) {
         let mut inner = self.inner.write();
         inner.strtab_base = base;
         inner.strtab_log2size = log2size;
@@ -178,20 +607,20 @@ impl SmmuSharedState {
 
     /// Updates the event queue configuration (called by SmmuDevice on
     /// EVTQ_BASE writes).
-    pub fn set_evtq_config(&self, base_addr: u64, log2size: u8) {
+    pub(crate) fn set_evtq_config(&self, base_addr: u64, log2size: u8) {
         let mut qs = self.queue_state.lock();
         qs.evtq_base_addr = base_addr;
         qs.evtq_log2size = log2size;
     }
 
     /// Updates the event queue enabled state (called on CR0 writes).
-    pub fn set_evtq_enabled(&self, enabled: bool) {
+    pub(crate) fn set_evtq_enabled(&self, enabled: bool) {
         self.queue_state.lock().evtq_enabled = enabled;
     }
 
     /// Updates both interrupt enable flags from IRQ_CTRL (called on
     /// IRQ_CTRL writes). Also updates the GERROR interrupt line level.
-    pub fn set_irq_ctrl(&self, evtq_irqen: bool, gerror_irqen: bool) {
+    pub(crate) fn set_irq_ctrl(&self, evtq_irqen: bool, gerror_irqen: bool) {
         let mut qs = self.queue_state.lock();
         qs.evtq_irqen = evtq_irqen;
         qs.gerror_irqen = gerror_irqen;
@@ -199,24 +628,24 @@ impl SmmuSharedState {
     }
 
     /// Reads the current GERROR register value.
-    pub fn read_gerror(&self) -> registers::Gerror {
+    pub(crate) fn read_gerror(&self) -> registers::Gerror {
         self.queue_state.lock().gerror
     }
 
     /// Reads the current GERRORN register value.
-    pub fn read_gerrorn(&self) -> registers::Gerror {
+    pub(crate) fn read_gerrorn(&self) -> registers::Gerror {
         self.queue_state.lock().gerrorn
     }
 
     /// Returns true if GERROR.CMDQ_ERR != GERRORN.CMDQ_ERR (error active).
-    pub fn cmdq_err_active(&self) -> bool {
+    pub(crate) fn cmdq_err_active(&self) -> bool {
         let qs = self.queue_state.lock();
         qs.gerror.cmdq_err() != qs.gerrorn.cmdq_err()
     }
 
     /// Writes GERRORN (guest acknowledging errors) and updates the
     /// interrupt line level.
-    pub fn write_gerrorn(&self, value: u32) {
+    pub(crate) fn write_gerrorn(&self, value: u32) {
         let mut qs = self.queue_state.lock();
         qs.gerrorn = registers::Gerror::from(value);
         self.update_gerror_irq(&qs);
@@ -225,7 +654,7 @@ impl SmmuSharedState {
     /// Toggles GERROR.CMDQ_ERR to signal a command queue error.
     ///
     /// Updates the interrupt line level under the lock.
-    pub fn toggle_cmdq_err(&self) {
+    pub(crate) fn toggle_cmdq_err(&self) {
         let mut qs = self.queue_state.lock();
         let new_val = !qs.gerror.cmdq_err();
         qs.gerror.set_cmdq_err(new_val);
@@ -259,7 +688,7 @@ impl SmmuSharedState {
     /// writes EVENTQ_CONS on page 1).
     ///
     /// Deasserts the EVTQ wired interrupt if the queue is now empty.
-    pub fn set_evtq_cons(&self, cons: u32) {
+    pub(crate) fn set_evtq_cons(&self, cons: u32) {
         let mut qs = self.queue_state.lock();
         qs.evtq_cons = cons;
         // Deassert EVTQ IRQ when the guest has drained all events.
@@ -272,18 +701,18 @@ impl SmmuSharedState {
 
     /// Returns the current event queue producer index (for guest reads
     /// of EVENTQ_PROD on page 1).
-    pub fn evtq_prod(&self) -> u32 {
+    pub(crate) fn evtq_prod(&self) -> u32 {
         self.queue_state.lock().evtq_prod
     }
 
     /// Returns the current event queue consumer index (for guest reads
     /// of EVENTQ_CONS on page 1).
-    pub fn evtq_cons(&self) -> u32 {
+    pub(crate) fn evtq_cons(&self) -> u32 {
         self.queue_state.lock().evtq_cons
     }
 
     /// Resets event queue and GERROR state (called on device reset).
-    pub fn reset_queue_state(&self) {
+    pub(crate) fn reset_queue_state(&self) {
         let mut qs = self.queue_state.lock();
         qs.evtq_base_addr = 0;
         qs.evtq_log2size = 0;
@@ -350,6 +779,264 @@ impl SmmuSharedState {
         }
     }
 
+    /// Register an accelerated backend for a VFIO device.
+    ///
+    /// The device's stream ID is derived dynamically from `bus_range`
+    /// (which holds the guest-assigned bus number) rather than being
+    /// fixed at registration time. When the guest writes `CFGI_STE` or
+    /// TLBI commands, the emulator matches the command's SID against
+    /// each registered device's current bus assignment.
+    ///
+    /// Registration is atomic with applying the SMMU's *current* policy to the
+    /// new device (under the `accel_devices` lock), so a freshly attached device lands
+    /// in the correct boot state instead of staying fail-closed (detached).
+    /// At boot the SMMU is disabled, so the policy is bypass-or-abort per
+    /// `GBPA.ABORT` and is independent of the StreamID — it is applied even
+    /// before the guest has assigned this device's bus number. Once the SMMU
+    /// is enabled the policy depends on the per-stream STE; if the bus is not
+    /// yet assigned the device is left fail-closed until the guest enumerates
+    /// and issues `CFGI_STE`.
+    pub fn register_accel_device(
+        &self,
+        bus_range: AssignedBusRange,
+        stream_id_base: u32,
+        backend: Arc<dyn AcceleratedStreamBackend>,
+    ) {
+        let mut devices = self.accel_devices.lock();
+        let mut reg = AccelDeviceRegistration {
+            bus_range: bus_range.clone(),
+            stream_id_base,
+            backend,
+            translating_sid: None,
+        };
+
+        // Catch the new device up to the current policy.
+        //
+        // If the bus is assigned, compute the stream-specific policy. If not,
+        // fall back to the disabled-state (StreamID-independent) policy — this
+        // is what lets a boot device reach bypass/abort before the guest has
+        // enumerated it. With the SMMU enabled and no bus yet, there is no
+        // policy to apply: leave the device fail-closed (non-translating)
+        // until its `CFGI_STE`.
+        let config = match compose_stream_id(&bus_range, stream_id_base, None) {
+            Some(sid) => Some(self.current_stream_config(sid)),
+            None => self.disabled_policy(),
+        };
+        if let Some(config) = config {
+            Self::apply_config(&mut reg, config);
+        }
+        devices.push(reg);
+    }
+
+    /// Computes the SMMU's current policy for the given stream.
+    ///
+    /// **Pure**: it snapshots register state and reads/decodes the STE, but
+    /// records no events. Faults are a *data-plane* concern and are never
+    /// synthesized on this config-plane path:
+    ///
+    /// - For emulated devices, an illegal/invalid STE faults per transaction in
+    ///   the software translate path
+    ///   ([`translate_locked`](Self::translate_locked)).
+    /// - For accelerated (passthrough) devices, the physical SMMU generates the
+    ///   fault on the real transaction and the host forwards it via the iommufd
+    ///   virtual event queue (VEVENTQ); this emulator does not fake it here.
+    ///
+    /// An illegal/invalid STE, an out-of-range SID, or an STE fetch failure all
+    /// resolve to [`StreamConfig::Abort`] (block the stream's DMA). When the
+    /// SMMU is disabled the result is `GBPA.ABORT ? Abort : Bypass`.
+    ///
+    /// The translation (`inner`) lock is only held to snapshot register state;
+    /// it is released before the STE read so callers can apply the result to a
+    /// backend (a blocking ioctl) without nesting the translation lock around
+    /// it.
+    pub(crate) fn current_stream_config(&self, sid: u32) -> StreamConfig {
+        let (enabled, gbpa_abort, strtab_base, strtab_log2size, oas_mask) = {
+            let inner = self.inner.read();
+            (
+                inner.enabled,
+                inner.gbpa_abort,
+                inner.strtab_base,
+                inner.strtab_log2size,
+                inner.oas_mask,
+            )
+        };
+
+        if !enabled {
+            return if gbpa_abort {
+                StreamConfig::Abort
+            } else {
+                StreamConfig::Bypass
+            };
+        }
+
+        // SMMU enabled: look up and decode this stream's STE with the same
+        // classification (`lookup_ste` + `ste_config_action`) as the software
+        // translation path, so the two cannot diverge. Every non-translating,
+        // non-bypass outcome blocks the stream's DMA by aborting; the matching
+        // fault event, when one is architecturally due, is delivered on the
+        // data plane (see the method doc), not here.
+        let Ok(ste) = translate::lookup_ste(
+            &self.guest_memory,
+            strtab_base,
+            strtab_log2size,
+            sid,
+            oas_mask,
+        ) else {
+            // Invalid STE (V=0), out-of-range SID, or STE fetch failure.
+            return StreamConfig::Abort;
+        };
+
+        match translate::ste_config_action(&ste) {
+            translate::SteAction::Bypass => StreamConfig::Bypass,
+            translate::SteAction::S1Translate => StreamConfig::Translate {
+                sid,
+                ste_dwords: canonical_s1_ste_dwords(&ste),
+            },
+            // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
+            // config (0b110/0b111 on this stage-1-only SMMU) also aborts here —
+            // its C_BAD_STE, being a data-plane fault, is delivered elsewhere.
+            translate::SteAction::Abort | translate::SteAction::Illegal => StreamConfig::Abort,
+        }
+    }
+
+    /// Returns the StreamID-independent policy that applies while the SMMU is
+    /// disabled (`Some(Bypass)` or `Some(Abort)` per `GBPA.ABORT`), or `None`
+    /// when the SMMU is enabled (the policy then depends on the per-stream
+    /// STE).
+    fn disabled_policy(&self) -> Option<StreamConfig> {
+        let inner = self.inner.read();
+        (!inner.enabled).then(|| {
+            if inner.gbpa_abort {
+                StreamConfig::Abort
+            } else {
+                StreamConfig::Bypass
+            }
+        })
+    }
+
+    /// Applies `config` to a registered device's backend and records the
+    /// stream ID for which the device is now translating (`S1_TRANS`), or
+    /// `None` for bypass/abort.
+    ///
+    /// The recorded `translating_sid` gates SID-based invalidation forwarding
+    /// (`CFGI_CD`/`CFGI_CD_ALL`, and `ATC_INV` once ATS is enabled): those
+    /// commands target host state — the context-descriptor cache, and the
+    /// device's ATS cache — that exists only while the device is attached to a
+    /// nested translating domain. It mirrors that attach state (the vDevice is
+    /// allocated and the device attached to its nested HWPT on `S1_TRANS`;
+    /// both torn down on bypass/abort) and stores the exact vSID the backend
+    /// used, so no recomputation is needed at invalidation time. A failed
+    /// apply leaves the host state uncertain, so it is cleared to `None`: fail
+    /// closed and do not forward invalidations the host could not resolve.
+    fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) {
+        let translating_sid = match config {
+            StreamConfig::Translate { sid, .. } => Some(sid),
+            StreamConfig::Bypass | StreamConfig::Abort => None,
+        };
+        match reg.backend.set_stream_config(config) {
+            Ok(()) => reg.translating_sid = translating_sid,
+            Err(e) => {
+                reg.translating_sid = None;
+                tracelimit::warn_ratelimited!(
+                    error = &*e as &dyn std::error::Error,
+                    "smmu: failed to apply stream config"
+                );
+            }
+        }
+    }
+
+    /// Re-computes and applies the current policy for a single stream's
+    /// accelerated backend (if one is registered).
+    ///
+    /// Serialized against registration and other policy updates via the
+    /// policy lock so the last write wins. Used for `CFGI_STE`.
+    pub(crate) fn apply_stream_config(&self, sid: u32) {
+        let mut devices = self.accel_devices.lock();
+        let Some(reg) = devices
+            .iter_mut()
+            .find(|reg| compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid))
+        else {
+            return;
+        };
+        let config = self.current_stream_config(sid);
+        Self::apply_config(reg, config);
+    }
+
+    /// Re-computes and applies the current policy for every registered
+    /// accelerated backend.
+    ///
+    /// Used on events that change policy globally without otherwise mutating
+    /// translation state: `CFGI_STE_RANGE` / `CFGI_ALL`. (The state-mutating
+    /// events — CR0/GBPA writes, reset, restore — re-drive atomically via
+    /// [`set_enabled`](Self::set_enabled),
+    /// [`set_gbpa_abort`](Self::set_gbpa_abort), and
+    /// [`sync_translation_state`](Self::sync_translation_state).)
+    /// Serialized via the policy lock.
+    pub(crate) fn apply_all_stream_configs(&self) {
+        let mut devices = self.accel_devices.lock();
+        self.apply_all_locked(&mut devices);
+    }
+
+    /// Re-drives every registered backend to its current policy. The caller
+    /// must already hold the `accel_devices` lock and pass in the guarded
+    /// slice (this is the shared body of
+    /// [`apply_all_stream_configs`](Self::apply_all_stream_configs) and the
+    /// state-mutating setters).
+    fn apply_all_locked(&self, devices: &mut [AccelDeviceRegistration]) {
+        for reg in devices.iter_mut() {
+            let Some(sid) = compose_stream_id(&reg.bus_range, reg.stream_id_base, None) else {
+                continue;
+            };
+            let config = self.current_stream_config(sid);
+            Self::apply_config(reg, config);
+        }
+    }
+
+    /// Whether a SID-based invalidation (`CFGI_CD`/`CFGI_CD_ALL`/`ATC_INV`)
+    /// targeting `sid` should be forwarded to the host vIOMMU.
+    ///
+    /// True only when a registered accelerated device is currently attached in
+    /// translating (`S1_TRANS`) mode for exactly `sid` — i.e. its recorded
+    /// `translating_sid` matches. That recorded value is the vSID the backend
+    /// used to allocate the host vDevice and attach the nested HWPT, so the
+    /// check reflects the *applied* host attach state — not the guest's STE
+    /// bytes, which can run ahead of what has been applied — and stays in
+    /// lockstep with the host vDevice / nested-HWPT lifetime.
+    ///
+    /// These commands target state that exists on the host only while the
+    /// stream translates: the context-descriptor cache (`CFGI_CD`), and the
+    /// device's ATS cache (`ATC_INV`, which in the nested path is enabled only
+    /// for `S1_TRANS` streams). In bypass/abort there is nothing to invalidate
+    /// and no vDevice bound, so forwarding would hit `-EIO`. Because the guest
+    /// writes the context descriptor (issuing `CFGI_CD`) before installing the
+    /// translating STE (`CFGI_STE`) when attaching a device, this also
+    /// correctly skips that first premature `CFGI_CD`.
+    pub(crate) fn sid_invalidation_forwardable(&self, sid: u32) -> bool {
+        self.accel_devices
+            .lock()
+            .iter()
+            .any(|reg| reg.translating_sid == Some(sid))
+    }
+
+    /// Registers the per-vIOMMU invalidation sink for accelerated mode.
+    ///
+    /// Called once per emulated SMMU when the first VFIO device behind it
+    /// binds. All devices behind a single emulated SMMU share one vIOMMU and
+    /// therefore one sink, so registrations from additional devices are
+    /// ignored (the first sink stays in place).
+    pub fn register_invalidation_sink(&self, sink: Arc<dyn AcceleratedInvalidationSink>) {
+        // First sink wins; additional devices behind the same vIOMMU share it.
+        let _ = self.invalidation_sink.set(sink);
+    }
+
+    /// Returns the registered invalidation sink, if any.
+    ///
+    /// Used by CMDQ processing to forward a batch of invalidation commands to
+    /// the host. `None` for emulated-only SMMUs.
+    pub(crate) fn invalidation_sink(&self) -> Option<Arc<dyn AcceleratedInvalidationSink>> {
+        self.invalidation_sink.get().cloned()
+    }
+
     /// Translate an IOVA to a GPA for the given stream ID.
     ///
     /// Callers that need to hold the lock across translation and a subsequent
@@ -372,6 +1059,14 @@ impl SmmuSharedState {
         write: bool,
     ) -> TranslateResult {
         if !inner.enabled {
+            // The SMMU is disabled: GBPA selects the global policy. ABORT
+            // terminates the transaction (with no event — there is no stream
+            // context to fault against); otherwise transactions bypass
+            // (IOVA = GPA). The matching accel policy is computed in
+            // [`current_stream_config`].
+            if inner.gbpa_abort {
+                return TranslateResult::GlobalAbort;
+            }
             return TranslateResult::Bypass;
         }
 
@@ -388,13 +1083,12 @@ impl SmmuSharedState {
         };
 
         // Dispatch on STE config.
-        let action = match translate::ste_config_action(&ste) {
-            Ok(action) => action,
-            Err(_) => return TranslateResult::Fault(EvtEntry::bad_ste(sid)),
-        };
-
-        match action {
-            translate::SteAction::Abort => TranslateResult::Abort(EvtEntry::bad_ste(sid)),
+        match translate::ste_config_action(&ste) {
+            // Config[2]==0 (0b000 / reserved): abort, no event recorded.
+            translate::SteAction::Abort => TranslateResult::Abort,
+            // Illegal on this stage-1-only SMMU (0b110/0b111): terminate and
+            // record C_BAD_STE, matching the spec's "behaves as V=0" rule.
+            translate::SteAction::Illegal => TranslateResult::Fault(EvtEntry::bad_ste(sid)),
             translate::SteAction::Bypass => TranslateResult::Bypass,
             translate::SteAction::S1Translate => {
                 // Look up the CD.
@@ -425,7 +1119,7 @@ impl SmmuSharedState {
     /// command processing. If the queue is full, drops the event and
     /// logs a warning. If an event is successfully written, pulses
     /// the EVTQ wired SPI interrupt (if enabled).
-    pub fn write_event(&self, event: EvtEntry) {
+    pub(crate) fn write_event(&self, event: EvtEntry) {
         let mut qs = self.queue_state.lock();
         if !qs.evtq_enabled {
             return;
@@ -539,6 +1233,17 @@ impl SmmuDmaFault {
             input_addr: event.input_addr,
         }
     }
+
+    /// A termination with **no** event record generated — either a global
+    /// abort (disabled SMMU, `GBPA.ABORT=1`) or an STE-driven abort
+    /// (`STE.Config[2]==0`). `event_id` is 0 to signify "no event".
+    fn no_event_abort(sid: u32, input_addr: u64) -> Self {
+        Self {
+            event_id: 0,
+            sid,
+            input_addr,
+        }
+    }
 }
 
 impl iommu_common::IommuTranslator for SmmuTranslator {
@@ -567,7 +1272,17 @@ impl iommu_common::IommuTranslator for SmmuTranslator {
         let gpa = match self.shared.translate_locked(&inner, sid, iova, write) {
             TranslateResult::Bypass => iova,
             TranslateResult::Translated(gpa) => gpa,
-            TranslateResult::Abort(event) | TranslateResult::Fault(event) => {
+            TranslateResult::GlobalAbort | TranslateResult::Abort => {
+                drop(inner);
+                // Terminate with no event recorded: either a disabled SMMU
+                // (`GBPA.ABORT=1`), or a valid STE whose `Config[2]==0`
+                // (`0b000` / reserved) aborts without a fault event.
+                return Err(iommu_common::TranslationFault {
+                    iova,
+                    error: SmmuDmaFault::no_event_abort(sid, iova),
+                });
+            }
+            TranslateResult::Fault(event) => {
                 drop(inner);
                 let error = SmmuDmaFault::from_event(&event);
                 self.shared.write_event(event);
@@ -624,9 +1339,10 @@ impl SignalMsi for SmmuSignalMsi {
             TranslateResult::Translated(gpa) => {
                 self.inner.signal_msi(devid, gpa, data);
             }
-            TranslateResult::Abort(event) => {
-                self.shared.write_event(event);
-                tracelimit::warn_ratelimited!(sid, address, "smmu: MSI aborted by STE config");
+            TranslateResult::GlobalAbort | TranslateResult::Abort => {
+                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
+                // STE with `Config[2]==0`. Drop the MSI.
+                tracelimit::warn_ratelimited!(sid, address, "smmu: MSI aborted, no event");
             }
             TranslateResult::Fault(event) => {
                 self.shared.write_event(event);
@@ -693,12 +1409,13 @@ impl IrqFdRoute for SmmuIrqFdRoute {
             TranslateResult::Translated(gpa) => {
                 self.inner.enable(gpa, data, devid);
             }
-            TranslateResult::Abort(event) => {
-                self.shared.write_event(event);
+            TranslateResult::GlobalAbort | TranslateResult::Abort => {
+                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
+                // STE with `Config[2]==0`. Drop the route.
                 tracelimit::warn_ratelimited!(
                     sid,
                     address,
-                    "smmu: irqfd MSI route aborted by STE config"
+                    "smmu: irqfd MSI route aborted, no event"
                 );
             }
             TranslateResult::Fault(event) => {
@@ -728,6 +1445,7 @@ mod tests {
     use crate::spec::events::EventId;
     use crate::spec::pt::ApBits;
     use crate::spec::pt::PtDesc;
+    use crate::spec::ste::S1Fmt;
     use crate::spec::ste::STE_SIZE;
     use crate::spec::ste::Ste;
     use crate::spec::ste::SteConfig;
@@ -759,6 +1477,56 @@ mod tests {
     const TEST_BUS: u8 = 1;
     /// The RID for the test device: (bus << 8) | devfn.
     const TEST_RID: u32 = (TEST_BUS as u32) << 8;
+
+    #[test]
+    fn test_canonical_s1_ste_dwords_preserves_allowed_fields() {
+        // Set every field the canonical set retains, with distinct values.
+        let cd_addr: u64 = 0x3_FFFF_FFFF_F000;
+        let qw0 = SteDw0::new()
+            .with_v(true)
+            .with_config(SteConfig::S1_TRANS.0)
+            .with_s1_fmt(S1Fmt::TWO_LEVEL_64K.0)
+            .with_s1_context_ptr(cd_addr >> 6)
+            .with_s1_cd_max(0x1f);
+        let qw1 = SteDw1::new()
+            .with_s1_dss(0x3)
+            .with_s1_cir(0x3)
+            .with_s1_cor(0x3)
+            .with_s1_csh(0x3)
+            .with_s1stalld(true)
+            .with_eats(0x3);
+        let ste = Ste {
+            qw0,
+            qw1,
+            _qw2_7: [0; 6],
+        };
+
+        let [out0, out1] = canonical_s1_ste_dwords(&ste);
+        // Retained fields survive untouched.
+        assert_eq!(out0, u64::from(qw0));
+        assert_eq!(out1, u64::from(qw1));
+    }
+
+    #[test]
+    fn test_canonical_s1_ste_dwords_drops_res0_fields() {
+        // A fully-populated STE must be reduced to only the retained fields.
+        let ste = Ste {
+            qw0: SteDw0::from(u64::MAX),
+            qw1: SteDw1::from(u64::MAX),
+            _qw2_7: [u64::MAX; 6],
+        };
+        let [out0, out1] = canonical_s1_ste_dwords(&ste);
+
+        // DW0 retained: V[0] | Config[3:1] | S1Fmt[5:4] | S1ContextPtr[55:6] |
+        // S1CDMax[63:59]. The reserved bits [58:56] between S1ContextPtr and
+        // S1CDMax must be cleared (a real SMMU ignores them; the Linux nesting
+        // path rejects them with -EIO).
+        assert_eq!(out0, 0xf8ff_ffff_ffff_ffff);
+        // DW1 retained: S1DSS[1:0] | S1CIR[3:2] | S1COR[5:4] | S1CSH[7:6] |
+        // S1STALLD[27] | EATS[29:28]. Everything else (STRW, SHCFG, NSCFG,
+        // PRIVCFG, stage-2/override fields, ...) is RES0/IGNORED and cleared.
+        assert_eq!(out1, 0x3800_00ff);
+    }
 
     /// A mock SignalMsi that records calls.
     struct MockSignalMsi {
@@ -908,7 +1676,14 @@ mod tests {
     }
 
     fn make_shared_state(gm: &GuestMemory) -> Arc<SmmuSharedState> {
-        let state = SmmuSharedState::new(gm.clone(), 40, None, None);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            false,
+            None,
+            None,
+        );
         state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
         state.set_enabled(true);
         // Enable EVTQ so fault events are written to guest memory.
@@ -1062,7 +1837,7 @@ mod tests {
         let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
-        // STE in abort mode.
+        // STE in abort mode (Config=0b000).
         write_ste(&gm, sid, &make_abort_ste());
 
         let state = make_shared_state(&gm);
@@ -1077,7 +1852,37 @@ mod tests {
         let result = translating_gm.read_at(0, &mut buf);
         assert!(result.is_err());
 
-        // Should have written an event to the EVTQ.
+        // Per the SMMUv3 STE.Config table, Config=0b000 aborts with **no**
+        // event recorded.
+        assert_eq!(evtq_event_count(&state), 0);
+    }
+
+    #[test]
+    fn test_translating_memory_illegal_config_records_event() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+
+        // STE with Config=0b110 (stage-2 translate). This SMMU advertises
+        // IDR0.S2P=0, so the STE is ILLEGAL and must fault with C_BAD_STE.
+        let ste = Ste {
+            qw0: SteDw0::new()
+                .with_v(true)
+                .with_config(SteConfig::S2_TRANS.0),
+            qw1: SteDw1::new(),
+            _qw2_7: [0; 6],
+        };
+        write_ste(&gm, sid, &ste);
+
+        let state = make_shared_state(&gm);
+        let bus_range = make_bus_range();
+        let mock_msi = MockSignalMsi::new();
+
+        let (translating_gm, _msi) =
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+
+        // Read should fail, and an event should be recorded.
+        let mut buf = vec![0u8; 4];
+        assert!(translating_gm.read_at(0, &mut buf).is_err());
         assert_eq!(evtq_event_count(&state), 1);
     }
 
@@ -1135,7 +1940,14 @@ mod tests {
         let data = b"disabled smmu";
         gm.write_at(0x3000, data).unwrap();
 
-        let state = SmmuSharedState::new(gm.clone(), 40, None, None);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            false,
+            None,
+            None,
+        );
         let bus_range = make_bus_range();
         let mock_msi = MockSignalMsi::new();
 
@@ -1358,5 +2170,454 @@ mod tests {
         let calls = mock_msi.take_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], (Some(rid), 0xFEE0_0000, 0x99));
+    }
+
+    // =========================================================================
+    // resolve_host_caps (accel host/guest compatibility) tests
+    // =========================================================================
+
+    /// A `HostSmmuCaps` that is compatible with everything the emulator
+    /// advertises (AArch64, little-endian, 4K granule, ample OAS).
+    fn compatible_host_caps() -> crate::HostSmmuCaps {
+        crate::HostSmmuCaps {
+            oas: Ips::IPS_48,
+            ttf: registers::Idr0Ttf::new().with_aarch64(true),
+            ttendian: registers::Idr0TtEndian::LE,
+            gran4k: true,
+        }
+    }
+
+    /// An accel-mode shared state with the given OAS policy.
+    fn make_accel_state(policy: crate::SmmuOasPolicy) -> Arc<SmmuSharedState> {
+        let gm = GuestMemory::allocate(0x1000);
+        SmmuSharedState::new(gm, 40, policy, true, None, None)
+    }
+
+    #[test]
+    fn resolve_host_caps_accepts_compatible_host() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+    }
+
+    #[test]
+    fn resolve_host_caps_auto_adopts_host_oas() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
+        let caps = crate::HostSmmuCaps {
+            oas: Ips::IPS_48,
+            ..compatible_host_caps()
+        };
+        state.resolve_host_caps(caps).unwrap();
+        assert_eq!(state.oas_bits(), 48);
+    }
+
+    #[test]
+    fn resolve_host_caps_rejects_fixed_oas_above_host() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(52));
+        let caps = crate::HostSmmuCaps {
+            oas: Ips::IPS_44,
+            ..compatible_host_caps()
+        };
+        let err = state.resolve_host_caps(caps).unwrap_err().to_string();
+        assert!(err.contains("exceeds host SMMU OAS"), "{err}");
+    }
+
+    #[test]
+    fn resolve_host_caps_rejects_no_aarch64() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        // AArch32-only host (TTF bit for AArch64 not set).
+        let caps = crate::HostSmmuCaps {
+            ttf: registers::Idr0Ttf::new().with_aarch32(true),
+            ..compatible_host_caps()
+        };
+        let err = state.resolve_host_caps(caps).unwrap_err().to_string();
+        assert!(err.contains("AArch64"), "{err}");
+    }
+
+    #[test]
+    fn resolve_host_caps_accepts_aarch32_and_aarch64_host() {
+        // A host advertising both formats supports AArch64 — must be accepted.
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let caps = crate::HostSmmuCaps {
+            ttf: registers::Idr0Ttf::new()
+                .with_aarch32(true)
+                .with_aarch64(true),
+            ..compatible_host_caps()
+        };
+        state.resolve_host_caps(caps).unwrap();
+    }
+
+    #[test]
+    fn resolve_host_caps_rejects_big_endian_only_host() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let caps = crate::HostSmmuCaps {
+            ttendian: registers::Idr0TtEndian::BE,
+            ..compatible_host_caps()
+        };
+        let err = state.resolve_host_caps(caps).unwrap_err().to_string();
+        assert!(err.contains("little-endian"), "{err}");
+    }
+
+    #[test]
+    fn resolve_host_caps_accepts_mixed_endian_host() {
+        // Mixed-endian host supports little-endian — must be accepted.
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let caps = crate::HostSmmuCaps {
+            ttendian: registers::Idr0TtEndian::MIXED,
+            ..compatible_host_caps()
+        };
+        state.resolve_host_caps(caps).unwrap();
+    }
+
+    #[test]
+    fn resolve_host_caps_rejects_no_gran4k() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let caps = crate::HostSmmuCaps {
+            gran4k: false,
+            ..compatible_host_caps()
+        };
+        let err = state.resolve_host_caps(caps).unwrap_err().to_string();
+        assert!(err.contains("4KB translation granule"), "{err}");
+    }
+
+    #[test]
+    fn resolve_host_caps_rejects_second_device_with_different_caps() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        // A second device backed by a different physical SMMU (different OAS).
+        let other = crate::HostSmmuCaps {
+            oas: Ips::IPS_44,
+            ..compatible_host_caps()
+        };
+        let err = state.resolve_host_caps(other).unwrap_err().to_string();
+        assert!(
+            err.contains("cannot be backed by two physical SMMUs"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn resolve_host_caps_accepts_second_device_with_identical_caps() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        // Same caps again (another device behind the same physical SMMU).
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+    }
+
+    // =========================================================================
+    // Disabled-state policy (GBPA.ABORT) tests
+    // =========================================================================
+
+    /// Non-accel: while the SMMU is disabled, DMA bypasses (IOVA = GPA) when
+    /// `GBPA.ABORT=0`.
+    #[test]
+    fn test_disabled_bypass_when_gbpa_abort_clear() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let data = b"disabled-bypass";
+        gm.write_at(0x3000, data).unwrap();
+
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            false,
+            None,
+            None,
+        );
+        // Disabled with GBPA.ABORT=0 (the reset default).
+        state.set_gbpa_abort(false);
+        // Enable the EVTQ so an (unexpected) abort would be observable.
+        state.set_evtq_config(EVTQ_BASE, EVTQ_LOG2SIZE);
+        state.set_evtq_enabled(true);
+
+        let bus_range = make_bus_range();
+        let mock_msi = MockSignalMsi::new();
+        let (translating_gm, _msi) =
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+
+        let mut buf = vec![0u8; data.len()];
+        translating_gm.read_at(0x3000, &mut buf).unwrap();
+        assert_eq!(&buf, data);
+        assert_eq!(evtq_event_count(&state), 0);
+    }
+
+    /// Non-accel: while the SMMU is disabled, DMA aborts when `GBPA.ABORT=1`.
+    /// Per SMMUv3 a global abort generates **no** event record (there is no
+    /// stream context to fault against), so the EVTQ stays empty even though
+    /// it is enabled.
+    #[test]
+    fn test_disabled_abort_when_gbpa_abort_set() {
+        let gm = GuestMemory::allocate(0x60_0000);
+
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            false,
+            None,
+            None,
+        );
+        // Disabled with GBPA.ABORT=1.
+        state.set_gbpa_abort(true);
+        state.set_evtq_config(EVTQ_BASE, EVTQ_LOG2SIZE);
+        state.set_evtq_enabled(true);
+
+        let bus_range = make_bus_range();
+        let mock_msi = MockSignalMsi::new();
+        let (translating_gm, _msi) =
+            device_context(&state, bus_range, TEST_STREAM_ID_BASE, &gm, mock_msi);
+
+        let mut buf = vec![0u8; 4];
+        translating_gm.read_at(0x3000, &mut buf).unwrap_err();
+        // A global (GBPA) abort generates no event record.
+        assert_eq!(evtq_event_count(&state), 0);
+    }
+
+    // =========================================================================
+    // current_stream_config tests
+    // =========================================================================
+
+    #[test]
+    fn test_current_stream_config_disabled_bypass() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            true,
+            None,
+            None,
+        );
+        // Disabled, GBPA.ABORT=0 → Bypass, regardless of SID.
+        state.set_gbpa_abort(false);
+        assert_eq!(state.current_stream_config(0), StreamConfig::Bypass);
+        assert_eq!(state.current_stream_config(0x1234), StreamConfig::Bypass);
+    }
+
+    #[test]
+    fn test_current_stream_config_disabled_abort() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            true,
+            None,
+            None,
+        );
+        // Disabled, GBPA.ABORT=1 → Abort, regardless of SID.
+        state.set_gbpa_abort(true);
+        assert_eq!(state.current_stream_config(0), StreamConfig::Abort);
+        assert_eq!(state.current_stream_config(0x1234), StreamConfig::Abort);
+    }
+
+    #[test]
+    fn test_current_stream_config_enabled_reads_ste() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        let state = make_shared_state(&gm);
+
+        // Valid S1_TRANS STE → Translate, carrying this SID.
+        write_ste(&gm, sid, &make_s1_ste(CD_BASE));
+        assert!(matches!(
+            state.current_stream_config(sid),
+            StreamConfig::Translate { sid: s, .. } if s == sid
+        ));
+
+        // Bypass STE → Bypass.
+        write_ste(&gm, sid, &make_bypass_ste());
+        assert_eq!(state.current_stream_config(sid), StreamConfig::Bypass);
+
+        // Abort STE → Abort.
+        write_ste(&gm, sid, &make_abort_ste());
+        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+
+        // Invalid STE (V=0) → Abort.
+        write_ste(
+            &gm,
+            sid,
+            &Ste {
+                qw0: SteDw0::new().with_v(false),
+                qw1: SteDw1::new(),
+                _qw2_7: [0; 6],
+            },
+        );
+        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+
+        // Illegal config (0b110 stage-2 on a stage-1-only SMMU) → Abort. The
+        // config plane is pure: no fault event is synthesized here (a C_BAD_STE
+        // is a data-plane fault, delivered via the software translate path or
+        // the host VEVENTQ).
+        write_ste(
+            &gm,
+            sid,
+            &Ste {
+                qw0: SteDw0::new()
+                    .with_v(true)
+                    .with_config(SteConfig::S2_TRANS.0),
+                qw1: SteDw1::new(),
+                _qw2_7: [0; 6],
+            },
+        );
+        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+    }
+
+    #[test]
+    fn test_current_stream_config_out_of_range_sid_aborts() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_shared_state(&gm);
+        // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end aborts.
+        let oob_sid = 1u32 << STRTAB_LOG2SIZE;
+        assert_eq!(state.current_stream_config(oob_sid), StreamConfig::Abort);
+    }
+
+    // =========================================================================
+    // register_accel_device initial-policy tests
+    // =========================================================================
+
+    /// A mock accel backend that records the configs applied to it.
+    struct MockBackend {
+        configs: Mutex<Vec<StreamConfig>>,
+    }
+
+    impl MockBackend {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                configs: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn take(&self) -> Vec<StreamConfig> {
+            std::mem::take(&mut *self.configs.lock())
+        }
+    }
+
+    impl AcceleratedStreamBackend for MockBackend {
+        fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()> {
+            self.configs.lock().push(config);
+            Ok(())
+        }
+    }
+
+    fn make_accel_shared(gm: &GuestMemory) -> Arc<SmmuSharedState> {
+        SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            true,
+            None,
+            None,
+        )
+    }
+
+    /// Registering a device while the SMMU is disabled (GBPA.ABORT=0) applies
+    /// Bypass immediately, even before the bus is assigned.
+    #[test]
+    fn test_register_applies_bypass_when_disabled() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_accel_shared(&gm);
+        state.set_gbpa_abort(false);
+
+        let backend = MockBackend::new();
+        // Bus not yet assigned.
+        let bus_range = AssignedBusRange::new();
+        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
+
+        let applied = backend.take();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0], StreamConfig::Bypass);
+    }
+
+    /// Registering a device while the SMMU is disabled (GBPA.ABORT=1) applies
+    /// Abort immediately.
+    #[test]
+    fn test_register_applies_abort_when_disabled_gbpa_abort() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_accel_shared(&gm);
+        state.set_gbpa_abort(true);
+
+        let backend = MockBackend::new();
+        let bus_range = AssignedBusRange::new();
+        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
+
+        let applied = backend.take();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0], StreamConfig::Abort);
+    }
+
+    /// Registering a device while the SMMU is enabled with an assigned bus
+    /// applies the stream's current STE-derived policy.
+    #[test]
+    fn test_register_applies_ste_policy_when_enabled() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_accel_shared(&gm);
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        state.set_enabled(true);
+
+        let sid = expected_sid();
+        write_ste(&gm, sid, &make_bypass_ste());
+
+        let backend = MockBackend::new();
+        let bus_range = make_bus_range(); // assigned
+        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
+
+        let applied = backend.take();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0], StreamConfig::Bypass);
+    }
+
+    /// Registering a device while the SMMU is enabled but the bus is not yet
+    /// assigned leaves the device fail-closed (no initial apply); a later
+    /// CFGI_STE (apply_stream_config) catches it up.
+    #[test]
+    fn test_register_enabled_unassigned_bus_then_cfgi() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_accel_shared(&gm);
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        state.set_enabled(true);
+
+        let backend = MockBackend::new();
+        let bus_range = AssignedBusRange::new(); // unassigned
+        state.register_accel_device(bus_range.clone(), TEST_STREAM_ID_BASE, backend.clone());
+        // No config applied yet (fail-closed / detached).
+        assert!(backend.take().is_empty());
+
+        // Guest assigns the bus and programs the STE, then issues CFGI_STE.
+        bus_range.set_bus_range(TEST_BUS, TEST_BUS);
+        let sid = expected_sid();
+        write_ste(&gm, sid, &make_s1_ste(CD_BASE));
+        state.apply_stream_config(sid);
+
+        let applied = backend.take();
+        assert_eq!(applied.len(), 1);
+        assert!(
+            matches!(applied[0], StreamConfig::Translate { sid: s, .. } if s == sid),
+            "expected Translate for sid {sid:#x}, got {:?}",
+            applied[0]
+        );
+    }
+
+    /// apply_all_stream_configs re-drives every registered backend (used for
+    /// GBPA writes, SMMUEN transitions, and CFGI_ALL).
+    #[test]
+    fn test_apply_all_stream_configs_redrives() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_accel_shared(&gm);
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        state.set_gbpa_abort(false);
+
+        let backend = MockBackend::new();
+        let bus_range = make_bus_range();
+        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
+        // Initial register applied Bypass (disabled, GBPA.ABORT=0).
+        assert_eq!(backend.take().last().copied(), Some(StreamConfig::Bypass));
+
+        // Enable the SMMU and program an abort STE, then re-drive.
+        let sid = expected_sid();
+        write_ste(&gm, sid, &make_abort_ste());
+        state.set_enabled(true);
+        state.apply_all_stream_configs();
+
+        let applied = backend.take();
+        assert_eq!(applied.last().copied(), Some(StreamConfig::Abort));
     }
 }
