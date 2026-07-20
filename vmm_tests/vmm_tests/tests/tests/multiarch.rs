@@ -626,14 +626,15 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .run_without_agent()
         .await?;
 
-    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
-    // before it hands control to `firmware_uefi::service::diagnostics` to
-    // collect entries. It only appears in the trace stream when:
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware in this
+    // no-boot (frontpage) scenario, right before it hands control to
+    // `firmware_uefi::service::diagnostics` to collect entries. It only
+    // appears in the trace stream when:
     //   1. The diagnostics log level is INFO
     //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
-    //      single burst, and this is one of the very last; with the default
-    //      rate limit it gets dropped.
-    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
+    //      single burst, and this is the very last; with the default rate
+    //      limit it gets dropped.
+    const MARKER: &str = "Signaling Unable To Boot event";
 
     let mut kmsg = vm.kmsg().await?;
 
