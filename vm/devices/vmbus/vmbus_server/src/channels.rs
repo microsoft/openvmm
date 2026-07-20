@@ -2797,12 +2797,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Entry::Occupied(_) => return Err(ChannelError::DuplicateGpadlId),
         };
 
-        // If we're not done, track the offer ID for GPADL body requests
-        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
-        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
-        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
-        //      is unique, since the body message doesn't include a channel ID.
-        if !done {
+        if done {
+            Self::gpadl_completed(
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused()),
+                offer_id,
+                channel,
+                input.gpadl_id,
+                gpadl,
+            )
+        } else {
+            // If we're not done, track the offer ID for GPADL body requests
+            // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique,
+            //      which allows for a guest to reuse a gpadl ID in use by a reserved channel (which
+            //      it may not know about). But for in-progress GPADLs we need to ensure the gpadl
+            //      ID itself is unique, since the body message doesn't include a channel ID.
             match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
                 Entry::Vacant(entry) => {
                     entry.insert(offer_id);
@@ -2818,17 +2828,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     return Err(ChannelError::DuplicateGpadlId);
                 }
             }
-        } else {
-            // Notify the channel if the GPADL is done.
-            Self::gpadl_completed(
-                self.inner
-                    .pending_messages
-                    .sender(self.notifier, self.inner.state.is_paused()),
-                offer_id,
-                channel,
-                input.gpadl_id,
-                gpadl,
-            )
         }
         Ok(())
     }
