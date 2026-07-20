@@ -104,6 +104,8 @@ pub struct IgvmAttestRequestHelper {
     runtime_claims_hash: [u8; tee_call::REPORT_DATA_SIZE],
     /// THe hash type of the `runtime_claims_hash`.
     hash_type: IgvmAttestHashType,
+    /// Whether to request TVM host-certification evidence.
+    request_tvm_host_certification: bool,
 }
 
 impl IgvmAttestRequestHelper {
@@ -139,6 +141,7 @@ impl IgvmAttestRequestHelper {
             runtime_claims,
             runtime_claims_hash,
             hash_type,
+            request_tvm_host_certification: false,
         }
     }
 
@@ -183,6 +186,7 @@ impl IgvmAttestRequestHelper {
             runtime_claims,
             runtime_claims_hash,
             hash_type,
+            request_tvm_host_certification: false,
         }
     }
 
@@ -194,6 +198,11 @@ impl IgvmAttestRequestHelper {
     /// Set the `request_type`.
     pub fn set_request_type(&mut self, request_type: IgvmAttestRequestType) {
         self.request_type = request_type
+    }
+
+    /// Request host-certification evidence for a TVM AK certificate.
+    pub fn set_request_tvm_host_certification(&mut self, value: bool) {
+        self.request_tvm_host_certification = value;
     }
 
     /// Create the request in raw bytes.
@@ -209,6 +218,7 @@ impl IgvmAttestRequestHelper {
             attestation_report,
             &self.report_type,
             self.hash_type,
+            self.request_tvm_host_certification,
         )
     }
 }
@@ -273,6 +283,7 @@ fn create_request(
     attestation_report: &[u8],
     report_type: &ReportType,
     hash_type: IgvmAttestHashType,
+    request_tvm_host_certification: bool,
 ) -> Result<Vec<u8>, Error> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestData;
@@ -318,7 +329,8 @@ fn create_request(
         let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
             .with_retry(true)
-            .with_skip_hw_unsealing(true);
+            .with_skip_hw_unsealing(true)
+            .with_tvm_host_certification(request_tvm_host_certification);
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }
@@ -373,6 +385,7 @@ mod tests {
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE],
             &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
+            false,
         );
         assert!(result.is_ok());
 
@@ -383,6 +396,7 @@ mod tests {
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE + 1],
             &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
+            false,
         );
         assert!(result.is_err());
     }
@@ -403,6 +417,7 @@ mod tests {
             &attestation_report,
             &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
+            false,
         )
         .expect("request generation");
 
@@ -444,6 +459,7 @@ mod tests {
             &attestation_report,
             &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
+            true,
         )
         .expect("request generation");
 
@@ -469,6 +485,7 @@ mod tests {
         assert!(ext.capability_bitmap.error_code());
         assert!(ext.capability_bitmap.retry());
         assert!(ext.capability_bitmap.skip_hw_unsealing());
+        assert!(ext.capability_bitmap.tvm_host_certification());
 
         assert_eq!(
             buffer.len(),
@@ -478,6 +495,31 @@ mod tests {
             &buffer[header_size + expected_extension_size..],
             runtime_claims.as_slice()
         );
+    }
+
+    #[test]
+    fn test_create_request_version2_host_certification_is_opt_in() {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+
+        let attestation_report =
+            vec![0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
+        let buffer = create_request(
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &attestation_report,
+            &ReportType::Snp,
+            IgvmAttestHashType::SHA_256,
+            false,
+        )
+        .expect("request generation");
+
+        let ext_offset = size_of::<IgvmAttestRequestBase>();
+        let (ext, _) = IgvmAttestRequestDataExt::read_from_prefix(&buffer[ext_offset..])
+            .expect("parse IgvmAttestRequestDataExt");
+        assert!(!ext.capability_bitmap.tvm_host_certification());
     }
 
     #[test]

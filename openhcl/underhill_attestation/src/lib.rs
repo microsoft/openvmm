@@ -21,6 +21,7 @@ mod test_helpers;
 
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
+pub use igvm_attest::ak_cert::AkCertResponse;
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
 use crate::hardware_key_sealing::HardwareKeySealingError;

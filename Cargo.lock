@@ -8359,6 +8359,7 @@ dependencies = [
  "chipset_device_resources",
  "crypto",
  "cvm_tracing",
+ "futures",
  "getrandom 0.4.2",
  "guestmem",
  "guid",

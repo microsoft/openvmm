@@ -62,8 +62,8 @@ use zerocopy::IntoBytes;
 const TPM_PAGE_SIZE: usize = 4096;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
 const MAX_NV_INDEX_SIZE: u16 = 4096;
-// Scale this with maximum attestation payload
-const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
+/// Maximum size of the platform attestation-report NV index.
+pub const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
 const RSA_2K_MODULUS_BITS: u16 = 2048;
 const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
@@ -278,6 +278,8 @@ pub struct AllocateNvIndicesParams {
     pub preserve_ak_cert: bool,
     /// Allocate NV index for the attestation report.
     pub support_attestation_report: bool,
+    /// Preserve the previous attestation report in the newly-created NV index.
+    pub preserve_attestation_report: bool,
     /// Attempt to mitigate a platform-defined AKCert in a legacy TPM.
     pub mitigate_legacy_akcert: bool,
     /// Create the AKCert index if it is not present.
@@ -767,6 +769,16 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
             );
         }
 
+        let previous_attestation_report =
+            if params.support_attestation_report && params.preserve_attestation_report {
+                let mut report = vec![0; MAX_ATTESTATION_INDEX_SIZE as usize];
+                match self.read_from_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT, &mut report)? {
+                    NvIndexState::Available => Some(report),
+                    NvIndexState::Unallocated | NvIndexState::Uninitialized => None,
+                }
+            } else {
+                None
+            };
         let previous_ak_cert = self.take_existing_ak_cert()?;
 
         match previous_ak_cert {
@@ -957,6 +969,11 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
                 },
                 error,
             })?;
+
+            if let Some(report) = previous_attestation_report {
+                tracing::info!("Preserve previous attestation report across boot");
+                self.write_to_nv_index(auth_value, TPM_NV_INDEX_ATTESTATION_REPORT, &report)?;
+            }
         }
 
         Ok(())
@@ -2380,6 +2397,7 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: true,
                     support_attestation_report: false,
+                    preserve_attestation_report: false,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
@@ -2423,6 +2441,7 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: true,
                     support_attestation_report: false,
+                    preserve_attestation_report: false,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
@@ -2484,6 +2503,7 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: true,
                     support_attestation_report: false,
+                    preserve_attestation_report: false,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
@@ -2556,6 +2576,7 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: false,
                     support_attestation_report: false,
+                    preserve_attestation_report: false,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
@@ -2617,6 +2638,7 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: false,
                     support_attestation_report: true,
+                    preserve_attestation_report: false,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
@@ -2676,8 +2698,7 @@ mod tests {
             assert_eq!(&attestation_report_output, input_with_padding.as_slice());
         }
 
-        // Test allocation after a restart preserve_ak_cert = false, support_attestation_report = true
-        // Expect both ak cert and attestation report nv indices to be re-created
+        // Test allocation after a restart with AK cert replacement and attestation report preservation.
         {
             let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
             let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
@@ -2700,23 +2721,30 @@ mod tests {
                 AllocateNvIndicesParams {
                     preserve_ak_cert: false,
                     support_attestation_report: true,
+                    preserve_attestation_report: true,
                     mitigate_legacy_akcert: false,
                     create_if_missing: true,
                 },
             );
             assert!(result.is_ok());
 
-            // Expect read to return Ok(false) given that the nv index is re-created and data is not preserved
+            // The AK cert index is re-created without preserving its data.
             let result =
                 tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
             assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
 
-            // Expect read to return Ok(false) given that the nv index is re-created and no data has been written
+            // The attestation report is preserved in the re-created index.
             let result = tpm_engine_helper.read_from_nv_index(
                 TPM_NV_INDEX_ATTESTATION_REPORT,
                 &mut attestation_report_output,
             );
-            assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
+            assert!(matches!(result.unwrap(), NvIndexState::Available));
+            let input_with_padding = {
+                let mut input = ATTESTATION_REPORT_INPUT.to_vec();
+                input.resize(MAX_ATTESTATION_INDEX_SIZE.into(), 0);
+                input
+            };
+            assert_eq!(&attestation_report_output, input_with_padding.as_slice());
         }
     }
 
@@ -2730,6 +2758,7 @@ mod tests {
             AllocateNvIndicesParams {
                 preserve_ak_cert: true,
                 support_attestation_report: true,
+                preserve_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
             },
@@ -2971,6 +3000,7 @@ mod tests {
             AllocateNvIndicesParams {
                 preserve_ak_cert: true,
                 support_attestation_report: false,
+                preserve_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
             },
@@ -3881,6 +3911,7 @@ mod tests {
             AllocateNvIndicesParams {
                 preserve_ak_cert: false,
                 support_attestation_report: true,
+                preserve_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
             },
@@ -3916,6 +3947,7 @@ mod tests {
             AllocateNvIndicesParams {
                 preserve_ak_cert: false,
                 support_attestation_report: true,
+                preserve_attestation_report: false,
                 mitigate_legacy_akcert: true,
                 create_if_missing: true,
             },

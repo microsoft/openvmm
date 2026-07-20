@@ -15,6 +15,8 @@ pub enum TpmAkCertType {
     /// whether OpenHCL handles renewal.
     /// Used by TVM
     Trusted(Arc<dyn RequestAkCert>, Option<bool>),
+    /// Authorized TVM AK cert with IDK_S-backed host-certification evidence.
+    HostCertified(Arc<dyn RequestAkCert>, Option<bool>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM
@@ -32,17 +34,32 @@ impl TpmAkCertType {
             TpmAkCertType::HwAttested(helper) => Some(helper),
             TpmAkCertType::SwAttested(helper) => Some(helper),
             TpmAkCertType::Trusted(helper, _) => Some(helper),
+            TpmAkCertType::HostCertified(helper, _) => Some(helper),
             TpmAkCertType::None => None,
         }
     }
 
-    /// Returns true if this AKCert type is attested, either with a TEE
-    /// attestation report or a software-based VM attestation report.
-    pub fn attested(&self) -> bool {
+    /// Returns true if this AKCert type exposes an attestation-report NV index.
+    pub fn has_attestation_report(&self) -> bool {
         match self {
-            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
+            TpmAkCertType::HwAttested(_)
+            | TpmAkCertType::SwAttested(_)
+            | TpmAkCertType::HostCertified(_, _) => true,
             TpmAkCertType::Trusted(_, _) | TpmAkCertType::None => false,
         }
+    }
+
+    /// Returns true if the attestation report is generated locally on NV read.
+    pub fn refreshes_attestation_report(&self) -> bool {
+        matches!(
+            self,
+            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_)
+        )
+    }
+
+    /// Returns true if the attestation report must be preserved across boot.
+    pub fn preserves_attestation_report(&self) -> bool {
+        matches!(self, TpmAkCertType::HostCertified(_, _))
     }
 }
 
@@ -53,6 +70,12 @@ impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
 
 /// A resolved request AK cert helper resource.
 pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
+
+/// AK certificate request result.
+pub struct AkCertRequestResult {
+    pub ak_cert: Vec<u8>,
+    pub host_certification_evidence: Option<Vec<u8>>,
+}
 
 impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
     fn from(value: T) -> Self {
@@ -78,5 +101,5 @@ pub trait RequestAkCert: Send + Sync {
     async fn request_ak_cert(
         &self,
         request: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
+    ) -> Result<AkCertRequestResult, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }

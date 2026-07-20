@@ -47,5 +47,8 @@ ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
+[dev-dependencies]
+futures.workspace = true
+
 [lints]
 workspace = true

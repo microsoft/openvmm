@@ -310,6 +310,8 @@ pub struct UnderhillEnvCfg {
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
     pub attempt_ak_cert_callback: Option<bool>,
+    /// Request and persist TVM host-certification evidence
+    pub tvm_host_certification: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
     /// Disable proxy interrupt redirection
@@ -1607,6 +1609,13 @@ async fn new_underhill_vm(
             dps.general
                 .management_vtl_features
                 .set_attempt_ak_cert_callback(value);
+        }
+
+        if let Some(value) = env_cfg.tvm_host_certification {
+            tracing::info!("using HCL_TVM_HOST_CERTIFICATION={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_tvm_host_certification(value);
         }
 
         dps
@@ -3035,10 +3044,13 @@ async fn new_underhill_vm(
         };
 
         let ak_cert_type = {
+            let tvm_host_certification = attestation_type == AttestationType::Host
+                && dps.general.management_vtl_features.tvm_host_certification();
             let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
                 attestation_type,
                 attestation_vm_config,
                 platform_attestation_data.agent_data,
+                tvm_host_certification,
             )
             .into_resource();
 
@@ -3047,17 +3059,22 @@ async fn new_underhill_vm(
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
                 AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
-                AttestationType::Host => TpmAkCertTypeResource::Trusted(
-                    request_ak_cert,
-                    dps.general
+                AttestationType::Host => {
+                    let handle_ak_cert = dps
+                        .general
                         .management_vtl_features
                         .control_ak_cert_provisioning()
                         .then(|| {
                             dps.general
                                 .management_vtl_features
                                 .attempt_ak_cert_callback()
-                        }),
-                ),
+                        });
+                    if tvm_host_certification {
+                        TpmAkCertTypeResource::HostCertified(request_ak_cert, handle_ak_cert)
+                    } else {
+                        TpmAkCertTypeResource::Trusted(request_ak_cert, handle_ak_cert)
+                    }
+                }
                 AttestationType::Cca => {
                     anyhow::bail!(
                         "CCA attestation is not supported for TPM AK certificate provisioning"

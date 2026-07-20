@@ -26,6 +26,7 @@ use tpm_lib::TpmRsa2kPublic;
 
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
+use crate::ak_cert::AkCertRequestResult;
 use crate::ak_cert::TpmAkCertType;
 use base64::Engine;
 use chipset_device::ChipsetDevice;
@@ -219,7 +220,13 @@ pub struct TpmKeys {
 }
 
 type AkCertRequestFuture = Box<
-    dyn Send + Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>>,
+    dyn Send
+        + Future<
+            Output = Result<
+                AkCertRequestResult,
+                Box<dyn std::error::Error + Send + Sync + 'static>,
+            >,
+        >,
 >;
 
 struct AkCertRequest {
@@ -350,6 +357,10 @@ pub enum TpmErrorKind {
         #[source]
         error: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error("host-certified TVM AK certificate response is missing evidence")]
+    MissingHostCertificationEvidence,
+    #[error("host-certified TVM NV index {nv_index:#x} is not allocated")]
+    MissingHostCertificationNvIndex { nv_index: u32 },
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] tpm_lib::Error),
 }
@@ -731,7 +742,9 @@ impl Tpm {
                     auth_value,
                     AllocateNvIndicesParams {
                         preserve_ak_cert: !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
-                        support_attestation_report: self.ak_cert_type.attested(),
+                        support_attestation_report: self.ak_cert_type.has_attestation_report(),
+                        preserve_attestation_report: !self.refresh_tpm_seeds
+                            && self.ak_cert_type.preserves_attestation_report(),
                         mitigate_legacy_akcert: fixup_16k_ak_cert,
                         create_if_missing: large_vtpm_blob,
                     },
@@ -751,10 +764,14 @@ impl Tpm {
                     // controls AKCert renewal, follow that.
                     should_handle
                 }
+                TpmAkCertType::HostCertified(_, Some(should_handle)) => should_handle,
                 TpmAkCertType::Trusted(_, _) => {
                     // Otherwise, if the existing AKCert index is platform-
                     // defined and this appears to be an HCL-provisioned
                     // vTPM, then handle AKCert renewal from OpenHCL.
+                    self.tpm_engine_helper.has_platform_akcert_index() && large_vtpm_blob
+                }
+                TpmAkCertType::HostCertified(_, _) => {
                     self.tpm_engine_helper.has_platform_akcert_index() && large_vtpm_blob
                 }
                 // If there's no AKCert, then don't handle renewal.
@@ -773,7 +790,7 @@ impl Tpm {
 
             // Initialize `TPM_NV_INDEX_ATTESTATION_REPORT` if `ak_cert_type` supports attestation
             // report.
-            if self.ak_cert_type.attested() {
+            if self.ak_cert_type.refreshes_attestation_report() {
                 self.renew_attestation_report()?;
             }
         }
@@ -1135,6 +1152,76 @@ impl Tpm {
         Ok(())
     }
 
+    fn validate_host_certification_nv_write(
+        &mut self,
+        nv_index: u32,
+        input_size: usize,
+    ) -> Result<(), TpmError> {
+        let Some(index) = self
+            .tpm_engine_helper
+            .find_nv_index(nv_index)
+            .map_err(TpmErrorKind::WriteToNvIndex)?
+        else {
+            return Err(TpmErrorKind::MissingHostCertificationNvIndex { nv_index }.into());
+        };
+        let attributes = tpm20proto::TpmaNvBits::from(index.nv_public.nv_public.attributes.0.get());
+        if !attributes.nv_authwrite() || !attributes.nv_platformcreate() {
+            return Err(
+                TpmErrorKind::WriteToNvIndex(tpm_lib::Error::InvalidPermission {
+                    nv_index,
+                    auth_write: attributes.nv_authwrite(),
+                    platform_created: attributes.nv_platformcreate(),
+                })
+                .into(),
+            );
+        }
+
+        let allocated_size = index.nv_public.nv_public.data_size.get() as usize;
+        if input_size > allocated_size {
+            return Err(
+                TpmErrorKind::WriteToNvIndex(tpm_lib::Error::NvWriteInputTooLarge {
+                    nv_index,
+                    input_size,
+                    allocated_size,
+                })
+                .into(),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn write_ak_cert_response(&mut self, response: &AkCertRequestResult) -> Result<(), TpmError> {
+        let evidence = if matches!(self.ak_cert_type, TpmAkCertType::HostCertified(_, _)) {
+            let evidence = response
+                .host_certification_evidence
+                .as_deref()
+                .ok_or(TpmErrorKind::MissingHostCertificationEvidence)?;
+            self.validate_host_certification_nv_write(
+                TPM_NV_INDEX_AIK_CERT,
+                response.ak_cert.len(),
+            )?;
+            self.validate_host_certification_nv_write(
+                TPM_NV_INDEX_ATTESTATION_REPORT,
+                evidence.len(),
+            )?;
+            Some(evidence)
+        } else {
+            None
+        };
+
+        let auth_value = self.auth_value.expect("auth value is uninitialized");
+        if let Some(evidence) = evidence {
+            self.tpm_engine_helper
+                .write_to_nv_index(auth_value, TPM_NV_INDEX_ATTESTATION_REPORT, evidence)
+                .map_err(TpmErrorKind::WriteToNvIndex)?;
+        }
+        self.tpm_engine_helper
+            .write_to_nv_index(auth_value, TPM_NV_INDEX_AIK_CERT, &response.ak_cert)
+            .map_err(TpmErrorKind::WriteToNvIndex)?;
+        Ok(())
+    }
+
     /// Poll the AK cert request made by `get_ak_cert`. This function is called by [`PollDevice::poll_device`].
     fn poll_ak_cert_request(&mut self, cx: &mut std::task::Context<'_>) {
         if let Some(async_ak_cert_request) = self.async_ak_cert_request.as_mut() {
@@ -1152,15 +1239,8 @@ impl Tpm {
 
                 // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => {
-                        // Set the renew time if successfully receiving the data.
-                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                        // `refresh_device_attestation_data_on_nv_read` is triggered.
-                        self.ak_cert_renew_time = Some(now);
-
-                        data
-                    }
-                    Ok(_data) => {
+                    Ok(data) if !data.ak_cert.is_empty() => data,
+                    Ok(_) => {
                         tracelimit::warn_ratelimited!(
                             CVM_ALLOWED,
                             op_type = ?LogOpType::AkCertProvision,
@@ -1202,19 +1282,15 @@ impl Tpm {
                     }
                 };
 
-                let auth_value = self.auth_value.expect("auth value is uninitialized");
-                if let Err(e) = self.tpm_engine_helper.write_to_nv_index(
-                    auth_value,
-                    TPM_NV_INDEX_AIK_CERT,
-                    &response,
-                ) {
+                if let Err(e) = self.write_ak_cert_response(&response) {
                     tracelimit::error_ratelimited!(
                         CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
-                        "Failed write new TPM AK cert to NV index"
+                        "Failed to write TPM AK certificate response to NV indices"
                     );
                     return;
                 }
+                self.ak_cert_renew_time = Some(now);
 
                 let duration = now.duration_since(std::time::UNIX_EPOCH);
 
@@ -1225,7 +1301,7 @@ impl Tpm {
                     ak_pub_hash = self.ak_pub_str(),
                     is_renew,
                     got_cert = 1,
-                    size = response.len(),
+                    size = response.ak_cert.len(),
                     latency = latency.map_or(0, |d| d.as_millis()),
                     cert_renew_time = ?duration,
                     "ak cert renewal is complete",
@@ -1278,7 +1354,7 @@ impl Tpm {
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
-            && self.ak_cert_type.attested()
+            && self.ak_cert_type.refreshes_attestation_report()
         {
             if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
                 || self.attestation_report_renew_time.is_none()
@@ -2028,10 +2104,18 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use std::sync::Arc;
+    use std::sync::LazyLock;
+    use tpm_lib::NvIndexState;
+    use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
+    use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
     use tpm_protocol::tpm20proto::TpmaNvBits;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+
+    static TPM_TEST_LOCK: LazyLock<futures::lock::Mutex<()>> =
+        LazyLock::new(|| futures::lock::Mutex::new(()));
+
     struct TestRequestAkCertHelper;
 
     #[async_trait::async_trait]
@@ -2051,13 +2135,49 @@ mod tests {
         async fn request_ak_cert(
             &self,
             _request: Vec<u8>,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-            Ok(Vec::new())
+        ) -> Result<AkCertRequestResult, Box<dyn std::error::Error + Send + Sync + 'static>>
+        {
+            Ok(AkCertRequestResult {
+                ak_cert: Vec::new(),
+                host_certification_evidence: None,
+            })
         }
+    }
+
+    async fn new_test_tpm(ak_cert_type: TpmAkCertType) -> Tpm {
+        Tpm::new(
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            EphemeralNonVolatileStore::new_boxed(),
+            EphemeralNonVolatileStore::new_boxed(),
+            None,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            ak_cert_type,
+            None,
+            None,
+            false,
+            guid::guid!("00112233-4455-6677-8899-aabbccddeeff"),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn assert_nv_index_contents(tpm: &mut Tpm, nv_index: u32, size: usize, expected: &[u8]) {
+        let mut data = vec![0; size];
+        let state = tpm
+            .tpm_engine_helper
+            .read_from_nv_index(nv_index, &mut data)
+            .unwrap();
+        assert!(matches!(state, NvIndexState::Available));
+        assert_eq!(&data[..expected.len()], expected);
+        assert!(data[expected.len()..].iter().all(|value| *value == 0));
     }
 
     #[async_test]
     async fn test_fix_corrupted_vmgs() {
+        let _test_guard = TPM_TEST_LOCK.lock().await;
         let tpm_state_blob = include_bytes!("../../test_data/vTpmState-corrupt.blob");
         let tpm_state_vec = tpm_state_blob.to_vec();
         let mut store = EphemeralNonVolatileStore::new_boxed();
@@ -2099,5 +2219,191 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    #[async_test]
+    async fn test_trusted_and_host_certified_nv_index_allocation() {
+        let _test_guard = TPM_TEST_LOCK.lock().await;
+        let helper = Arc::new(TestRequestAkCertHelper);
+        let mut trusted = new_test_tpm(TpmAkCertType::Trusted(helper.clone(), Some(false))).await;
+        let mut data = vec![0; tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize];
+        let state = trusted
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT, &mut data)
+            .unwrap();
+        assert!(matches!(state, NvIndexState::Unallocated));
+        drop(trusted);
+
+        let mut host_certified =
+            new_test_tpm(TpmAkCertType::HostCertified(helper, Some(false))).await;
+        let state = host_certified
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT, &mut data)
+            .unwrap();
+        assert!(matches!(state, NvIndexState::Uninitialized));
+    }
+
+    #[async_test]
+    async fn test_host_certified_response_updates_certificate_and_evidence() {
+        let _test_guard = TPM_TEST_LOCK.lock().await;
+        let mut tpm = new_test_tpm(TpmAkCertType::HostCertified(
+            Arc::new(TestRequestAkCertHelper),
+            Some(false),
+        ))
+        .await;
+        let initial_response = AkCertRequestResult {
+            ak_cert: vec![1, 2, 3],
+            host_certification_evidence: Some(vec![4, 5, 6, 7]),
+        };
+        tpm.write_ak_cert_response(&initial_response).unwrap();
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_AIK_CERT,
+            tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+            &[1, 2, 3],
+        );
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_ATTESTATION_REPORT,
+            tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize,
+            &[4, 5, 6, 7],
+        );
+
+        let renewed_response = AkCertRequestResult {
+            ak_cert: vec![8, 9],
+            host_certification_evidence: Some(vec![10, 11, 12]),
+        };
+        tpm.write_ak_cert_response(&renewed_response).unwrap();
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_AIK_CERT,
+            tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+            &[8, 9],
+        );
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_ATTESTATION_REPORT,
+            tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize,
+            &[10, 11, 12],
+        );
+    }
+
+    #[async_test]
+    async fn test_host_certified_response_survives_cold_boot() {
+        let _test_guard = TPM_TEST_LOCK.lock().await;
+        let mut tpm = new_test_tpm(TpmAkCertType::HostCertified(
+            Arc::new(TestRequestAkCertHelper),
+            Some(false),
+        ))
+        .await;
+        let response = AkCertRequestResult {
+            ak_cert: vec![1, 2, 3],
+            host_certification_evidence: Some(vec![4, 5, 6, 7]),
+        };
+        tpm.write_ak_cert_response(&response).unwrap();
+        let nvram = tpm.pending_nvram.lock().clone();
+        assert!(!nvram.is_empty());
+        drop(tpm);
+
+        let mut nvram_store = EphemeralNonVolatileStore::default();
+        nvram_store.persist(nvram).await.unwrap();
+        let mut rebooted_tpm = Tpm::new(
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            EphemeralNonVolatileStore::new_boxed(),
+            Box::new(nvram_store),
+            None,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            TpmAkCertType::HostCertified(Arc::new(TestRequestAkCertHelper), Some(false)),
+            None,
+            None,
+            false,
+            guid::guid!("00112233-4455-6677-8899-aabbccddeeff"),
+        )
+        .await
+        .unwrap();
+
+        assert_nv_index_contents(
+            &mut rebooted_tpm,
+            TPM_NV_INDEX_AIK_CERT,
+            tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+            &[1, 2, 3],
+        );
+        assert_nv_index_contents(
+            &mut rebooted_tpm,
+            TPM_NV_INDEX_ATTESTATION_REPORT,
+            tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize,
+            &[4, 5, 6, 7],
+        );
+    }
+
+    #[async_test]
+    async fn test_host_certified_response_failure_preserves_previous_values() {
+        let _test_guard = TPM_TEST_LOCK.lock().await;
+        let mut tpm = new_test_tpm(TpmAkCertType::HostCertified(
+            Arc::new(TestRequestAkCertHelper),
+            Some(false),
+        ))
+        .await;
+        let initial_response = AkCertRequestResult {
+            ak_cert: vec![1, 2, 3],
+            host_certification_evidence: Some(vec![4, 5, 6, 7]),
+        };
+        tpm.write_ak_cert_response(&initial_response).unwrap();
+
+        let missing_evidence = AkCertRequestResult {
+            ak_cert: vec![8, 9],
+            host_certification_evidence: None,
+        };
+        assert!(matches!(
+            tpm.write_ak_cert_response(&missing_evidence),
+            Err(TpmError(TpmErrorKind::MissingHostCertificationEvidence))
+        ));
+
+        let oversized_certificate = AkCertRequestResult {
+            ak_cert: vec![8; tpm_protocol::TPM_DEFAULT_AKCERT_SIZE + 1],
+            host_certification_evidence: Some(vec![9]),
+        };
+        assert!(matches!(
+            tpm.write_ak_cert_response(&oversized_certificate),
+            Err(TpmError(TpmErrorKind::WriteToNvIndex(
+                tpm_lib::Error::NvWriteInputTooLarge {
+                    nv_index: TPM_NV_INDEX_AIK_CERT,
+                    ..
+                }
+            )))
+        ));
+
+        let oversized_evidence = AkCertRequestResult {
+            ak_cert: vec![8],
+            host_certification_evidence: Some(vec![
+                9;
+                tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize + 1
+            ]),
+        };
+        assert!(matches!(
+            tpm.write_ak_cert_response(&oversized_evidence),
+            Err(TpmError(TpmErrorKind::WriteToNvIndex(
+                tpm_lib::Error::NvWriteInputTooLarge {
+                    nv_index: TPM_NV_INDEX_ATTESTATION_REPORT,
+                    ..
+                }
+            )))
+        ));
+
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_AIK_CERT,
+            tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+            &[1, 2, 3],
+        );
+        assert_nv_index_contents(
+            &mut tpm,
+            TPM_NV_INDEX_ATTESTATION_REPORT,
+            tpm_lib::MAX_ATTESTATION_INDEX_SIZE as usize,
+            &[4, 5, 6, 7],
+        );
     }
 }

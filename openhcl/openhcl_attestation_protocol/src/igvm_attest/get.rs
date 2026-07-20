@@ -33,8 +33,24 @@ pub const WRAPPED_KEY_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Currently the number matches the maximum value defined by `get_protocol`
 pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Number of pages required by the response buffer of AK_CERT request
-/// Currently the AK cert request only requires 1 page.
-pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
+pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = 2 * PAGE_SIZE;
+
+pub const TVM_HOST_CERTIFICATION_BINDING_VERSION: u32 = 1;
+pub const TVM_HOST_CERTIFICATION_BINDING_HASH_ALG_SHA256: u32 = 1;
+pub const TVM_HOST_CERTIFICATION_EVIDENCE_MAGIC: u32 = 0x4543_4854;
+pub const TVM_HOST_CERTIFICATION_EVIDENCE_VERSION: u32 = 1;
+pub const TVM_HOST_CERTIFICATION_EVIDENCE_FLAG_HOST_CERTIFIED: u32 = 0x0000_0001;
+pub const TVM_HOST_CERTIFICATION_EVIDENCE_HEADER_SIZE: usize = 48;
+pub const TVM_HOST_CERTIFICATION_IDKS_SIGNATURE_SIZE: usize = 256;
+pub const TVM_HOST_CERTIFICATION_EVIDENCE_MAX_SIZE: usize = 2900;
+pub const TVM_HOST_CERTIFICATION_RESPONSE_MAGIC: u32 = 0x5243_4854;
+pub const TVM_HOST_CERTIFICATION_RESPONSE_VERSION: u32 = 1;
+pub const TVM_HOST_CERTIFICATION_RESPONSE_HEADER_SIZE: usize = 32;
+pub const TVM_HOST_CERTIFICATION_AK_CERT_MAX_SIZE: usize = 4096;
+pub const TVM_HOST_CERTIFICATION_RESPONSE_MAX_SIZE: usize =
+    TVM_HOST_CERTIFICATION_RESPONSE_HEADER_SIZE
+        + TVM_HOST_CERTIFICATION_AK_CERT_MAX_SIZE
+        + TVM_HOST_CERTIFICATION_EVIDENCE_MAX_SIZE;
 
 /// Current IGVM Attest response header version.
 pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: IgvmAttestResponseVersion =
@@ -170,13 +186,15 @@ impl IgvmAttestRequestHeader {
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
 /// 2 - skip_hw_unsealing: Skip hardware unsealing in case key release request fails
+/// 3 - tvm_host_certification: Request host-certification evidence for a TVM AK certificate
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
     pub skip_hw_unsealing: bool,
-    #[bits(29)]
+    pub tvm_host_certification: bool,
+    #[bits(28)]
     _reserved: u32,
 }
 
@@ -245,7 +263,7 @@ pub struct IgvmSignal {
 
 /// The common response header that comply with both V1 and V2 Igvm attest response
 #[repr(C)]
-#[derive(Default, Debug, IntoBytes, FromBytes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestCommonResponseHeader {
     /// Data size
     pub data_size: u32,
@@ -302,6 +320,36 @@ pub struct IgvmAttestAkCertResponseHeader {
     pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
+}
+
+/// Stable host-certification evidence persisted in the TVM attestation-report NV index.
+#[repr(C)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TvmHostCertificationEvidenceHeader {
+    pub magic: u32,
+    pub version: u32,
+    pub header_size: u32,
+    pub total_size: u32,
+    pub flags: u32,
+    pub binding_version: u32,
+    pub binding_hash_algorithm: u32,
+    pub report_size: u32,
+    pub report_signature_size: u32,
+    pub runtime_data_size: u32,
+    pub reserved: [u32; 2],
+}
+
+/// Capability-gated AK certificate response payload for host-certified TVMs.
+#[repr(C)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TvmHostCertificationResponseHeader {
+    pub magic: u32,
+    pub version: u32,
+    pub header_size: u32,
+    pub total_size: u32,
+    pub ak_cert_size: u32,
+    pub evidence_size: u32,
+    pub reserved: [u32; 2],
 }
 
 /// Definition of the runt-time claims, which will be appended to the
@@ -504,5 +552,34 @@ pub mod runtime_claims {
                 hardware_sealing_policy: HardwareSealingPolicy::None,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tvm_host_certification_contract() {
+        assert_eq!(
+            size_of::<TvmHostCertificationEvidenceHeader>(),
+            TVM_HOST_CERTIFICATION_EVIDENCE_HEADER_SIZE
+        );
+        assert_eq!(
+            size_of::<TvmHostCertificationResponseHeader>(),
+            TVM_HOST_CERTIFICATION_RESPONSE_HEADER_SIZE
+        );
+        assert_eq!(
+            IgvmCapabilityBitMap::new()
+                .with_tvm_host_certification(true)
+                .into_bits(),
+            0x0000_0008
+        );
+        assert_eq!(
+            TVM_HOST_CERTIFICATION_RESPONSE_MAX_SIZE,
+            TVM_HOST_CERTIFICATION_RESPONSE_HEADER_SIZE
+                + TVM_HOST_CERTIFICATION_AK_CERT_MAX_SIZE
+                + TVM_HOST_CERTIFICATION_EVIDENCE_MAX_SIZE
+        );
     }
 }
