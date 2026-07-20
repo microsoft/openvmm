@@ -50,6 +50,11 @@ pub struct UefiLoadSettings {
     pub vmbus: bool,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce: bool,
+    /// Whether the hypervisor (HV#1) enlightenments are exposed to the guest.
+    /// When `false`, the firmware is told (via the SEC platform type in `x2` on
+    /// aarch64) not to attempt to use hypervisor-specific facilities. This is
+    /// required to boot UEFI without hypervisor support (e.g. aarch64 KVM).
+    pub hv: bool,
 }
 
 /// All inputs needed by [`load_uefi`].
@@ -222,6 +227,7 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         &mut loader,
         image,
         loader::uefi::ConfigType::ConfigBlob(cfg),
+        settings.hv,
     )
     .map_err(Error::Loader)?;
 
