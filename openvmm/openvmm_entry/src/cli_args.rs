@@ -5635,4 +5635,53 @@ mod tests {
         assert!(parse_numa_distance("0:1").is_err());
         assert!(parse_numa_distance("0:1:20:extra").is_err());
     }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_smmu_cli_from_str() {
+        // Minimal: only rc=, oas defaults to auto, accel off.
+        let s = SmmuCli::from_str("rc=pcie0").unwrap();
+        assert_eq!(s.rc_name, "pcie0");
+        assert!(!s.accel);
+        assert!(matches!(s.oas, SmmuOasCli::Auto));
+
+        // accel flag.
+        let s = SmmuCli::from_str("rc=pcie0,accel").unwrap();
+        assert_eq!(s.rc_name, "pcie0");
+        assert!(s.accel);
+        assert!(matches!(s.oas, SmmuOasCli::Auto));
+
+        // Explicit oas=auto.
+        let s = SmmuCli::from_str("rc=pcie0,oas=auto").unwrap();
+        assert!(matches!(s.oas, SmmuOasCli::Auto));
+
+        // Fixed oas.
+        let s = SmmuCli::from_str("rc=pcie0,oas=52").unwrap();
+        assert!(matches!(s.oas, SmmuOasCli::Fixed(52)));
+
+        // All keys/flags together, order independent.
+        let s = SmmuCli::from_str("oas=48,accel,rc=pcie1").unwrap();
+        assert_eq!(s.rc_name, "pcie1");
+        assert!(s.accel);
+        assert!(matches!(s.oas, SmmuOasCli::Fixed(48)));
+
+        // Missing required rc=.
+        assert!(SmmuCli::from_str("accel").is_err());
+        assert!(SmmuCli::from_str("oas=52").is_err());
+
+        // Empty rc= value.
+        assert!(SmmuCli::from_str("rc=").is_err());
+
+        // Duplicate rc= key.
+        assert!(SmmuCli::from_str("rc=pcie0,rc=pcie1").is_err());
+
+        // Non-numeric oas value.
+        assert!(SmmuCli::from_str("rc=pcie0,oas=big").is_err());
+
+        // Unknown key.
+        assert!(SmmuCli::from_str("rc=pcie0,foo=bar").is_err());
+
+        // Unknown flag.
+        assert!(SmmuCli::from_str("rc=pcie0,turbo").is_err());
+    }
 }

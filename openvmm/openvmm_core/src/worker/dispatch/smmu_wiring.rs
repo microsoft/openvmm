@@ -17,10 +17,18 @@ use vmotherboard::ChipsetBuilder;
 
 /// Default advertised OAS (in bits) for an `oas=auto` SMMU.
 ///
-/// 48 bits (256 TiB) comfortably covers any guest physical address space, so an
-/// `auto` SMMU advertises it as a fixed value rather than sizing it to the
-/// guest memory layout (matching the fixed-OAS approach taken by QEMU and
-/// Hyper-V's emulated SMMUs).
+/// This is a fixed sizing policy, not a computed maximum: rather than sizing
+/// the advertised OAS to the guest memory layout (or to the host's supported
+/// IPA width, which on aarch64/KVM can be up to 52 bits), an `auto` SMMU
+/// advertises a constant 48 bits. This matches the fixed-OAS approach taken by
+/// Hyper-V's emulated SMMU.
+///
+/// The memory-layout allocator packs high MMIO compactly bottom-up just above
+/// guest RAM, so for typical configurations every translatable address sits
+/// far below 48 bits (256 TiB). This is not a hard guarantee, though: a large
+/// enough RAM size, or an explicitly pinned high MMIO/ECAM base, can place
+/// addresses above 256 TiB (up to the host IPA width). Such a configuration
+/// must pass an explicit `oas=` (e.g. `oas=52`) rather than relying on `auto`.
 const DEFAULT_AUTO_OAS_BITS: u8 = 48;
 
 /// Valid SMMUv3 output address sizes (IDR5.OAS encodings), in bits.

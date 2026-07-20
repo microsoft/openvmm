@@ -864,6 +864,23 @@ async fn vm_config_from_command_line(
     let mut vtd_names: std::collections::HashSet<&str> =
         opt.intel_vtd.iter().map(|s| s.as_str()).collect();
 
+    // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
+    // entries up front. Entries are removed as they are matched to a root
+    // complex below; any left over refer to unknown root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
+        let mut map = std::collections::HashMap::new();
+        for s in &opt.smmu {
+            if map.insert(s.rc_name.as_str(), s).is_some() {
+                anyhow::bail!(
+                    "--smmu specified multiple times for root complex '{}'",
+                    s.rc_name
+                );
+            }
+        }
+        map
+    };
+
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports: Vec<PciePortConfig> = opt
@@ -927,7 +944,7 @@ async fn vm_config_from_command_line(
             cxl,
             ports,
             #[cfg(guest_arch = "aarch64")]
-            iommu: opt.smmu.iter().find(|s| s.rc_name == rc_cli.name).map(|s| {
+            iommu: smmu_names.remove(rc_cli.name.as_str()).map(|s| {
                 openvmm_defs::config::PcieIommuConfig::Smmu {
                     accel: s.accel,
                     oas: match s.oas {
@@ -952,12 +969,8 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    for s in &opt.smmu {
-        anyhow::ensure!(
-            pcie_root_complexes.iter().any(|rc| rc.name == s.rc_name),
-            "--smmu refers to unknown root complex '{}'",
-            s.rc_name
-        );
+    if let Some(name) = smmu_names.into_keys().next() {
+        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
     }
     #[cfg(guest_arch = "x86_64")]
     if let Some(name) = amd_iommu_names.into_iter().next() {
