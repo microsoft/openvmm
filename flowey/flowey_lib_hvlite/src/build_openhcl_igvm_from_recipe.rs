@@ -313,6 +313,16 @@ impl ArtifactType for OpenhclIgvmRecipe {
 }
 
 impl OpenhclIgvmRecipe {
+    pub fn uses_dev_kernel(&self) -> bool {
+        matches!(
+            self,
+            Self::X64Devkern
+                | Self::X64TestLinuxDirectDevkern
+                | Self::X64CvmDevkern
+                | Self::Aarch64Devkern
+        )
+    }
+
     pub fn non_production_tag(&self) -> String {
         let mut tag = self.arch().to_string();
         if let Some(flavor) = self.flavor() {
