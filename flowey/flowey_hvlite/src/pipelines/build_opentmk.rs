@@ -11,7 +11,6 @@ use flowey_lib_hvlite::common::CommonArch;
 use std::path::PathBuf;
 
 /// Build OpenTMK and package it into a bootable VHD.
-/// DO NOT USE IN CI.
 #[derive(clap::Args)]
 pub struct BuildOpentmkCli {
     /// Target architecture for the OpenTMK build. Defaults to x86-64.
