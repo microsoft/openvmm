@@ -1083,6 +1083,9 @@ impl ChannelList {
     }
 
     /// Gets a channel by guest channel ID.
+    ///
+    /// It is an error to call this function on a channel that has been released
+    /// by the guest, since the guest should not be using that ID anymore.
     fn get_by_channel_id_mut(
         &mut self,
         assigned_channels: &AssignedChannels,
@@ -2742,49 +2745,27 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Sends a GPADL to the device after the full list of ranges was received.
-    /// Returns false if the GPADL should be removed because the channel is
-    /// already released by the guest.
-    #[must_use]
-    fn gpadl_updated(
+    fn gpadl_completed(
         mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &Channel,
         gpadl_id: GpadlId,
         gpadl: &mut Gpadl,
-    ) -> bool {
-        let is_released = channel.state.is_released();
-        if is_released || channel.state.is_revoked() {
+    ) {
+        if channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            let status = if is_released {
-                tracelimit::warn_ratelimited!(
-                    channel_id = channel_id.0,
-                    key = %channel.offer.key(),
-                    gpadl_id = gpadl_id.0,
-                    "guest sent GPADL for unreferenced channel"
-                );
 
-                protocol::STATUS_UNSUCCESSFUL
-            } else {
-                // A gpadl for a channel that was revoked but still referenced is
-                // allowed. In this case there is no channel to notify so
-                // immediately send a success response.
-                gpadl.state = GpadlState::Accepted;
-                protocol::STATUS_SUCCESS
-            };
-
-            sender.send_gpadl_created(channel_id, gpadl_id, status);
-
-            // Keep the gpadl around until the channel is released, so that the
-            // guest can tear it down if it wants.
-            !is_released
+            // A gpadl for a channel that was revoked but still referenced is
+            // allowed. In this case there is no channel to notify so
+            // immediately send a success response.
+            gpadl.state = GpadlState::Accepted;
+            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_SUCCESS);
         } else {
-            // Notify the channel if the GPADL is done.
+            // Notify the channel of the completed GPADL.
             sender.notifier.notify(
                 offer_id,
                 Action::Gpadl(gpadl_id, gpadl.count, gpadl.buf.clone()),
             );
-
-            true
         }
     }
 
@@ -2837,10 +2818,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     return Err(ChannelError::DuplicateGpadlId);
                 }
             }
-        }
-
-        if done
-            && !Self::gpadl_updated(
+        } else {
+            // Notify the channel if the GPADL is done.
+            Self::gpadl_completed(
                 self.inner
                     .pending_messages
                     .sender(self.notifier, self.inner.state.is_paused()),
@@ -2849,8 +2829,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 input.gpadl_id,
                 gpadl,
             )
-        {
-            self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
         }
         Ok(())
     }
@@ -2904,7 +2882,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Ok(done) => {
                 if done {
                     self.inner.incomplete_gpadls.remove(&input.gpadl_id);
-                    if !Self::gpadl_updated(
+                    Self::gpadl_completed(
                         self.inner
                             .pending_messages
                             .sender(self.notifier, self.inner.state.is_paused()),
@@ -2912,9 +2890,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         channel,
                         input.gpadl_id,
                         gpadl,
-                    ) {
-                        self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
-                    }
+                    )
                 }
             }
             Err(err) => {
