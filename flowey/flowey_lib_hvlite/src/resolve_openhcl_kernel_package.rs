@@ -139,8 +139,10 @@ impl FlowNodeWithConfig for Node {
                 if kind.is_dev() {
                     anyhow::bail!(
                         "OpenHCL dev kernel support is disabled; configure \
-                         OPENHCL_KERNEL_DEV_VERSION to enable {:?}",
-                        kind
+                         OPENHCL_KERNEL_DEV_VERSION or provide local kernel paths for {:?} to \
+                         enable {:?}",
+                        arch,
+                        kind,
                     );
                 }
                 anyhow::bail!(
