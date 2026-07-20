@@ -437,6 +437,8 @@ virt_support_x86emu = { path = "vmm_core/virt_support_x86emu" }
 virt_whp = { path = "vmm_core/virt_whp" }
 vm_loader = { path = "vmm_core/vm_loader" }
 vm_manifest_builder = { path = "vmm_core/vm_manifest_builder" }
+vmm_cli = { path = "vmm_core/vmm_cli" }
+vmm_cli_derive = { path = "vmm_core/vmm_cli_derive" }
 vmm_core = { path = "vmm_core" }
 vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }

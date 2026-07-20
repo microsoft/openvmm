@@ -1914,17 +1914,20 @@ async fn vm_config_from_command_line(
                         .iter()
                         .map(|n| NumaNode {
                             mem: Some(MemoryConfig {
-                                mem_size: n.memory.mem_size,
+                                mem_size: n.memory.size.map(|m| m.0).unwrap_or(0),
                                 prefetch_memory: n.memory.prefetch,
                                 private_memory: n.memory.shared == Some(false),
-                                transparent_hugepages: n.memory.transparent_hugepages,
+                                transparent_hugepages: n
+                                    .memory
+                                    .transparent_hugepages
+                                    .unwrap_or(!n.memory.hugepages),
                                 hugepages: n.memory.hugepages,
-                                hugepage_size: n.memory.hugepage_size,
+                                hugepage_size: n.memory.hugepage_size.map(|m| m.0),
                                 host_numa_node: n.host_numa_node,
                             }),
                             vps: match &n.vps {
-                                Some(vps) if vps.is_empty() => VpAssignment::Empty,
-                                Some(vps) => VpAssignment::Explicit(vps.clone()),
+                                Some(vps) if vps.0.is_empty() => VpAssignment::Empty,
+                                Some(vps) => VpAssignment::Explicit(vps.0.clone()),
                                 None => VpAssignment::FromTopology,
                             },
                         })
@@ -1951,7 +1954,7 @@ async fn vm_config_from_command_line(
                             private_memory: opt.private_memory(),
                             transparent_hugepages: opt.transparent_hugepages(),
                             hugepages: opt.memory.hugepages,
-                            hugepage_size: opt.memory.hugepage_size,
+                            hugepage_size: opt.memory.hugepage_size.map(|m| m.0),
                             host_numa_node: None,
                         }),
                         vps: VpAssignment::FromTopology,
