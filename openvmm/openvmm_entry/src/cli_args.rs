@@ -3534,8 +3534,8 @@ pub struct SmmuCli {
 #[cfg(guest_arch = "aarch64")]
 #[derive(Clone, Copy, Debug)]
 pub enum SmmuOasCli {
-    /// Resolve automatically to a fixed default covering the guest physical
-    /// address space.
+    /// Advertise a fixed default OAS (see the `--smmu` docs for the sizing
+    /// policy and when a larger fixed OAS is required).
     Auto,
     /// Fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
     Fixed(u8),

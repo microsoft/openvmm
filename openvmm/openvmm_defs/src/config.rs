@@ -386,8 +386,8 @@ pub enum PcieIommuConfig {
 /// Output address size (OAS) policy for an emulated SMMUv3.
 #[derive(Debug, MeshPayload, Clone, Copy)]
 pub enum SmmuOas {
-    /// Resolve automatically to a fixed default that covers any guest physical
-    /// address space.
+    /// Advertise a fixed default OAS. See `DEFAULT_AUTO_OAS_BITS` for the
+    /// sizing policy and its limits.
     Auto,
     /// Use a fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
     Fixed(u8),

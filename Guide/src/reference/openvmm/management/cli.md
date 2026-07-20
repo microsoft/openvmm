@@ -428,9 +428,11 @@ The syntax is a comma-separated key/value list:
   translation, delegating stage-1 walks to the host IOMMU. See the note
   below — this is not yet wired up and currently fails at startup.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
-  `auto` (the default) picks a fixed size large enough to cover any guest
-  physical address space. A fixed `N` must be one of the SMMUv3-legal
-  encodings: `32`, `36`, `40`, `42`, `44`, `48`, or `52`.
+  `auto` (the default) advertises a fixed 48 bits, which covers typical
+  configurations. Very large RAM or an explicitly pinned high MMIO/ECAM
+  base can exceed this, requiring an explicit larger `oas=` (e.g. `oas=52`).
+  A fixed `N` must be one of the SMMUv3-legal encodings: `32`, `36`, `40`,
+  `42`, `44`, `48`, or `52`.
 
 ```sh
 # Enable an emulated SMMU on root complex rc0
