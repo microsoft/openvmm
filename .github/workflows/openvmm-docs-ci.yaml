@@ -519,6 +519,9 @@ jobs:
         path: ${{ runner.temp }}/bootstrapped-flowey
   job3:
     name: publish openvmm.dev
+    concurrency:
+      group: openvmm.dev
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
