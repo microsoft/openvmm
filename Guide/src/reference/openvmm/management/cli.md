@@ -7,8 +7,8 @@ The most up to date reference is always the [code itself](https://openvmm.dev/ru
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
-* `--version`, `-V`: Prints the OpenVMM product version from `openvmm/VERSION`
-  and exits.
+* `--version`, `-V`: Prints the OpenVMM product version from the current
+  development train in `openvmm/VERSION` and exits.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a

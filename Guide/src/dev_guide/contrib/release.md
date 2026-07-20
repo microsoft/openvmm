@@ -2,13 +2,16 @@
 
 ## OpenVMM product version
 
-The source of truth for the OpenVMM product version is
-`openvmm/VERSION`. It contains the three-component version used by OpenVMM
-artifacts, independently of the release branch names described below.
+The source of truth for the current OpenVMM development train is
+`openvmm/VERSION`. It contains the three-component product version used by
+OpenVMM artifacts, independently of the release branch names described below.
+The file does not by itself indicate that a release exists.
 
-Update this file when selecting the next planned OpenVMM release. Build and
-release tooling may append prerelease or build metadata, but must not replace
-the product version with a CI build number.
+An official release requires an exact matching
+`openvmm-vMAJOR.MINOR.PATCH` tag. After publishing a release, update
+`openvmm/VERSION` to the next intended development train. Build and release
+tooling may append prerelease or build metadata, but must not replace the
+product version with a CI build number.
 
 Occasionally, the OpenVMM project will declare upcoming release milestones. We
 stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
