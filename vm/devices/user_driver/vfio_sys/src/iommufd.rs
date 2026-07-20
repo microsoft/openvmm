@@ -596,13 +596,17 @@ impl IommufdCtx {
         data_type: u32,
         entries: &[[u64; 2]],
     ) -> Result<u32, HwptInvalidateError> {
+        let entry_num = u32::try_from(entries.len()).map_err(|_| HwptInvalidateError {
+            errno: nix::errno::Errno::EINVAL,
+            handled: 0,
+        })?;
         let mut cmd = IommuHwptInvalidate {
             size: size_of::<IommuHwptInvalidate>() as u32,
             hwpt_id,
             data_uptr: entries.as_ptr() as u64,
             data_type,
             entry_len: size_of::<[u64; 2]>() as u32,
-            entry_num: entries.len() as u32,
+            entry_num,
             __reserved: 0,
         };
         // SAFETY: the fd is valid and `cmd` is correctly constructed.
