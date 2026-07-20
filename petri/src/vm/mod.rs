@@ -237,6 +237,8 @@ pub struct PetriVmConfig {
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+    /// PCIe virtio-blk drives.
+    pub pcie_virtio_blk_drives: Vec<PcieVirtioBlkDrive>,
     /// Physical NVMe devices to attach
     pub physical_nvme_devices: HashMap<Guid, PhysicalNvmeDevice>,
 }
@@ -248,6 +250,15 @@ pub struct PcieNvmeDrive {
     pub port_name: String,
     /// NVMe namespace ID.
     pub nsid: u32,
+    /// The drive to attach.
+    pub drive: Drive,
+}
+
+/// PCIe virtio-blk drive configuration.
+#[derive(Debug)]
+pub struct PcieVirtioBlkDrive {
+    /// PCIe root port name (e.g. "s0rc0rp0").
+    pub port_name: String,
     /// The drive to attach.
     pub drive: Drive,
 }
@@ -443,6 +454,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                pcie_virtio_blk_drives: Vec::new(),
                 physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
@@ -520,6 +532,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                pcie_virtio_blk_drives: Vec::new(),
                 physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
@@ -935,6 +948,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     self.config.pcie_nvme_drives.push(PcieNvmeDrive {
                         port_name,
                         nsid: 1,
+                        drive: boot_drive,
+                    });
+                    self
+                }
+                BootDeviceType::PcieVirtioBlk => {
+                    self.config.pcie_virtio_blk_drives.push(PcieVirtioBlkDrive {
+                        port_name: "s0rc0rp0".into(),
                         drive: boot_drive,
                     });
                     self
@@ -2623,6 +2643,8 @@ pub enum BootDeviceType {
     NvmeViaNvme,
     /// Boot from NVMe attached to a PCIe root port.
     PcieNvme,
+    /// Boot from virtio-blk attached to a PCIe root port.
+    PcieVirtioBlk,
 }
 
 impl BootDeviceType {
@@ -2632,7 +2654,8 @@ impl BootDeviceType {
             | BootDeviceType::Ide
             | BootDeviceType::Scsi
             | BootDeviceType::Nvme
-            | BootDeviceType::PcieNvme => false,
+            | BootDeviceType::PcieNvme
+            | BootDeviceType::PcieVirtioBlk => false,
             BootDeviceType::IdeViaScsi
             | BootDeviceType::IdeViaNvme
             | BootDeviceType::ScsiViaScsi
@@ -2651,7 +2674,10 @@ impl BootDeviceType {
 
     fn requires_vmbus(&self) -> bool {
         match self {
-            BootDeviceType::None | BootDeviceType::Ide | BootDeviceType::PcieNvme => false,
+            BootDeviceType::None
+            | BootDeviceType::Ide
+            | BootDeviceType::PcieNvme
+            | BootDeviceType::PcieVirtioBlk => false,
             BootDeviceType::IdeViaScsi
             | BootDeviceType::IdeViaNvme
             | BootDeviceType::Scsi

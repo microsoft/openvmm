@@ -525,6 +525,48 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
     Ok(())
 }
 
+/// Boot a guest through UEFI from a virtio-blk device on an emulated PCIe root
+/// port. Exercises UEFI's virtio-blk driver stack (UEFI must read the OS off
+/// the device to load it) and confirms the guest's root filesystem lands on the
+/// virtio-blk disk.
+///
+/// Only Linux guests are covered: the base Windows images do not carry an inbox
+/// virtio-blk driver, so Windows cannot mount the OS volume from virtio-blk.
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)), uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+async fn pcie_virtio_blk_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_boot_device_type(petri::BootDeviceType::PcieVirtioBlk)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+
+    // Confirm we actually booted from virtio-blk. Linux only assigns the "vd"
+    // prefix to virtio-blk block devices (NVMe uses "nvme*", SCSI uses "sd*"),
+    // so a "/dev/vd*" root device proves the OS was loaded off the virtio-blk
+    // disk rather than some other device.
+    let mounts = String::from_utf8(agent.read_file("/proc/mounts").await?)
+        .context("/proc/mounts is not valid UTF-8")?;
+    let root_device = mounts
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let source = fields.next()?;
+            let target = fields.next()?;
+            (target == "/").then_some(source)
+        })
+        .context("no root mount found in /proc/mounts")?;
+    tracing::info!(root_device, "guest root device");
+    assert!(
+        root_device.starts_with("/dev/vd"),
+        "expected to boot from a virtio-blk device, but root is {root_device}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Test SMMUv3 IOMMU emulation with a mixed topology:
 ///
 /// - Root complex s0rc0 (segment 0): SMMU enabled, virtio-net + NVMe behind it
