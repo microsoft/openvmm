@@ -336,18 +336,25 @@ impl IortRmr {
             identifier,
             mapping_count,
         );
-        // Total size: fixed header + ID mappings + RMR descriptors.
-        let total = size_of::<Self>() as u16
-            + (mapping_count as u16) * size_of::<IortIdMapping>() as u16
-            + (rmr_count as u16) * size_of::<IortRmrDescriptor>() as u16;
-        header.length = total.into();
+        // Total node size: fixed header + ID mappings + RMR descriptors.
+        // Accumulate in `usize` and convert to the on-wire `u16` `length`
+        // field via `try_into`, so an oversized node fails loudly instead of
+        // silently wrapping to a too-small length.
+        let total = size_of::<Self>()
+            + mapping_count as usize * size_of::<IortIdMapping>()
+            + rmr_count as usize * size_of::<IortRmrDescriptor>();
+        header.length = u16::try_from(total)
+            .expect("IORT RMR node length exceeds u16")
+            .into();
         // mapping_offset is immediately after the fixed header.
         if mapping_count > 0 {
             header.mapping_offset = (size_of::<Self>() as u32).into();
         }
-        // rmr_offset comes after the ID mappings.
+        // rmr_offset comes after the ID mappings. Bounded by `total` (already
+        // checked to fit `u16`), so the `u32` accumulation cannot overflow.
         let rmr_offset = if rmr_count > 0 {
-            size_of::<Self>() as u32 + mapping_count * size_of::<IortIdMapping>() as u32
+            u32::try_from(size_of::<Self>() + mapping_count as usize * size_of::<IortIdMapping>())
+                .expect("IORT RMR descriptor offset exceeds u32")
         } else {
             0
         };
