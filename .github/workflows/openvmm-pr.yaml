@@ -4963,7 +4963,6 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job0
     - job12
     - job2
     - job3
@@ -6867,7 +6866,6 @@ jobs:
     - job22
     - job23
     - job24
-    - job25
     - job26
     - job27
     - job28
