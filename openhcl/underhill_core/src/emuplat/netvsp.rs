@@ -580,7 +580,7 @@ impl HclNetworkVFManagerWorker {
             }
         }
         // Explicitly update save state mac filter settings in case of errors or
-        // if VTL2 is no longer preset.
+        // if VTL2 is no longer present.
         if !vtl2_present || guest_notification_result.is_err() {
             for direction_to_vtl0 in &mut *self.save_state.direction_to_vtl0.lock() {
                 *direction_to_vtl0 = Some(false);
