@@ -1,74 +1,110 @@
 # OpenVMM Release Model and Support
 
-This page describes how standalone OpenVMM versions are released and
-supported, independently from OpenHCL servicing, and provides the maintainer
-runbook for publishing a release.
+This page describes standalone OpenVMM releases, support policy, source-build
+identity, and the maintainer release runbook. OpenVMM versions are independent
+from OpenHCL servicing versions.
 
-## One branch family, two products
+## One repository, two products
 
 OpenVMM and OpenHCL share a repository and substantial code, but they are
 separate products with different release and support policies.
 
 | Product | Release and support model |
 | --- | --- |
-| OpenVMM | Cross-platform Virtual Machine Monitor. Continuous development on `main`, with rolling standalone releases identified by OpenVMM-specific tags. |
+| OpenVMM | Cross-platform Virtual Machine Monitor. Continuous development on `main`, with standalone releases identified by OpenVMM-specific tags. |
 | OpenHCL | Paravisor built on OpenVMM. Releases and in-market servicing use selected long-lived release branches. |
-
-OpenVMM releases do not create another branch family during bring-up. The two
-products are differentiated by tags and support policy rather than separate
-development branches.
 
 ```admonish note title="See also"
 [OpenHCL Releases & Code Flow](./release.md) describes the OpenHCL release
 branch and backport process.
 ```
 
-## Pre-1.0 OpenVMM releases
+## Pre-1.0 cadence and support
 
-Before `1.0`, OpenVMM follows a rolling release model:
+Before `1.0`, maintainers target approximately one OpenVMM release per month
+from a healthy `main` commit. A release may be delayed or skipped when the
+candidate does not meet the quality bar. Calendar months are not encoded into
+the product version.
 
-- Development stays on `main`.
-- Maintainers target a release approximately monthly when the code is healthy,
-  without guaranteeing a fixed release date.
-- Releases use `0.x.y` versions.
-- Only the latest release is supported.
-- OpenVMM has no servicing branches, backports, or long-term support (LTS)
-  releases.
+Normal releases advance the minor version:
 
-To receive any fix, including a security fix, consumers must move to a newer
-OpenVMM release or to `main`.
+```text
+0.1.0
+0.2.0
+0.3.0
+```
+
+Patch releases advance the patch version:
+
+```text
+0.2.1
+0.2.2
+```
+
+Only the newest OpenVMM release is supported initially. A supported release
+receives a patch only for a security issue or release-blocking regression.
+Once a newer normal release ships, the previous line leaves normal support.
 
 A `0.x.y` version does not promise backward compatibility. APIs, command-line
 behavior, device models, snapshot formats, and other interfaces may change
 between releases.
 
-## Product versions
+## Release tags
 
-`openvmm/VERSION` is the source of truth for the current standalone OpenVMM
-development train. It contains exactly three numeric components:
+Git tags are the only source of public OpenVMM semantic versions. There is no
+checked-in OpenVMM product-version file.
+
+Release tags use:
 
 ```text
-MAJOR.MINOR.PATCH
+openvmm-vMAJOR.MINOR.PATCH
 ```
 
-On `main`, the file records the version currently under development. It is not
-evidence that a release with that version exists. An exact matching release tag
-authorizes a commit as an official release.
+Examples:
 
-Before `1.0`, each rolling release increments `MINOR` and resets `PATCH` to
-zero, such as `0.1.0` to `0.2.0`. Immediately after publishing a release,
-maintainers update `openvmm/VERSION` to the next intended minor train.
+```text
+openvmm-v0.1.0
+openvmm-v0.1.1
+openvmm-v0.2.0
+```
 
-OpenVMM does not publish patch releases while it has no servicing branches. An
-urgent correction lands in `main` and is published as the next rolling minor
-release.
+Tags must contain exactly three canonical unsigned numeric components.
+Prerelease suffixes, build metadata, leading zeroes, and additional components
+are rejected.
 
-Moving to `1.0.0` requires an explicit compatibility and deprecation
-commitment.
+Normal `MAJOR.MINOR.0` tags must point to commits reachable from `main`. A patch
+tag must descend from its immediate predecessor. For example,
+`openvmm-v0.2.2` must descend from `openvmm-v0.2.1`.
 
-Windows numeric version fields use a fourth numeric revision component. The
-revision is currently `0`, so product version `0.1.0` is represented as
-`0.1.0.0` in Windows resources.
+More than one `openvmm-v*` tag on the same commit is an error. Pushed release
+tags are immutable.
+
+## Build identity
+
+OpenVMM resolves its displayed version from source identity:
+
+| Source state | Displayed version |
+| --- | --- |
+| Clean exact `openvmm-v0.2.0` tag | `0.2.0` |
+| Dirty exact tag | `0.2.0+dirty` |
+| Clean untagged Git checkout | `0.0.0-dev+g012345678` |
+| Dirty untagged Git checkout | `0.0.0-dev+g012345678.dirty` |
+| No usable Git or generated release metadata | `0.0.0-dev` |
+
+More than one OpenVMM release tag on `HEAD` fails the build rather than
+selecting an arbitrary version.
+
+`openvmm --version` prints the concise displayed version. Full source revision,
+branch, release tag, and dirty state remain available as separate embedded
+build information.
+
+A shallow detached checkout without an available release tag warns that it may
+be missing release identity. A source tree with neither Git metadata nor
+generated release metadata warns that `0.0.0-dev` is not an official release
+identity.
+
+Windows numeric version resources use `MAJOR.MINOR.PATCH.0` for an official
+release and `0.0.0.0` for a development build.
 
 ### Independent version spaces
 
@@ -84,219 +120,169 @@ Build and distribution systems may record package versions, build IDs, and
 source revisions as additional metadata. They must not present those values as
 the OpenVMM product version.
 
-## Release tags
+## Release assets
 
-Each release is tagged:
+The initial release contains:
 
-```text
-openvmm-vMAJOR.MINOR.PATCH
-```
+- `openvmm-<VERSION>-windows-x64.zip`;
+- `openvmm-<VERSION>-windows-x64-symbols.zip`;
+- `openvmm-<VERSION>-windows-arm64.zip`;
+- `openvmm-<VERSION>-windows-arm64-symbols.zip`;
+- `openvmm-<VERSION>-linux-x64-musl.tar.gz`;
+- `openvmm-<VERSION>-linux-x64-musl-symbols.tar.gz`;
+- `openvmm-<VERSION>-linux-arm64-musl.tar.gz`;
+- `openvmm-<VERSION>-linux-arm64-musl-symbols.tar.gz`;
+- `openvmm-<VERSION>-source.tar.gz`;
+- `SHA256SUMS`.
 
-For example:
+Runtime archives contain the runnable binary and `LICENSE`. Symbol archives
+contain the matching debug symbols and `LICENSE`. Linux runtime binaries retain
+executable permissions.
 
-```text
-openvmm-v0.1.0
-```
-
-The complete tag must equal `openvmm-v` followed by the value in
-`openvmm/VERSION` at that commit. The stable release workflow triggers on tags
-matching `openvmm-v*` and fails if this equality check does not pass.
-
-## Release artifacts
-
-OpenVMM releases are published through GitHub Releases. The initial supported
-targets are:
-
-- Windows x64;
-- Windows ARM64;
-- Linux x64 using musl;
-- Linux ARM64 using musl.
-
-Each target has a runtime archive containing the `openvmm` binary and the
-repository `LICENSE`. Debug symbols are published in a separate archive that
-also contains `LICENSE`. The release includes `SHA256SUMS` covering all runtime
-and symbols archives.
+`SHA256SUMS` covers all nine archives. Every archive and `SHA256SUMS` receives a
+public GitHub build provenance attestation before the release is published.
 
 ```admonish warning title="Windows signing is not implemented"
 The public release workflow does not Authenticode-sign Windows artifacts. Do
 not describe downloaded Windows executables as signed.
 ```
 
-Release automation assembles a draft GitHub Release after validating the tag
-and building the artifacts. A maintainer reviews the artifacts and generated
-release notes before publishing the release. If the workflow is retried, it
-replaces assets only while the release remains a draft. A retry cannot replace
-assets after the stable release is published.
+## Building a release from source
 
-Every stable release asset, including `SHA256SUMS`, receives a public GitHub
-build provenance attestation generated by `actions/attest@v4`.
+A real Git checkout with the exact release tag available derives its version
+directly from Git:
 
-## Maintainer release runbook
+```bash
+git clone https://github.com/microsoft/openvmm.git
+cd openvmm
+git checkout openvmm-v0.2.0
+```
 
-Use this runbook for a normal pre-1.0 OpenVMM release. Do not create an OpenHCL
-release branch or backport changes as part of this process.
+Each release also publishes an official attested source archive. The archive
+contains `.openvmm-release.json` at its root, recording the metadata schema,
+release version, release tag, and full source revision. Builds from this archive
+retain the exact release identity without a `.git` directory.
 
-### 1. Select the release version
+```admonish warning title="Use the official source archive"
+GitHub's automatic "Source code (zip)" and "Source code (tar.gz)" links omit Git
+metadata and do not preserve the OpenVMM release identity. They are convenience
+snapshots, not supported version-preserving build inputs. Use a real checkout of
+the release tag or `openvmm-<VERSION>-source.tar.gz`.
+```
 
-Choose a healthy commit on `main` from the current development train. Confirm
-that `openvmm/VERSION` contains the version intended for the release. If it
-does not, stage and merge a pull request that corrects the train before
-creating the tag.
+## Normal release runbook
 
-Verify:
+Tag creation is the release decision. A successful workflow publishes
+automatically after building, packaging, checksumming, and attesting every
+asset. There is no separate manual approval or draft-review phase.
 
-- the file contains only `MAJOR.MINOR.PATCH`;
-- `PATCH` is zero under the current no-servicing-branch policy;
+### 1. Select the release
+
+Choose a healthy commit already on `main`. Confirm that:
+
+- required changes are merged;
+- required CI checks pass;
+- the next normal version follows the release sequence;
 - the version has not already been released;
-- required changes are already in `main`;
-- required CI checks pass.
+- the commit is suitable for public release.
 
-Do not create the release tag while a required version update is unmerged.
+Do not create the tag while required changes or checks are outstanding.
 
-### 2. Tag the release commit
+### 2. Create and push the tag
 
-Update your local `main` after the version pull request merges. Confirm that the
-working tree is clean and that `openvmm/VERSION` contains the intended version.
-
-For example, the following commands create and push an annotated tag:
+Update local `main`, confirm the working tree is clean, and create an annotated
+tag. For example:
 
 ```bash
 git switch main
 git pull --ff-only
-version="$(tr -d '\r\n' < openvmm/VERSION)"
-tag="openvmm-v${version}"
 git status --short
+version="0.2.0"
+tag="openvmm-v${version}"
 git tag -a "${tag}" -m "OpenVMM ${version}"
 git push origin "${tag}"
 ```
 
-The public workflow validates the complete tag against `openvmm/VERSION`.
-Anything other than `openvmm-v` followed by the exact file contents fails
-validation.
+Do not move, delete, or recreate a pushed release tag.
 
-### 3. Wait for the draft release
+### 3. Monitor automatic publication
 
-The tag starts the public release workflow. Wait for all build, packaging,
-attestation, and release jobs to finish. The workflow builds these target
-combinations:
+The tag starts the OpenVMM release workflow. The workflow:
 
-| Operating system | Architecture | Runtime |
-| --- | --- | --- |
-| Windows | x64 | Native Windows |
-| Windows | ARM64 | Native Windows |
-| Linux | x64 | musl |
-| Linux | ARM64 | musl |
+1. validates the tag and commit topology;
+2. builds Windows x64, Windows ARM64, Linux musl x64, and Linux musl ARM64;
+3. creates separate runtime and symbol archives;
+4. creates the official source archive;
+5. creates `SHA256SUMS`;
+6. attests every archive and the checksum file;
+7. publishes a non-draft GitHub Release with generated notes.
 
-For each target, expect a runtime archive and a separate symbols archive. Also
-expect `LICENSE` in every archive, `SHA256SUMS`, public provenance attestations,
-generated release notes, and a draft GitHub Release.
+If a build, packaging, checksum, or attestation step fails, no public release
+is created. The same immutable tag may be rerun after a pipeline or
+infrastructure failure when no release was published.
 
-Do not publish a draft produced by a partially failed workflow. Fix the problem
-or retry the workflow. A retry replaces assets only while the release remains a
-draft, so review the final asset set after the last successful run. If the
-release is already published, the retry fails instead of replacing its assets.
+If a public release already exists, the workflow refuses to replace its assets.
+Correct a bad published release with a new version rather than mutating it.
 
-### 4. Review the draft
+### 4. Confirm the release
 
-Before publishing, verify:
+After the workflow succeeds, confirm that:
 
-- the release tag and displayed version match `openvmm/VERSION`;
-- all four targets have runtime and symbols archives;
-- symbols are not bundled into the runtime archives;
-- every archive contains `LICENSE`;
-- `SHA256SUMS` covers all runtime and symbols archives;
-- checksums match files downloaded from the draft;
-- every runtime archive, symbols archive, and `SHA256SUMS` has a public
-  provenance attestation;
-- generated notes cover the intended range and do not describe unrelated
-  OpenHCL servicing changes as OpenVMM releases;
+- the release page points to the intended tag and revision;
+- all four targets have separate runtime and symbol archives;
+- the official source archive is present;
+- every runtime and symbol archive contains `LICENSE`;
+- `SHA256SUMS` covers all nine archives;
+- every archive and `SHA256SUMS` has a provenance attestation;
+- generated notes cover the intended pull requests;
 - Windows assets are not described as signed;
-- the release remains a draft until this review is complete.
+- the release is presented as the newest supported OpenVMM release.
 
-After downloading all assets into one directory, you can validate the checksum
-file on a system with `sha256sum`:
+After downloading all assets into one directory, verify the checksums:
 
 ```bash
 sha256sum -c SHA256SUMS
 ```
 
-Verify each downloaded asset's provenance with the GitHub CLI:
+Verify an asset's provenance with the GitHub CLI:
 
 ```bash
 gh attestation verify path/to/<ASSET> --repo microsoft/openvmm
 ```
 
 Smoke-test runnable archives on compatible hosts where practical. At minimum,
-confirm that the executable starts and reports the expected product version.
+confirm that the executable starts and reports the expected version.
 
-### 5. Publish and confirm
+## Patch release runbook
 
-Publish the reviewed draft in GitHub. Then confirm that:
+OpenVMM does not create a release branch for every normal release. Create a
+patch branch only when the currently supported release requires a security or
+release-blocking fix.
 
-- the release page is public and points to the intended tag;
-- the final asset list matches the reviewed draft;
-- generated notes, checksums, and attestations are available;
-- the release is presented as the latest supported OpenVMM release.
-
-Immediately after publication, stage and merge a pull request that increments
-`MINOR`, resets `PATCH` to zero, and establishes the next development train.
-For example, after publishing `0.1.0`, update `openvmm/VERSION` to `0.2.0`.
-Development builds then report versions such as
-`0.2.0-dev+g012345678`.
-
-## Nightly publishing
-
-The nightly workflow runs daily at 08:00 UTC and also supports manual dispatch.
-It fails unless the source ref is exactly `refs/heads/main`, so select `main`
-when starting a manual run.
-
-Nightly versions are prereleases of the current OpenVMM development train.
-Given `openvmm/VERSION` value `0.2.0`, a nightly version has this form:
-
-```text
-0.2.0-nightly.20260717.42.g012345678
-```
-
-The suffix records the UTC build date, workflow run number, and first nine
-characters of the source commit ID. Nightly publishing does not modify `openvmm/VERSION`.
-
-The workflow builds the same Windows x64, Windows ARM64, Linux musl x64, and
-Linux musl ARM64 targets as a stable release. It publishes the same runtime
-archive, separate symbols archive, `LICENSE`, and `SHA256SUMS` layout. Every
-nightly asset receives a public provenance attestation.
-
-Each nightly is published immediately as a non-draft GitHub prerelease under a
-unique tag:
-
-```text
-openvmm-nightly-v<FULL_VERSION>
-```
+1. Implement and merge the fix into `main`.
+2. Create a temporary patch branch from the currently supported release tag.
+3. Cherry-pick the fix onto that branch.
+4. Validate the branch and the affected release artifacts.
+5. Tag the corrected commit with the next patch version.
+6. Push the tag and monitor the normal automatic release workflow.
 
 For example:
 
-```text
-openvmm-nightly-v0.2.0-nightly.20260717.42.g012345678
+```bash
+git switch main
+git pull --ff-only
+git switch -c patch/openvmm-0.2.x openvmm-v0.2.0
+git cherry-pick <FIX_COMMIT>
+git tag -a openvmm-v0.2.1 -m "OpenVMM 0.2.1"
+git push origin openvmm-v0.2.1
 ```
 
-A rerun that resolves to the same tag replaces the already-published nightly
-assets. Because the UTC date is part of the full version, a rerun on a later UTC
-date may publish a new uniquely tagged nightly instead.
+Further patches must branch from or include their immediate predecessor. For
+example, `openvmm-v0.2.2` must descend from `openvmm-v0.2.1`.
 
-### Reviewing a nightly
-
-After a nightly run completes:
-
-1. Confirm that the source ref was `refs/heads/main`.
-2. Confirm that all four targets have runtime and symbols archives.
-3. Validate the downloaded archives with `SHA256SUMS`.
-4. Verify each asset with the `gh attestation verify` command shown above.
-5. Use the full version or tag when recording test results.
-
-```admonish warning title="Nightlies are unsupported"
-Nightlies may contain breaking changes. Do not treat them as supported releases
-or promote a nightly in place. A stable release still requires an exact
-`openvmm-vMAJOR.MINOR.PATCH` tag matching the current development train.
-```
+The patch branch is not a new general development branch. New work continues
+on `main`, and the older line leaves support when the next normal release
+ships.
 
 ## How fixes flow
 
@@ -305,11 +291,15 @@ Shared fixes always land in `main` first.
 For OpenHCL, maintainers cherry-pick a fix to each live OpenHCL release branch
 that requires it.
 
-For OpenVMM, there is no pre-1.0 backport. The fix becomes available in the next
-rolling OpenVMM release.
+For OpenVMM, the fix ships in the next normal release unless the currently
+supported release qualifies for an on-demand patch.
 
-## Post-1.0 policy
+## Future policy
 
-The project has not committed to a post-1.0 servicing or branch model. Before
-publishing `1.0.0`, maintainers must document the compatibility, deprecation,
-support-window, and servicing commitments that replace this pre-1.0 policy.
+The project may later designate selected releases for longer support, but no
+LTS policy exists yet. Before supporting multiple OpenVMM lines or publishing
+`1.0.0`, maintainers must document the compatibility, deprecation,
+support-window, and servicing commitments.
+
+Public nightly releases are deferred until a concrete consumer requires them.
+Ordinary CI artifacts remain available for engineering use.
