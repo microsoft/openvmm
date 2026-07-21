@@ -187,7 +187,6 @@ fn positional_head() {
 }
 
 #[derive(KeyValueGroup, Debug, PartialEq)]
-#[kv(required)]
 enum Transport {
     #[kv(key = "tcp")]
     Tcp(String),

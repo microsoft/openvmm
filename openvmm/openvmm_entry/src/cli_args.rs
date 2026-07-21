@@ -1494,7 +1494,7 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
     // Bare shortcut: `--memory 64G` sets only the size.
     let memory = if !s.contains('=') && !s.contains(',') {
         MemoryCli {
-            size: Some(vmm_cli::MemorySize(parse_memory(s)?)),
+            size: Some(s.parse::<vmm_cli::MemorySize>()?),
             ..Default::default()
         }
     } else {
@@ -1987,7 +1987,6 @@ impl FromStr for DiskCli {
 
 /// The transport for a named NVMe controller.
 #[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueGroup)]
-#[kv(required)]
 pub enum NvmeControllerTransport {
     /// Present via PCIe on the specified root port.
     #[kv(key = "pcie_port")]

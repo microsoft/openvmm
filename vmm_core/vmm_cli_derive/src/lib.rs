@@ -291,6 +291,13 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
+        // The accumulator inherits the parsed type's visibility (`#vis`) rather
+        // than being private. It is the value of the public
+        // `KeyValueFields::Accum` associated type, so for a `pub` parsed type it
+        // must be at least as visible as that type; making it private trips
+        // E0446 ("private type in public interface"). It also has to be nameable
+        // by other types that `#[kv(flatten)]` this one, potentially across
+        // crates. `#[doc(hidden)]` keeps it out of rustdoc regardless.
         #[doc(hidden)]
         #[derive(::core::default::Default)]
         #vis struct #accum_name {
@@ -358,21 +365,6 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
         ));
     };
 
-    let mut required = false;
-    for attr in &input.attrs {
-        if !attr.path().is_ident("kv") {
-            continue;
-        }
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("required") {
-                required = true;
-                Ok(())
-            } else {
-                Err(meta.error("unknown `kv` attribute"))
-            }
-        })?;
-    }
-
     let mut arms = Vec::new();
     let mut keys = Vec::new();
     let mut default_variant = None;
@@ -410,14 +402,20 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
         };
         arms.push(quote! { #key => #build, });
         if is_default {
+            if default_variant.is_some() {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "only one variant may be marked `#[kv(default)]`",
+                ));
+            }
             default_variant = Some(quote! { #name::#vname });
         }
     }
 
     let keys_desc = keys.join(", ");
-    let none_case = match (&default_variant, required) {
-        (Some(def), _) => quote! { ::core::result::Result::Ok(#def) },
-        (None, _) => quote! {
+    let none_case = match &default_variant {
+        Some(def) => quote! { ::core::result::Result::Ok(#def) },
+        None => quote! {
             ::core::result::Result::Err(::vmm_cli::error(
                 ::std::format!("one of {} is required", #keys_desc),
             ))
