@@ -11,6 +11,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::CmosRtcTimeSourceHandleKind;
+use firmware_uefi_custom_vars::delta::SecureBootCustomization;
 use firmware_uefi_resources::ResolvedUefiWatchdogPlatform;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiDeviceHandle;
@@ -207,12 +208,52 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             storage_quirks,
         );
         let nvram_storage = if config.secure_boot {
-            match base_secure_boot_template_variables(
-                &config.base_secure_boot_template_vars,
-                config.base_secure_boot_template_revision.as_deref(),
+            // log secure boot customization mode
+            let customization_mode = config
+                .secure_boot_customization
+                .map(SecureBootCustomization::as_str)
+                .unwrap_or("none");
+            tracing::info!(
+                custom_uefi_config_present = config.secure_boot_customization.is_some(),
+                customization_mode,
+                "secure boot custom UEFI configuration"
+            );
+
+            if matches!(
+                config.secure_boot_customization,
+                Some(SecureBootCustomization::FullReplace)
             ) {
-                Some(template) => nvram_storage.with_base_secure_boot_template_variables(template),
-                None => nvram_storage,
+                // Full replacement skips the baseline evaluation
+                tracing::info!(
+                    baseline_configured =
+                        config.base_secure_boot_template_vars.signatures.is_some(),
+                    baseline_revision = config
+                        .base_secure_boot_template_revision
+                        .as_deref()
+                        .unwrap_or("none"),
+                    customization_mode,
+                    "secure boot baseline evaluation skipped"
+                );
+                nvram_storage
+            } else {
+                // Append, PartialReplace, or None: evaluate the baseline and apply it to the NVRAM storage
+                match base_secure_boot_template_variables(
+                    &config.base_secure_boot_template_vars,
+                    config.base_secure_boot_template_revision.as_deref(),
+                ) {
+                    // Base template selected, evaluate even if customization is Append or PartialReplace
+                    Some(template) => {
+                        nvram_storage.with_base_secure_boot_template_variables(template)
+                    }
+                    // No base template selected, log that the baseline is not configured
+                    None => {
+                        tracing::info!(
+                            baseline_configured = false,
+                            "secure boot base template is empty"
+                        );
+                        nvram_storage
+                    }
+                }
             }
         } else {
             nvram_storage

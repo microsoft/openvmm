@@ -415,6 +415,7 @@ impl PetriVmConfigOpenVmm {
                 },
                 base_secure_boot_template_vars,
                 base_secure_boot_template_revision,
+                None,
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
@@ -646,6 +647,7 @@ impl PetriVmConfigOpenVmm {
             secure_boot_enabled,
             base_secure_boot_template_vars,
             base_secure_boot_template_revision,
+            secure_boot_customization: None,
             custom_uefi_vars,
             vmgs,
 

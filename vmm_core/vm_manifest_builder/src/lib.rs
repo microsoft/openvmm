@@ -39,6 +39,7 @@ use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
 use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_custom_vars::delta::SecureBootCustomization;
 use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
@@ -115,6 +116,7 @@ impl UefiManifest {
         arch: MachineArch,
         base_secure_boot_template_vars: CustomVars,
         base_secure_boot_template_revision: Option<String>,
+        secure_boot_customization: Option<SecureBootCustomization>,
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
@@ -138,6 +140,7 @@ impl UefiManifest {
                 diagnostics_log_level,
                 diagnostics_rate_limit,
                 base_secure_boot_template_revision,
+                secure_boot_customization,
             },
             storage_quirks,
             generation_id_recv: mesh::channel().1,

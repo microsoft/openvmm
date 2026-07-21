@@ -16,6 +16,7 @@ pub use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
 
 use chipset_resources::CmosRtcTimeSourceHandleKind;
 use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_custom_vars::delta::SecureBootCustomization;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use mesh_protobuf::Protobuf;
@@ -162,6 +163,7 @@ pub struct UefiConfig {
     pub diagnostics_rate_limit: Option<u32>,
     pub base_secure_boot_template_vars: CustomVars,
     pub base_secure_boot_template_revision: Option<String>,
+    pub secure_boot_customization: Option<SecureBootCustomization>,
 }
 
 /// Resource kind for the platform-provided UEFI logger.

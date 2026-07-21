@@ -1161,7 +1161,7 @@ async fn vm_config_from_command_line(
     let base_secure_boot_template_revision = opt
         .secure_boot_template
         .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
-    let (base_secure_boot_template_vars, custom_uefi_vars) = {
+    let (base_secure_boot_template_vars, secure_boot_customization, custom_uefi_vars) = {
         use firmware_uefi_custom_vars::CustomVars;
 
         // load base vars from specified template, or use an empty set of base
@@ -1193,15 +1193,20 @@ async fn vm_config_from_command_line(
         };
 
         // obtain the final custom uefi vars by applying the delta onto the base vars
-        let custom_uefi_vars = match custom_uefi_json_data {
+        let (secure_boot_customization, custom_uefi_vars) = match custom_uefi_json_data {
             Some(data) => {
                 let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
+                let customization = delta.secure_boot_customization();
+                (Some(customization), base_vars.apply_delta(delta)?)
             }
-            None => base_vars,
+            None => (None, base_vars),
         };
 
-        (base_secure_boot_template_vars, custom_uefi_vars)
+        (
+            base_secure_boot_template_vars,
+            secure_boot_customization,
+            custom_uefi_vars,
+        )
     };
 
     let efi_diagnostics_log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
@@ -1227,6 +1232,7 @@ async fn vm_config_from_command_line(
             arch,
             base_secure_boot_template_vars.clone(),
             base_secure_boot_template_revision.clone(),
+            secure_boot_customization,
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
@@ -2019,6 +2025,7 @@ async fn vm_config_from_command_line(
         secure_boot_enabled: opt.secure_boot,
         base_secure_boot_template_vars,
         base_secure_boot_template_revision,
+        secure_boot_customization,
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,

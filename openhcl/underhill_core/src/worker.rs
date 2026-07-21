@@ -2583,15 +2583,16 @@ async fn new_underhill_vm(
 
         // obtain the final custom uefi vars by applying the delta onto
         // the base vars
-        let custom_uefi_vars = match custom_uefi_json_data {
+        let (secure_boot_customization, custom_uefi_vars) = match custom_uefi_json_data {
             Some(data) => {
-                let res = (|| -> Result<CustomVars, anyhow::Error> {
+                let res = (|| -> Result<_, anyhow::Error> {
                     let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                    Ok(base_vars.apply_delta(delta)?)
+                    let customization = delta.secure_boot_customization();
+                    Ok((Some(customization), base_vars.apply_delta(delta)?))
                 })();
 
                 match res {
-                    Ok(vars) => vars,
+                    Ok(result) => result,
                     Err(e) => {
                         tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
                         get_client
@@ -2601,7 +2602,7 @@ async fn new_underhill_vm(
                     }
                 }
             }
-            None => base_vars,
+            None => (None, base_vars),
         };
 
         let config = firmware_uefi_resources::UefiConfig {
@@ -2627,6 +2628,7 @@ async fn new_underhill_vm(
             },
             diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
             base_secure_boot_template_revision,
+            secure_boot_customization,
         };
 
         // Register the platform resolvers used by the resource-model UEFI
