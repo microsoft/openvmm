@@ -135,14 +135,36 @@ pub fn collect_git_info() -> anyhow::Result<GitInfo> {
     collect_git_info_inner(None)
 }
 
+fn normalize_absolute_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let path = std::path::absolute(path)?;
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                normalized.push(component.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                anyhow::ensure!(
+                    normalized.pop(),
+                    "{} escapes the filesystem root",
+                    path.display()
+                );
+            }
+            std::path::Component::Normal(component) => normalized.push(component),
+        }
+    }
+    Ok(normalized)
+}
+
 /// Collect Git information from an expected repository root.
 ///
 /// This rejects a parent repository so vendored source does not accidentally
 /// inherit the identity of the repository that contains it.
 pub fn collect_git_info_at(repo: &std::path::Path) -> anyhow::Result<GitInfo> {
-    let expected_root = std::fs::canonicalize(repo)?;
+    let expected_root = normalize_absolute_path(repo)?;
     let actual_root = git_output(Some(repo), &["rev-parse", "--show-toplevel"])?;
-    let actual_root = std::fs::canonicalize(actual_root)?;
+    let actual_root = normalize_absolute_path(std::path::Path::new(&actual_root))?;
     anyhow::ensure!(
         actual_root == expected_root,
         "{} is not the Git repository root",
