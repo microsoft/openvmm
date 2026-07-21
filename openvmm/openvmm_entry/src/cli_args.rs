@@ -143,6 +143,7 @@ pub struct NumaDistanceCli {
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[command(name = "openvmm", version = openvmm_build_info::get().version())]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -3388,9 +3389,20 @@ impl FromStr for VhostUserCli {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn test_version_uses_source_identity() {
+        let Err(error) = Options::try_parse_from(["openvmm", "--version"]) else {
+            panic!("--version unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("openvmm {}\n", openvmm_build_info::get().version())
+        );
+    }
 
     #[test]
     fn test_parse_rpc() {

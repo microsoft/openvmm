@@ -5595,7 +5595,6 @@ version = "0.0.0"
 dependencies = [
  "crypto",
  "embed-resource",
- "openvmm_build_info",
  "openvmm_entry",
  "openvmm_hypervisors",
  "openvmm_resources",
@@ -5779,6 +5778,7 @@ dependencies = [
  "net_tap",
  "netvsp_resources",
  "nvme_resources",
+ "openvmm_build_info",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",
