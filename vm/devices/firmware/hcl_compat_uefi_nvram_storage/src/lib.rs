@@ -18,6 +18,8 @@
 
 pub mod storage_backend;
 
+use core::mem::size_of;
+use core::mem::size_of_val;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
@@ -334,10 +336,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
     /// Report whether each base Secure Boot template variable is present in loaded NVRAM.
     fn report_secure_boot_base_template_presence(&self) {
         let Some(template) = &self.base_secure_boot_template_variables else {
-            tracing::warn!(
-                CVM_ALLOWED,
-                "no base secure boot template variables to check"
-            );
             return;
         };
 
@@ -737,6 +735,15 @@ mod test {
         assert_eq!(base.len(), 2);
         assert_eq!(loaded.len(), 2);
         assert_eq!(missing_entries, 1);
+    }
+
+    #[test]
+    fn secure_boot_template_variable_skips_auth_header() {
+        let data = x509_variable(&[b"cert1"]);
+        let mut authenticated_data = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+        authenticated_data.extend_from_slice(&data);
+
+        assert_eq!(signature_set(&authenticated_data), signature_set(&data));
     }
 
     /// An ephemeral implementation of [`StorageBackend`] backed by an in-memory

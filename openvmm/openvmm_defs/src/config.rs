@@ -48,7 +48,6 @@ pub struct Config {
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     pub vmgs: Option<VmgsResource>,
     pub secure_boot_enabled: bool,
-    pub base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
     pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
@@ -66,6 +65,7 @@ pub struct Config {
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    pub base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;

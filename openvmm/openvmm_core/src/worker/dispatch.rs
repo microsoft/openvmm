@@ -264,7 +264,6 @@ pub struct Manifest {
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     vmgs: Option<VmgsResource>,
     secure_boot_enabled: bool,
-    base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
@@ -277,6 +276,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
+    base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
