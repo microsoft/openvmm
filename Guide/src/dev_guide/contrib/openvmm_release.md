@@ -15,7 +15,7 @@ separate products with different release and support policies.
 | OpenHCL | Paravisor built on OpenVMM. Releases and in-market servicing use selected long-lived release branches. |
 
 ```admonish note title="See also"
-[OpenHCL Releases & Code Flow](./release.md) describes the OpenHCL release
+[OpenHCL Release Management](./release.md) describes the OpenHCL release
 branch and backport process.
 ```
 
