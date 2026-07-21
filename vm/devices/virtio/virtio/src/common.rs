@@ -167,7 +167,9 @@ impl VirtioQueueCallbackWork {
                 remaining.len(),
             );
             let (current, next) = remaining.split_at(size);
-            mem.write_at(payload.address + skip_bytes, current)?;
+            // Saturating add so an overflowing guest address lands out of range
+            // rather than wrapping to a low GPA (mirrors the read path).
+            mem.write_at(payload.address.saturating_add(skip_bytes), current)?;
             remaining = next;
             if remaining.is_empty() {
                 break;
