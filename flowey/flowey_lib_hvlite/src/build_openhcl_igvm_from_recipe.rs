@@ -355,13 +355,13 @@ impl ArtifactType for OpenhclIgvmRecipe {
 
 impl OpenhclIgvmRecipe {
     pub fn uses_dev_kernel(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Self::X64 | Self::X64TestLinuxDirect | Self::X64Cvm | Self::Aarch64 => false,
             Self::X64Devkern
-                | Self::X64TestLinuxDirectDevkern
-                | Self::X64CvmDevkern
-                | Self::Aarch64Devkern
-        )
+            | Self::X64TestLinuxDirectDevkern
+            | Self::X64CvmDevkern
+            | Self::Aarch64Devkern => true,
+        }
     }
 
     pub fn non_production_tag(&self) -> String {

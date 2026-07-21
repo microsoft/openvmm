@@ -18,7 +18,10 @@ pub enum OpenhclKernelPackageKind {
 
 impl OpenhclKernelPackageKind {
     pub fn is_dev(self) -> bool {
-        matches!(self, Self::Dev | Self::CvmDev)
+        match self {
+            Self::Main | Self::Cvm => false,
+            Self::Dev | Self::CvmDev => true,
+        }
     }
 }
 
