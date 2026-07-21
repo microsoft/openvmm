@@ -53,6 +53,32 @@ fn git_output(repo: &std::path::Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn watch_tracked_files(repo: &std::path::Path) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "-z"])
+        .output()
+        .expect("failed to list tracked OpenVMM files");
+    assert!(
+        output.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for path in output.stdout.split(|byte| *byte == 0) {
+        if path.is_empty() {
+            continue;
+        }
+        let path = std::str::from_utf8(path).expect("tracked OpenVMM file path is not valid UTF-8");
+        assert!(
+            !path.contains(['\r', '\n']),
+            "tracked OpenVMM file path contains a line break"
+        );
+        println!("cargo:rerun-if-changed={}", repo.join(path).display());
+    }
+}
+
 fn watch_git_inputs(repo: &std::path::Path) {
     for path in ["HEAD", "refs/tags", "packed-refs"] {
         if let Some(path) = git_output(repo, &["rev-parse", "--git-path", path]) {
@@ -74,6 +100,7 @@ fn watch_git_inputs(repo: &std::path::Path) {
             }
         }
     }
+    watch_tracked_files(repo);
 }
 
 fn main() {
