@@ -36,10 +36,8 @@ process.
 
 ## Marking, Approval Process, Code Flow
 
-The OpenHCL maintainers will publish various dates for upcoming releases.
-Currently, these dates are driven by a Microsoft-internal process and can, and
-do, often change. Microsoft does not mean to convey any new product launches by
-choices of these dates.
+The OpenHCL maintainers will publish various dates for upcoming releases. These
+dates may change as release needs evolve and do not convey new product launches.
 
 Releases naturally fall into several phases:
 

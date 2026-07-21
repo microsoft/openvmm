@@ -94,14 +94,11 @@ OpenVMM resolves its displayed version from source identity:
 More than one OpenVMM release tag on `HEAD` fails the build rather than
 selecting an arbitrary version.
 
-`openvmm --version` prints the concise displayed version. Full source revision,
-branch, release tag, and dirty state remain available as separate embedded
-build information.
+`openvmm --version` prints the concise displayed version. The full source
+revision remains available as separate embedded build information.
 
-A shallow detached checkout without an available release tag warns that it may
-be missing release identity. A source tree with neither Git metadata nor
-generated release metadata warns that `0.0.0-dev` is not an official release
-identity.
+A source tree with neither Git metadata nor generated release metadata warns
+that `0.0.0-dev` is not an official release identity.
 
 Windows numeric version resources use `MAJOR.MINOR.PATCH.0` for an official
 release and `0.0.0.0` for a development build.
@@ -171,6 +168,11 @@ the release tag or `openvmm-<VERSION>-source.tar.gz`.
 ```
 
 ## Normal release runbook
+
+```admonish note
+The tag-triggered release automation described below is under development. Do
+not create a public OpenVMM release tag until that implementation has landed.
+```
 
 Tag creation is the release decision. A successful workflow publishes
 automatically after building, packaging, checksumming, and attesting every
