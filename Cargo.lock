@@ -5601,6 +5601,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm_build_info"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openvmm_core"
 version = "0.0.0"
 dependencies = [
