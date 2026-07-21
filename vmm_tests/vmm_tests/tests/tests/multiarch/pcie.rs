@@ -517,9 +517,9 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
             b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
                 .with_smmu(&["s0rc0"]) // SMMU only on segment 0's RC
                 .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
-                .with_virtio_nic("s0rc0rp1")
+                .with_virtio_nic("s0rc0rp1", PCIE_NIC_MAC_ADDRESSES[0])
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
-                .with_virtio_nic("s1rc0rp1")
+                .with_virtio_nic("s1rc0rp1", PCIE_NIC_MAC_ADDRESSES[1])
                 // Set real ACS capability bits on root ports so Linux creates
                 // per-device IOMMU groups (SV + RR + CR + UF).
                 .with_custom_config(|c| {
@@ -597,9 +597,9 @@ async fn amd_iommu_mixed_topology(
             b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
                 .with_amd_iommu(&["s0rc0"]) // IOMMU only on segment 0's RC
                 .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
-                .with_virtio_nic("s0rc0rp1")
+                .with_virtio_nic("s0rc0rp1", PCIE_NIC_MAC_ADDRESSES[0])
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
-                .with_virtio_nic("s1rc0rp1")
+                .with_virtio_nic("s1rc0rp1", PCIE_NIC_MAC_ADDRESSES[1])
                 // Set real ACS capability bits on root ports so Linux creates
                 // per-device IOMMU groups (SV + RR + CR + UF).
                 .with_custom_config(|c| {
@@ -688,9 +688,9 @@ async fn intel_vtd_multi_segment(
             b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
                 .with_intel_vtd(&["s0rc0", "s1rc0"]) // VT-d on every RC
                 .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
-                .with_virtio_nic("s0rc0rp1")
+                .with_virtio_nic("s0rc0rp1", PCIE_NIC_MAC_ADDRESSES[0])
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
-                .with_virtio_nic("s1rc0rp1")
+                .with_virtio_nic("s1rc0rp1", PCIE_NIC_MAC_ADDRESSES[1])
                 // Linux's Intel IOMMU driver is off by default unless the
                 // kernel was built with CONFIG_INTEL_IOMMU_DEFAULT_ON.
                 // Also set real ACS capability bits on root ports so Linux
@@ -810,8 +810,8 @@ async fn verify_iommu_mixed_topology(
     // Verify NVMe DMA works through the IOMMU (segment 0 / PCI domain 0000).
     verify_nvme_dma_on_segment(sh, 2, "0000").await?;
 
-    // Verify network interfaces exist on both RCs.
-    verify_net_interface_count(sh, 2).await?;
+    // Verify the expected network interfaces exist with distinct MAC addresses.
+    verify_net_interfaces(sh, &PCIE_NIC_MAC_ADDRESSES).await?;
 
     // Verify no IOMMU faults — faults indicate broken device scope, missing
     // page table mappings, or devices not covered by the IOMMU. Re-read dmesg
@@ -960,19 +960,44 @@ async fn verify_nvme_dma_on_segment(
     Ok(())
 }
 
-/// Assert that the guest has at least `min_count` non-loopback network
-/// interfaces.
-async fn verify_net_interface_count(
+/// Assert that the guest has a non-loopback interface for every expected MAC.
+async fn verify_net_interfaces(
     sh: &pipette_client::shell::UnixShell<'_>,
-    min_count: usize,
+    expected_macs: &[MacAddress],
 ) -> anyhow::Result<()> {
+    let expected_mac_count = expected_macs.len();
+    let expected_macs = expected_macs
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        expected_macs.len(),
+        expected_mac_count,
+        "expected network interface MAC addresses must be unique"
+    );
+
     let net_devs = cmd!(sh, "ls /sys/class/net/").read().await?;
     let net_count = net_devs.split_whitespace().filter(|d| *d != "lo").count();
     tracing::info!(%net_devs, net_count, "network devices");
     assert!(
-        net_count >= min_count,
-        "expected at least {min_count} network interfaces, got {net_count}: {net_devs}"
+        net_count >= expected_mac_count,
+        "expected at least {} network interfaces, got {net_count}: {net_devs}",
+        expected_mac_count
     );
+
+    let guest_macs = cmd!(sh, "sh -c 'cat /sys/class/net/*/address'")
+        .read()
+        .await?
+        .lines()
+        .filter_map(|address| address.parse().ok())
+        .collect::<std::collections::HashSet<MacAddress>>();
+    tracing::info!(?guest_macs, "network interface MAC addresses");
+    for expected_mac in &expected_macs {
+        assert!(
+            guest_macs.contains(expected_mac),
+            "expected network interface with MAC {expected_mac}; found {guest_macs:?}"
+        );
+    }
     Ok(())
 }
 
@@ -989,7 +1014,7 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
         .with_default_boot_always_attempt(true)
         .modify_backend(|b| {
             b.with_pcie_root_topology(1, 1, 3)
-                .with_tcp_pipette_nic("s0rc0rp2")
+                .with_tcp_pipette_nic("s0rc0rp2", PCIE_NIC_MAC_ADDRESSES[0])
         })
         .run()
         .await?;
@@ -1015,7 +1040,7 @@ async fn virtio_net_windows(
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_pcie_root_topology(1, 1, 1)
-                .with_virtio_nic("s0rc0rp0")
+                .with_virtio_nic("s0rc0rp0", PCIE_NIC_MAC_ADDRESSES[0])
         })
         .run()
         .await?;
