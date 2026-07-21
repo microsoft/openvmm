@@ -16,7 +16,6 @@ creates a separate on-demand patch branch only when its currently supported
 release requires a security or release-blocking fix.
 ```
 Occasionally, the OpenHCL project will declare upcoming release milestones. We
-Occasionally, the OpenHCL project will declare upcoming release milestones. We
 stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
 named for the YYMM when the branch was forked. Future references to the release
 number will be shortened to `<RELEASE>` in this doc. We expect a high quality
