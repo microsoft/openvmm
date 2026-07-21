@@ -32,7 +32,6 @@ use parking_lot::RwLock;
 use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
@@ -139,7 +138,7 @@ pub enum StreamConfig {
         /// Canonical stage-1 STE double-words `[DW0, DW1]`: the guest STE
         /// reduced to the fields that are architecturally meaningful under this
         /// vSMMU's advertised capabilities, with every RES0/IGNORED field
-        /// zeroed (see [`canonical_s1_ste_dwords`]). A host nesting binding can
+        /// zeroed (see `canonical_s1_ste_dwords`). A host nesting binding can
         /// consume these as-is; no further masking is required, because the
         /// canonical set is validated against the host at attach time.
         ste_dwords: [u64; 2],
@@ -197,13 +196,18 @@ fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste) -> [u64; 2] {
 /// The SID is derived dynamically from the `bus_range` (which holds the
 /// guest-assigned bus number) rather than being fixed at registration time,
 /// because PCIe bus numbers are assigned by the guest during enumeration.
-struct AccelDeviceRegistration {
+///
+/// Owned by the single-threaded emulator (`SmmuDevice`), not shared state: the
+/// registration table lives behind `&mut self` on the emulator thread, so no
+/// lock guards these fields. Cross-thread registration reaches the emulator via
+/// the [`PendingAccelOp`] queue, drained on the emulator thread.
+pub(crate) struct AccelDeviceRegistration {
     /// The device's assigned bus range (shared with the PCIe port).
-    bus_range: AssignedBusRange,
+    pub(crate) bus_range: AssignedBusRange,
     /// Offset into this SMMU's stream table for the device's root complex.
-    stream_id_base: u32,
+    pub(crate) stream_id_base: u32,
     /// The iommufd-backed stream handler.
-    backend: Arc<dyn AcceleratedStreamBackend>,
+    pub(crate) backend: Arc<dyn AcceleratedStreamBackend>,
     /// The stream ID for which this device is currently attached in
     /// translating (`S1_TRANS`) mode on the host, or `None` when the most
     /// recently applied config is bypass/abort (or an apply failed).
@@ -211,9 +215,29 @@ struct AccelDeviceRegistration {
     /// This is the exact vSID the backend used to allocate the host vDevice
     /// and attach the nested HWPT, recorded at apply time rather than
     /// recomputed at query time, so it matches the host attach state exactly.
-    /// It gates SID-based invalidation forwarding. Read and written only under
-    /// the `accel_devices` lock.
-    translating_sid: Option<u32>,
+    /// It gates SID-based invalidation forwarding. Owned by the emulator
+    /// thread; read and written without a lock.
+    pub(crate) translating_sid: Option<u32>,
+}
+
+/// A cross-thread accelerated-mode registration request, enqueued by the VFIO
+/// resolver and drained on the emulator thread.
+///
+/// Registration must be applied on the emulator thread so the registration
+/// table and per-stream forwarding state can be owned as plain `&mut self`
+/// state (no lock on the CMDQ invalidation path). The resolver pushes an op;
+/// the emulator drains the queue at the top of `process_cmdq` and in the
+/// CR0/GBPA/reset/restore re-drive points, where it then applies initial
+/// policy.
+pub(crate) enum PendingAccelOp {
+    /// Register a device's accelerated stream backend.
+    Register {
+        bus_range: AssignedBusRange,
+        stream_id_base: u32,
+        backend: Arc<dyn AcceleratedStreamBackend>,
+    },
+    /// Set the per-vIOMMU invalidation sink (first one wins).
+    SetSink(Arc<dyn AcceleratedInvalidationSink>),
 }
 
 /// Composes an SMMU-local stream ID from a bus range, a base offset,
@@ -225,7 +249,7 @@ struct AccelDeviceRegistration {
 /// Returns `None` if the secondary bus has not been assigned yet
 /// (still 0) or if the BDF's bus number falls outside the port's
 /// assigned range.
-fn compose_stream_id(
+pub(crate) fn compose_stream_id(
     bus_range: &AssignedBusRange,
     stream_id_base: u32,
     devid: Option<u32>,
@@ -297,29 +321,17 @@ pub struct SmmuSharedState {
     /// How the advertised OAS is resolved against the host SMMU at
     /// device-attach time (see [`resolve_host_caps`](Self::resolve_host_caps)).
     oas_policy: crate::SmmuOasPolicy,
-    /// Per-device accelerated backends (VFIO devices with iommufd nested).
+    /// Cross-thread queue of accelerated registration requests.
     ///
-    /// Devices not in this list use the software page table walk path.
-    /// The SID is derived dynamically from each entry's `AssignedBusRange`
-    /// because bus numbers are guest-assigned after device construction.
-    ///
-    /// This `Mutex` also serializes "compute current policy + apply to
-    /// backend" for accelerated streams: both device registration
-    /// (resolver/manager thread) and CMDQ-driven re-config (vCPU thread) hold
-    /// it across the policy computation and the backend ioctls, so the two are
-    /// totally ordered and the last-applied stream config always reflects the
-    /// newest guest intent. It is never nested inside the translation `inner`
-    /// lock (the DMA hot path takes `inner` only) and is not on the DMA path.
-    accel_devices: Mutex<Vec<AccelDeviceRegistration>>,
-    /// The per-vIOMMU invalidation sink for accelerated mode.
-    ///
-    /// Set once when the first VFIO device behind this SMMU binds. All devices
-    /// behind a single emulated SMMU share one vIOMMU and therefore a single
-    /// sink, so invalidations are forwarded once per command rather than once
-    /// per device. Unset for emulated-only SMMUs (no host to forward to). A
-    /// `OnceLock` because it is written once and then read lock-free from the
-    /// CMDQ forwarding path.
-    invalidation_sink: OnceLock<Arc<dyn AcceleratedInvalidationSink>>,
+    /// The registration table and per-stream forwarding state are owned by the
+    /// single-threaded emulator (`SmmuDevice`) so the CMDQ invalidation path
+    /// needs no lock. This queue is the only shared, locked handoff: the VFIO
+    /// resolver (a different thread) pushes [`PendingAccelOp`]s here, and the
+    /// emulator drains them on its own thread — at the top of `process_cmdq`
+    /// and at each policy re-drive point — where it mutates the owned table and
+    /// applies initial policy. Not on the DMA path; never nested inside the
+    /// translation `inner` lock.
+    pending_accel_ops: Mutex<Vec<PendingAccelOp>>,
 }
 
 struct SharedStateInner {
@@ -434,8 +446,7 @@ impl SmmuSharedState {
             gerror_irq,
             accel,
             oas_policy,
-            accel_devices: Mutex::new(Vec::new()),
-            invalidation_sink: OnceLock::new(),
+            pending_accel_ops: Mutex::new(Vec::new()),
         })
     }
 
@@ -544,41 +555,36 @@ impl SmmuSharedState {
         Ok(())
     }
 
-    /// Updates the SMMU enable state (called by SmmuDevice on CR0 writes) and
-    /// atomically re-drives accelerated backends to the new policy.
+    /// Updates the SMMU enable state (called by SmmuDevice on CR0 writes).
     ///
-    /// The state write and the re-drive happen under a single `accel_devices`
-    /// lock acquisition, so the transition is atomic with respect to device
-    /// registration and other policy changes: a backend can never observe a
-    /// half-updated view and apply a stale policy that then "wins".
+    /// Only mutates the shared translation config. Re-driving accelerated
+    /// backends to the new policy is the emulator's job (it owns the
+    /// registration table): the CR0 handler calls this, then re-drives on its
+    /// own thread. Because registration is also applied on that thread (via the
+    /// [`PendingAccelOp`] queue), the update and the re-drive cannot interleave
+    /// with a concurrent registration.
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        let mut devices = self.accel_devices.lock();
         self.inner.write().enabled = enabled;
-        self.apply_all_locked(&mut devices);
     }
 
     /// Updates the mirrored `GBPA.ABORT` state (called by SmmuDevice on GBPA
-    /// writes) and atomically re-drives accelerated backends to the new
-    /// policy. Selects the disabled-state policy (abort vs bypass).
+    /// writes). Selects the disabled-state policy (abort vs bypass).
     ///
-    /// Like [`set_enabled`](Self::set_enabled), the write and the re-drive are
-    /// a single `accel_devices` lock critical section.
+    /// Like [`set_enabled`](Self::set_enabled), this only mutates shared
+    /// config; the GBPA handler re-drives accelerated backends afterward on the
+    /// emulator thread.
     pub(crate) fn set_gbpa_abort(&self, abort: bool) {
-        let mut devices = self.accel_devices.lock();
         self.inner.write().gbpa_abort = abort;
-        self.apply_all_locked(&mut devices);
     }
 
     /// Atomically replaces all policy-relevant translation state (enable,
-    /// `GBPA.ABORT`, stream table base/size) and re-drives accelerated
-    /// backends to the resulting policy, in a single `accel_devices` lock
-    /// critical section.
+    /// `GBPA.ABORT`, stream table base/size).
     ///
     /// Used on device reset and state restore, where several policy inputs
-    /// change together: applying them as one atomic transition (rather than a
+    /// change together: applying them as one atomic write (rather than a
     /// sequence of single-field updates) avoids transient intermediate
-    /// policies and any ordering fragility around when the final re-drive
-    /// observes fully-consistent state.
+    /// policies. The caller (reset/restore, on the emulator thread) re-drives
+    /// accelerated backends afterward.
     pub(crate) fn sync_translation_state(
         &self,
         enabled: bool,
@@ -586,15 +592,11 @@ impl SmmuSharedState {
         strtab_base: u64,
         strtab_log2size: u8,
     ) {
-        let mut devices = self.accel_devices.lock();
-        {
-            let mut inner = self.inner.write();
-            inner.enabled = enabled;
-            inner.gbpa_abort = gbpa_abort;
-            inner.strtab_base = strtab_base;
-            inner.strtab_log2size = strtab_log2size;
-        }
-        self.apply_all_locked(&mut devices);
+        let mut inner = self.inner.write();
+        inner.enabled = enabled;
+        inner.gbpa_abort = gbpa_abort;
+        inner.strtab_base = strtab_base;
+        inner.strtab_log2size = strtab_log2size;
     }
 
     /// Updates the stream table configuration (called by SmmuDevice on
@@ -787,45 +789,34 @@ impl SmmuSharedState {
     /// TLBI commands, the emulator matches the command's SID against
     /// each registered device's current bus assignment.
     ///
-    /// Registration is atomic with applying the SMMU's *current* policy to the
-    /// new device (under the `accel_devices` lock), so a freshly attached device lands
-    /// in the correct boot state instead of staying fail-closed (detached).
-    /// At boot the SMMU is disabled, so the policy is bypass-or-abort per
-    /// `GBPA.ABORT` and is independent of the StreamID — it is applied even
-    /// before the guest has assigned this device's bus number. Once the SMMU
-    /// is enabled the policy depends on the per-stream STE; if the bus is not
-    /// yet assigned the device is left fail-closed until the guest enumerates
-    /// and issues `CFGI_STE`.
+    /// This only *enqueues* the registration (`PendingAccelOp::Register`);
+    /// the emulator adds it to its owned table and applies the SMMU's current
+    /// policy when it next drains the queue (top of `process_cmdq`, or a
+    /// CR0/GBPA/reset/restore re-drive). Deferring is safe: an accelerated
+    /// device cannot DMA until the guest enumerates and configures it, which
+    /// drives the SMMU (and thus a drain) first. Callable from any thread (the
+    /// VFIO resolver); the queue is the cross-thread handoff to the
+    /// single-threaded emulator.
     pub fn register_accel_device(
         &self,
         bus_range: AssignedBusRange,
         stream_id_base: u32,
         backend: Arc<dyn AcceleratedStreamBackend>,
     ) {
-        let mut devices = self.accel_devices.lock();
-        let mut reg = AccelDeviceRegistration {
-            bus_range: bus_range.clone(),
-            stream_id_base,
-            backend,
-            translating_sid: None,
-        };
+        self.pending_accel_ops
+            .lock()
+            .push(PendingAccelOp::Register {
+                bus_range,
+                stream_id_base,
+                backend,
+            });
+    }
 
-        // Catch the new device up to the current policy.
-        //
-        // If the bus is assigned, compute the stream-specific policy. If not,
-        // fall back to the disabled-state (StreamID-independent) policy — this
-        // is what lets a boot device reach bypass/abort before the guest has
-        // enumerated it. With the SMMU enabled and no bus yet, there is no
-        // policy to apply: leave the device fail-closed (non-translating)
-        // until its `CFGI_STE`.
-        let config = match compose_stream_id(&bus_range, stream_id_base, None) {
-            Some(sid) => Some(self.current_stream_config(sid)),
-            None => self.disabled_policy(),
-        };
-        if let Some(config) = config {
-            Self::apply_config(&mut reg, config);
-        }
-        devices.push(reg);
+    /// Drains the pending accelerated-registration queue, transferring
+    /// ownership of the queued ops to the caller (the emulator, on its own
+    /// thread). The emulator applies each op to its owned registration table.
+    pub(crate) fn drain_pending_accel_ops(&self) -> Vec<PendingAccelOp> {
+        std::mem::take(&mut *self.pending_accel_ops.lock())
     }
 
     /// Computes the SMMU's current policy for the given stream.
@@ -902,8 +893,9 @@ impl SmmuSharedState {
     /// Returns the StreamID-independent policy that applies while the SMMU is
     /// disabled (`Some(Bypass)` or `Some(Abort)` per `GBPA.ABORT`), or `None`
     /// when the SMMU is enabled (the policy then depends on the per-stream
-    /// STE).
-    fn disabled_policy(&self) -> Option<StreamConfig> {
+    /// STE). Used by the emulator to catch a freshly registered device up to
+    /// the current policy before its bus is assigned.
+    pub(crate) fn disabled_policy(&self) -> Option<StreamConfig> {
         let inner = self.inner.read();
         (!inner.enabled).then(|| {
             if inner.gbpa_abort {
@@ -914,127 +906,18 @@ impl SmmuSharedState {
         })
     }
 
-    /// Applies `config` to a registered device's backend and records the
-    /// stream ID for which the device is now translating (`S1_TRANS`), or
-    /// `None` for bypass/abort.
-    ///
-    /// The recorded `translating_sid` gates SID-based invalidation forwarding
-    /// (`CFGI_CD`/`CFGI_CD_ALL`, and `ATC_INV` once ATS is enabled): those
-    /// commands target host state — the context-descriptor cache, and the
-    /// device's ATS cache — that exists only while the device is attached to a
-    /// nested translating domain. It mirrors that attach state (the vDevice is
-    /// allocated and the device attached to its nested HWPT on `S1_TRANS`;
-    /// both torn down on bypass/abort) and stores the exact vSID the backend
-    /// used, so no recomputation is needed at invalidation time. A failed
-    /// apply leaves the host state uncertain, so it is cleared to `None`: fail
-    /// closed and do not forward invalidations the host could not resolve.
-    fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) {
-        let translating_sid = match config {
-            StreamConfig::Translate { sid, .. } => Some(sid),
-            StreamConfig::Bypass | StreamConfig::Abort => None,
-        };
-        match reg.backend.set_stream_config(config) {
-            Ok(()) => reg.translating_sid = translating_sid,
-            Err(e) => {
-                reg.translating_sid = None;
-                tracelimit::warn_ratelimited!(
-                    error = &*e as &dyn std::error::Error,
-                    "smmu: failed to apply stream config"
-                );
-            }
-        }
-    }
-
-    /// Re-computes and applies the current policy for a single stream's
-    /// accelerated backend (if one is registered).
-    ///
-    /// Serialized against registration and other policy updates via the
-    /// policy lock so the last write wins. Used for `CFGI_STE`.
-    pub(crate) fn apply_stream_config(&self, sid: u32) {
-        let mut devices = self.accel_devices.lock();
-        let Some(reg) = devices
-            .iter_mut()
-            .find(|reg| compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid))
-        else {
-            return;
-        };
-        let config = self.current_stream_config(sid);
-        Self::apply_config(reg, config);
-    }
-
-    /// Re-computes and applies the current policy for every registered
-    /// accelerated backend.
-    ///
-    /// Used on events that change policy globally without otherwise mutating
-    /// translation state: `CFGI_STE_RANGE` / `CFGI_ALL`. (The state-mutating
-    /// events — CR0/GBPA writes, reset, restore — re-drive atomically via
-    /// [`set_enabled`](Self::set_enabled),
-    /// [`set_gbpa_abort`](Self::set_gbpa_abort), and
-    /// [`sync_translation_state`](Self::sync_translation_state).)
-    /// Serialized via the policy lock.
-    pub(crate) fn apply_all_stream_configs(&self) {
-        let mut devices = self.accel_devices.lock();
-        self.apply_all_locked(&mut devices);
-    }
-
-    /// Re-drives every registered backend to its current policy. The caller
-    /// must already hold the `accel_devices` lock and pass in the guarded
-    /// slice (this is the shared body of
-    /// [`apply_all_stream_configs`](Self::apply_all_stream_configs) and the
-    /// state-mutating setters).
-    fn apply_all_locked(&self, devices: &mut [AccelDeviceRegistration]) {
-        for reg in devices.iter_mut() {
-            let Some(sid) = compose_stream_id(&reg.bus_range, reg.stream_id_base, None) else {
-                continue;
-            };
-            let config = self.current_stream_config(sid);
-            Self::apply_config(reg, config);
-        }
-    }
-
-    /// Whether a SID-based invalidation (`CFGI_CD`/`CFGI_CD_ALL`/`ATC_INV`)
-    /// targeting `sid` should be forwarded to the host vIOMMU.
-    ///
-    /// True only when a registered accelerated device is currently attached in
-    /// translating (`S1_TRANS`) mode for exactly `sid` — i.e. its recorded
-    /// `translating_sid` matches. That recorded value is the vSID the backend
-    /// used to allocate the host vDevice and attach the nested HWPT, so the
-    /// check reflects the *applied* host attach state — not the guest's STE
-    /// bytes, which can run ahead of what has been applied — and stays in
-    /// lockstep with the host vDevice / nested-HWPT lifetime.
-    ///
-    /// These commands target state that exists on the host only while the
-    /// stream translates: the context-descriptor cache (`CFGI_CD`), and the
-    /// device's ATS cache (`ATC_INV`, which in the nested path is enabled only
-    /// for `S1_TRANS` streams). In bypass/abort there is nothing to invalidate
-    /// and no vDevice bound, so forwarding would hit `-EIO`. Because the guest
-    /// writes the context descriptor (issuing `CFGI_CD`) before installing the
-    /// translating STE (`CFGI_STE`) when attaching a device, this also
-    /// correctly skips that first premature `CFGI_CD`.
-    pub(crate) fn sid_invalidation_forwardable(&self, sid: u32) -> bool {
-        self.accel_devices
-            .lock()
-            .iter()
-            .any(|reg| reg.translating_sid == Some(sid))
-    }
-
     /// Registers the per-vIOMMU invalidation sink for accelerated mode.
     ///
     /// Called once per emulated SMMU when the first VFIO device behind it
     /// binds. All devices behind a single emulated SMMU share one vIOMMU and
-    /// therefore one sink, so registrations from additional devices are
-    /// ignored (the first sink stays in place).
+    /// therefore one sink. This only *enqueues* the sink
+    /// (`PendingAccelOp::SetSink`); the emulator adopts the first one it
+    /// drains and ignores the rest. Callable from any thread (the VFIO
+    /// resolver).
     pub fn register_invalidation_sink(&self, sink: Arc<dyn AcceleratedInvalidationSink>) {
-        // First sink wins; additional devices behind the same vIOMMU share it.
-        let _ = self.invalidation_sink.set(sink);
-    }
-
-    /// Returns the registered invalidation sink, if any.
-    ///
-    /// Used by CMDQ processing to forward a batch of invalidation commands to
-    /// the host. `None` for emulated-only SMMUs.
-    pub(crate) fn invalidation_sink(&self) -> Option<Arc<dyn AcceleratedInvalidationSink>> {
-        self.invalidation_sink.get().cloned()
+        self.pending_accel_ops
+            .lock()
+            .push(PendingAccelOp::SetSink(sink));
     }
 
     /// Translate an IOVA to a GPA for the given stream ID.
@@ -2468,156 +2351,5 @@ mod tests {
         // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end aborts.
         let oob_sid = 1u32 << STRTAB_LOG2SIZE;
         assert_eq!(state.current_stream_config(oob_sid), StreamConfig::Abort);
-    }
-
-    // =========================================================================
-    // register_accel_device initial-policy tests
-    // =========================================================================
-
-    /// A mock accel backend that records the configs applied to it.
-    struct MockBackend {
-        configs: Mutex<Vec<StreamConfig>>,
-    }
-
-    impl MockBackend {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
-                configs: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn take(&self) -> Vec<StreamConfig> {
-            std::mem::take(&mut *self.configs.lock())
-        }
-    }
-
-    impl AcceleratedStreamBackend for MockBackend {
-        fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()> {
-            self.configs.lock().push(config);
-            Ok(())
-        }
-    }
-
-    fn make_accel_shared(gm: &GuestMemory) -> Arc<SmmuSharedState> {
-        SmmuSharedState::new(
-            gm.clone(),
-            40,
-            crate::SmmuOasPolicy::Fixed(40),
-            true,
-            None,
-            None,
-        )
-    }
-
-    /// Registering a device while the SMMU is disabled (GBPA.ABORT=0) applies
-    /// Bypass immediately, even before the bus is assigned.
-    #[test]
-    fn test_register_applies_bypass_when_disabled() {
-        let gm = GuestMemory::allocate(0x60_0000);
-        let state = make_accel_shared(&gm);
-        state.set_gbpa_abort(false);
-
-        let backend = MockBackend::new();
-        // Bus not yet assigned.
-        let bus_range = AssignedBusRange::new();
-        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
-
-        let applied = backend.take();
-        assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0], StreamConfig::Bypass);
-    }
-
-    /// Registering a device while the SMMU is disabled (GBPA.ABORT=1) applies
-    /// Abort immediately.
-    #[test]
-    fn test_register_applies_abort_when_disabled_gbpa_abort() {
-        let gm = GuestMemory::allocate(0x60_0000);
-        let state = make_accel_shared(&gm);
-        state.set_gbpa_abort(true);
-
-        let backend = MockBackend::new();
-        let bus_range = AssignedBusRange::new();
-        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
-
-        let applied = backend.take();
-        assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0], StreamConfig::Abort);
-    }
-
-    /// Registering a device while the SMMU is enabled with an assigned bus
-    /// applies the stream's current STE-derived policy.
-    #[test]
-    fn test_register_applies_ste_policy_when_enabled() {
-        let gm = GuestMemory::allocate(0x60_0000);
-        let state = make_accel_shared(&gm);
-        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
-        state.set_enabled(true);
-
-        let sid = expected_sid();
-        write_ste(&gm, sid, &make_bypass_ste());
-
-        let backend = MockBackend::new();
-        let bus_range = make_bus_range(); // assigned
-        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
-
-        let applied = backend.take();
-        assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0], StreamConfig::Bypass);
-    }
-
-    /// Registering a device while the SMMU is enabled but the bus is not yet
-    /// assigned leaves the device fail-closed (no initial apply); a later
-    /// CFGI_STE (apply_stream_config) catches it up.
-    #[test]
-    fn test_register_enabled_unassigned_bus_then_cfgi() {
-        let gm = GuestMemory::allocate(0x60_0000);
-        let state = make_accel_shared(&gm);
-        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
-        state.set_enabled(true);
-
-        let backend = MockBackend::new();
-        let bus_range = AssignedBusRange::new(); // unassigned
-        state.register_accel_device(bus_range.clone(), TEST_STREAM_ID_BASE, backend.clone());
-        // No config applied yet (fail-closed / detached).
-        assert!(backend.take().is_empty());
-
-        // Guest assigns the bus and programs the STE, then issues CFGI_STE.
-        bus_range.set_bus_range(TEST_BUS, TEST_BUS);
-        let sid = expected_sid();
-        write_ste(&gm, sid, &make_s1_ste(CD_BASE));
-        state.apply_stream_config(sid);
-
-        let applied = backend.take();
-        assert_eq!(applied.len(), 1);
-        assert!(
-            matches!(applied[0], StreamConfig::Translate { sid: s, .. } if s == sid),
-            "expected Translate for sid {sid:#x}, got {:?}",
-            applied[0]
-        );
-    }
-
-    /// apply_all_stream_configs re-drives every registered backend (used for
-    /// GBPA writes, SMMUEN transitions, and CFGI_ALL).
-    #[test]
-    fn test_apply_all_stream_configs_redrives() {
-        let gm = GuestMemory::allocate(0x60_0000);
-        let state = make_accel_shared(&gm);
-        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
-        state.set_gbpa_abort(false);
-
-        let backend = MockBackend::new();
-        let bus_range = make_bus_range();
-        state.register_accel_device(bus_range, TEST_STREAM_ID_BASE, backend.clone());
-        // Initial register applied Bypass (disabled, GBPA.ABORT=0).
-        assert_eq!(backend.take().last().copied(), Some(StreamConfig::Bypass));
-
-        // Enable the SMMU and program an abort STE, then re-drive.
-        let sid = expected_sid();
-        write_ste(&gm, sid, &make_abort_ste());
-        state.set_enabled(true);
-        state.apply_all_stream_configs();
-
-        let applied = backend.take();
-        assert_eq!(applied.last().copied(), Some(StreamConfig::Abort));
     }
 }

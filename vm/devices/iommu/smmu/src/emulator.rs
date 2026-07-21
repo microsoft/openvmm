@@ -145,6 +145,20 @@ pub struct SmmuDevice {
     #[inspect(skip)]
     shared_state: Arc<SmmuSharedState>,
 
+    // Accelerated (iommufd-nested) stream registration table, owned by this
+    // single-threaded emulator. Cross-thread registrations arrive via the
+    // shared `pending_accel_ops` queue and are drained into this table on the
+    // emulator thread (see `drain_accel_ops`), so it needs no lock — unlike the
+    // old shared, per-command-locked table.
+    #[inspect(skip)]
+    accel_devices: Vec<crate::shared::AccelDeviceRegistration>,
+
+    // Per-vIOMMU invalidation sink for accelerated mode, adopted from the first
+    // `SetSink` op drained. `None` for emulated-only SMMUs. Owned here (it was a
+    // shared `OnceLock`) so the CMDQ flush path reads it without a lock.
+    #[inspect(skip)]
+    invalidation_sink: Option<Arc<dyn crate::shared::AcceleratedInvalidationSink>>,
+
     // Identification registers (read-only, set at construction).
     idr0: registers::Idr0,
     idr1: registers::Idr1,
@@ -305,6 +319,9 @@ impl SmmuDevice {
             guest_memory,
             shared_state,
 
+            accel_devices: Vec::new(),
+            invalidation_sink: None,
+
             idr0,
             idr1,
             idr2: 0,
@@ -435,10 +452,11 @@ impl SmmuDevice {
                 self.cr0ack = self.cr0;
                 self.shared_state.set_evtq_enabled(self.cr0.eventqen());
                 // Sync enable state to shared state for per-device wrappers.
-                // This atomically re-drives accelerated backends, since a
-                // SMMUEN change flips the disabled-state policy (bypass/abort)
-                // to/from the per-stream STE policy.
+                // A SMMUEN change flips the disabled-state policy
+                // (bypass/abort) to/from the per-stream STE policy, so re-drive
+                // the owned accel backends afterward.
                 self.shared_state.set_enabled(self.cr0.smmuen());
+                self.redrive_accel();
             }
             registers::CR1 => {
                 self.cr1 = registers::Cr1::from(value);
@@ -454,9 +472,10 @@ impl SmmuDevice {
                 self.gbpa = gbpa;
                 // GBPA.ABORT selects bypass vs abort while the SMMU is
                 // disabled. Mirror it into shared state (consulted by the
-                // non-accel translate path and the accel policy computation);
-                // this atomically re-drives accelerated backends.
+                // non-accel translate path and the accel policy computation),
+                // then re-drive the owned accel backends.
                 self.shared_state.set_gbpa_abort(self.gbpa.abort());
+                self.redrive_accel();
             }
             registers::IRQ_CTRL => {
                 self.irq_ctrl = registers::IrqCtrl::from(value);
@@ -643,6 +662,141 @@ impl SmmuDevice {
     ///
     /// Called when the guest writes CMDQ_PROD. Consumes commands from
     /// CMDQ_CONS up to CMDQ_PROD, dispatching each by opcode.
+    /// Drains the shared pending-op queue into the emulator's owned accel
+    /// registration table, applying initial policy to newly registered devices
+    /// and adopting the invalidation sink.
+    ///
+    /// Runs only on the emulator thread (top of `process_cmdq` and each policy
+    /// re-drive point), so the owned table needs no lock. A registration is
+    /// caught up to the SMMU's current policy immediately on drain: the
+    /// stream-specific policy if its bus is assigned, else the disabled-state
+    /// (StreamID-independent) policy, else left fail-closed until its
+    /// `CFGI_STE`.
+    fn drain_accel_ops(&mut self) {
+        for op in self.shared_state.drain_pending_accel_ops() {
+            match op {
+                crate::shared::PendingAccelOp::Register {
+                    bus_range,
+                    stream_id_base,
+                    backend,
+                } => {
+                    let mut reg = crate::shared::AccelDeviceRegistration {
+                        bus_range: bus_range.clone(),
+                        stream_id_base,
+                        backend,
+                        translating_sid: None,
+                    };
+                    // Catch the new device up to the current policy. If the bus
+                    // is assigned, use the stream-specific policy; otherwise the
+                    // disabled-state (StreamID-independent) policy lets a boot
+                    // device reach bypass/abort before enumeration. With the
+                    // SMMU enabled and no bus yet there is no policy to apply —
+                    // leave it fail-closed until its `CFGI_STE`.
+                    let config =
+                        match crate::shared::compose_stream_id(&bus_range, stream_id_base, None) {
+                            Some(sid) => Some(self.shared_state.current_stream_config(sid)),
+                            None => self.shared_state.disabled_policy(),
+                        };
+                    if let Some(config) = config {
+                        Self::apply_accel_config(&mut reg, config);
+                    }
+                    self.accel_devices.push(reg);
+                }
+                crate::shared::PendingAccelOp::SetSink(sink) => {
+                    // First sink wins; all devices behind one vIOMMU share it.
+                    self.invalidation_sink.get_or_insert(sink);
+                }
+            }
+        }
+    }
+
+    /// Applies `config` to a registered device's backend and records the stream
+    /// ID for which the device is now translating (`S1_TRANS`), or `None` for
+    /// bypass/abort.
+    ///
+    /// The recorded `translating_sid` is the exact vSID the backend used to
+    /// allocate the host vDevice and attach the nested HWPT; it gates SID-based
+    /// invalidation forwarding. A failed apply leaves the host state uncertain,
+    /// so it is cleared to `None`: fail closed and do not forward invalidations
+    /// the host could not resolve.
+    fn apply_accel_config(
+        reg: &mut crate::shared::AccelDeviceRegistration,
+        config: crate::shared::StreamConfig,
+    ) {
+        let translating_sid = match config {
+            crate::shared::StreamConfig::Translate { sid, .. } => Some(sid),
+            crate::shared::StreamConfig::Bypass | crate::shared::StreamConfig::Abort => None,
+        };
+        match reg.backend.set_stream_config(config) {
+            Ok(()) => reg.translating_sid = translating_sid,
+            Err(e) => {
+                reg.translating_sid = None;
+                tracelimit::warn_ratelimited!(
+                    error = &*e as &dyn std::error::Error,
+                    "smmu: failed to apply stream config"
+                );
+            }
+        }
+    }
+
+    /// Re-computes and applies the current policy for a single stream's owned
+    /// accel backend (if one is registered). Used for `CFGI_STE`.
+    fn apply_stream_config(&mut self, sid: u32) {
+        let config = self.shared_state.current_stream_config(sid);
+        if let Some(reg) = self.accel_devices.iter_mut().find(|reg| {
+            crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid)
+        }) {
+            Self::apply_accel_config(reg, config);
+        }
+    }
+
+    /// Re-computes and applies the current policy for every owned accel
+    /// backend. Used for `CFGI_STE_RANGE`/`CFGI_ALL`.
+    fn apply_all_stream_configs(&mut self) {
+        self.apply_stream_configs_in(0..self.accel_devices.len());
+    }
+
+    /// Re-drives the accel backends at `range` (indices into the owned table)
+    /// to their current policy. Assigned-bus devices only; an unassigned device
+    /// has no stream ID yet and is left as-is until its `CFGI_STE`.
+    fn apply_stream_configs_in(&mut self, range: std::ops::Range<usize>) {
+        for i in range {
+            let reg = &self.accel_devices[i];
+            let Some(sid) =
+                crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None)
+            else {
+                continue;
+            };
+            let config = self.shared_state.current_stream_config(sid);
+            Self::apply_accel_config(&mut self.accel_devices[i], config);
+        }
+    }
+
+    /// Whether a SID-based invalidation (`CFGI_CD`/`CFGI_CD_ALL`/`ATC_INV`)
+    /// targeting `sid` should be forwarded to the host vIOMMU: true only when an
+    /// owned accel device is currently attached translating (`S1_TRANS`) for
+    /// exactly `sid`. Lock-free lookup over the emulator-owned table.
+    fn sid_invalidation_forwardable(&self, sid: u32) -> bool {
+        self.accel_devices
+            .iter()
+            .any(|reg| reg.translating_sid == Some(sid))
+    }
+
+    /// Drains pending registrations (catching up any new devices), then
+    /// re-drives the pre-existing owned backends to the current policy. Called
+    /// after a state-mutating policy change (CR0/GBPA writes, reset, restore)
+    /// that alters the disabled-state or per-stream policy for all streams at
+    /// once.
+    ///
+    /// Only the pre-existing devices are re-driven here: `drain_accel_ops`
+    /// already applied initial policy to the devices it just added, so
+    /// re-driving them again would redundantly re-apply the same config.
+    fn redrive_accel(&mut self) {
+        let before = self.accel_devices.len();
+        self.drain_accel_ops();
+        self.apply_stream_configs_in(0..before);
+    }
+
     fn process_cmdq(&mut self) {
         if !self.cmdq_enabled() {
             return;
@@ -652,6 +806,11 @@ impl SmmuDevice {
         if self.cmdq_has_error() {
             return;
         }
+
+        // Pick up any cross-thread registrations (and the invalidation sink)
+        // before processing commands, so newly bound devices are visible to the
+        // whole batch and their initial policy is applied.
+        self.drain_accel_ops();
 
         let log2size = self.cmdq_log2size() as u32;
         let max_entries = 1u32 << log2size;
@@ -740,10 +899,7 @@ impl SmmuDevice {
                     opcode,
                     CmdOpcode::CFGI_CD | CmdOpcode::CFGI_CD_ALL | CmdOpcode::ATC_INV
                 );
-                if sid_based
-                    && !self
-                        .shared_state
-                        .sid_invalidation_forwardable(CmdCfgiCd::from(entry.qw0).sid())
+                if sid_based && !self.sid_invalidation_forwardable(CmdCfgiCd::from(entry.qw0).sid())
                 {
                     // Flush the pending batch first so its CMDQ indices stay
                     // contiguous (the partial-failure → CMDQ_CONS mapping
@@ -782,7 +938,7 @@ impl SmmuDevice {
                     let cmd = CmdCfgiSte::from(entry.qw0);
                     // Emulated devices: no-op (no STE cache). Accelerated
                     // streams: the emulator re-reads and re-applies the STE.
-                    self.shared_state.apply_stream_config(cmd.sid());
+                    self.apply_stream_config(cmd.sid());
                 }
 
                 // CFGI_STE_RANGE: re-drive every registered backend.
@@ -792,7 +948,7 @@ impl SmmuDevice {
                     // but Range=31 is the only value Linux uses at init.
                     // For now, treat all ranges as broadcast to all backends.
                     // Empty for emulated-only configurations (loop is a no-op).
-                    self.shared_state.apply_all_stream_configs();
+                    self.apply_all_stream_configs();
                 }
 
                 // Prefetch hint — no-op (no caching to warm).
@@ -855,7 +1011,7 @@ impl SmmuDevice {
         if self.invalidation_batch.is_empty() {
             return Ok(());
         }
-        let result = match self.shared_state.invalidation_sink() {
+        let result = match &self.invalidation_sink {
             Some(sink) => sink.invalidate(&self.invalidation_batch),
             // Emulated-only SMMU: no host to forward to.
             None => Ok(()),
@@ -939,6 +1095,12 @@ impl ChangeDeviceState for SmmuDevice {
             guest_memory: _,
             shared_state,
 
+            // Accelerated stream state — the devices remain assigned across a
+            // guest reset, so keep the registration table and sink; they are
+            // re-driven to the post-reset (bypass) policy below.
+            accel_devices: _,
+            invalidation_sink: _,
+
             // Identification registers — read-only, not reset.
             idr0: _,
             idr1: _,
@@ -1008,12 +1170,15 @@ impl ChangeDeviceState for SmmuDevice {
         *cmdq_msi = MsiConfig::default();
 
         // Atomically reset the policy-relevant translation state (disabled,
-        // GBPA.ABORT=0 so DMA bypasses, stream table cleared) and re-drive
-        // accelerated backends to the post-reset policy (bypass).
+        // GBPA.ABORT=0 so DMA bypasses, stream table cleared).
         shared_state.sync_translation_state(false, false, 0, 0);
         // Reset EVTQ state (prod, cons, config, enabled).
         // Reset GERROR state and deassert interrupt.
         shared_state.reset_queue_state();
+
+        // Re-drive the owned accel backends to the post-reset policy (bypass),
+        // now that the shared translation state reflects the reset.
+        self.redrive_accel();
     }
 }
 
@@ -1027,6 +1192,12 @@ impl SaveRestore for SmmuDevice {
             mmio_base: _,
             guest_memory: _,
             ref shared_state,
+
+            // Accelerated stream state — rebuilt from device re-registration
+            // and the restored register state (re-driven on restore), not
+            // serialized.
+            accel_devices: _,
+            invalidation_sink: _,
 
             // Identification registers — read-only, not saved.
             idr0: _,
@@ -1141,8 +1312,8 @@ impl SaveRestore for SmmuDevice {
 
         // Re-sync derived state in SmmuSharedState. Apply the policy-relevant
         // translation state (enable, GBPA.ABORT, stream table) as one atomic
-        // transition, which also re-drives accelerated backends to the
-        // restored policy.
+        // transition; the owned accel backends are re-driven to the restored
+        // policy below.
         let strtab_base = registers::StrtabBase::from(self.strtab_base).addr();
         let strtab_log2size = self.strtab_base_cfg.log2size();
         self.shared_state.sync_translation_state(
@@ -1162,6 +1333,9 @@ impl SaveRestore for SmmuDevice {
                 gerror,
                 gerrorn,
             });
+
+        // Re-drive the owned accel backends to the restored policy.
+        self.redrive_accel();
 
         Ok(())
     }
@@ -2121,6 +2295,182 @@ mod tests {
             .write_plain(ste_addr, &ste)
             .expect("write STE");
         register_test_stream(dev, secondary_bus)
+    }
+
+    // =========================================================================
+    // Accel registration initial-policy tests
+    //
+    // Registration only enqueues a `PendingAccelOp`; the emulator applies the
+    // device's initial policy when it drains the queue (here driven explicitly
+    // via `redrive_accel`, as `process_cmdq`/CR0/GBPA/reset/restore do at
+    // runtime). These pin that drain-time catch-up behavior.
+    // =========================================================================
+
+    /// A recording accel backend that captures each config applied to it.
+    struct RecordingBackend {
+        configs: parking_lot::Mutex<Vec<crate::shared::StreamConfig>>,
+    }
+
+    impl RecordingBackend {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                configs: parking_lot::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn take(&self) -> Vec<crate::shared::StreamConfig> {
+            std::mem::take(&mut *self.configs.lock())
+        }
+    }
+
+    impl crate::shared::AcceleratedStreamBackend for RecordingBackend {
+        fn set_stream_config(&self, config: crate::shared::StreamConfig) -> anyhow::Result<()> {
+            self.configs.lock().push(config);
+            Ok(())
+        }
+    }
+
+    /// A minimal accelerated device for registration tests.
+    fn make_accel_device() -> SmmuDevice {
+        let gm = GuestMemory::allocate(0x4_0000);
+        let config = SmmuConfig {
+            sidsize: 16,
+            oas_policy: SmmuOasPolicy::Fixed(40),
+            accel: true,
+        };
+        SmmuDevice::new(TEST_MMIO_BASE, gm, &config, None, None)
+    }
+
+    /// Write a valid STE with the given `Config` at `sid` in the test stream
+    /// table.
+    fn write_test_ste(dev: &SmmuDevice, sid: u32, config: crate::spec::ste::SteConfig) {
+        use crate::spec::ste::STE_SIZE;
+        use crate::spec::ste::Ste;
+        use crate::spec::ste::SteDw0;
+        use crate::spec::ste::SteDw1;
+        let ste = Ste {
+            qw0: SteDw0::new().with_v(true).with_config(config.0),
+            qw1: SteDw1::new(),
+            _qw2_7: [0; 6],
+        };
+        let addr = TEST_STRTAB_GPA + sid as u64 * STE_SIZE as u64;
+        dev.guest_memory.write_plain(addr, &ste).expect("write STE");
+    }
+
+    /// Registering while disabled (GBPA.ABORT=0) applies Bypass on the next
+    /// drain, even before the device's bus is assigned.
+    #[test]
+    fn test_register_applies_bypass_when_disabled() {
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        // Bus not yet assigned; SMMU disabled with GBPA.ABORT=0 (reset default).
+        dev.shared_state
+            .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
+        dev.redrive_accel();
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+    }
+
+    /// Registering while disabled with GBPA.ABORT=1 applies Abort on drain.
+    #[test]
+    fn test_register_applies_abort_when_disabled_gbpa_abort() {
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        dev.shared_state.set_gbpa_abort(true);
+        let backend = RecordingBackend::new();
+        dev.shared_state
+            .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
+        dev.redrive_accel();
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+    }
+
+    /// Registering while enabled with an assigned bus applies the stream's
+    /// STE-derived policy on drain.
+    #[test]
+    fn test_register_applies_ste_policy_when_enabled() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+
+        let sid = 0x100u32; // bus 1, dev 0, fn 0
+        write_test_ste(&dev, sid, SteConfig::BYPASS);
+
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+        let backend = RecordingBackend::new();
+        dev.shared_state
+            .register_accel_device(bus_range, 0, backend.clone());
+        dev.redrive_accel();
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+    }
+
+    /// Registering while enabled but with the bus unassigned leaves the device
+    /// fail-closed (no apply); a later CFGI_STE catches it up to Translate.
+    #[test]
+    fn test_register_enabled_unassigned_bus_then_cfgi() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+
+        let bus_range = AssignedBusRange::new(); // unassigned
+        let backend = RecordingBackend::new();
+        dev.shared_state
+            .register_accel_device(bus_range.clone(), 0, backend.clone());
+        dev.redrive_accel();
+        // Fail-closed: nothing applied yet.
+        assert!(backend.take().is_empty());
+
+        // Guest assigns the bus, programs a translating STE, then CFGI_STE.
+        bus_range.set_bus_range(1, 1);
+        let sid = 0x100u32;
+        write_test_ste(&dev, sid, SteConfig::S1_TRANS);
+        dev.apply_stream_config(sid);
+        let applied = backend.take();
+        assert_eq!(applied.len(), 1);
+        assert!(
+            matches!(applied[0], crate::shared::StreamConfig::Translate { sid: s, .. } if s == sid),
+            "expected Translate for sid {sid:#x}, got {:?}",
+            applied[0]
+        );
+    }
+
+    /// `redrive_accel` re-drives every registered backend to the current
+    /// policy (used on CR0/GBPA writes, reset, restore, and CFGI_ALL).
+    #[test]
+    fn test_redrive_reapplies_all() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+        let backend = RecordingBackend::new();
+        dev.shared_state
+            .register_accel_device(bus_range, 0, backend.clone());
+        // Disabled + GBPA.ABORT=0 → initial drain applies Bypass.
+        dev.redrive_accel();
+        assert_eq!(
+            backend.take().last().copied(),
+            Some(crate::shared::StreamConfig::Bypass)
+        );
+
+        // Enable and program an abort STE, then re-drive.
+        let sid = 0x100u32;
+        write_test_ste(&dev, sid, SteConfig::ABORT);
+        dev.shared_state.set_enabled(true);
+        dev.redrive_accel();
+        assert_eq!(
+            backend.take().last().copied(),
+            Some(crate::shared::StreamConfig::Abort)
+        );
     }
 
     /// Build a SID-based `CFGI_CD`/`CFGI_CD_ALL` entry for `sid`.
