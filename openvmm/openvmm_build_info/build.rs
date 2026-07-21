@@ -80,7 +80,7 @@ fn watch_tracked_files(repo: &std::path::Path) {
 }
 
 fn watch_git_inputs(repo: &std::path::Path, github_actions: bool) {
-    for path in ["HEAD", "refs/tags", "packed-refs"] {
+    for path in ["HEAD", "index", "refs/tags", "packed-refs"] {
         if let Some(path) = git_output(repo, &["rev-parse", "--git-path", path]) {
             println!("cargo:rerun-if-changed={}", repo.join(path).display());
         }
