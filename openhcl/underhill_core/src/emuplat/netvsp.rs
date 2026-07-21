@@ -803,16 +803,7 @@ impl HclNetworkVFManagerWorker {
     /// duplicate removals become no-ops. On return,
     /// `guest_state.offered_to_guest` is always false even if the RPC fails or
     /// times out.
-    async fn remove_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
-        if !matches!(vtl2_device_state, Vtl2DeviceState::Present) {
-            let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
-            tracing::info!(
-                vtl2_vfid,
-                vtl2_device_state = ?vtl2_device_state,
-                "VTL2 device not present; skipping VTL0 VF revoke"
-            );
-            return;
-        }
+    async fn remove_vtl0_vf(&mut self) {
         let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
         if self.guest_state.is_offered_to_guest().await {
@@ -1421,7 +1412,7 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                    self.remove_vtl0_vf(&vtl2_device_state)
+                    self.remove_vtl0_vf()
                         .instrument(tracing::info_span!("remove vtl0 vf", vtl2_vfid, vtl0_vfid))
                         .await;
                 }
@@ -1465,7 +1456,7 @@ impl HclNetworkVFManagerWorker {
                         "beginning VTL2 device shutdown"
                     );
                     if remove_vtl0_vf {
-                        self.remove_vtl0_vf(&vtl2_device_state)
+                        self.remove_vtl0_vf()
                             .instrument(tracing::info_span!(
                                 "remove vtl0 vf for shutdown",
                                 vtl2_vfid,
