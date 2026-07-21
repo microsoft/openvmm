@@ -64,6 +64,16 @@ fn watch_git_inputs(repo: &std::path::Path) {
             println!("cargo:rerun-if-changed={}", repo.join(path).display());
         }
     }
+    if let Some(tag_refs) = git_output(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/tags/openvmm-v"],
+    ) {
+        for tag_ref in tag_refs.lines() {
+            if let Some(path) = git_output(repo, &["rev-parse", "--git-path", tag_ref]) {
+                println!("cargo:rerun-if-changed={}", repo.join(path).display());
+            }
+        }
+    }
 }
 
 fn main() {

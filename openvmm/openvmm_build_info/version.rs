@@ -90,6 +90,9 @@ fn git_command(repo: &std::path::Path, args: &[&str]) -> std::io::Result<std::pr
         .output()
 }
 
+// This collector is intentionally OpenVMM-specific. The shared
+// build_rs_git_info helper remains a compatibility emitter for its existing
+// revision and branch variables.
 fn git_output(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     let output = git_command(repo, args).map_err(|error| format!("failed to run git: {error}"))?;
     if !output.status.success() {
@@ -156,13 +159,11 @@ pub fn collect_git_source(
 
     let revision = git_output(repo, &["rev-parse", "HEAD"])?;
     validate_revision(&revision)?;
-    let tags = git_output(
-        repo,
-        &["tag", "--points-at", "HEAD", "--list", "openvmm-v*"],
-    )?
-    .lines()
-    .map(str::to_owned)
-    .collect();
+    let tag_glob = format!("{RELEASE_TAG_PREFIX}*");
+    let tags = git_output(repo, &["tag", "--points-at", "HEAD", "--list", &tag_glob])?
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let release_tag = select_release_tag(tags)?;
     let status = git_command(repo, &["status", "--porcelain", "--untracked-files=normal"])
         .map_err(|error| format!("failed to run git: {error}"))?;
