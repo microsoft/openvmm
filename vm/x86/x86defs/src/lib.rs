@@ -36,6 +36,9 @@ pub const X64_CR0_NW: u64 = 0x0000000020000000; // not write-through
 pub const X64_CR0_CD: u64 = 0x0000000040000000; // cache disable
 pub const X64_CR0_PG: u64 = 0x0000000080000000; // paging
 
+/// Reserved bits in the low 32 of CR0 (bits 6-15, 17, 19-28).
+pub const X64_CR0_RSVDZ_MASK: u64 = 0x1FFA_FFC0;
+
 pub const X64_CR4_VME: u64 = 0x0000000000000001; // Virtual 8086 mode extensions
 pub const X64_CR4_PVI: u64 = 0x0000000000000002; // Protected mode virtual interrupts
 pub const X64_CR4_TSD: u64 = 0x0000000000000004; // Time stamp disable

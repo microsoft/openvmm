@@ -3069,19 +3069,15 @@ impl UhProcessor<'_, SnpBacked> {
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
-        // MSR_FS_BASE and MSR_GS_BASE go into segment.base and are loaded on
-        // the very next VMRUN, so they need the paging-mode-aware canonical
-        // check against the guest's live EFER/CR4.
-        if matches!(msr, x86defs::X64_MSR_FS_BASE | x86defs::X64_MSR_GS_BASE) {
-            let vmsa = self.runner.vmsa(vtl);
-            if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
-                return Err(MsrError::InvalidAccess);
-            }
-        }
 
         let mut vmsa = self.runner.vmsa_mut(vtl);
         match msr {
             x86defs::X64_MSR_FS_BASE => {
+                // The FS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let fs = vmsa.fs();
                 vmsa.set_fs(SevSelector {
                     attrib: fs.attrib,
@@ -3091,6 +3087,11 @@ impl UhProcessor<'_, SnpBacked> {
                 });
             }
             x86defs::X64_MSR_GS_BASE => {
+                // The GS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let gs = vmsa.gs();
                 vmsa.set_gs(SevSelector {
                     attrib: gs.attrib,

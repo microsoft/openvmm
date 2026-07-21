@@ -66,7 +66,9 @@ use x86defs::X64_CR0_CD;
 use x86defs::X64_CR0_NW;
 use x86defs::X64_CR0_PE;
 use x86defs::X64_CR0_PG;
+use x86defs::X64_CR0_RSVDZ_MASK;
 use x86defs::X64_CR4_LA57;
+use x86defs::X64_EFER_FFXSR;
 use x86defs::X64_EFER_LMA;
 use x86defs::X64_EFER_LME;
 use x86defs::X64_EFER_NXE;
@@ -142,8 +144,6 @@ impl Drop for RedirectedVectorMapping<'_> {
 
 const CVM_GUEST_VA_BITS_48: u32 = 48;
 const CVM_GUEST_VA_BITS_57: u32 = 57;
-const X64_CR0_RESERVED_BITS_MASK_LOW32: u64 = 0x1FFA_FF80;
-const X64_CR0_RSVDZ1_MASK: u64 = 1 << 6;
 
 /// CR4 bits that are either reserved or unsupported for CVM guests, so must
 /// be zero.
@@ -157,10 +157,19 @@ const X64_CR0_RSVDZ1_MASK: u64 = 1 << 6;
 /// - Bits 15, 26, 28-31, 33-63: architecturally reserved.
 const X64_CR4_INVALID_MASK: u64 = 0xFFFF_FFFF_FF48_E000;
 
-const X64_EFER_VALID_MASK: u64 =
-    X64_EFER_SCE | X64_EFER_LME | X64_EFER_LMA | X64_EFER_NXE | X64_EFER_SVME | X64_EFER_TCE;
+/// EFER bits allowed for a CVM guest.
+const X64_EFER_VALID_MASK: u64 = X64_EFER_SCE
+    | X64_EFER_LME
+    | X64_EFER_LMA
+    | X64_EFER_NXE
+    | X64_EFER_SVME
+    | X64_EFER_FFXSR
+    | X64_EFER_TCE;
 
+/// `IA32_FMASK` reserved bits (only low 32 are defined).
 const SFMASK_MSR_RESERVED_MASK: u64 = 0xFFFF_FFFF_0000_0000;
+
+/// `IA32_PLx_SSP` reserved bits (SSPs are 4-byte aligned).
 const PLX_SSP_MSR_RESERVED_MASK: u64 = 0x3;
 
 /// Corresponds to PASID (bit 10), CET_U (bit 11), and CET_S (bit 12).
@@ -171,13 +180,13 @@ const XSS_VALID_MASK: u64 = XSAVE_SUPERVISOR_FEATURE_PASID
 /// Returns true if `v` is a valid linear address to load into a currently-in-
 /// use paging state whose EFER.LMA / CR4.LA57 bits are as given.
 pub(crate) fn validate_canonical_address(v: u64, efer: u64, cr4: u64) -> bool {
-    if !is_canonical_address(v, CVM_GUEST_VA_BITS_57) {
-        return false;
-    }
-    if is_canonical_address(v, CVM_GUEST_VA_BITS_48) {
-        return true;
-    }
-    (efer & X64_EFER_LMA) != 0 && (cr4 & X64_CR4_LA57) != 0
+    let la57_active = (efer & X64_EFER_LMA) != 0 && (cr4 & X64_CR4_LA57) != 0;
+    let bits = if la57_active {
+        CVM_GUEST_VA_BITS_57
+    } else {
+        CVM_GUEST_VA_BITS_48
+    };
+    is_canonical_address(v, bits)
 }
 
 /// Validates a PAT MSR value: each of the 8 entries must be a valid memory
@@ -634,6 +643,10 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         }
     }
 
+    /// Validates (and possibly normalizes) the value being written to `reg`
+    /// against the target register's architectural constraints, returning the
+    /// (possibly modified) register-value pair on success. Some registers
+    /// (e.g. CR0) silently mask reserved bits matching hypervisor behavior.
     fn validate_set_vp_register_value(
         &self,
         vtl: GuestVtl,
@@ -695,10 +708,10 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
             }
 
             HvX64RegisterName::Cr0 | HvX64RegisterName::IntermediateCr0 => {
+                // Writes to CR0 reserved bits in the Low 32 are silently ignored.
                 let mut cr0 = reg.value.as_u64();
-                cr0 &= !X64_CR0_RESERVED_BITS_MASK_LOW32;
-                // Bit 6 must be zero; PG requires PE; NW requires CD.
-                if cr0 & X64_CR0_RSVDZ1_MASK != 0
+                cr0 &= !X64_CR0_RSVDZ_MASK;
+                if cr0 & 0xFFFF_FFFF_0000_0000 != 0
                     || (cr0 & X64_CR0_PG != 0 && cr0 & X64_CR0_PE == 0)
                     || (cr0 & X64_CR0_NW != 0 && cr0 & X64_CR0_CD == 0)
                 {
@@ -725,11 +738,7 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         reg: &hvdef::hypercall::HvRegisterAssoc,
     ) -> HvResult<()> {
         self.validate_register_access(vtl, reg.name)?;
-
-        // Validate (and possibly normalize) the value against the target
-        // register's architectural constraints.
         let reg = self.validate_set_vp_register_value(vtl, *reg)?;
-        let reg = &reg;
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
@@ -3296,8 +3305,9 @@ mod tests {
         assert_eq!(X64_EFER_SVME & !X64_EFER_VALID_MASK, 0);
         // TCE (bit 15) is permitted, matching the Windows HCL allowlist.
         assert_eq!(X64_EFER_TCE & !X64_EFER_VALID_MASK, 0);
-        // FFXSR (bit 14) is not permitted.
-        assert_ne!((1u64 << 14) & !X64_EFER_VALID_MASK, 0);
+        // FFXSR (bit 14) is permitted (allowed by HCL on SEV; TDX rejects it
+        // separately in `write_efer`).
+        assert_eq!(X64_EFER_FFXSR & !X64_EFER_VALID_MASK, 0);
         // LMSLE (bit 13) is not permitted.
         assert_ne!((1u64 << 13) & !X64_EFER_VALID_MASK, 0);
         // Reserved bits (bit 1) must be zero.
@@ -3343,21 +3353,21 @@ mod tests {
 
     #[test]
     fn cr0_reserved_low32_mask_covers_expected_bits() {
-        // Silently-masked reserved bits: 7-15, 17, 19-28.
-        for bit in [7, 8, 15, 17, 19, 28] {
+        // Silently-masked reserved bits per the CR0 layout: 6-15, 17, 19-28.
+        for bit in [6, 7, 8, 15, 17, 19, 28] {
             assert!(
-                X64_CR0_RESERVED_BITS_MASK_LOW32 & (1u64 << bit) != 0,
+                X64_CR0_RSVDZ_MASK & (1u64 << bit) != 0,
                 "expected CR0 bit {bit} to be silently masked"
             );
         }
-        // Bit 6 is checked separately, not silently masked.
-        assert_eq!(X64_CR0_RESERVED_BITS_MASK_LOW32 & (1u64 << 6), 0);
         // Live bits must not be masked.
         for bit in [0, 1, 2, 3, 4, 5, 16, 18, 29, 30, 31] {
             assert!(
-                X64_CR0_RESERVED_BITS_MASK_LOW32 & (1u64 << bit) == 0,
+                X64_CR0_RSVDZ_MASK & (1u64 << bit) == 0,
                 "did not expect CR0 bit {bit} to be masked"
             );
         }
+        // The mask only covers the low 32 bits — the upper 32 are hard-rejected.
+        assert_eq!(X64_CR0_RSVDZ_MASK & 0xFFFF_FFFF_0000_0000, 0);
     }
 }
