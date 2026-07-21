@@ -360,6 +360,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             );
         }
 
+        // TODO: Determine whether custom keys can be appended to PK before
+        // requiring an exact PK match instead of baseline set membership.
         for (variable, (vendor, name), base_template_variable) in [
             ("PK", vars::PK(), template.pk.as_slice()),
             ("KEK", vars::KEK(), template.kek.as_slice()),
