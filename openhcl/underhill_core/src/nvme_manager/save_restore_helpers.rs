@@ -163,6 +163,7 @@ mod tests {
                                 .collect(),
                             qsize: 0,
                             max_io_queues: 0,
+                            allow_lazy_restore: None,
                         },
                     },
                 })
