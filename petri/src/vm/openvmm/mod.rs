@@ -171,6 +171,13 @@ pub struct PetriVmConfigOpenVmm {
     // File-backed guest memory.
     memory_backing_file: Option<PathBuf>,
 
+    // The private-memory setting explicitly requested via
+    // `MemoryConfig::private_memory`, preserved so that backend methods which
+    // force shared memory (e.g. `with_hugepages`, `with_memory_backing_file`)
+    // can fail when the caller explicitly asked for private memory rather than
+    // silently downgrading it.
+    requested_private_memory: Option<bool>,
+
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,

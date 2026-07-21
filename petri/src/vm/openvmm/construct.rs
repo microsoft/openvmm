@@ -423,6 +423,10 @@ impl PetriVmConfigOpenVmm {
             .build()
             .context("failed to build chipset configuration")?;
 
+        // Preserve the caller's explicit private-memory request so that backend
+        // methods which force shared memory can fail on an explicit conflict.
+        let requested_private_memory = memory.private_memory;
+
         let numa = {
             let MemoryConfig {
                 startup_bytes,
@@ -443,9 +447,22 @@ impl PetriVmConfigOpenVmm {
             // - PCAT (Gen1) relies on x86 legacy support (the VGA hole and
             //   PAM registers), which toggles low RAM visibility in a way
             //   that requires shared, file-backed memory.
-            // Force shared memory in these cases regardless of the requested
-            // setting.
-            let private_memory = private_memory && !firmware.is_openhcl() && !firmware.is_pcat();
+            let private_incompatible = firmware.is_openhcl() || firmware.is_pcat();
+            let private_memory = match private_memory {
+                // An explicit request for private memory that the firmware
+                // cannot honor is an error, rather than a silent downgrade.
+                Some(true) if private_incompatible => {
+                    anyhow::bail!(
+                        "private guest memory was explicitly requested but is \
+                         not supported with this firmware (OpenHCL and \
+                         PCAT/Gen1 require shared memory)"
+                    );
+                }
+                Some(explicit) => explicit,
+                // Default: prefer private memory for performance, falling back
+                // to shared when the firmware requires it.
+                None => !private_incompatible,
+            };
 
             // THP is only valid for private anonymous memory and only on
             // Linux; disable it otherwise to avoid a memory build error.
@@ -732,6 +749,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file: log_source.log_file("openvmm")?,
 
             memory_backing_file: None,
+            requested_private_memory,
 
             ged,
             framebuffer_view,

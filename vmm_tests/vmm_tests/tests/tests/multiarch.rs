@@ -177,7 +177,7 @@ async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
 async fn boot_shared_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_memory(MemoryConfig {
-            private_memory: false,
+            private_memory: Some(false),
             ..Default::default()
         })
         .run()
@@ -921,7 +921,7 @@ async fn vhost_user_blk_device<T>(
         // vhost-user requires the guest RAM backing to be shareable with the
         // backend process, so opt out of the default private memory.
         .with_memory(MemoryConfig {
-            private_memory: false,
+            private_memory: Some(false),
             ..Default::default()
         })
         .modify_backend(move |b| {

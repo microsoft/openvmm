@@ -2286,19 +2286,25 @@ pub struct MemoryConfig {
     /// Per-NUMA-node memory sizes. When set, RAM is distributed across
     /// vNUMA nodes instead of assigning all RAM to node 0.
     pub numa_mem_sizes: Option<Vec<u64>>,
-    /// Back guest RAM with private anonymous memory rather than a shared
-    /// (file/memfd-backed) memory section.
+    /// Whether to back guest RAM with private anonymous memory rather than a
+    /// shared (file/memfd-backed) memory section.
     ///
-    /// Defaults to `true`. Set to `false` for tests that require the guest
-    /// RAM backing to be shareable with another process, such as vhost-user
-    /// backends. Note that `with_hugepages` and `with_memory_backing_file`
-    /// force shared memory regardless of this setting, since they require a
-    /// file-backed mapping. Private memory is also forced off for OpenHCL
-    /// (which shares VTL0 RAM with VTL2 via a remote mapper) and PCAT/Gen1
-    /// (which relies on x86 legacy support), since both require shared memory.
+    /// - `None` (the default) uses private memory whenever the configuration
+    ///   allows it, falling back to shared memory otherwise. Private anonymous
+    ///   memory is cheaper to set up and eligible for Transparent Huge Pages,
+    ///   so it is preferred for performance; this lets each VM get the best
+    ///   backing for its firmware without the test having to know the details.
+    /// - `Some(true)` explicitly requires private memory. This is an error if
+    ///   the configuration is incompatible with private memory (OpenHCL, which
+    ///   shares VTL0 RAM with VTL2 via a remote mapper, and PCAT/Gen1, which
+    ///   relies on x86 legacy support, both require shared memory), rather than
+    ///   silently downgrading to shared.
+    /// - `Some(false)` explicitly requires shared memory, for tests that need
+    ///   the guest RAM backing to be shareable with another process, such as
+    ///   vhost-user backends.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
-    pub private_memory: bool,
+    pub private_memory: Option<bool>,
     /// Mark private guest RAM as eligible for Transparent Huge Pages (THP),
     /// improving performance for large allocations.
     ///
@@ -2317,7 +2323,7 @@ impl Default for MemoryConfig {
             startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
             numa_mem_sizes: None,
-            private_memory: true,
+            private_memory: None,
             transparent_hugepages: true,
         }
     }
