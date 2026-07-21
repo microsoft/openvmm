@@ -770,6 +770,10 @@ impl SparseMapping {
     ) -> Result<(), Error> {
         assert_ne!(len, 0);
         self.map(offset, len, |addr| unsafe {
+            // Keep a handle for the mapping's lifetime (unmap/split re-map
+            // through it), restricted to just `access` as mild defense in depth.
+            // Either handle works for the initial map below (same section), so
+            // use the caller's original.
             let section = file_mapping.as_handle().duplicate(false, Some(access))?;
             let mut param = numa_extended_param(numa_node);
             map_view_of_file(

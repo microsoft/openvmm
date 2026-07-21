@@ -1000,9 +1000,12 @@ impl ResolveMemoryFault for VaMapper {
             ));
         }
 
-        // Widen to a 2 MB soft large page only on the first fault of a 2 MB
-        // window that both contains the whole fault and lies entirely within one
-        // THP-eligible mapping. Every re-fault of an already-attempted region
+        // Widen to a 2 MB soft large page only on the first *write* fault of a
+        // 2 MB window that both contains the whole fault and lies entirely within
+        // one THP-eligible mapping. Read faults are served read-only from the
+        // zero page and must not claim the window, so that the later first write
+        // still gets its one widening attempt (spending a large page only on the
+        // written working set). Every re-fault of an already-attempted region
         // (e.g. after the host trimmer reclaimed the pages) resolves to the
         // caller's range to avoid a hard-fault storm.
         let base = fault.start() & !(LARGE_PAGE_SIZE - 1);
@@ -1021,11 +1024,27 @@ impl ResolveMemoryFault for VaMapper {
                 UnexpectedPageFault,
             ));
         };
+        // The trait contract requires the resolved range to stay within the
+        // single uniform RAM region that covers `fault.start()`. Today the only
+        // caller faults one page at a time, so a fault never spans two mappings;
+        // guard against a future caller passing a wider range that starts in this
+        // mapping but extends past its end (`end` is the inclusive last address).
+        if fault.end() > end + 1 {
+            return Err(GuestMemoryBackingError::new(
+                GuestMemoryErrorKind::OutOfRange,
+                fault.start(),
+                UnexpectedPageFault,
+            ));
+        }
         props.stats.guest_faults.increment();
         let soft_lp = props.soft_lp.as_ref();
 
         let full_window = fault.end() <= window_end && base >= start && window_end <= end + 1;
-        let widen = full_window
+        // Only a write fault claims the window (see the widen comment above); a
+        // read fault leaves `first_fault` clear so the first write can still
+        // widen.
+        let widen = write
+            && full_window
             && soft_lp.is_some_and(|sl| {
                 sl.first_fault
                     .try_claim(base / LARGE_PAGE_SIZE - start / LARGE_PAGE_SIZE)
@@ -1086,8 +1105,6 @@ impl ResolveMemoryFault for VaMapper {
                 }
             }
         }
-        #[cfg(not(windows))]
-        let _ = write;
 
         Ok(if widen {
             MemoryRange::new(base..window_end)
@@ -1154,7 +1171,9 @@ impl FirstFault {
 
 #[cfg(test)]
 mod tests {
-
+    use super::FirstFault;
+    use super::large_region_count;
+    use memory_range::MemoryRange;
     use sparse_mmap::SparseMapping;
 
     /// Tests that private RAM pages can be allocated, written to, and read from.
@@ -1201,5 +1220,85 @@ mod tests {
         let mut buf = vec![0u8; 64];
         mapping.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, pattern);
+    }
+
+    /// `try_claim` is one-shot: the first claim of a region wins and every
+    /// subsequent claim of the same region loses until it is (never) cleared.
+    #[test]
+    fn first_fault_try_claim_is_one_shot() {
+        let ff = FirstFault::new(4);
+        // First claim of each region wins.
+        for region in 0..4 {
+            assert!(ff.try_claim(region), "first claim of region {region}");
+        }
+        // Repeat claims of the same regions all lose.
+        for region in 0..4 {
+            assert!(!ff.try_claim(region), "repeat claim of region {region}");
+        }
+    }
+
+    /// Claims are independent across regions, including across the 64-bit word
+    /// boundary of the underlying bitmap.
+    #[test]
+    fn first_fault_claims_are_independent() {
+        // Enough regions to span more than one 64-bit word.
+        let ff = FirstFault::new(130);
+        assert!(ff.try_claim(0));
+        assert!(ff.try_claim(63));
+        assert!(ff.try_claim(64));
+        assert!(ff.try_claim(129));
+        // Claiming one region does not claim its neighbors.
+        assert!(ff.try_claim(1));
+        assert!(ff.try_claim(65));
+        // But the already-claimed regions stay claimed.
+        assert!(!ff.try_claim(0));
+        assert!(!ff.try_claim(64));
+    }
+
+    /// Region indices past the end of the allocated bitmap return false rather
+    /// than panicking, so a stray claim can never index out of bounds. (The
+    /// bitmap rounds up to whole 64-bit words, so indices in the final word's
+    /// padding are still claimable; callers only ever pass valid region
+    /// indices.)
+    #[test]
+    fn first_fault_out_of_range_returns_false() {
+        // One region rounds up to a single 64-bit word, so word 1 and beyond are
+        // out of range.
+        let ff = FirstFault::new(1);
+        assert!(!ff.try_claim(64));
+        assert!(!ff.try_claim(1_000_000));
+    }
+
+    /// `new_all_claimed` starts fully claimed, so no in-range window is ever
+    /// widened (used for eagerly prefetched ranges).
+    #[test]
+    fn first_fault_new_all_claimed_prevents_widening() {
+        let regions = 100;
+        let ff = FirstFault::new_all_claimed(regions);
+        for region in 0..regions {
+            assert!(
+                !ff.try_claim(region),
+                "region {region} should already be claimed"
+            );
+        }
+    }
+
+    /// `large_region_count` counts the aligned 2 MB regions a range spans by
+    /// absolute region index, so a range that straddles a 2 MB boundary spans
+    /// two regions even when it is smaller than 2 MB.
+    #[test]
+    fn large_region_count_spans() {
+        const LP: u64 = super::LARGE_PAGE_SIZE;
+        // A single page at the start of a region spans one region.
+        assert_eq!(large_region_count(MemoryRange::new(0..0x1000)), 1);
+        // A full aligned region spans one region.
+        assert_eq!(large_region_count(MemoryRange::new(0..LP)), 1);
+        // A range straddling a 2 MB boundary spans two regions.
+        assert_eq!(
+            large_region_count(MemoryRange::new(LP - 0x1000..LP + 0x1000)),
+            2
+        );
+        // Two full aligned regions span two regions.
+        assert_eq!(large_region_count(MemoryRange::new(0..2 * LP)), 2);
     }
 }

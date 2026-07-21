@@ -754,7 +754,7 @@ mod x86 {
                             }
                             Ok(_) => {}
                             Err(err) => {
-                                tracing::warn!(
+                                tracelimit::warn_ratelimited!(
                                     gpa = access.Gpa,
                                     error = ?err,
                                     "memory fault resolver failed; populating single page"
@@ -774,7 +774,7 @@ mod x86 {
                         return Ok(());
                     }
                     Err(err) => {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             gpa = access.Gpa,
                             access = ?access.AccessInfo.AccessType(),
                             error = &err as &dyn std::error::Error,

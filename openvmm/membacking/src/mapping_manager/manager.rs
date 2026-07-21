@@ -86,9 +86,16 @@ pub struct MappingManagerClient {
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
-    /// Returns a secondary VA mapper for this guest memory (host-side access
-    /// that is not the loader/partition mapper: `guest_memory()` in any process,
-    /// DMA targets, etc.).
+    /// Returns a secondary VA mapper for this guest memory.
+    ///
+    /// A *secondary* mapper is any host-side view of guest memory other than the
+    /// primary one that the loader writes through and the partition resolves
+    /// faults against (see [`new_primary_mapper`](Self::new_primary_mapper)).
+    /// Secondary mappers are additional, remote views: for example a mapper in
+    /// the VP process for WHP VTL2 emulation, an out-of-process device that needs
+    /// to touch guest memory, or a DMA target. They never own the memory, and
+    /// soft large pages are not applied to them: in soft-large-page mode a
+    /// secondary mapper only ever gets 4 KB pages.
     ///
     /// When `eager` is true, the mapper receives all existing mappings
     /// immediately and gets new ones pushed synchronously. File-backed
