@@ -246,14 +246,11 @@ impl SerialPl011 {
             if !self.state.connected {
                 // The backend is disconnected, so drop everything in the FIFO.
                 self.stats.tx_dropped.add(self.state.tx_buffer.len() as u64);
-                if self.state.tx_buffer.len() > self.state.tx_fifo_trigger() {
-                    self.state.ris.set_tx(true);
-                }
                 self.state.tx_buffer.clear();
+                self.state.ris.set_tx(true);
                 break;
             }
             let (buf, _) = self.state.tx_buffer.as_slices();
-            let old_len = self.state.tx_buffer.len();
             match ready!(Pin::new(&mut self.io).poll_write(cx, buf)) {
                 Ok(n) => {
                     assert_ne!(n, 0);
@@ -266,6 +263,7 @@ impl SerialPl011 {
                         "serial output broken pipe, disconnecting"
                     );
                     self.state.disconnect();
+                    continue;
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -279,7 +277,7 @@ impl SerialPl011 {
                 }
             }
             let tx_fifo_trigger = self.state.tx_fifo_trigger();
-            if old_len > tx_fifo_trigger && self.state.tx_buffer.len() <= tx_fifo_trigger {
+            if self.state.tx_buffer.len() <= tx_fifo_trigger {
                 self.state.ris.set_tx(true);
             }
         }
@@ -1015,11 +1013,14 @@ mod tests {
 
     const UARTLCR_H_FIFO_ENABLE: u16 = 0x0010;
     const UARTLCR_H_8BITS: u16 = 0x0060;
+    const UARTINT_TX: u16 = 0x0020;
 
     // This is a "loopback" kind of io, where a write to the serial port will appear in the read queue
     #[derive(InspectMut)]
     pub struct SerialIoMock {
         data: Vec<u8>,
+        #[inspect(skip)]
+        write_error: Option<ErrorKind>,
     }
 
     impl SerialIo for SerialIoMock {
@@ -1059,6 +1060,9 @@ mod tests {
             _cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
+            if let Some(error) = self.write_error.take() {
+                return Poll::Ready(Err(error.into()));
+            }
             let buf = &buf[..buf.len().min(FIFO_SIZE)];
             self.data.extend_from_slice(buf);
             Poll::Ready(Ok(buf.len()))
@@ -1075,7 +1079,17 @@ mod tests {
 
     impl SerialIoMock {
         pub fn new() -> Self {
-            Self { data: Vec::new() }
+            Self {
+                data: Vec::new(),
+                write_error: None,
+            }
+        }
+
+        fn with_write_error(error: ErrorKind) -> Self {
+            Self {
+                data: Vec::new(),
+                write_error: Some(error),
+            }
         }
     }
 
@@ -1406,6 +1420,54 @@ mod tests {
         for n in FIFO_SIZE as u16..1 {
             assert_eq!(read(&mut serial, Register::UARTDR), n);
         }
+    }
+
+    #[test]
+    fn tx_interrupt_asserts_after_short_fifo_drain() {
+        let serial_io = SerialIoMock::new();
+        let mut serial = SerialPl011::new(
+            "com1".to_string(),
+            PL011_SERIAL0_BASE,
+            LineInterrupt::detached(),
+            Box::new(serial_io),
+            None,
+        )
+        .unwrap();
+
+        // FreeBSD enables the TX interrupt, clears stale status, writes a
+        // short batch, and waits for TX-idle before submitting more. With a
+        // fast backend, that batch can drain without ever exceeding the FIFO
+        // trigger level.
+        write(&mut serial, Register::UARTIMSC, UARTINT_TX);
+        write(&mut serial, Register::UARTICR, 0x7ff);
+        write(&mut serial, Register::UARTDR, b'x'.into());
+
+        serial.poll_device(&mut Context::from_waker(Waker::noop()));
+
+        assert!(serial.state.tx_buffer.is_empty());
+        assert_ne!(read(&mut serial, Register::UARTMIS) & UARTINT_TX, 0);
+    }
+
+    #[test]
+    fn tx_interrupt_asserts_after_broken_pipe_drain() {
+        let serial_io = SerialIoMock::with_write_error(ErrorKind::BrokenPipe);
+        let mut serial = SerialPl011::new(
+            "com1".to_string(),
+            PL011_SERIAL0_BASE,
+            LineInterrupt::detached(),
+            Box::new(serial_io),
+            None,
+        )
+        .unwrap();
+
+        write(&mut serial, Register::UARTIMSC, UARTINT_TX);
+        write(&mut serial, Register::UARTICR, 0x7ff);
+        write(&mut serial, Register::UARTDR, b'x'.into());
+
+        serial.poll_device(&mut Context::from_waker(Waker::noop()));
+
+        assert!(serial.state.tx_buffer.is_empty());
+        assert_ne!(read(&mut serial, Register::UARTMIS) & UARTINT_TX, 0);
     }
 
     #[test]
