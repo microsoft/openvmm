@@ -70,6 +70,14 @@ pub const X64_EMPTY_DR7: u64 = 0x0000000000000400;
 
 pub const USER_MODE_DPL: u8 = 3;
 
+/// Returns true if `v` is a canonical linear address for a paging mode with
+/// `bits` effective virtual address bits (48 or 57): the top `64 - bits` bits
+/// must be a sign-extension of the highest used bit.
+pub fn is_canonical_address(v: u64, bits: u32) -> bool {
+    let high = (v as i64) >> (bits - 1);
+    high == 0 || high == -1
+}
+
 pub const X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttributes::new()
     .with_granularity(true)
     .with_long(true)

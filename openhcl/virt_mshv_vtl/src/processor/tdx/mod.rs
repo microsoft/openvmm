@@ -95,6 +95,7 @@ use x86defs::X64_EFER_LMA;
 use x86defs::X64_EFER_LME;
 use x86defs::X64_EFER_NXE;
 use x86defs::X64_EFER_SVME;
+use x86defs::X64_EFER_TCE;
 use x86defs::X86X_MSR_EFER;
 use x86defs::apic::X2APIC_MSR_BASE;
 use x86defs::tdx::TdCallResultCode;
@@ -3269,11 +3270,11 @@ impl UhProcessor<'_, TdxBacked> {
     /// Note that a caller must also call [`Self::update_execution_mode`] after
     /// updating EFER.
     fn write_efer(&mut self, vtl: GuestVtl, efer: u64) -> Result<(), vp_state::Error> {
-        if efer & (X64_EFER_SVME | X64_EFER_FFXSR) != 0 {
+        if efer & (X64_EFER_SVME | X64_EFER_FFXSR | X64_EFER_TCE) != 0 {
             return Err(vp_state::Error::InvalidValue(
                 efer,
                 "EFER",
-                "SVME or FFXSR set",
+                "SVME, FFXSR, or TCE set",
             ));
         }
 

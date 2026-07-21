@@ -75,6 +75,7 @@ use x86defs::X64_EFER_SVME;
 use x86defs::X64_EFER_TCE;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::is_canonical_address;
 use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_CET_S;
 use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_CET_U;
 use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_PASID;
@@ -167,18 +168,13 @@ const XSS_VALID_MASK: u64 = XSAVE_SUPERVISOR_FEATURE_PASID
     | XSAVE_SUPERVISOR_FEATURE_CET_U
     | XSAVE_SUPERVISOR_FEATURE_CET_S;
 
-fn is_canonical(v: u64, bits: u32) -> bool {
-    let high = (v as i64) >> (bits - 1);
-    high == 0 || high == -1
-}
-
 /// Returns true if `v` is a valid linear address to load into a currently-in-
 /// use paging state whose EFER.LMA / CR4.LA57 bits are as given.
 pub(crate) fn validate_canonical_address(v: u64, efer: u64, cr4: u64) -> bool {
-    if !is_canonical(v, CVM_GUEST_VA_BITS_57) {
+    if !is_canonical_address(v, CVM_GUEST_VA_BITS_57) {
         return false;
     }
-    if is_canonical(v, CVM_GUEST_VA_BITS_48) {
+    if is_canonical_address(v, CVM_GUEST_VA_BITS_48) {
         return true;
     }
     (efer & X64_EFER_LMA) != 0 && (cr4 & X64_CR4_LA57) != 0
@@ -208,7 +204,7 @@ fn is_valid_ssp_msr(v: u64) -> bool {
     if v & PLX_SSP_MSR_RESERVED_MASK != 0 {
         return false;
     }
-    is_canonical(v, CVM_GUEST_VA_BITS_57)
+    is_canonical_address(v, CVM_GUEST_VA_BITS_57)
 }
 
 /// Validates the value being written to `msr` per the architectural
@@ -230,7 +226,7 @@ pub(crate) fn validate_cvm_msr_write(
         | x86defs::X86X_MSR_SYSENTER_EIP
         | x86defs::X86X_MSR_SYSENTER_ESP
         | x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR => {
-            if !is_canonical(value, CVM_GUEST_VA_BITS_57) {
+            if !is_canonical_address(value, CVM_GUEST_VA_BITS_57) {
                 return Err(MsrError::InvalidAccess);
             }
         }
@@ -641,8 +637,8 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
     fn validate_set_vp_register_value(
         &self,
         vtl: GuestVtl,
-        reg: &mut hvdef::hypercall::HvRegisterAssoc,
-    ) -> HvResult<()> {
+        mut reg: hvdef::hypercall::HvRegisterAssoc,
+    ) -> HvResult<hvdef::hypercall::HvRegisterAssoc> {
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::SysenterEsp
             | HvX64RegisterName::SysenterEip
@@ -650,7 +646,7 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
             | HvX64RegisterName::Cstar
             | HvX64RegisterName::KernelGsBase
             | HvX64RegisterName::InterruptSspTableAddr => {
-                if !is_canonical(reg.value.as_u64(), CVM_GUEST_VA_BITS_57) {
+                if !is_canonical_address(reg.value.as_u64(), CVM_GUEST_VA_BITS_57) {
                     return Err(HvError::InvalidRegisterValue);
                 }
             }
@@ -720,7 +716,7 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
             _ => {}
         }
 
-        Ok(())
+        Ok(reg)
     }
 
     fn set_vp_register(
@@ -732,8 +728,7 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
 
         // Validate (and possibly normalize) the value against the target
         // register's architectural constraints.
-        let mut reg = *reg;
-        self.validate_set_vp_register_value(vtl, &mut reg)?;
+        let reg = self.validate_set_vp_register_value(vtl, *reg)?;
         let reg = &reg;
 
         match HvX64RegisterName::from(reg.name) {
@@ -3238,22 +3233,6 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn canonical_va_check() {
-        // 48-bit canonical: also 57-bit canonical.
-        assert!(is_canonical(0, CVM_GUEST_VA_BITS_57));
-        assert!(is_canonical(0x0000_7FFF_FFFF_FFFF, CVM_GUEST_VA_BITS_57));
-        assert!(is_canonical(0xFFFF_8000_0000_0000, CVM_GUEST_VA_BITS_57));
-        assert!(is_canonical(u64::MAX, CVM_GUEST_VA_BITS_57));
-        // 57-bit canonical only (upper-half boundary of 5-level paging).
-        assert!(is_canonical(0x0000_8000_0000_0000, CVM_GUEST_VA_BITS_57));
-        assert!(is_canonical(0x00FF_FFFF_FFFF_FFFF, CVM_GUEST_VA_BITS_57));
-        assert!(is_canonical(0xFF00_0000_0000_0000, CVM_GUEST_VA_BITS_57));
-        // Not even 57-bit canonical.
-        assert!(!is_canonical(0x0100_0000_0000_0000, CVM_GUEST_VA_BITS_57));
-        assert!(!is_canonical(0xFC00_0000_0000_0000, CVM_GUEST_VA_BITS_57));
-    }
 
     #[test]
     fn canonical_current_paging_mode() {
