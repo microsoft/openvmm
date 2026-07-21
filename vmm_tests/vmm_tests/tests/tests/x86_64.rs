@@ -500,11 +500,11 @@ async fn file_backed_memory_boot(
 }
 
 /// Boot with file-backed memory, pause + save VM state, write the snapshot
-/// artifacts to disk, read them back to verify the roundtrip, then resume
-/// the VM and confirm it is still functional.
+/// artifacts with the shared snapshot helper, read them back to verify the
+/// roundtrip, then resume the VM and confirm it is still functional.
 ///
-/// This exercises the full save-to-disk path with real VM state and validates
-/// that the serialized state bytes survive a disk roundtrip unchanged.
+/// This exercises snapshot I/O with real VM state, but does not exercise the
+/// interactive `save-snapshot` command.
 #[openvmm_test(linux_direct_x64)]
 async fn snapshot_save_to_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -546,7 +546,7 @@ async fn snapshot_save_to_disk(
     let manifest = openvmm_helpers::snapshot::SnapshotManifest {
         version: openvmm_helpers::snapshot::MANIFEST_VERSION,
         created_at: std::time::SystemTime::now().into(),
-        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        openvmm_version: openvmm_build_info::get().version().to_string(),
         memory_size_bytes: mem_size,
         vp_count: 2,
         page_size: 4096,

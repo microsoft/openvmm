@@ -81,6 +81,7 @@ flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
 openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_build_info = { path = "openvmm/openvmm_build_info" }
 openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
 openvmm_helpers = { path = "openvmm/openvmm_helpers" }

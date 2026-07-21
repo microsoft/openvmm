@@ -30,6 +30,7 @@ petri.workspace = true
 inspect.workspace = true
 
 get_resources.workspace = true
+openvmm_build_info.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true

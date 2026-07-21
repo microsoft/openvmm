@@ -474,7 +474,7 @@ impl VmController {
         let manifest = openvmm_helpers::snapshot::SnapshotManifest {
             version: openvmm_helpers::snapshot::MANIFEST_VERSION,
             created_at: std::time::SystemTime::now().into(),
-            openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+            openvmm_version: openvmm_build_info::get().version().to_string(),
             memory_size_bytes: self.memory,
             vp_count: self.processors,
             page_size: crate::system_page_size(),

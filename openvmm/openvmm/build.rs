@@ -3,39 +3,29 @@
 
 #![expect(missing_docs)]
 
-fn parse_component(name: &str, value: &str) -> u16 {
-    value
-        .parse()
-        .unwrap_or_else(|_| panic!("{name} must be an unsigned 16-bit integer, got {value:?}"))
-}
-
-fn product_version() -> (String, [u16; 3]) {
-    let version_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../VERSION");
-    let version = std::fs::read_to_string(&version_path)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", version_path.display()));
-    let version = version.trim();
+fn numeric_version() -> [u16; 3] {
+    let version = openvmm_build_info::get().product_version();
     let components = version.split('.').collect::<Vec<_>>();
     let [major, minor, patch] = components.as_slice() else {
-        panic!("OpenVMM VERSION must contain exactly three components, got {version:?}");
+        panic!("OpenVMM product version must contain exactly three components, got {version:?}");
     };
-
-    (
-        version.to_owned(),
-        [
-            parse_component("OpenVMM VERSION major component", major),
-            parse_component("OpenVMM VERSION minor component", minor),
-            parse_component("OpenVMM VERSION patch component", patch),
-        ],
-    )
+    let parse = |name: &str, value: &str| {
+        value.parse().unwrap_or_else(|_| {
+            panic!("OpenVMM product {name} component must be an unsigned 16-bit integer")
+        })
+    };
+    [
+        parse("major", major),
+        parse("minor", minor),
+        parse("patch", patch),
+    ]
 }
 
 fn main() {
     // Prevent this build script from rerunning unnecessarily.
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../VERSION");
 
-    let (product_version, [major, minor, patch]) = product_version();
-    println!("cargo:rustc-env=OPENVMM_PRODUCT_VERSION={product_version}");
+    let [major, minor, patch] = numeric_version();
 
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         println!("cargo:rustc-link-lib=onecore_apiset");
