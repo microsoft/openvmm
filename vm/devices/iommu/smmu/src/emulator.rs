@@ -676,11 +676,13 @@ impl SmmuDevice {
         for op in self.shared_state.drain_pending_accel_ops() {
             match op {
                 crate::shared::PendingAccelOp::Register {
+                    id,
                     bus_range,
                     stream_id_base,
                     backend,
                 } => {
                     let mut reg = crate::shared::AccelDeviceRegistration {
+                        id,
                         bus_range: bus_range.clone(),
                         stream_id_base,
                         backend,
@@ -701,6 +703,20 @@ impl SmmuDevice {
                         Self::apply_accel_config(&mut reg, config);
                     }
                     self.accel_devices.push(reg);
+                }
+                crate::shared::PendingAccelOp::Unregister { id } => {
+                    // Remove the device's registration. This emulator holds the
+                    // sole `Arc` to the backend, so dropping the entry runs the
+                    // backend's `Drop` (device detach + vDevice/HWPT destroy)
+                    // right here on the emulator thread. Drains happen at a
+                    // batch boundary (top of `process_cmdq`, or after the
+                    // pending batch is flushed at a re-drive point), so this
+                    // teardown cannot race a live invalidation batch that still
+                    // references the device's vSID.
+                    if let Some(pos) = self.accel_devices.iter().position(|reg| reg.id == id) {
+                        let reg = self.accel_devices.swap_remove(pos);
+                        drop(reg);
+                    }
                 }
                 crate::shared::PendingAccelOp::SetSink(sink) => {
                     // First sink wins; all devices behind one vIOMMU share it.
@@ -753,23 +769,22 @@ impl SmmuDevice {
     /// Re-computes and applies the current policy for every owned accel
     /// backend. Used for `CFGI_STE_RANGE`/`CFGI_ALL`.
     fn apply_all_stream_configs(&mut self) {
-        self.apply_stream_configs_in(0..self.accel_devices.len());
+        for i in 0..self.accel_devices.len() {
+            self.apply_stream_config_at(i);
+        }
     }
 
-    /// Re-drives the accel backends at `range` (indices into the owned table)
-    /// to their current policy. Assigned-bus devices only; an unassigned device
-    /// has no stream ID yet and is left as-is until its `CFGI_STE`.
-    fn apply_stream_configs_in(&mut self, range: std::ops::Range<usize>) {
-        for i in range {
-            let reg = &self.accel_devices[i];
-            let Some(sid) =
-                crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None)
-            else {
-                continue;
-            };
-            let config = self.shared_state.current_stream_config(sid);
-            Self::apply_accel_config(&mut self.accel_devices[i], config);
-        }
+    /// Re-drives the accel backend at index `i` to its current policy.
+    /// Assigned-bus devices only; an unassigned device has no stream ID yet and
+    /// is left as-is until its `CFGI_STE`.
+    fn apply_stream_config_at(&mut self, i: usize) {
+        let reg = &self.accel_devices[i];
+        let Some(sid) = crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None)
+        else {
+            return;
+        };
+        let config = self.shared_state.current_stream_config(sid);
+        Self::apply_accel_config(&mut self.accel_devices[i], config);
     }
 
     /// Whether a SID-based invalidation (`CFGI_CD`/`CFGI_CD_ALL`/`ATC_INV`)
@@ -782,19 +797,24 @@ impl SmmuDevice {
             .any(|reg| reg.translating_sid == Some(sid))
     }
 
-    /// Drains pending registrations (catching up any new devices), then
-    /// re-drives the pre-existing owned backends to the current policy. Called
-    /// after a state-mutating policy change (CR0/GBPA writes, reset, restore)
-    /// that alters the disabled-state or per-stream policy for all streams at
-    /// once.
+    /// Drains pending registrations (catching up any new devices and tearing
+    /// down removed ones), then re-drives the pre-existing owned backends to
+    /// the current policy. Called after a state-mutating policy change
+    /// (CR0/GBPA writes, reset, restore) that alters the disabled-state or
+    /// per-stream policy for all streams at once.
     ///
     /// Only the pre-existing devices are re-driven here: `drain_accel_ops`
-    /// already applied initial policy to the devices it just added, so
-    /// re-driving them again would redundantly re-apply the same config.
+    /// already applied initial policy to the devices it just added. Devices are
+    /// tracked by id (not index) because a drained `Unregister` can remove an
+    /// entry and shuffle the table.
     fn redrive_accel(&mut self) {
-        let before = self.accel_devices.len();
+        let existing: Vec<u64> = self.accel_devices.iter().map(|reg| reg.id).collect();
         self.drain_accel_ops();
-        self.apply_stream_configs_in(0..before);
+        for id in existing {
+            if let Some(i) = self.accel_devices.iter().position(|reg| reg.id == id) {
+                self.apply_stream_config_at(i);
+            }
+        }
     }
 
     fn process_cmdq(&mut self) {
@@ -2264,7 +2284,10 @@ mod tests {
         use pci_core::bus_range::AssignedBusRange;
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(secondary_bus, secondary_bus);
-        dev.shared_state
+        // Test streams stay registered for the device's lifetime, so the
+        // registration id / guard is dropped (no `Unregister` enqueued).
+        let _id = dev
+            .shared_state
             .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend));
         (secondary_bus as u32) << 8
     }
@@ -2365,8 +2388,9 @@ mod tests {
         let mut dev = make_accel_device();
         let backend = RecordingBackend::new();
         // Bus not yet assigned; SMMU disabled with GBPA.ABORT=0 (reset default).
-        dev.shared_state
-            .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
+        let _id =
+            dev.shared_state
+                .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
         dev.redrive_accel();
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
@@ -2378,8 +2402,9 @@ mod tests {
         let mut dev = make_accel_device();
         dev.shared_state.set_gbpa_abort(true);
         let backend = RecordingBackend::new();
-        dev.shared_state
-            .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
+        let _id =
+            dev.shared_state
+                .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
         dev.redrive_accel();
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
     }
@@ -2401,7 +2426,8 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(1, 1);
         let backend = RecordingBackend::new();
-        dev.shared_state
+        let _id = dev
+            .shared_state
             .register_accel_device(bus_range, 0, backend.clone());
         dev.redrive_accel();
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
@@ -2420,7 +2446,8 @@ mod tests {
 
         let bus_range = AssignedBusRange::new(); // unassigned
         let backend = RecordingBackend::new();
-        dev.shared_state
+        let _id = dev
+            .shared_state
             .register_accel_device(bus_range.clone(), 0, backend.clone());
         dev.redrive_accel();
         // Fail-closed: nothing applied yet.
@@ -2453,7 +2480,8 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(1, 1);
         let backend = RecordingBackend::new();
-        dev.shared_state
+        let _id = dev
+            .shared_state
             .register_accel_device(bus_range, 0, backend.clone());
         // Disabled + GBPA.ABORT=0 → initial drain applies Bypass.
         dev.redrive_accel();
@@ -2471,6 +2499,93 @@ mod tests {
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Abort)
         );
+    }
+
+    /// A backend that flips a shared flag when dropped, to observe that the
+    /// emulator holds the sole `Arc` and tears the backend down on unregister.
+    struct DropTrackingBackend {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::shared::AcceleratedStreamBackend for DropTrackingBackend {
+        fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for DropTrackingBackend {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Unregistering removes the device from the forwarding table and, because
+    /// the emulator holds the sole backend `Arc`, drops (tears down) the
+    /// backend on the emulator thread at the next drain.
+    #[test]
+    fn test_unregister_removes_and_drops_backend() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        let mut dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+
+        let sid = 0x100u32;
+        write_test_ste(&dev, sid, SteConfig::S1_TRANS);
+
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+        let dropped = Arc::new(AtomicBool::new(false));
+        // Register a translating stream. Do NOT keep a clone of the backend, so
+        // the emulator's table holds the only `Arc`.
+        let id = dev.shared_state.register_accel_device(
+            bus_range,
+            0,
+            Arc::new(DropTrackingBackend {
+                dropped: dropped.clone(),
+            }),
+        );
+        dev.redrive_accel();
+        // Device present, translating → its SID-based invalidations forward.
+        assert!(dev.sid_invalidation_forwardable(sid));
+        assert!(!dropped.load(Ordering::Relaxed));
+
+        // Unregister and drain: the entry is removed and the backend dropped.
+        dev.shared_state.unregister_accel_device(id);
+        dev.redrive_accel();
+        assert!(!dev.sid_invalidation_forwardable(sid));
+        assert!(dev.accel_devices.is_empty());
+        assert!(
+            dropped.load(Ordering::Relaxed),
+            "backend should be torn down on the emulator thread"
+        );
+    }
+
+    /// Dropping the [`AccelRegistration`] guard enqueues the unregister, so a
+    /// removed/hot-unplugged device is torn down at the next drain.
+    #[test]
+    fn test_accel_registration_guard_unregisters_on_drop() {
+        use pci_core::bus_range::AssignedBusRange;
+        let mut dev = make_accel_device();
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+
+        let id = dev
+            .shared_state
+            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend));
+        let guard = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        dev.redrive_accel();
+        assert_eq!(dev.accel_devices.len(), 1);
+
+        // Device teardown drops the guard, which enqueues the unregister.
+        drop(guard);
+        dev.redrive_accel();
+        assert!(dev.accel_devices.is_empty());
     }
 
     /// Build a SID-based `CFGI_CD`/`CFGI_CD_ALL` entry for `sid`.

@@ -17,6 +17,7 @@ pub use emulator::HostSmmuCaps;
 pub use emulator::SmmuConfig;
 pub use emulator::SmmuDevice;
 pub use emulator::SmmuOasPolicy;
+pub use shared::AccelRegistration;
 pub use shared::AcceleratedInvalidationSink;
 pub use shared::AcceleratedStreamBackend;
 pub use shared::SmmuNestingContext;

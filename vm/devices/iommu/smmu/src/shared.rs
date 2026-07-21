@@ -32,6 +32,9 @@ use parking_lot::RwLock;
 use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
+use std::sync::Weak;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
@@ -202,6 +205,10 @@ fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste) -> [u64; 2] {
 /// lock guards these fields. Cross-thread registration reaches the emulator via
 /// the [`PendingAccelOp`] queue, drained on the emulator thread.
 pub(crate) struct AccelDeviceRegistration {
+    /// Unique id assigned at registration, used to match the
+    /// [`PendingAccelOp::Unregister`] that removes this entry on device
+    /// teardown.
+    pub(crate) id: u64,
     /// The device's assigned bus range (shared with the PCIe port).
     pub(crate) bus_range: AssignedBusRange,
     /// Offset into this SMMU's stream table for the device's root complex.
@@ -232,12 +239,50 @@ pub(crate) struct AccelDeviceRegistration {
 pub(crate) enum PendingAccelOp {
     /// Register a device's accelerated stream backend.
     Register {
+        id: u64,
         bus_range: AssignedBusRange,
         stream_id_base: u32,
         backend: Arc<dyn AcceleratedStreamBackend>,
     },
+    /// Remove a previously registered device (by its registration `id`) on
+    /// teardown/hot-unplug. The emulator drops the entry — and, as its sole
+    /// owner, the backend — on its own thread at a batch boundary, so the
+    /// backend's vDevice/HWPT teardown cannot race a live invalidation batch.
+    Unregister { id: u64 },
     /// Set the per-vIOMMU invalidation sink (first one wins).
     SetSink(Arc<dyn AcceleratedInvalidationSink>),
+}
+
+/// Handle tying an accelerated registration to the lifetime of the VFIO
+/// device that owns it. Dropping it enqueues an unregister (a
+/// `PendingAccelOp::Unregister`) so the emulator removes the device's stream
+/// backend and tears it down on its own thread.
+///
+/// Held by the assigned PCI device (see the VFIO resolver); dropped when the
+/// device is removed or hot-unplugged. Holds a [`Weak`] reference so it never
+/// keeps the emulated SMMU alive: if the SMMU is already gone there is nothing
+/// left to unregister from.
+pub struct AccelRegistration {
+    shared: Weak<SmmuSharedState>,
+    id: u64,
+}
+
+impl AccelRegistration {
+    /// Creates a guard for registration `id` on `shared`.
+    pub fn new(shared: &Arc<SmmuSharedState>, id: u64) -> Self {
+        Self {
+            shared: Arc::downgrade(shared),
+            id,
+        }
+    }
+}
+
+impl Drop for AccelRegistration {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.unregister_accel_device(self.id);
+        }
+    }
 }
 
 /// Composes an SMMU-local stream ID from a bus range, a base offset,
@@ -332,6 +377,11 @@ pub struct SmmuSharedState {
     /// applies initial policy. Not on the DMA path; never nested inside the
     /// translation `inner` lock.
     pending_accel_ops: Mutex<Vec<PendingAccelOp>>,
+    /// Monotonic source of accelerated-registration ids. Each
+    /// [`register_accel_device`](Self::register_accel_device) hands back a
+    /// fresh id (via its [`AccelRegistration`] guard) that identifies the
+    /// entry for later [`PendingAccelOp::Unregister`].
+    next_accel_id: AtomicU64,
 }
 
 struct SharedStateInner {
@@ -447,6 +497,7 @@ impl SmmuSharedState {
             accel,
             oas_policy,
             pending_accel_ops: Mutex::new(Vec::new()),
+            next_accel_id: AtomicU64::new(0),
         })
     }
 
@@ -797,19 +848,37 @@ impl SmmuSharedState {
     /// drives the SMMU (and thus a drain) first. Callable from any thread (the
     /// VFIO resolver); the queue is the cross-thread handoff to the
     /// single-threaded emulator.
+    ///
+    /// Returns the registration id. Wrap it in an [`AccelRegistration`]
+    /// (`AccelRegistration::new(&shared, id)`) tied to the device's lifetime so
+    /// the backend is unregistered (and torn down) when the device is removed.
+    #[must_use]
     pub fn register_accel_device(
         &self,
         bus_range: AssignedBusRange,
         stream_id_base: u32,
         backend: Arc<dyn AcceleratedStreamBackend>,
-    ) {
+    ) -> u64 {
+        let id = self.next_accel_id.fetch_add(1, Ordering::Relaxed);
         self.pending_accel_ops
             .lock()
             .push(PendingAccelOp::Register {
+                id,
                 bus_range,
                 stream_id_base,
                 backend,
             });
+        id
+    }
+
+    /// Enqueues removal of the accelerated registration `id`. Called from the
+    /// [`AccelRegistration`] guard's `Drop` when the owning device is torn
+    /// down; the emulator removes the entry (and drops the backend) on its own
+    /// thread at the next drain.
+    pub fn unregister_accel_device(&self, id: u64) {
+        self.pending_accel_ops
+            .lock()
+            .push(PendingAccelOp::Unregister { id });
     }
 
     /// Drains the pending accelerated-registration queue, transferring
