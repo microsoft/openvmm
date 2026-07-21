@@ -210,6 +210,14 @@ pub(crate) struct VfioAssignedPciDevice {
     /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
     /// (cdev) fds alive and cleans up on drop.
     binding: manager::VfioBinding,
+
+    /// Accelerated (iommufd-nested) SMMU registration guard, present only for
+    /// a device behind an accel-capable SMMU. Dropped when this device is
+    /// removed/hot-unplugged, which enqueues the unregister so the emulated
+    /// SMMU removes and tears down the device's stream backend. Held purely
+    /// for its `Drop`.
+    #[inspect(skip)]
+    _accel_registration: Option<smmu::AccelRegistration>,
 }
 
 #[derive(Inspect)]
@@ -303,6 +311,8 @@ impl VfioAssignedPciDevice {
             msi_target,
             memory_mapper,
             bar_addresses,
+            // Legacy group/type1 path never does nested S1 (rejected earlier).
+            None,
         )
         .await
     }
@@ -316,6 +326,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
+        accel_registration: Option<smmu::AccelRegistration>,
     ) -> anyhow::Result<Self> {
         Self::from_device(
             device,
@@ -325,6 +336,7 @@ impl VfioAssignedPciDevice {
             msi_target,
             memory_mapper,
             bar_addresses,
+            accel_registration,
         )
         .await
     }
@@ -337,6 +349,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
+        accel_registration: Option<smmu::AccelRegistration>,
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -571,6 +584,7 @@ impl VfioAssignedPciDevice {
             bar_direct_maps,
             config_patches,
             binding,
+            _accel_registration: accel_registration,
         })
     }
 
@@ -1230,8 +1244,9 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _,       // immutable device geometry
             ref mut msix,
             supports_reset,
-            config_patches: _, // immutable — built at init
-            binding: _,        // lifetime handle — no reset needed
+            config_patches: _,      // immutable — built at init
+            binding: _,             // lifetime handle — no reset needed
+            _accel_registration: _, // SMMU registration guard — persists across reset
         } = *self;
 
         // Reset emulated MSI-X table and capability to power-on defaults

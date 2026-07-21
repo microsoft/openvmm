@@ -226,6 +226,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         // the emulated SMMU: finalize host-derived parameters and register
         // the per-device stream backend. The manager already created (or
         // reused) the shared vIOMMU and queried host capabilities.
+        let mut accel_registration: Option<smmu::AccelRegistration> = None;
         if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
             // Finalize the vSMMU's host-derived parameters (OAS, ...) against
             // the physical SMMU backing this device. Runs once per vSMMU; a
@@ -247,8 +248,16 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 device.clone(),
             ));
 
-            ctx.shared
-                .register_accel_device(ctx.bus_range.clone(), ctx.stream_id_base, backend);
+            // Register the backend and keep the returned guard on the device,
+            // so removing/hot-unplugging the device unregisters the backend
+            // (and tears it down on the emulator thread) instead of leaking it
+            // for the vSMMU's lifetime.
+            let id = ctx.shared.register_accel_device(
+                ctx.bus_range.clone(),
+                ctx.stream_id_base,
+                backend,
+            );
+            accel_registration = Some(smmu::AccelRegistration::new(&ctx.shared, id));
 
             tracing::info!(pci_id, "registered iommufd nesting backend with SMMU");
         }
@@ -265,6 +274,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             input.dma_target.msi_target(),
             memory_mapper,
             bar_addresses,
+            accel_registration,
         )
         .await?;
 
