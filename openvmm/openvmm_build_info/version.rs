@@ -364,7 +364,16 @@ mod tests {
     #[test]
     fn collects_only_repository_root_git_identity() {
         let repo = temporary_repo();
-        run(&repo, &["tag", "openvmm-v0.12.3"]);
+        run(
+            &repo,
+            &[
+                "tag",
+                "--annotate",
+                "openvmm-v0.12.3",
+                "--message",
+                "release",
+            ],
+        );
 
         let source = collect_git_source(&repo, false).unwrap().unwrap();
         assert_eq!(source.release_tag.as_deref(), Some("openvmm-v0.12.3"));
