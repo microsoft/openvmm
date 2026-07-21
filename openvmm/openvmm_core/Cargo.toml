@@ -35,7 +35,7 @@ floppy_resources.workspace = true
 hvdef.workspace = true
 hyperv_dump.workspace = true
 ide_resources.workspace = true
-igvm.workspace = true
+igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
 loader.workspace = true
 virt.workspace = true

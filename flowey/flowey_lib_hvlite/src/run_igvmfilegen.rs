@@ -18,6 +18,9 @@ pub struct IgvmOutput {
     /// The unsigned SNP ID block signing payload (`<base>-snp.idblock`), if the
     /// manifest produced a measurable SEV-SNP platform.
     pub igvm_snp_idblock: Option<PathBuf>,
+    pub igvm_tdx_corim: Option<PathBuf>,
+    pub igvm_snp_corim: Option<PathBuf>,
+    pub igvm_vbs_corim: Option<PathBuf>,
 }
 
 flowey_request! {
@@ -138,6 +141,18 @@ impl SimpleFlowNode for Node {
                     )
                     .run()?;
                 }
+                let igvm_tdx_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-tdx.cbor"));
+                    path.exists().then_some(path)
+                };
+                let igvm_snp_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-snp.cbor"));
+                    path.exists().then_some(path)
+                };
+                let igvm_vbs_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-vbs.cbor"));
+                    path.exists().then_some(path)
+                };
 
                 rt.write(
                     igvm,
@@ -148,6 +163,9 @@ impl SimpleFlowNode for Node {
                         igvm_snp_json,
                         igvm_vbs_json,
                         igvm_snp_idblock,
+                        igvm_tdx_corim,
+                        igvm_snp_corim,
+                        igvm_vbs_corim,
                     },
                 );
 
