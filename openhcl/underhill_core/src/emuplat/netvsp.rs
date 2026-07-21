@@ -589,9 +589,13 @@ impl HclNetworkVFManagerWorker {
         // Pick a `Present` vPCI bus control to revoke against: try the caller-supplied
         // bus first, then fall back to the worker's current bus.
         let vpci_bus_control = match bus_control {
-            Vtl0Bus::Present(current_bus) => Some(current_bus),
+            Vtl0Bus::Present(current_bus) | Vtl0Bus::HiddenPresent(current_bus) => {
+                Some(current_bus)
+            }
             _ => match &self.vtl0_bus_control {
-                Vtl0Bus::Present(current_bus) => Some(current_bus),
+                Vtl0Bus::Present(current_bus) | Vtl0Bus::HiddenPresent(current_bus) => {
+                    Some(current_bus)
+                }
                 _ => None,
             },
         };
@@ -744,15 +748,13 @@ impl HclNetworkVFManagerWorker {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent);
                     if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
-                            *self.guest_state.vtl0_vfid.lock().await =
-                                vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                            self.try_notify_guest_and_revoke_vtl0_vf(
-                                &old_bus_control,
-                                vtl2_device_state,
-                            )
-                            .await;
-                        }
+                        *self.guest_state.vtl0_vfid.lock().await =
+                            vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                        self.try_notify_guest_and_revoke_vtl0_vf(
+                            &old_bus_control,
+                            vtl2_device_state,
+                        )
+                        .await;
                         let Vtl0Bus::Present(bus_control) = old_bus_control else {
                             unreachable!();
                         };
