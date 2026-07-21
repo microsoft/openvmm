@@ -213,9 +213,19 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let repo =
-            std::env::temp_dir().join(format!("build-rs-git-info-{}-{nonce}", std::process::id()));
-        std::fs::create_dir(&repo).unwrap();
+        let repo = (0..100)
+            .find_map(|attempt| {
+                let repo = std::env::temp_dir().join(format!(
+                    "build-rs-git-info-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&repo) {
+                    Ok(()) => Some(repo),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("failed to create {}: {error}", repo.display()),
+                }
+            })
+            .expect("failed to create a unique temporary repository");
         run(&repo, &["init", "--quiet"]);
         run(&repo, &["config", "core.autocrlf", "false"]);
         run(&repo, &["config", "core.safecrlf", "false"]);
