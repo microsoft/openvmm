@@ -36,11 +36,11 @@ When bumping `mu_msvm`, update both the Nix fetch and the Flowey version
 constant in the same PR.
 
 1. Update `nix/uefi_mu_msvm.nix`:
-  - Set `version` to the new release.
-  - Ensure the `fetchzip` URL uses that version.
-  - Set both architecture hashes to empty strings.
+    - Set `version` to the new release.
+    - Ensure the `fetchzip` URL uses that version.
+    - Set both architecture hashes to empty strings.
 2. Update `flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs`:
-  - Bump `MU_MSVM` to the same version.
+    - Bump `MU_MSVM` to the same version.
 3. From the repo root, run `sudo nix-shell` (or `nix-shell` if sudo is not
   required in your environment).
 4. Copy the first `got:` hash from the mismatch error into the matching entry
