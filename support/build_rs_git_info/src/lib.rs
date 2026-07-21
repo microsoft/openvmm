@@ -44,7 +44,11 @@ impl GitInfo {
         self.shallow
     }
 
-    /// Emit this information as Cargo environment variables.
+    /// Emit the legacy revision, branch, and dirty-state Cargo environment
+    /// variables.
+    ///
+    /// Callers that need exact tags or shallow-checkout state should use the
+    /// structured accessors instead.
     pub fn emit(&self) {
         println!("cargo:rustc-env=BUILD_GIT_SHA={}", self.sha);
         println!("cargo:rustc-env=BUILD_GIT_BRANCH={}", self.branch);
@@ -52,7 +56,7 @@ impl GitInfo {
     }
 }
 
-fn git_output(repo: Option<&std::path::Path>, args: &[&str]) -> anyhow::Result<String> {
+fn git_output_bytes(repo: Option<&std::path::Path>, args: &[&str]) -> anyhow::Result<Vec<u8>> {
     let mut command = Command::new("git");
     if let Some(repo) = repo {
         command.arg("-C").arg(repo);
@@ -68,8 +72,12 @@ fn git_output(repo: Option<&std::path::Path>, args: &[&str]) -> anyhow::Result<S
         );
     }
 
-    let output = String::from_utf8(output.stdout).unwrap().trim().to_owned();
-    Ok(output)
+    Ok(output.stdout)
+}
+
+fn git_output(repo: Option<&std::path::Path>, args: &[&str]) -> anyhow::Result<String> {
+    let output = String::from_utf8(git_output_bytes(repo, args)?)?;
+    Ok(output.trim().to_owned())
 }
 
 fn git_path(args: &[&str]) -> anyhow::Result<std::path::PathBuf> {
@@ -88,7 +96,7 @@ fn collect_git_info_inner(repo: Option<&std::path::Path>) -> anyhow::Result<GitI
     };
     println!("cargo:rerun-if-changed={}", head_path.display());
 
-    for git_path in ["refs/tags", "packed-refs"] {
+    for git_path in ["refs/tags", "packed-refs", "shallow"] {
         let output = git_output(repo, &["rev-parse", "--git-path", git_path])?;
         let path = match repo {
             Some(repo) => std::path::absolute(repo.join(output))?,
@@ -118,7 +126,7 @@ fn collect_git_info_inner(repo: Option<&std::path::Path>) -> anyhow::Result<GitI
     // Cargo cannot practically watch every repository file, so this is
     // refreshed whenever another watched build input changes.
     let dirty =
-        !git_output(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
+        !git_output_bytes(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     let shallow = git_output(repo, &["rev-parse", "--is-shallow-repository"])? == "true";
 
     Ok(GitInfo {
