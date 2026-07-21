@@ -11,8 +11,9 @@ release branches described below.
 
 ```admonish warning
 The `release/*` branches on this page service OpenHCL. They are not standalone
-OpenVMM release branches. Pre-1.0 OpenVMM fixes ship from `main` in the next
-rolling OpenVMM release instead of being backported here.
+OpenVMM release branches. OpenVMM normally releases directly from `main` and
+creates a separate on-demand patch branch only when its currently supported
+release requires a security or release-blocking fix.
 ```
 
 Occasionally, the OpenHCL project will declare upcoming release milestones. We
