@@ -744,13 +744,15 @@ impl HclNetworkVFManagerWorker {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent);
                     if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                        *self.guest_state.vtl0_vfid.lock().await =
-                            vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                        self.try_notify_guest_and_revoke_vtl0_vf(
-                            &old_bus_control,
-                            vtl2_device_state,
-                        )
-                        .await;
+                        if matches!(vtl2_device_state, Vtl2DeviceState::Present) {
+                            *self.guest_state.vtl0_vfid.lock().await =
+                                vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                            self.try_notify_guest_and_revoke_vtl0_vf(
+                                &old_bus_control,
+                                vtl2_device_state,
+                            )
+                            .await;
+                        }
                         let Vtl0Bus::Present(bus_control) = old_bus_control else {
                             unreachable!();
                         };
@@ -797,9 +799,38 @@ impl HclNetworkVFManagerWorker {
     /// Removes the VTL0 VF from the guest.
     ///
     /// Generally called when not in shutdown, but it's not assumed here.
+    /// The guest-facing offer bit is cleared before the revoke RPC is issued so
+    /// duplicate removals become no-ops. On return,
+    /// `guest_state.offered_to_guest` is always false even if the RPC fails or
+    /// times out.
     async fn remove_vtl0_vf(&mut self, vtl2_device_state: &Vtl2DeviceState) {
-        self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent, vtl2_device_state)
-            .await;
+        if !matches!(vtl2_device_state, Vtl2DeviceState::Present) {
+            let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+            tracing::info!(
+                vtl2_vfid,
+                vtl2_device_state = ?vtl2_device_state,
+                "VTL2 device not present; skipping VTL0 VF revoke"
+            );
+            return;
+        }
+        let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+        let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+        if self.guest_state.is_offered_to_guest().await {
+            *self.guest_state.offered_to_guest.lock().await = false;
+            if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
+                match self.revoke_vtl0_vf(vtl0_bus_control).await {
+                    Ok(_) => (),
+                    Err(err) => {
+                        tracing::error!(
+                            vtl2_vfid,
+                            vtl0_vfid,
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "Failed to remove VTL0 VF"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Updates which VTL0 VF, if any, is associated with this worker.
@@ -869,20 +900,9 @@ impl HclNetworkVFManagerWorker {
                     | Vtl2DeviceState::DeviceEnumerated,
                     _,
                 ) => {
-                    *self.guest_state.vtl0_vfid.lock().await = None;
-                    let old_bus_control = std::mem::replace(
-                        &mut self.vtl0_bus_control,
-                        bus_control
-                            .map(Vtl0Bus::Present)
-                            .unwrap_or(Vtl0Bus::NotPresent),
-                    );
-                    if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                        self.try_notify_guest_and_revoke_vtl0_vf(
-                            &old_bus_control,
-                            vtl2_device_state,
-                        )
-                        .await;
-                    }
+                    self.vtl0_bus_control = bus_control
+                        .map(Vtl0Bus::Present)
+                        .unwrap_or(Vtl0Bus::NotPresent);
                 }
             }
         })
