@@ -984,8 +984,8 @@ async fn verify_net_interfaces(
         .read()
         .await?
         .lines()
-        .map(str::parse)
-        .collect::<Result<std::collections::HashSet<MacAddress>, _>>()?;
+        .filter_map(|address| address.parse().ok())
+        .collect::<std::collections::HashSet<MacAddress>>();
     tracing::info!(?guest_macs, "network interface MAC addresses");
     for expected_mac in &expected_macs {
         assert!(
