@@ -1158,6 +1158,9 @@ async fn vm_config_from_command_line(
         );
     }
 
+    let base_secure_boot_template_revision = opt
+        .secure_boot_template
+        .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
     let (base_secure_boot_template_vars, custom_uefi_vars) = {
         use firmware_uefi_custom_vars::CustomVars;
 
@@ -1223,6 +1226,7 @@ async fn vm_config_from_command_line(
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             base_secure_boot_template_vars.clone(),
+            base_secure_boot_template_revision.clone(),
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
@@ -2014,6 +2018,7 @@ async fn vm_config_from_command_line(
         vmgs,
         secure_boot_enabled: opt.secure_boot,
         base_secure_boot_template_vars,
+        base_secure_boot_template_revision,
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,

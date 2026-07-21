@@ -2541,6 +2541,11 @@ async fn new_underhill_vm(
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
         // map the GET's template enum onto the hardcoded secureboot template type
+        let base_secure_boot_template_revision = (!matches!(
+            dps.general.secure_boot_template,
+            SecureBootTemplateType::None
+        ))
+        .then(|| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
         let base_vars = match dps.general.secure_boot_template {
             SecureBootTemplateType::None => CustomVars::default(),
             SecureBootTemplateType::MicrosoftWindows => {
@@ -2621,6 +2626,7 @@ async fn new_underhill_vm(
                 }
             },
             diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
+            base_secure_boot_template_revision,
         };
 
         // Register the platform resolvers used by the resource-model UEFI

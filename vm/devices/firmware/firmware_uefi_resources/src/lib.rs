@@ -161,6 +161,7 @@ pub struct UefiConfig {
     pub diagnostics_log_level: LogLevel,
     pub diagnostics_rate_limit: Option<u32>,
     pub base_secure_boot_template_vars: CustomVars,
+    pub base_secure_boot_template_revision: Option<String>,
 }
 
 /// Resource kind for the platform-provided UEFI logger.

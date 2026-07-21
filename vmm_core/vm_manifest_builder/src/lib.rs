@@ -114,6 +114,7 @@ impl UefiManifest {
     pub fn new(
         arch: MachineArch,
         base_secure_boot_template_vars: CustomVars,
+        base_secure_boot_template_revision: Option<String>,
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
@@ -136,6 +137,7 @@ impl UefiManifest {
                 },
                 diagnostics_log_level,
                 diagnostics_rate_limit,
+                base_secure_boot_template_revision,
             },
             storage_quirks,
             generation_id_recv: mesh::channel().1,

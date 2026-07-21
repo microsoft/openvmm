@@ -666,6 +666,7 @@ impl VmService {
             vmgs: None,
             secure_boot_enabled: false,
             base_secure_boot_template_vars: Default::default(),
+            base_secure_boot_template_revision: None,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,

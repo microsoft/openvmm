@@ -63,6 +63,7 @@ pub enum ResolveUefiDeviceError {
 
 fn base_secure_boot_template_variables(
     custom_vars: &firmware_uefi_custom_vars::CustomVars,
+    baseline_revision: Option<&str>,
 ) -> Option<BaseSecureBootTemplateVariables> {
     let signatures = custom_vars.signatures.as_ref()?;
 
@@ -78,7 +79,13 @@ fn base_secure_boot_template_variables(
     let mut dbx = Vec::new();
     extend_signature_var(&signatures.dbx, &mut dbx);
 
-    Some(BaseSecureBootTemplateVariables::new(pk, kek, db, dbx))
+    Some(BaseSecureBootTemplateVariables::new(
+        baseline_revision.map(str::to_owned),
+        pk,
+        kek,
+        db,
+        dbx,
+    ))
 }
 
 fn extend_signature_var<'a>(
@@ -200,7 +207,10 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             storage_quirks,
         );
         let nvram_storage = if config.secure_boot {
-            match base_secure_boot_template_variables(&config.base_secure_boot_template_vars) {
+            match base_secure_boot_template_variables(
+                &config.base_secure_boot_template_vars,
+                config.base_secure_boot_template_revision.as_deref(),
+            ) {
                 Some(template) => nvram_storage.with_base_secure_boot_template_variables(template),
                 None => nvram_storage,
             }
