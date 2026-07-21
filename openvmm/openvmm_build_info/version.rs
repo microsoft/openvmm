@@ -342,6 +342,8 @@ mod tests {
     fn rejects_invalid_or_ambiguous_release_identity() {
         assert!(parse_release_tag("openvmm-v0.01.0").is_err());
         assert!(parse_release_tag("openvmm-v0.1").is_err());
+        assert!(select_release_tag(vec!["openvmm-vnext".into()]).is_err());
+        assert!(select_release_tag(vec!["openvmm-v0.1.0-rc1".into()]).is_err());
         assert!(
             select_release_tag(vec!["openvmm-v0.1.0".into(), "openvmm-v0.2.0".into()]).is_err()
         );
