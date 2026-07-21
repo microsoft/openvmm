@@ -568,13 +568,12 @@ impl GuestMemoryBuilder {
             None
         };
 
-        let mapping_manager = MappingManager::new(&spawner, max_addr, max_hugepage_size);
-
-        let va_mapper = mapping_manager
-            .client()
-            .new_primary_mapper() // the loader's target and the partition's fault resolver
-            .await
-            .map_err(MemoryBuildError::VaMapper)?;
+        // The primary mapper is created as part of `MappingManager::new`: it is
+        // the loader's target and the partition's fault resolver.
+        let (mapping_manager, va_mapper) =
+            MappingManager::new(&spawner, max_addr, max_hugepage_size)
+                .await
+                .map_err(MemoryBuildError::VaMapper)?;
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 

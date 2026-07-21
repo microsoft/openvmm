@@ -41,13 +41,40 @@ pub struct MappingManager {
 }
 
 impl MappingManager {
-    /// Returns a new mapping manager that can map addresses up to `max_addr`.
+    /// Returns a new mapping manager (mapping addresses up to `max_addr`) and
+    /// its primary VA mapper.
+    ///
+    /// The primary mapper is created here, as part of construction, so it is
+    /// necessarily the first mapper in the owning process and is captured by the
+    /// shared cache: every later
+    /// [`new_mapper`](MappingManagerClient::new_mapper) in this process returns
+    /// it. It is the loader's write target and the partition's fault resolver,
+    /// and the only mapper eligible for soft large pages. It is always eager,
+    /// and starts empty — it receives mappings as regions are added.
     ///
     /// Private memory imposes a "single local eager mapper" restriction, but
     /// that is enforced dynamically by the manager task as mappings and mappers
     /// come and go (private RAM may be added later, e.g. via hotplug) rather
     /// than captured here at construction time.
-    pub fn new(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
+    pub async fn new(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+    ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
+        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
+        // Create the primary mapper as part of construction. Being first, it is
+        // the instance the shared cache hands to every later `new_mapper` in
+        // this process.
+        let primary = this
+            .client()
+            .get_or_create_mapper(true, MapperRole::Primary)
+            .await?;
+        Ok((this, primary))
+    }
+
+    /// Spawns the manager task and builds the client, without creating a primary
+    /// mapper.
+    fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -65,6 +92,18 @@ impl MappingManager {
                 minimum_va_alignment,
             },
         }
+    }
+
+    /// Test-only constructor that builds a manager with no primary mapper (an
+    /// empty mapper cache), so unit tests can exercise secondary/lazy mapper
+    /// mechanics directly. Production code must use [`new`](Self::new).
+    #[cfg(test)]
+    pub(crate) fn new_without_primary(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+    ) -> Self {
+        Self::new_bare(spawn, max_addr, minimum_va_alignment)
     }
 
     /// Returns an object used to access the mapping manager, potentially from a
@@ -90,7 +129,7 @@ impl MappingManagerClient {
     ///
     /// A *secondary* mapper is any host-side view of guest memory other than the
     /// primary one that the loader writes through and the partition resolves
-    /// faults against (see [`new_primary_mapper`](Self::new_primary_mapper)).
+    /// faults against (created by [`MappingManager::new`](MappingManager::new)).
     /// Secondary mappers are additional, remote views: for example a mapper in
     /// the VP process for WHP VTL2 emulation, an out-of-process device that needs
     /// to touch guest memory, or a DMA target. They never own the memory, and
@@ -112,25 +151,12 @@ impl MappingManagerClient {
     /// mapper was previously created and an eager one is now requested,
     /// it is upgraded in place. In the process that owns the
     /// [`GuestMemoryManager`](crate::MemoryManager), that cached instance is the
-    /// primary mapper created by [`new_primary_mapper`](Self::new_primary_mapper);
+    /// primary mapper created by [`MappingManager::new`](MappingManager::new);
     /// in other processes (device/DMA workers) this creates a fresh secondary
     /// mapper.
     pub async fn new_mapper(&self, eager: bool) -> Result<Arc<VaMapper>, VaMapperError> {
         self.get_or_create_mapper(eager, MapperRole::Secondary)
             .await
-    }
-
-    /// Returns *the* primary VA mapper: the one the loader writes through and the
-    /// partition resolves faults against, and the only mapper for which soft
-    /// large pages are worthwhile.
-    ///
-    /// Must be called by exactly one caller
-    /// ([`GuestMemoryManager`](crate::MemoryManager) at build time), which is
-    /// necessarily the first mapper created in the owning process, so the shared
-    /// cache captures it and later [`new_mapper`](Self::new_mapper) calls in that
-    /// process return it. It is always eager.
-    pub async fn new_primary_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
-        self.get_or_create_mapper(true, MapperRole::Primary).await
     }
 
     async fn get_or_create_mapper(
@@ -827,7 +853,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x200000, None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x200000, None);
         let client = mm.client().clone();
 
         let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
@@ -879,7 +905,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x100000, None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x100000, None);
         let client = mm.client().clone();
 
         let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
@@ -1524,7 +1550,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping so the lazy mapper can find it.
@@ -1574,7 +1600,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping while no mappers exist — it is stored for replay.
@@ -1612,7 +1638,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x20000, None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x20000, None);
         let client = mm.client().clone();
 
         // Add a mapping first so replay has something to push.
