@@ -25,10 +25,16 @@ fn main() {
 }
 
 fn version_requested(args: impl IntoIterator<Item = OsString>) -> bool {
-    args.into_iter().any(|arg| {
+    for arg in args {
         let arg = arg.as_os_str();
-        arg == OsStr::new("--version") || arg == OsStr::new("-V")
-    })
+        if arg == OsStr::new("--") {
+            return false;
+        }
+        if arg == OsStr::new("--version") || arg == OsStr::new("-V") {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -41,5 +47,6 @@ mod tests {
         assert!(version_requested(["--version"].map(OsString::from)));
         assert!(version_requested(["--help", "-V"].map(OsString::from)));
         assert!(!version_requested(["--help"].map(OsString::from)));
+        assert!(!version_requested(["--", "--version"].map(OsString::from)));
     }
 }
