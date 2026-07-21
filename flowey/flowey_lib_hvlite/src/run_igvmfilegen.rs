@@ -15,6 +15,9 @@ pub struct IgvmOutput {
     pub igvm_tdx_json: Option<PathBuf>,
     pub igvm_snp_json: Option<PathBuf>,
     pub igvm_vbs_json: Option<PathBuf>,
+    /// The unsigned SNP ID block signing payload (`<base>-snp.idblock`), if the
+    /// manifest produced a measurable SEV-SNP platform.
+    pub igvm_snp_idblock: Option<PathBuf>,
 }
 
 flowey_request! {
@@ -31,6 +34,13 @@ flowey_request! {
         /// command line, enabling confidential diagnostics on CVM builds even
         /// in release builds.
         pub confidential_debug: bool,
+        /// For SEV-SNP builds, add an SNP ID block signed by an ephemeral key
+        /// (via `igvmfilegen add-snp-id-block --manifest`). This restores the
+        /// pre-migration behavior for open-source builds, where every SNP IGVM
+        /// carried a temporary-key ID block so that `id_block_en = 1` at launch.
+        /// Production pipelines set this to `false` and instead add an ID block
+        /// signed with a real key out-of-band.
+        pub add_temp_snp_id_block: bool,
         /// Output path of generated igvm file
         pub igvm: WriteVar<IgvmOutput>,
     }
@@ -50,6 +60,7 @@ impl SimpleFlowNode for Node {
             resources,
             disable_secure_avic,
             confidential_debug,
+            add_temp_snp_id_block,
             igvm,
         } = request;
 
@@ -106,6 +117,27 @@ impl SimpleFlowNode for Node {
                     let path = igvm_path.with_file_name(format!("{igvm_file_stem}-vbs.json"));
                     path.exists().then_some(path)
                 };
+                let igvm_snp_idblock = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-snp.idblock"));
+                    path.exists().then_some(path)
+                };
+
+                // For open-source SEV-SNP builds, embed an ID block signed by an
+                // ephemeral key so the file launches with `id_block_en = 1`, as
+                // it did before the ID block was split into a separate step.
+                // The presence of `<stem>-snp.idblock` means the manifest built
+                // a measurable SNP platform.
+                if add_temp_snp_id_block && igvm_snp_idblock.is_some() {
+                    flowey::shell_cmd!(
+                        rt,
+                        "{igvmfilegen} add-snp-id-block
+                                --input {igvm_path}
+                                --output {igvm_path}
+                                --manifest {manifest}
+                            "
+                    )
+                    .run()?;
+                }
 
                 rt.write(
                     igvm,
@@ -115,6 +147,7 @@ impl SimpleFlowNode for Node {
                         igvm_tdx_json,
                         igvm_snp_json,
                         igvm_vbs_json,
+                        igvm_snp_idblock,
                     },
                 );
 

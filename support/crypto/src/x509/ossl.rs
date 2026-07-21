@@ -4,6 +4,7 @@
 //! X.509 certificate parsing and verification using OpenSSL.
 
 use super::X509Error;
+use super::X509PublicKey;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
     X509Error(crate::BackendError(err, op))
@@ -18,20 +19,27 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let pkey = self
             .0
             .public_key()
-            .map_err(|e| crate::rsa::RsaError(crate::BackendError(e, "extracting public key")))?;
-        // Currently we only expect RSA public keys, so verify the type.
-        // If someday we need to support other public key types, the return
-        // type of this function will need to change.
-        pkey.rsa().map_err(|e| {
-            crate::rsa::RsaError(crate::BackendError(e, "extracting RSA public key"))
-        })?;
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::ossl::RsaPublicKeyInner(pkey),
-        ))
+            .map_err(|e| err(e, "extracting public key"))?;
+        if pkey.rsa().is_ok() {
+            Ok(X509PublicKey::Rsa(crate::rsa::RsaPublicKey(
+                crate::rsa::ossl::RsaPublicKeyInner(pkey),
+            )))
+        } else if pkey.ec_key().is_ok() {
+            // Hand the already-parsed key to the ECDSA backend directly rather
+            // than re-serializing and re-parsing it.
+            let inner = crate::ecdsa::ossl::EcdsaPublicKeyInner::from_pkey(pkey)
+                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+            Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
+        } else {
+            Err(err(
+                openssl::error::ErrorStack::get(),
+                "unsupported certificate public key type",
+            ))
+        }
     }
 
     pub fn verify(

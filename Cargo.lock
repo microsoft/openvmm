@@ -823,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "cmov"
-version = "0.5.4"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
+checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
 
 [[package]]
 name = "cms"
@@ -942,6 +942,28 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "corim"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18ae0dacf8af1ae85596c375df3bf848ff57712a8b07d5a9ba36863d901f78d7"
+dependencies = [
+ "corim-macros",
+ "serde",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "corim-macros"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c16ee2c7db3dde66570487ea3a6329bd07ca138652b57a3a442c200c75df495"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
 
 [[package]]
 name = "cpubits"
@@ -3705,24 +3727,27 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=3d1a950116d624746bf3342e09ea0a3416d89dd3#3d1a950116d624746bf3342e09ea0a3416d89dd3"
+source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
 dependencies = [
  "bitfield-struct 0.12.1",
+ "corim",
  "crc32fast",
  "hex",
  "igvm_defs",
  "open-enum",
  "range_map_vec",
+ "sha2",
  "static_assertions",
  "thiserror 2.0.16",
  "tracing",
+ "uuid",
  "zerocopy",
 ]
 
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=3d1a950116d624746bf3342e09ea0a3416d89dd3#3d1a950116d624746bf3342e09ea0a3416d89dd3"
+source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
 dependencies = [
  "bitfield-struct 0.12.1",
  "open-enum",
@@ -3736,8 +3761,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bitfield-struct 0.11.0",
  "clap",
  "crypto",
+ "der",
  "fs-err",
  "hex",
  "hvdef",
@@ -3750,11 +3777,12 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "thiserror 2.0.16",
+ "signature",
+ "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
- "vbs_defs",
+ "x509-cert",
  "x86defs",
  "zerocopy",
 ]
@@ -9109,21 +9137,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "uuid"
+version = "1.23.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vbs_defs"
-version = "0.0.0"
-dependencies = [
- "bitfield-struct 0.11.0",
- "igvm_defs",
- "open_enum",
- "static_assertions",
- "zerocopy",
-]
 
 [[package]]
 name = "vcpkg"
