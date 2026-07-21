@@ -79,7 +79,7 @@ fn watch_tracked_files(repo: &std::path::Path) {
     }
 }
 
-fn watch_git_inputs(repo: &std::path::Path) {
+fn watch_git_inputs(repo: &std::path::Path, github_actions: bool) {
     for path in ["HEAD", "refs/tags", "packed-refs"] {
         if let Some(path) = git_output(repo, &["rev-parse", "--git-path", path]) {
             println!("cargo:rerun-if-changed={}", repo.join(path).display());
@@ -100,7 +100,9 @@ fn watch_git_inputs(repo: &std::path::Path) {
             }
         }
     }
-    watch_tracked_files(repo);
+    if !github_actions {
+        watch_tracked_files(repo);
+    }
 }
 
 fn main() {
@@ -112,13 +114,11 @@ fn main() {
     println!("cargo:rerun-if-changed={}", release_metadata_path.display());
 
     let release_metadata = read_release_metadata(&release_metadata_path);
-    let git = version::collect_git_source(
-        &repo_root,
-        std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
-    )
-    .unwrap_or_else(|error| panic!("failed to collect OpenVMM Git identity: {error}"));
+    let github_actions = std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true");
+    let git = version::collect_git_source(&repo_root, github_actions)
+        .unwrap_or_else(|error| panic!("failed to collect OpenVMM Git identity: {error}"));
     if git.is_some() {
-        watch_git_inputs(&repo_root);
+        watch_git_inputs(&repo_root, github_actions);
     }
     let version = version::resolve_version(git.as_ref(), release_metadata.as_ref())
         .unwrap_or_else(|error| panic!("failed to resolve OpenVMM version: {error}"));
