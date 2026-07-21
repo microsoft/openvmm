@@ -164,10 +164,10 @@ Size suffixes accept K, M, G, and T, optionally followed by B.
 
 Options:
     size=<SIZE>              guest RAM size, default 1GB
-    shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate guest RAM mappings
-    thp=on|off               mark guest RAM as THP-eligible (Linux), default on
-    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    shared[=on|off]          use shared file-backed RAM, default on
+    prefetch[=on|off]        pre-populate guest RAM mappings
+    thp[=on|off]             mark guest RAM as THP-eligible (Linux), default on
+    hugepages[=on|off]       allocate RAM from hugetlb/large pages (Linux, Windows)
     hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     file=<PATH>              use an existing file as guest RAM backing
 
@@ -194,10 +194,10 @@ Syntax: key=value[,key=value...]
 
 Options:
     size=<SIZE>              RAM for this node (required)
-    shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate guest RAM mappings
-    thp=on|off               mark node RAM as THP-eligible (Linux), default on
-    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    shared[=on|off]          use shared file-backed RAM, default on
+    prefetch[=on|off]        pre-populate guest RAM mappings
+    thp[=on|off]             mark node RAM as THP-eligible (Linux), default on
+    hugepages[=on|off]       allocate RAM from hugetlb/large pages (Linux, Windows)
     hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
@@ -2746,8 +2746,8 @@ impl FromStr for PcieRootComplexCli {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let args: PcieRootComplexArgs = s.parse()?;
 
-        if args.start_bus >= args.end_bus {
-            anyhow::bail!("start_bus must be less than or equal to end_bus");
+        if args.start_bus > args.end_bus {
+            anyhow::bail!("start_bus must be <= end_bus");
         }
 
         let low_mmio = u32::try_from(args.low_mmio.0).context("low MMIO size exceeds 32 bits")?;

@@ -402,6 +402,12 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
         };
         arms.push(quote! { #key => #build, });
         if is_default {
+            if !matches!(variant.fields, Fields::Unit) {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "`#[kv(default)]` is only allowed on unit variants",
+                ));
+            }
             if default_variant.is_some() {
                 return Err(syn::Error::new_spanned(
                     variant,

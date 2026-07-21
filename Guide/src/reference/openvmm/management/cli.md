@@ -24,14 +24,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
-  * `shared=on|off` - use shared file-backed guest RAM. The default is
+  * `shared[=on|off]` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate guest RAM mappings up front.
+  * `prefetch[=on|off]` - pre-populate guest RAM mappings up front.
     Only has an effect under WHP; a no-op on KVM/mshv.
-  * `thp=on|off` - mark guest RAM (shared or private) as Transparent Huge
+  * `thp[=on|off]` - mark guest RAM (shared or private) as Transparent Huge
     Page eligible. Linux-only, best-effort, and on by default; pass `thp=off` to
     opt out.
-  * `hugepages=on|off` - allocate guest RAM from explicit large/huge pages
+  * `hugepages[=on|off]` - allocate guest RAM from explicit large/huge pages
     (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
     shared memory.
   * `hugepage_size=<SIZE>` - request a specific large-page size, such
