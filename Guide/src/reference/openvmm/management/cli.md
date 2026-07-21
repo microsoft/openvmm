@@ -9,9 +9,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
 * `--version`, `-V`: Print the displayed OpenVMM source version and exit. An
   exact release tag prints `MAJOR.MINOR.PATCH`, with `+dirty` appended for a
-  dirty checkout. An untagged Git checkout prints `0.0.0-dev+g<SHA>`, with
-  `.dirty` appended when dirty. Source without usable identity metadata prints
-  `0.0.0-dev`.
+  dirty checkout. An untagged Git checkout prints
+  `0.0.0-dev+g<SHORT_REVISION>`, where `<SHORT_REVISION>` is the first nine
+  revision characters, with `.dirty` appended when dirty. Source without usable
+  identity metadata prints `0.0.0-dev`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
