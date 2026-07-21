@@ -183,7 +183,7 @@ impl PetriVmConfigOpenVmm {
     ///
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
-    pub fn with_virtio_nic(mut self, port_name: &str) -> Self {
+    pub fn with_virtio_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             ports: Vec::new(),
@@ -196,7 +196,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    mac_address: NIC_MAC_ADDRESS,
+                    mac_address,
                     endpoint,
                 }
                 .into_resource(),
@@ -214,7 +214,7 @@ impl PetriVmConfigOpenVmm {
     /// This configures consomme to forward the pipette TCP port from the
     /// host into the guest, so the petri framework can connect to the
     /// pipette agent over TCP.
-    pub fn with_tcp_pipette_nic(mut self, port_name: &str) -> Self {
+    pub fn with_tcp_pipette_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
@@ -234,7 +234,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    mac_address: NIC_MAC_ADDRESS,
+                    mac_address,
                     endpoint,
                 }
                 .into_resource(),

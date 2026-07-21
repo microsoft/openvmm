@@ -59,7 +59,7 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
                 "s0rc0rp3",
                 guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
             )
-            .with_tcp_pipette_nic("s0rc0rp2")
+            .with_tcp_pipette_nic("s0rc0rp2", petri::openvmm::NIC_MAC_ADDRESS)
             .with_custom_config(|c| {
                 // Set ACS capability bits on root ports for proper IOMMU
                 // group isolation (SV + RR + CR + UF).
