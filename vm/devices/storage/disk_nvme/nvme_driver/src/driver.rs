@@ -84,6 +84,10 @@ pub struct NvmeDriver<D: DeviceBacking> {
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
+    /// WORKAROUND: a subset of devices require "fused keepalive". When this flag is
+    /// set, the driver must be prepared to continue normally if admin queues become
+    /// unusable after a servicing event
+    fused_keepalive_device: bool,
 }
 
 /// A container that can hold either a weak or strong reference to a value.
@@ -158,7 +162,7 @@ struct WorkerState {
     max_io_queues: u16,
     qsize: u16,
     #[inspect(skip)]
-    async_event_task: Task<()>,
+    async_event_task: Option<Task<()>>,
 }
 
 /// An error restoring from saved state.
@@ -196,6 +200,10 @@ struct IoQueue<D: DeviceBacking> {
     queue: QueuePair<NoOpAerHandler, D>,
     iv: u16,
     cpu: u32,
+    /// WORKAROUND: for fused keepalive devices, we eagerly initialize
+    /// IO queues. However, we continue to wait for an IO before mapping
+    /// the interrupt to a CPU
+    unmapped: bool,
 }
 
 impl<D: DeviceBacking> IoQueue<D> {
@@ -204,6 +212,7 @@ impl<D: DeviceBacking> IoQueue<D> {
             cpu: self.cpu,
             iv: self.iv as u32,
             queue_data: self.queue.save().await?,
+            unmapped: self.unmapped,
         })
     }
 
@@ -221,6 +230,7 @@ impl<D: DeviceBacking> IoQueue<D> {
             cpu,
             iv,
             queue_data,
+            unmapped,
         } = saved_state;
         let queue = QueuePair::restore(
             spawner,
@@ -232,12 +242,14 @@ impl<D: DeviceBacking> IoQueue<D> {
             bounce_buffer,
             NoOpAerHandler,
             drain_after_restore,
+            false,
         )?;
 
         Ok(Self {
             queue,
             iv: *iv as u16,
             cpu: *cpu,
+            unmapped: *unmapped,
         })
     }
 }
@@ -271,11 +283,18 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         cpu_count: u32,
         device: D,
         bounce_buffer: bool,
+        fused_keepalive_device: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
-            .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
-            .await?;
+        let mut this = Self::new_disabled(
+            driver_source,
+            cpu_count,
+            device,
+            bounce_buffer,
+            fused_keepalive_device,
+        )
+        .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
+        .await?;
         match this
             .enable(cpu_count as u16)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
@@ -300,6 +319,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         cpu_count: u32,
         mut device: D,
         bounce_buffer: bool,
+        fused_keepalive_device: bool,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -361,6 +381,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             namespaces: Default::default(),
             nvme_keepalive: false,
             bounce_buffer,
+            fused_keepalive_device,
         })
     }
 
@@ -384,7 +405,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
-        // Start the admin queue pair.
+        // Start the admin queue pair. For fused keepalive devices, disable AER
+        // since no admin commands may be issued after initialization.
+        let aer_handler = if self.fused_keepalive_device {
+            AdminAerHandler::new_disabled()
+        } else {
+            AdminAerHandler::new()
+        };
         let admin = QueuePair::new(
             self.driver.clone(),
             worker.device.deref(),
@@ -394,8 +421,9 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             interrupt0,
             worker.registers.clone(),
             self.bounce_buffer,
-            AdminAerHandler::new(),
+            aer_handler,
             DrainAfterRestoreBuilder::new_no_drain(),
+            false,
         )
         .context("failed to create admin queue pair")?;
 
@@ -544,18 +572,23 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         };
 
         // Spawn a task to handle asynchronous events.
-        let async_event_task = self.driver.spawn("nvme_async_event", {
-            let admin = admin.issuer().clone();
-            let rescan_notifiers = self.rescan_notifiers.clone();
-            async move {
-                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers).await {
-                    tracing::error!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "asynchronous event failure, not processing any more"
-                    );
+        // When fused_keepalive_device is set, no commands are issued on the admin queue after init.
+        let async_event_task = if !self.fused_keepalive_device {
+            Some(self.driver.spawn("nvme_async_event", {
+                let admin = admin.issuer().clone();
+                let rescan_notifiers = self.rescan_notifiers.clone();
+                async move {
+                    if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers).await {
+                        tracing::error!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "asynchronous event failure, not processing any more"
+                        );
+                    }
                 }
-            }
-        });
+            }))
+        } else {
+            None
+        };
 
         let mut state = WorkerState {
             qsize,
@@ -565,14 +598,49 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
         self.admin = Some(admin.issuer().clone());
 
-        // Pre-create the IO queue 1 for CPU 0. The other queues will be created
-        // lazily. Numbering for I/O queues starts with 1 (0 is Admin).
-        let issuer = worker
-            .create_io_queue(&mut state, 0)
-            .await
-            .context("failed to create io queue 1")?;
+        if self.fused_keepalive_device {
+            // Pre-create IO queues for all CPUs, all targeting CPU 0 initially.
+            // Interrupts will be lazily re-mapped when a CPU first does IO.
+            let num_queues = max_io_queues.min(self.io_issuers.per_cpu.len() as u16);
+            tracing::info!(
+                num_queues,
+                pci_id = ?self.device_id,
+                "fused keepalive device mode: eagerly pre-creating all io queues"
+            );
+            for i in 0..num_queues {
+                let issuer = worker
+                    .create_io_queue(&mut state, 0)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to create io queue {} for fused keepalive device {}",
+                            i + 1,
+                            self.device_id
+                        )
+                    })?;
+                if i == 0 {
+                    // First queue is assigned to CPU 0 immediately.
+                    self.io_issuers.per_cpu[0].set(issuer).unwrap();
+                } else {
+                    // Mark remaining queues as unmapped — they'll be claimed lazily.
+                    let io_queue = worker.io.last_mut().unwrap();
+                    io_queue.unmapped = true;
+                }
+            }
+        } else {
+            // Pre-create the IO queue 1 for CPU 0. The other queues will be created
+            // lazily. Numbering for I/O queues starts with 1 (0 is Admin).
+            tracing::info!(
+                pci_id = ?self.device_id,
+                "pre-creating io queue 1 for cpu 0; remaining queues created lazily"
+            );
+            let issuer = worker
+                .create_io_queue(&mut state, 0)
+                .await
+                .context("failed to create io queue 1")?;
 
-        self.io_issuers.per_cpu[0].set(issuer).unwrap();
+            self.io_issuers.per_cpu[0].set(issuer).unwrap();
+        }
         task.insert(&self.driver, "nvme_worker", state);
         task.start();
         Ok(())
@@ -599,7 +667,9 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             task.stop().await;
             let (worker, state) = task.into_inner();
             if let Some(state) = state {
-                state.async_event_task.cancel().await;
+                if let Some(aen_task) = state.async_event_task {
+                    aen_task.cancel().await;
+                }
             }
             // Hold onto responses until the reset completes so that waiting IOs do
             // not think the memory is unaliased by the device.
@@ -750,6 +820,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         mut device: D,
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
+        fused_keepalive_device: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
         let driver = driver_source.simple();
@@ -806,6 +877,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             namespaces: Default::default(),
             nvme_keepalive: true,
             bounce_buffer,
+            fused_keepalive_device,
         };
 
         let task = &mut this.task.as_mut().unwrap();
@@ -840,6 +912,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     .find(|mem| mem.len() == a.mem_len && a.base_pfn == mem.pfns()[0])
                     .expect("unable to find restored mem block")
                     .to_owned();
+                // For fused keepalive devices, disable AER on restore since no
+                // admin commands may be issued after the BAR may be remapped.
+                let aer_handler = if fused_keepalive_device {
+                    AdminAerHandler::new_disabled()
+                } else {
+                    AdminAerHandler::new()
+                };
                 QueuePair::restore(
                     driver.clone(),
                     interrupt0,
@@ -848,8 +927,9 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     &pci_id,
                     a,
                     bounce_buffer,
-                    AdminAerHandler::new(),
+                    aer_handler,
                     DrainAfterRestoreBuilder::new_no_drain(), // admin queue doesn't need draining
+                    fused_keepalive_device,
                 )
                 .expect("failed to restore admin queue pair")
             })
@@ -861,6 +941,20 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // phantom completions written by the device during the keepalive window.
         if let Some(diag) = admin.issuer().request_diagnostic_dump().await {
             if diag.peek_phase_match {
+                if fused_keepalive_device {
+                    panic!(
+                        "admin CQ has a completion at head after restore for fused \
+                         keepalive device {pci_id}: phantom completion from keepalive \
+                         window (cq_head={}, expected_phase={}, peek_cid={}, peek_sqid={}, \
+                         peek_status={:#x}, pending_count={})",
+                        diag.head,
+                        diag.expected_phase,
+                        diag.peek_cid,
+                        diag.peek_sqid,
+                        diag.peek_status_raw,
+                        diag.pending_count,
+                    );
+                }
                 tracing::warn!(
                     ?pci_id,
                     cq_head = diag.head,
@@ -884,21 +978,27 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         }
 
         // Spawn a task to handle asynchronous events.
-        let async_event_task = this.driver.spawn("nvme_async_event", {
-            let admin = admin.issuer().clone();
-            let rescan_notifiers = this.rescan_notifiers.clone();
-            async move {
-                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers)
-                    .instrument(tracing::info_span!("async_event_handler"))
-                    .await
-                {
-                    tracing::error!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "asynchronous event failure, not processing any more"
-                    );
+        // When fused_keepalive_device is set, no commands are issued on the admin queue after init.
+        let async_event_task = if !fused_keepalive_device {
+            Some(this.driver.spawn("nvme_async_event", {
+                let admin = admin.issuer().clone();
+                let rescan_notifiers = this.rescan_notifiers.clone();
+                async move {
+                    if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers)
+                        .instrument(tracing::info_span!("async_event_handler"))
+                        .await
+                    {
+                        tracing::error!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "asynchronous event failure, not processing any more"
+                        );
+                    }
                 }
-            }
-        });
+            }))
+        } else {
+            tracing::info!("fused keepalive device mode: skipping async event handler on restore");
+            None
+        };
 
         let state = WorkerState {
             qsize: saved_state.worker_data.qsize,
@@ -1048,11 +1148,20 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                         },
                     )?;
                     tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
-                    let issuer = IoIssuer {
-                        issuer: q.queue.issuer().clone(),
-                        cpu: q.cpu,
-                    };
-                    this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    if !q.unmapped {
+                        let issuer = IoIssuer {
+                            issuer: q.queue.issuer().clone(),
+                            cpu: q.cpu,
+                        };
+                        this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    } else {
+                        tracing::info!(
+                            qid,
+                            cpu,
+                            ?pci_id,
+                            "restoring unmapped queue into lazy pool"
+                        );
+                    }
                     Ok(q)
                 })
                 .collect();
@@ -1147,12 +1256,28 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                             drain_after_restore_template.new_draining()
                         },
                     )?;
-                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
-                    let issuer = IoIssuer {
-                        issuer: q.queue.issuer().clone(),
-                        cpu: q.cpu,
-                    };
-                    this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    tracing::info!(
+                        qid,
+                        cpu,
+                        iv = q.iv,
+                        ?pci_id,
+                        "restoring queue: create issuer"
+                    );
+                    if !q.unmapped {
+                        let issuer = IoIssuer {
+                            issuer: q.queue.issuer().clone(),
+                            cpu: q.cpu,
+                        };
+                        this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    } else {
+                        tracing::info!(
+                            qid,
+                            cpu,
+                            iv = q.iv,
+                            ?pci_id,
+                            "restoring unmapped queue into lazy pool"
+                        );
+                    }
                     Ok(q)
                 })
                 .collect();
@@ -1388,15 +1513,85 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
 
         self.io_issuers.per_cpu[cpu as usize]
             .set(issuer)
-            .expect("issuer already set for this cpu");
+            .unwrap_or_else(|_| {
+                panic!("io issuer for device {pci_id} on cpu {cpu} was already set")
+            });
         self.io.push(queue);
 
         Ok(())
     }
 
+    fn fallback_io_issuer(&self, cpu: u32) -> (usize, IoIssuer) {
+        self.io_issuers.per_cpu[..cpu as usize]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer.clone())))
+            .unwrap_or_else(|| {
+                panic!(
+                    "io issuer for device {:?} on cpu {} failed to fallback. there must be at least one io issuer for cpu 0",
+                    self.device.id(),
+                    cpu
+                )
+            })
+    }
+
     async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
         tracing::debug!(cpu, pci_id = ?self.device.id(), "issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
+            return;
+        }
+
+        // In fused keepalive device mode, claim an unmapped queue from the pool
+        // and re-target its interrupt to the requesting CPU.
+        if let Some(idx) = self.io.iter().position(|q| q.unmapped) {
+            let iv = self.io[idx].iv;
+            tracing::debug!(
+                cpu,
+                iv,
+                pci_id = ?self.device.id(),
+                "fused mode: claiming unmapped queue"
+            );
+            match self.device.map_interrupt(iv.into(), cpu) {
+                Ok(_interrupt) => {
+                    let io_queue = &mut self.io[idx];
+                    io_queue.cpu = cpu;
+                    io_queue.unmapped = false;
+                    let issuer = IoIssuer {
+                        issuer: io_queue.queue.issuer().clone(),
+                        cpu,
+                    };
+                    self.io_issuers.per_cpu[cpu as usize]
+                        .set(issuer)
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "io issuer for device {:?} on cpu {} was already set",
+                                self.device.id(),
+                                cpu
+                            )
+                        });
+                }
+                Err(err) => {
+                    let (fallback_cpu, fallback) = self.fallback_io_issuer(cpu);
+                    tracing::error!(
+                        cpu,
+                        iv,
+                        fallback_cpu,
+                        pci_id = ?self.device.id(),
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "fused mode: failed to re-target interrupt, sharing an existing issuer"
+                    );
+                    self.io_issuers.per_cpu[cpu as usize]
+                        .set(fallback)
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "io issuer for device {:?} on cpu {} was already set",
+                                self.device.id(),
+                                cpu
+                            )
+                        });
+                }
+            }
             return;
         }
 
@@ -1430,12 +1625,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             Ok(issuer) => issuer,
             Err(err) => {
                 // Find a fallback queue close in index to the failed queue.
-                let (fallback_cpu, fallback) = self.io_issuers.per_cpu[..cpu as usize]
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
-                    .expect("unable to find an io issuer for fallback");
+                let (fallback_cpu, fallback) = self.fallback_io_issuer(cpu);
 
                 // Log the error as informational only when there is a lack of
                 // hardware resources from the device.
@@ -1460,14 +1650,19 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                     }
                 }
 
-                fallback.clone()
+                fallback
             }
         };
 
         self.io_issuers.per_cpu[cpu as usize]
             .set(issuer)
-            .ok()
-            .unwrap();
+            .unwrap_or_else(|_| {
+                panic!(
+                    "io issuer for device {:?} on cpu {} was already set",
+                    self.device.id(),
+                    cpu
+                )
+            });
 
         // Lazily clear the drain-after-restore builder once draining is done,
         // to free the shared Arc resources.
@@ -1528,6 +1723,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             self.bounce_buffer,
             NoOpAerHandler,
             drain_after_restore,
+            false,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
@@ -1539,7 +1735,12 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
 
         // Add the queue pair before aliasing its memory with the device so
         // that it can be torn down correctly on failure.
-        let io_queue = self.io.push_mut(IoQueue { queue, iv, cpu });
+        let io_queue = self.io.push_mut(IoQueue {
+            queue,
+            iv,
+            cpu,
+            unmapped: false,
+        });
 
         let admin = self.admin.as_ref().unwrap().issuer().as_ref();
         let pci_id_str = self.device.id().to_owned();
@@ -1769,7 +1970,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             io,
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
-            allow_lazy_restore: Some(false), // For now, we always restore eagerly to work around device bugs.
+            allow_lazy_restore: Some(true),
         })
     }
 }
@@ -1870,6 +2071,9 @@ pub mod save_restore {
         pub iv: u32,
         #[mesh(3)]
         pub queue_data: QueuePairSavedState,
+        #[mesh(4)]
+        /// When `true`, the queue has not yet been affinitized to its cpu.
+        pub unmapped: bool,
     }
 
     /// Save/restore state for QueueHandler task.
