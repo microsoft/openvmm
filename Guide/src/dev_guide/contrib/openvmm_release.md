@@ -155,10 +155,11 @@ cd openvmm
 git checkout openvmm-v0.2.0
 ```
 
-Each release also publishes an official attested source archive. The archive
-contains `.openvmm-release.json` at its root, recording the metadata schema,
-release version, release tag, and full source revision. Builds from this archive
-retain the exact release identity without a `.git` directory.
+Once the release automation lands, each release will also publish an official
+attested source archive. The archive will contain `.openvmm-release.json` at
+its root, recording the metadata schema, release version, release tag, and full
+source revision. Builds from this archive retain the exact release identity
+without a `.git` directory.
 
 ```admonish warning title="Use the official source archive"
 GitHub's automatic "Source code (zip)" and "Source code (tar.gz)" links omit Git

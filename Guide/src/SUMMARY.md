@@ -62,7 +62,7 @@
   - [Save State](./dev_guide/contrib/save-state.md)
   - [Snapshot Format](./dev_guide/snapshot_format.md)
   - [OpenVMM Release Model and Support](./dev_guide/contrib/openvmm_release.md)
-  - [OpenHCL Releases & Code Flow](./dev_guide/contrib/release.md)
+  - [OpenHCL Release Management](./dev_guide/contrib/release.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
