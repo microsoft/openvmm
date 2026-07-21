@@ -80,7 +80,7 @@ impl crate::harness::ColdPerfTest for MemoryTest {
             })
             .with_memory(petri::MemoryConfig {
                 startup_bytes: self.mem_mb * 1024 * 1024,
-                private_memory: self.profile.uses_private_memory(),
+                private_memory: Some(self.profile.uses_private_memory()),
                 ..Default::default()
             });
 
