@@ -225,7 +225,6 @@ pub(crate) fn validate_cvm_msr_write(
 ) -> Result<(), MsrError> {
     match msr {
         x86defs::X64_MSR_KERNEL_GS_BASE
-        | x86defs::X86X_MSR_STAR
         | x86defs::X86X_MSR_LSTAR
         | x86defs::X86X_MSR_CSTAR
         | x86defs::X86X_MSR_SYSENTER_EIP
@@ -647,7 +646,6 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::SysenterEsp
             | HvX64RegisterName::SysenterEip
-            | HvX64RegisterName::Star
             | HvX64RegisterName::Lstar
             | HvX64RegisterName::Cstar
             | HvX64RegisterName::KernelGsBase
