@@ -129,7 +129,7 @@ fn ci_config_rewrite_is_only_change(repo: &std::path::Path, github_actions: bool
         &[
             "status",
             "--porcelain",
-            "--untracked-files=normal",
+            "--untracked-files=no",
             "--",
             ".",
             ":(exclude).cargo/config.toml",
@@ -165,7 +165,7 @@ pub fn collect_git_source(
         .map(str::to_owned)
         .collect();
     let release_tag = select_release_tag(tags)?;
-    let status = git_command(repo, &["status", "--porcelain", "--untracked-files=normal"])
+    let status = git_command(repo, &["status", "--porcelain", "--untracked-files=no"])
         .map_err(|error| format!("failed to run git: {error}"))?;
     if !status.status.success() {
         return Err(format!(
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_only_the_known_github_ci_config_rewrite() {
+    fn ignores_untracked_files_and_the_known_github_ci_config_rewrite() {
         let repo = temporary_repo();
         let config_path = repo.join(".cargo/config.toml");
         std::fs::write(&config_path, "[build]\n rustflags = [\"-Dwarnings\"]\n").unwrap();
@@ -398,6 +398,8 @@ mod tests {
         assert!(collect_git_source(&repo, false).unwrap().unwrap().dirty);
 
         std::fs::write(repo.join("other.txt"), "dirty\n").unwrap();
+        assert!(!collect_git_source(&repo, true).unwrap().unwrap().dirty);
+        run(&repo, &["add", "other.txt"]);
         assert!(collect_git_source(&repo, true).unwrap().unwrap().dirty);
 
         std::fs::remove_dir_all(repo).unwrap();
