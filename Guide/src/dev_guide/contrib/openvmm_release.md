@@ -45,9 +45,11 @@ Only the newest OpenVMM release is supported initially. A supported release
 receives a patch only for a security issue or release-blocking regression.
 Once a newer normal release ships, the previous line leaves normal support.
 
-A `0.x.y` version does not promise backward compatibility. APIs, command-line
-behavior, device models, snapshot formats, and other interfaces may change
-between releases.
+Before `1.0`, normal minor releases may make breaking changes to APIs,
+command-line behavior, device models, snapshot formats, and other interfaces.
+Breaking changes should be intentional and documented in the release notes,
+with migration guidance when practical. Patch releases correct the currently
+supported minor line and should not intentionally introduce breaking changes.
 
 ## Release tags
 
@@ -76,8 +78,11 @@ Normal `MAJOR.MINOR.0` tags must point to commits reachable from `main`. A patch
 tag must descend from its immediate predecessor. For example,
 `openvmm-v0.2.2` must descend from `openvmm-v0.2.1`.
 
-More than one `openvmm-v*` tag on the same commit is an error. Pushed release
-tags are immutable.
+More than one `openvmm-v*` tag on the same commit is an error. After Git checks
+out a tagged commit, the source identity cannot determine which of several tags
+the caller intended. Selecting the highest version could therefore make a
+checkout of an older tag report a newer version. Each release commit must have
+exactly one OpenVMM release tag. Pushed release tags are immutable.
 
 ## Build identity
 
@@ -91,14 +96,22 @@ OpenVMM resolves its displayed version from source identity:
 | Dirty untagged Git checkout | `0.0.0-dev+g012345678.dirty` |
 | No usable Git or generated release metadata | `0.0.0-dev` |
 
+The `g` prefix follows the `git describe` convention and identifies the
+following nine characters as an abbreviated Git commit ID. It is not part of
+the commit ID.
+
 More than one OpenVMM release tag on `HEAD` fails the build rather than
 selecting an arbitrary version.
 
 `openvmm --version` prints the concise displayed version. The full source
 revision remains available as separate embedded build information.
 
-A source tree with neither Git metadata nor generated release metadata warns
-that `0.0.0-dev` is not an official release identity.
+A copied or exported source tree may contain neither Git metadata nor generated
+release metadata. Examples include GitHub's automatic source archives and
+metadata-free vendored source trees. Such a build warns that `0.0.0-dev` is not
+an official release identity. The official OpenVMM source archive described
+below instead includes generated release metadata and retains the exact release
+identity without Git.
 
 Windows numeric version resources use `MAJOR.MINOR.PATCH.0` for an official
 release and `0.0.0.0` for a development build.
