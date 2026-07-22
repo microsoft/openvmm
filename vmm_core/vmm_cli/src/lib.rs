@@ -83,6 +83,9 @@ pub trait KeyValueFields: Sized {
     /// Accumulator state threaded through parsing.
     type Accum: Default;
 
+    /// Append the option keys accepted by this type to `keys`.
+    fn append_keys(keys: &mut Vec<&'static str>);
+
     /// Try to consume `key`; returns `Ok(true)` if it belongs to this type,
     /// `Ok(false)` if the key is unknown to it.
     fn accept(accum: &mut Self::Accum, key: &str, value: Option<&str>) -> Result<bool>;
@@ -99,6 +102,20 @@ pub trait KeyValueFields: Sized {
 #[doc(hidden)]
 pub fn error(msg: impl Display) -> Error {
     anyhow::Error::msg(msg.to_string())
+}
+
+/// Construct an unknown-option error listing all keys accepted by `T`.
+#[doc(hidden)]
+pub fn unknown_option<T: KeyValueFields>(key: &str) -> Error {
+    let mut keys = Vec::new();
+    T::append_keys(&mut keys);
+    error(format!(
+        "unknown option '{key}'; expected one of: {}",
+        keys.iter()
+            .map(|key| format!("'{key}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Split a `key=value[,key=value...]` option string on top-level commas,
@@ -153,18 +170,19 @@ where
         .map_err(|e| error(format!("invalid value for option '{key}': {e}")))
 }
 
-/// Parse an optional value: a bare key or empty value yields `None`, otherwise
-/// the value is parsed via `T`'s [`FromStr`].
-pub fn parse_opt_value<T>(value: Option<&str>) -> Result<Option<T>>
+/// Parse an optional value for `key`: a bare key or empty value yields `None`,
+/// otherwise the value is parsed via `T`'s [`FromStr`].
+pub fn parse_opt_value<T>(key: &str, value: Option<&str>) -> Result<Option<T>>
 where
     T: FromStr,
     T::Err: Display,
 {
     match value {
-        Some(v) if !v.is_empty() => Ok(Some(
-            v.parse::<T>()
-                .map_err(|e| error(format!("invalid value: {e}")))?,
-        )),
+        Some(v) if !v.is_empty() => {
+            Ok(Some(v.parse::<T>().map_err(|e| {
+                error(format!("invalid value for option '{key}': {e}"))
+            })?))
+        }
         _ => Ok(None),
     }
 }

@@ -1922,7 +1922,11 @@ async fn vm_config_from_command_line(
                             };
                             Ok(NumaNode {
                                 mem: Some(MemoryConfig {
-                                    mem_size: n.memory.size.map(|m| m.0).unwrap_or(0),
+                                    mem_size: n
+                                        .memory
+                                        .size
+                                        .expect("NUMA memory size was validated")
+                                        .0,
                                     prefetch_memory: n.memory.prefetch,
                                     private_memory: n.memory.shared == Some(false),
                                     transparent_hugepages: n

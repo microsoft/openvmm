@@ -142,6 +142,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut accum_fields = Vec::new();
     let mut accept_arms = Vec::new();
     let mut flatten_accepts = Vec::new();
+    let mut append_keys = Vec::new();
     let mut finish_fields = Vec::new();
     let mut positional: Option<(syn::Ident, Type, String)> = None;
 
@@ -174,6 +175,9 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             positional = Some((fname.clone(), ty.clone(), pname));
         } else if fa.flatten {
             accum_fields.push(quote! { #fname: <#ty as ::vmm_cli::KeyValueFields>::Accum, });
+            append_keys.push(quote! {
+                <#ty as ::vmm_cli::KeyValueFields>::append_keys(__keys);
+            });
             flatten_accepts.push(quote! {
                 if <#ty as ::vmm_cli::KeyValueFields>::accept(&mut __a.#fname, __key, __value)? {
                     return ::core::result::Result::Ok(true);
@@ -183,6 +187,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
                 #fname: <#ty as ::vmm_cli::KeyValueFields>::finish(__a.#fname)?,
             });
         } else if fa.flag {
+            append_keys.push(quote! { __keys.push(#key); });
             accum_fields.push(quote! { #fname: ::core::option::Option<bool>, });
             accept_arms.push(quote! {
                 #key => { ::vmm_cli::set_toggle(&mut __a.#fname, #key, __value)?; }
@@ -211,6 +216,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
                 });
             }
         } else if let Some(inner) = option_inner(ty) {
+            append_keys.push(quote! { __keys.push(#key); });
             accum_fields.push(quote! { #fname: #ty, });
             accept_arms.push(quote! {
                 #key => {
@@ -219,6 +225,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             });
             finish_fields.push(quote! { #fname: __a.#fname, });
         } else {
+            append_keys.push(quote! { __keys.push(#key); });
             accum_fields.push(quote! { #fname: ::core::option::Option<#ty>, });
             accept_arms.push(quote! {
                 #key => {
@@ -271,9 +278,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             for __part in __parts {
                 let (__key, __value) = ::vmm_cli::split_kv(__part);
                 if !<#name as ::vmm_cli::KeyValueFields>::accept(&mut __a, __key, __value)? {
-                    return ::core::result::Result::Err(::vmm_cli::error(
-                        ::std::format!("unknown option '{}'", __key),
-                    ));
+                    return ::core::result::Result::Err(::vmm_cli::unknown_option::<#name>(__key));
                 }
             }
         }
@@ -282,9 +287,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             for __part in ::vmm_cli::split_options(s)? {
                 let (__key, __value) = ::vmm_cli::split_kv(__part);
                 if !<#name as ::vmm_cli::KeyValueFields>::accept(&mut __a, __key, __value)? {
-                    return ::core::result::Result::Err(::vmm_cli::error(
-                        ::std::format!("unknown option '{}'", __key),
-                    ));
+                    return ::core::result::Result::Err(::vmm_cli::unknown_option::<#name>(__key));
                 }
             }
         }
@@ -306,6 +309,10 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
 
         impl ::vmm_cli::KeyValueFields for #name {
             type Accum = #accum_name;
+
+            fn append_keys(__keys: &mut ::std::vec::Vec<&'static str>) {
+                #(#append_keys)*
+            }
 
             fn accept(
                 __a: &mut Self::Accum,
@@ -367,12 +374,14 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut arms = Vec::new();
     let mut keys = Vec::new();
+    let mut append_keys = Vec::new();
     let mut default_variant = None;
 
     for variant in &data.variants {
         let vname = &variant.ident;
         let (key, is_default) = parse_variant_attr(variant)?;
         keys.push(format!("'{key}'"));
+        append_keys.push(quote! { __keys.push(#key); });
 
         let build = match &variant.fields {
             Fields::Unit => quote! {
@@ -388,7 +397,7 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
             Fields::Unnamed(f) if f.unnamed.len() == 1 => {
                 let fty = &f.unnamed.first().unwrap().ty;
                 if let Some(inner) = option_inner(fty) {
-                    quote! { #name::#vname(::vmm_cli::parse_opt_value::<#inner>(__value)?) }
+                    quote! { #name::#vname(::vmm_cli::parse_opt_value::<#inner>(#key, __value)?) }
                 } else {
                     quote! { #name::#vname(::vmm_cli::parse_value::<#fty>(#key, __value)?) }
                 }
@@ -431,6 +440,10 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
     Ok(quote! {
         impl ::vmm_cli::KeyValueFields for #name {
             type Accum = ::core::option::Option<#name>;
+
+            fn append_keys(__keys: &mut ::std::vec::Vec<&'static str>) {
+                #(#append_keys)*
+            }
 
             fn accept(
                 __accum: &mut Self::Accum,

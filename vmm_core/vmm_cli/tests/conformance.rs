@@ -78,7 +78,11 @@ fn basic_happy_path() {
 
 #[test]
 fn unknown_key_is_rejected() {
-    assert!("name=foo,bogus=1".parse::<Basic>().is_err());
+    let err = "name=foo,bogus=1".parse::<Basic>().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unknown option 'bogus'; expected one of: 'name', 'count', 'level', 'retries', 'fast', 'verbose', 'sz', 'vps'"
+    );
     // A bare unknown token is also rejected.
     assert!("name=foo,bogus".parse::<Basic>().is_err());
 }
@@ -232,7 +236,11 @@ fn group_required_and_exclusive() {
     // Mutually exclusive: two group keys present.
     assert!("id=a,tcp=x,none".parse::<WithGroup>().is_err());
     // Unknown key still errors even with a valid group key.
-    assert!("id=a,tcp=x,bogus".parse::<WithGroup>().is_err());
+    let err = "id=a,tcp=x,bogus".parse::<WithGroup>().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unknown option 'bogus'; expected one of: 'id', 'tcp', 'unix', 'none'"
+    );
 }
 
 #[derive(KeyValueArgs, Debug, PartialEq)]
@@ -270,5 +278,9 @@ fn flatten_merges_struct_keys() {
     assert_eq!(o.shared, Shared { a: false, b: None });
 
     // Unknown keys still error at the top level.
-    assert!("name=x,bogus=1".parse::<Outer>().is_err());
+    let err = "name=x,bogus=1".parse::<Outer>().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unknown option 'bogus'; expected one of: 'name', 'a', 'b', 'c'"
+    );
 }

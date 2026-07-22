@@ -4835,7 +4835,8 @@ mod tests {
         // Empty pcie_port.
         assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=").is_err());
         // Invalid GUID.
-        assert!(NvmeControllerCli::from_str("id=nvme0,vpci=not-a-guid").is_err());
+        let err = NvmeControllerCli::from_str("id=nvme0,vpci=not-a-guid").unwrap_err();
+        assert!(err.to_string().contains("invalid value for option 'vpci'"));
     }
 
     #[test]
