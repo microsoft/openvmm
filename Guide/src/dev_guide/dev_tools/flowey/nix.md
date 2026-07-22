@@ -30,6 +30,35 @@ error: Cannot build '/nix/store/spg5vbm6mzmsxpg5v2ibg97qrz8khc70-openhcl-kernel-
 
 Given this error, you would update the corresponding hash to `sha256-An1N76i1MPb+rrQ1nBpoiuxnNeD0E+VuwqXdkPzaZn0=` in the `openhcl_kernel.nix` file.
 
+### Updating `mu_msvm` UEFI (`nix/uefi_mu_msvm.nix`)
+
+When bumping `mu_msvm`, update both the Nix fetch and the Flowey version
+constant in the same PR.
+
+1. Update `nix/uefi_mu_msvm.nix`:
+    - Set `version` to the new release.
+    - Ensure the `fetchzip` URL uses that version.
+    - Set both architecture hashes to empty strings.
+2. Update `flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs`:
+    - Bump `MU_MSVM` to the same version.
+3. From the repo root, run `sudo nix-shell` (or `nix-shell` if sudo is not
+  required in your environment).
+4. Copy the first `got:` hash from the mismatch error into the matching entry
+  in `nix/uefi_mu_msvm.nix`.
+5. Run `sudo nix-shell` again to fetch the other architecture and copy its
+  `got:` hash.
+6. Re-run `sudo nix-shell` a final time to verify both hashes are correct.
+
+Expected mismatch output:
+
+```bash
+error: hash mismatch in fixed-output derivation '/nix/store/...-source.drv':
+      specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        got:    sha256-<new hash from downloaded artifact>
+```
+
+Use the `got:` value in the `.nix` file.
+
 ## Updating the Rust Version
 
 The Nix shell derives its Rust toolchain version from `rust-version` in the root `Cargo.toml` and resolves it against a pinned [rust-overlay](https://github.com/oxalica/rust-overlay) commit in `shell.nix`. When `rust-version` is bumped in `Cargo.toml`, the pinned rust-overlay may not yet include the new version, causing an error like:
