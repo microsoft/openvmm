@@ -21,7 +21,7 @@ use crate::uefi_security_policy::UefiSecurityPolicy;
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[mesh(package = "openhcl.product_policy")]
 pub struct SivmPolicy {
-    /// Reserved: require an ephemeral VMGS. Not enforced at runtime yet.
+    /// Require an ephemeral VMGS guest state lifetime.
     #[mesh(1)]
     pub require_ephemeral_vmgs: bool,
 
@@ -29,17 +29,16 @@ pub struct SivmPolicy {
     #[mesh(2)]
     pub require_secure_boot: bool,
 
-    /// Reserved: require PK/KEK/db/dbx variables. Not enforced at runtime yet.
+    /// Require PK/KEK/db/dbx variables to be self-contained.
     #[mesh(3)]
     pub require_secure_boot_vars: bool,
 
-    /// Reserved: require `BootConfigurationDataHash`. Not enforced at runtime yet.
+    /// Require `BootConfigurationDataHash`.
     #[mesh(4)]
     pub require_bcd_integrity: bool,
 
-    /// Custom UEFI JSON bytes (base64 in manifest JSON). Required in
-    /// manifests and asserted non-empty at build time when secure boot
-    /// plus secure-boot-vars or BCD-integrity are set;
+    /// Custom UEFI JSON bytes (base64 in manifest JSON); mandatory when
+    /// secure boot plus secure-boot-vars or BCD-integrity are set.
     #[mesh(5)]
     #[cfg_attr(
         feature = "manifest",
@@ -52,6 +51,22 @@ pub struct SivmPolicy {
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for SivmPolicy {
     fn require_secure_boot(&self) -> bool {
         self.require_secure_boot
+    }
+
+    fn require_secure_boot_vars(&self) -> bool {
+        self.require_secure_boot_vars
+    }
+
+    fn require_bcd_integrity(&self) -> bool {
+        self.require_bcd_integrity
+    }
+
+    fn custom_uefi_json(&self) -> &[u8] {
+        &self.custom_uefi_json
+    }
+
+    fn require_ephemeral_vmgs(&self) -> bool {
+        self.require_ephemeral_vmgs
     }
 }
 
