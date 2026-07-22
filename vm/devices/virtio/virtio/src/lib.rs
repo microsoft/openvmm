@@ -8,6 +8,7 @@
 
 mod common;
 pub mod device;
+pub mod in_order;
 pub mod queue;
 pub mod regions;
 pub mod resolve;
@@ -19,6 +20,7 @@ pub mod transport;
 pub use common::*;
 pub use device::DynVirtioDevice;
 pub use device::VirtioDevice;
+pub use in_order::InOrderCompletion;
 pub use transport::*;
 pub use virtio_spec as spec;
 

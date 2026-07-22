@@ -97,10 +97,10 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// All queues returned via `get_queues` must have been dropped.
     async fn stop(&mut self);
 
-    /// Specifies whether packets are always completed in order.
-    fn is_ordered(&self) -> bool {
-        false
-    }
+    /// Whether the endpoint completes buffers in the order they were made
+    /// available (RX buffers returned from `rx_poll`, and TX packets completed,
+    /// in available-ring order).
+    fn is_ordered(&self) -> bool;
 
     /// Specifies the supported set of transmit offloads.
     fn tx_offload_support(&self) -> TxOffloadSupport {
@@ -722,8 +722,25 @@ impl Endpoint for DisconnectableEndpoint {
                 let old_endpoint = self.endpoint.take();
                 assert!(old_endpoint.is_none());
                 self.endpoint = Some(endpoint);
+                // Ordering is pinned at the first connect and reported
+                // unchanged for the endpoint's lifetime. Consumers bake the
+                // value into correctness decisions (e.g. virtio-net advertises
+                // VIRTIO_F_IN_ORDER to the guest based on it), so a reattach
+                // MUST NOT downgrade an ordered endpoint to an unordered one.
+                // Upgrading (unordered -> ordered) is harmless but we keep
+                // reporting the original conservative value for stability.
+                let new_is_ordered = self.current().is_ordered();
+                let is_ordered = if let Some(prev) = &self.cached_state {
+                    assert!(
+                        !prev.is_ordered || new_is_ordered,
+                        "network endpoint reattached as unordered after being ordered"
+                    );
+                    prev.is_ordered
+                } else {
+                    new_is_ordered
+                };
                 self.cached_state = Some(DisconnectableEndpointCachedState {
-                    is_ordered: self.current().is_ordered(),
+                    is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
