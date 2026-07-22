@@ -69,7 +69,6 @@ use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
@@ -1198,19 +1197,11 @@ async fn vm_config_from_command_line(
         }
     };
 
-    let efi_diagnostics_log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
-        EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
-        EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
-        EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
-    };
-
     if opt.uefi {
-        let log_level = match efi_diagnostics_log_level {
-            EfiDiagnosticsLogLevelType::Default => {
-                firmware_uefi_resources::LogLevel::make_default()
-            }
-            EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
-            EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
+        let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+            EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
+            EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
+            EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
         let nvram_storage = if opt.vmgs.is_some() {
             VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
@@ -1219,7 +1210,7 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            custom_uefi_vars.clone(),
+            custom_uefi_vars,
             opt.secure_boot,
             log_level,
             None,
@@ -2008,8 +1999,6 @@ async fn vm_config_from_command_line(
         #[cfg(windows)]
         vpci_resources,
         vmgs,
-        secure_boot_enabled: opt.secure_boot,
-        custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
@@ -2017,13 +2006,6 @@ async fn vm_config_from_command_line(
         // For `halt` or `exit`, the guest reset must surface as a halt event so
         // the controller can hold the VM or exit instead of rebooting in place.
         automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
-        efi_diagnostics_log_level: {
-            match opt.efi_diagnostics_log_level.unwrap_or_default() {
-                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
-                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
-                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
-            }
-        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
