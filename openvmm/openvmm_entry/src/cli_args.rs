@@ -1120,7 +1120,7 @@ Options:
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
-    `pasid`                        enables PASID for devices downstream of this port
+    `pasid`                        configure this port to support PASID for downstream devices
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -1157,7 +1157,7 @@ Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
-    `pasid`                         enables PASID for devices downstream of this switch
+    `pasid`                         configure this port to support PASID for downstream devices
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,

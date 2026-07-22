@@ -622,7 +622,7 @@ pub mod caps {
 
         /// PCIe max TLP prefix values for use in Device Capabilities 2.
         ///
-        /// Values are defined in PCIe Base Specification for the Max  End-End TLP Prefixes
+        /// Values are defined in PCIe Base Specification for the Max End-End TLP Prefixes
         /// field in Device Capabilities 2 Register and similar fields.
         #[derive(Copy, Clone, Debug)]
         #[repr(u32)]
