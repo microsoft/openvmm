@@ -32,7 +32,9 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                hyperv_uefi_custom_vars_json::load_template_from_json(include_bytes!(concat!(env!("OUT_DIR"), "/", $path))).unwrap()
+                hyperv_uefi_custom_vars_json::load_template_from_json(include_bytes!(concat!(env!("OUT_DIR"), "/", $path)))
+                    .unwrap()
+                    .with_baseline_revision($crate::BASELINE_REVISION)
             }
         )*
 
@@ -41,7 +43,10 @@ macro_rules! include_templates {
             $(
                 #[test]
                 fn $fn_name() {
-                    super::$fn_name();
+                    assert_eq!(
+                        super::$fn_name().baseline_revision(),
+                        Some($crate::BASELINE_REVISION)
+                    );
                 }
             )*
         }

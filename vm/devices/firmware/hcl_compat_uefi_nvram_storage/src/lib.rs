@@ -60,7 +60,6 @@ type SignatureSet = BTreeSet<(EFI_SIGNATURE_DATA, Vec<u8>)>;
 /// Base Secure Boot template variable contents expected to be present in loaded NVRAM.
 #[derive(Clone, Debug)]
 pub struct BaseSecureBootTemplateVariables {
-    baseline_revision: Option<String>,
     pk: Vec<u8>,
     kek: Vec<u8>,
     db: Vec<u8>,
@@ -69,20 +68,8 @@ pub struct BaseSecureBootTemplateVariables {
 
 impl BaseSecureBootTemplateVariables {
     /// Create a new base Secure Boot template variable set.
-    pub fn new(
-        baseline_revision: Option<String>,
-        pk: Vec<u8>,
-        kek: Vec<u8>,
-        db: Vec<u8>,
-        dbx: Vec<u8>,
-    ) -> Self {
-        Self {
-            baseline_revision,
-            pk,
-            kek,
-            db,
-            dbx,
-        }
+    pub fn new(pk: Vec<u8>, kek: Vec<u8>, db: Vec<u8>, dbx: Vec<u8>) -> Self {
+        Self { pk, kek, db, dbx }
     }
 
     /// Return whether there are no base Secure Boot template variables to track.
@@ -351,14 +338,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         let Some(template) = &self.base_secure_boot_template_variables else {
             return;
         };
-
-        if let Some(baseline_revision) = &template.baseline_revision {
-            tracing::info!(
-                CVM_ALLOWED,
-                baseline_revision,
-                "secure boot base template baseline configured"
-            );
-        }
 
         // TODO: Determine whether custom keys can be appended to PK before
         // requiring an exact PK match instead of baseline set membership.

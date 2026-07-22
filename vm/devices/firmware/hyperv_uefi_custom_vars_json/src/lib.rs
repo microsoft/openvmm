@@ -68,8 +68,8 @@ pub fn load_template_from_json(
         custom_vars,
     } = load_delta_from_json(data)?;
 
-    Ok(CustomVars {
-        signatures: Some(match signatures {
+    Ok(CustomVars::from_parts(
+        Some(match signatures {
             SignaturesDelta::Append(_) => panic!("hardcoded templates cannot use append"),
             SignaturesDelta::Replace(signatures) => Signatures {
                 pk: deny_default(signatures.pk)?,
@@ -89,7 +89,7 @@ pub fn load_template_from_json(
             },
         }),
         custom_vars,
-    })
+    ))
 }
 
 /// Parse a [`CustomVarsDelta`](firmware_uefi_custom_vars::delta::CustomVarsDelta) from a user

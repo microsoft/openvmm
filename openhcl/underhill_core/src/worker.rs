@@ -2541,11 +2541,6 @@ async fn new_underhill_vm(
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
         // map the GET's template enum onto the hardcoded secureboot template type
-        let base_secure_boot_template_revision = (!matches!(
-            dps.general.secure_boot_template,
-            SecureBootTemplateType::None
-        ))
-        .then(|| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
         let base_vars = match dps.general.secure_boot_template {
             SecureBootTemplateType::None => CustomVars::default(),
             SecureBootTemplateType::MicrosoftWindows => {
@@ -2583,16 +2578,15 @@ async fn new_underhill_vm(
 
         // obtain the final custom uefi vars by applying the delta onto
         // the base vars
-        let (secure_boot_customization, custom_uefi_vars) = match custom_uefi_json_data {
+        let custom_uefi_vars = match custom_uefi_json_data {
             Some(data) => {
-                let res = (|| -> Result<_, anyhow::Error> {
+                let res = (|| -> Result<CustomVars, anyhow::Error> {
                     let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                    let customization = delta.secure_boot_customization();
-                    Ok((Some(customization), base_vars.apply_delta(delta)?))
+                    Ok(base_vars.apply_delta(delta)?)
                 })();
 
                 match res {
-                    Ok(result) => result,
+                    Ok(vars) => vars,
                     Err(e) => {
                         tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
                         get_client
@@ -2602,7 +2596,7 @@ async fn new_underhill_vm(
                     }
                 }
             }
-            None => (None, base_vars),
+            None => base_vars,
         };
 
         let config = firmware_uefi_resources::UefiConfig {
@@ -2627,8 +2621,6 @@ async fn new_underhill_vm(
                 }
             },
             diagnostics_rate_limit: env_cfg.efi_diagnostics_rate_limit,
-            base_secure_boot_template_revision,
-            secure_boot_customization,
         };
 
         // Register the platform resolvers used by the resource-model UEFI

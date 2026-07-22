@@ -369,9 +369,6 @@ impl PetriVmConfigOpenVmm {
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
             let uefi_cfg = firmware.uefi_config();
-            let base_secure_boot_template_revision = uefi_cfg
-                .and_then(|c| c.secure_boot_template)
-                .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
             let base_secure_boot_template_vars =
                 uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
                     (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
@@ -414,8 +411,6 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
                 base_secure_boot_template_vars,
-                base_secure_boot_template_revision,
-                None,
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
@@ -538,10 +533,6 @@ impl PetriVmConfigOpenVmm {
                     )
                 },
             );
-        let base_secure_boot_template_revision = firmware
-            .uefi_config()
-            .and_then(|c| c.secure_boot_template)
-            .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_string());
         let custom_uefi_vars = base_secure_boot_template_vars.clone();
 
         let vmgs = if firmware.is_openhcl() {
@@ -646,8 +637,6 @@ impl PetriVmConfigOpenVmm {
 
             secure_boot_enabled,
             base_secure_boot_template_vars,
-            base_secure_boot_template_revision,
-            secure_boot_customization: None,
             custom_uefi_vars,
             vmgs,
 

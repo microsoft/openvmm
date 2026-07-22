@@ -35,7 +35,6 @@ use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
-use firmware_uefi_custom_vars::delta::SecureBootCustomization;
 use firmware_uefi_resources::LogLevel;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -214,8 +213,6 @@ impl Manifest {
             vmgs: config.vmgs,
             secure_boot_enabled: config.secure_boot_enabled,
             base_secure_boot_template_vars: config.base_secure_boot_template_vars,
-            base_secure_boot_template_revision: config.base_secure_boot_template_revision,
-            secure_boot_customization: config.secure_boot_customization,
             custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
             debugger_rpc: config.debugger_rpc,
@@ -280,8 +277,6 @@ pub struct Manifest {
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
     base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
-    base_secure_boot_template_revision: Option<String>,
-    secure_boot_customization: Option<SecureBootCustomization>,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -3949,8 +3944,6 @@ impl LoadedVm {
             vmgs: None,             // TODO
             secure_boot_enabled: false, // TODO
             base_secure_boot_template_vars: Default::default(), // TODO
-            base_secure_boot_template_revision: None, // TODO
-            secure_boot_customization: None, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
             debugger_rpc: None,          // TODO
