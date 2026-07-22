@@ -1239,7 +1239,7 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            custom_uefi_vars.clone(),
+            custom_uefi_vars,
             opt.secure_boot,
             log_level,
             None,
@@ -2027,8 +2027,6 @@ async fn vm_config_from_command_line(
         #[cfg(windows)]
         vpci_resources,
         vmgs,
-        secure_boot_enabled: opt.secure_boot,
-        custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,

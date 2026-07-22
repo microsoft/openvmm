@@ -47,8 +47,6 @@ pub struct Config {
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     pub vmgs: Option<VmgsResource>,
-    pub secure_boot_enabled: bool,
-    pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
     pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,

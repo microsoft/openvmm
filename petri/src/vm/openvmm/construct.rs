@@ -564,32 +564,6 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
-        let (secure_boot_enabled, custom_uefi_vars) = firmware.uefi_config().map_or_else(
-            || (false, Default::default()),
-            |c| {
-                (
-                    c.secure_boot_enabled,
-                    match (arch, c.secure_boot_template) {
-                        (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::X86_64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                        (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::Aarch64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                        (_, None) => Default::default(),
-                    },
-                )
-            },
-        );
-
         let vmgs = if firmware.is_openhcl() {
             None
         } else {
@@ -690,8 +664,6 @@ impl PetriVmConfigOpenVmm {
             framebuffer,
             vga_firmware,
 
-            secure_boot_enabled,
-            custom_uefi_vars,
             vmgs,
 
             // Don't automatically reset the guest by default

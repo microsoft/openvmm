@@ -827,8 +827,6 @@ impl VmService {
             #[cfg(windows)]
             vpci_resources: vec![],
             vmgs: None,
-            secure_boot_enabled: false,
-            custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,

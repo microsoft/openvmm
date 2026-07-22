@@ -59,7 +59,6 @@ chipset_resources.workspace = true
 closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true

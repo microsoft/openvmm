@@ -5593,7 +5593,6 @@ dependencies = [
  "disk_backend",
  "fdt",
  "firmware_pcat",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
  "floppy",
  "floppy_resources",
@@ -5671,7 +5670,6 @@ name = "openvmm_defs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
  "get_resources",
