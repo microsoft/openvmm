@@ -294,6 +294,21 @@ message NvmeNamespace {
 message VfioDevice {
     // Host PCI address (BDF), e.g. "0000:01:00.0".
     string host_pci_address = 1;
+    // BARs whose initial addresses are pinned. Omitted BARs are assigned by
+    // the guest normally.
+    repeated VfioBarAddress bar_addresses = 2;
+}
+
+// Initial address configuration for one VFIO device BAR.
+message VfioBarAddress {
+    // BAR index, from 0 through 5.
+    uint32 bar_index = 1;
+    oneof source {
+        // Use the physical BAR address reported by the host.
+        google.protobuf.Empty host = 2;
+        // Use an explicit host physical address.
+        uint64 fixed = 3;
+    }
 }
 
 //

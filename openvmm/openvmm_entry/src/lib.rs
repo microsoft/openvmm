@@ -1058,7 +1058,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })
@@ -1085,7 +1085,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })

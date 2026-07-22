@@ -407,7 +407,7 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
 # Pin BAR0 to its physical address for P2P DMA:
---vfio host=0000:01:00.0,port=rp0,bar0=pt
+--vfio host=0000:01:00.0,port=rp0,bar0=host
 ```
 
 ### SMMU (aarch64 only)

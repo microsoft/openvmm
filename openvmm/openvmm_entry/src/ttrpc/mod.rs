@@ -1643,7 +1643,11 @@ async fn build_pcie_device(
 /// opened. The device must already be bound to `vfio-pci` on the host.
 #[cfg(target_os = "linux")]
 fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
-    let vmservice::VfioDevice { host_pci_address } = vfio;
+    let vmservice::VfioDevice {
+        host_pci_address,
+        bar_addresses,
+    } = vfio;
+    let bar_addresses = parse_vfio_bar_addresses(bar_addresses)?;
     // The address is joined into a sysfs path below; reject path separators so
     // it cannot escape `/sys/bus/pci/devices` (an absolute path or `..` would
     // otherwise redirect the join).
@@ -1669,9 +1673,38 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
     Ok(vfio_assigned_device_resources::VfioDeviceHandle {
         pci_id: host_pci_address,
         group,
-        bar_pt: [false; 6],
+        bar_addresses,
     }
     .into_resource())
+}
+
+fn parse_vfio_bar_addresses(
+    entries: Vec<vmservice::VfioBarAddress>,
+) -> anyhow::Result<[vfio_assigned_device_resources::BarAddressConfig; 6]> {
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+    for entry in entries {
+        let index =
+            usize::try_from(entry.bar_index).context("VFIO BAR index does not fit usize")?;
+        let config = bar_addresses
+            .get_mut(index)
+            .with_context(|| format!("VFIO BAR index {} is out of range", entry.bar_index))?;
+        anyhow::ensure!(
+            *config == BarAddressConfig::GuestAssigned,
+            "duplicate VFIO BAR index {}",
+            entry.bar_index
+        );
+        *config = match entry.source.context("missing VFIO BAR address source")? {
+            Source::Host(()) => BarAddressConfig::HostAssigned,
+            Source::Fixed(address) => {
+                anyhow::ensure!(address != 0, "VFIO BAR fixed address must be nonzero");
+                BarAddressConfig::Fixed(address)
+            }
+        };
+    }
+    Ok(bar_addresses)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1914,4 +1947,46 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
+        vmservice::VfioBarAddress { bar_index, source }
+    }
+
+    #[test]
+    fn parse_vfio_bar_address_config() {
+        let bars = parse_vfio_bar_addresses(vec![
+            vfio_bar_address(0, Some(Source::Host(()))),
+            vfio_bar_address(4, Some(Source::Fixed(0x11_0000_0000))),
+        ])
+        .unwrap();
+
+        assert_eq!(bars[0], BarAddressConfig::HostAssigned);
+        assert_eq!(bars[1], BarAddressConfig::GuestAssigned);
+        assert_eq!(bars[4], BarAddressConfig::Fixed(0x11_0000_0000));
+    }
+
+    #[test]
+    fn reject_invalid_vfio_bar_address_config() {
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(6, Some(Source::Host(())))]).is_err()
+        );
+        assert!(parse_vfio_bar_addresses(vec![vfio_bar_address(0, None)]).is_err());
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(0, Some(Source::Fixed(0)))]).is_err()
+        );
+        assert!(
+            parse_vfio_bar_addresses(vec![
+                vfio_bar_address(0, Some(Source::Host(()))),
+                vfio_bar_address(0, Some(Source::Fixed(0x1000))),
+            ])
+            .is_err()
+        );
+    }
 }

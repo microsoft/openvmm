@@ -3058,7 +3058,7 @@ pub struct PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,barN=host|barN=0x<addr>]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -3069,36 +3069,43 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
-    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
-    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
-    pub bar_pt: [bool; 6],
+    /// Per-BAR pre-programming configuration.
+    pub bar_addresses: [vfio_assigned_device_resources::BarAddressConfig; 6],
 }
 
-/// Marker for a BAR passthrough value; only `pt` is accepted.
+/// Per-BAR address configuration parsed from the CLI.
 #[cfg(target_os = "linux")]
-struct Pt;
+struct BarAddressCli(vfio_assigned_device_resources::BarAddressConfig);
 
 #[cfg(target_os = "linux")]
-impl FromStr for Pt {
+impl FromStr for BarAddressCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        anyhow::ensure!(s == "pt", "expected 'pt'");
-        Ok(Pt)
+        let config = if s == "host" {
+            vfio_assigned_device_resources::BarAddressConfig::HostAssigned
+        } else if let Some(value) = s.strip_prefix("0x") {
+            let address = u64::from_str_radix(value, 16).context("invalid BAR address")?;
+            anyhow::ensure!(address != 0, "BAR address must be nonzero");
+            vfio_assigned_device_resources::BarAddressConfig::Fixed(address)
+        } else {
+            anyhow::bail!("expected 'host' or a hexadecimal address starting with '0x'");
+        };
+        Ok(Self(config))
     }
 }
 
-/// Per-BAR passthrough flags (`bar0=pt` .. `bar5=pt`), flattened into
+/// Per-BAR address configuration, flattened into
 /// [`VfioArgs`].
 #[cfg(target_os = "linux")]
 #[derive(vmm_cli::KeyValueArgs)]
 struct BarFlags {
-    bar0: Option<Pt>,
-    bar1: Option<Pt>,
-    bar2: Option<Pt>,
-    bar3: Option<Pt>,
-    bar4: Option<Pt>,
-    bar5: Option<Pt>,
+    bar0: Option<BarAddressCli>,
+    bar1: Option<BarAddressCli>,
+    bar2: Option<BarAddressCli>,
+    bar3: Option<BarAddressCli>,
+    bar4: Option<BarAddressCli>,
+    bar5: Option<BarAddressCli>,
 }
 
 /// Raw `--vfio` options, resolved and validated into a [`VfioDeviceCli`].
@@ -3125,20 +3132,20 @@ impl FromStr for VfioDeviceCli {
         }
 
         let bars = args.bars;
-        let bar_pt = [
-            bars.bar0.is_some(),
-            bars.bar1.is_some(),
-            bars.bar2.is_some(),
-            bars.bar3.is_some(),
-            bars.bar4.is_some(),
-            bars.bar5.is_some(),
+        let bar_addresses = [
+            bars.bar0.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar1.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar2.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar3.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar4.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar5.map(|bar| bar.0).unwrap_or_default(),
         ];
 
         Ok(VfioDeviceCli {
             port_name: args.port,
             pci_id: args.host,
             iommu: args.iommu,
-            bar_pt,
+            bar_addresses,
         })
     }
 }
@@ -4805,6 +4812,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_vfio_device_cli_parse() {
+        use vfio_assigned_device_resources::BarAddressConfig;
+
         // Required keys only.
         let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0").unwrap();
         assert_eq!(v.pci_id, "0000:01:00.0");
@@ -4817,13 +4826,14 @@ mod tests {
         assert_eq!(v.port_name, "rp1");
         assert_eq!(v.iommu.as_deref(), Some("iommu0"));
 
-        // BAR passthrough flags set the corresponding indices.
-        let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=pt,bar2=pt").unwrap();
-        assert_eq!(v.bar_pt, [true, false, true, false, false, false]);
-
-        // A BAR flag only accepts `pt`, and requires a value.
-        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=x").is_err());
-        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0").is_err());
+        let v = VfioDeviceCli::from_str(
+            "host=0000:03:00.0,port=rp2,bar0=host,bar2=0x80000000,bar4=0x110000000000",
+        )
+        .unwrap();
+        assert_eq!(v.bar_addresses[0], BarAddressConfig::HostAssigned);
+        assert_eq!(v.bar_addresses[1], BarAddressConfig::GuestAssigned);
+        assert_eq!(v.bar_addresses[2], BarAddressConfig::Fixed(0x80000000));
+        assert_eq!(v.bar_addresses[4], BarAddressConfig::Fixed(0x110000000000));
     }
 
     #[cfg(target_os = "linux")]
@@ -4853,6 +4863,15 @@ mod tests {
         // Path-traversal characters in the host BDF are rejected.
         assert!(VfioDeviceCli::from_str("host=../../etc/passwd,port=rp0").is_err());
         assert!(VfioDeviceCli::from_str("host=foo/bar,port=rp0").is_err());
+
+        // Invalid and duplicate BAR configurations are rejected.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0x0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0xnope").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=pt").is_err());
+        assert!(
+            VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0x1000,bar0=host").is_err()
+        );
     }
 
     #[cfg(target_os = "linux")]
