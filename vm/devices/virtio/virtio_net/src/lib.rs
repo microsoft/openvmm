@@ -49,11 +49,11 @@ use task_control::TaskControl;
 use thiserror::Error;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::InOrderCompletion;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::in_order::InOrderCompletion;
 use virtio::queue::QueueCompletion;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
@@ -825,8 +825,7 @@ struct VirtioState {
     tx_queue_size: u16,
     /// In-order completion discipline for the RX queue. virtio-net requires
     /// the used ring to be published in avail order so the outstanding set is
-    /// exactly the contiguous `[used_index, avail_index)` range (see the
-    /// backend `is_ordered()` gate in `restart_queues`).
+    /// exactly the contiguous `[used_index, avail_index)` range.
     rx_in_order: InOrderCompletion,
     /// In-order completion discipline for the TX queue.
     tx_in_order: InOrderCompletion,
@@ -973,21 +972,19 @@ impl Worker {
                     completion: work.into_completion(),
                 });
             }
-            Err(TxPacketError::DuplicateIndex(idx)) => {
-                // A duplicate descriptor index cannot be tracked (the pending
-                // slot is already taken), so treat it as a fatal queue protocol
-                // violation rather than an out-of-order drop.
+            Err(err) => {
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                return Err(WorkerError::DuplicateDescriptor(idx));
-            }
-            Err(err) => {
+                if let TxPacketError::DuplicateIndex(idx) = err {
+                    // A duplicate descriptor index cannot be tracked (the pending
+                    // slot is already taken), so treat it as a fatal queue protocol
+                    // violation rather than an out-of-order drop.
+                    return Err(WorkerError::DuplicateDescriptor(idx));
+                }
                 tracelimit::warn_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "dropping TX packet"
                 );
-                self.active_state.stats.tx_dropped.increment();
-                self.active_state.data.tx_segments.truncate(seg_start);
                 // Complete (drop) the packet in avail order via the in-order
                 // completion discipline.
                 self.virtio_state.tx_in_order.complete(

@@ -5357,7 +5357,7 @@ async fn packed_full_ring_chain_toggles_wrap_counters(driver: DefaultDriver) {
 /// strictly in avail (consumption) order.
 #[async_test]
 async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
-    use crate::InOrderCompletion;
+    use crate::in_order::InOrderCompletion;
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
     use crate::test_helpers::make_available;
@@ -5448,7 +5448,7 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
 #[async_test]
 #[should_panic(expected = "completed more than once")]
 async fn in_order_double_complete_panics(driver: DefaultDriver) {
-    use crate::InOrderCompletion;
+    use crate::in_order::InOrderCompletion;
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
     use crate::test_helpers::make_available;

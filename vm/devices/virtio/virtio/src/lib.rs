@@ -20,7 +20,6 @@ pub mod transport;
 pub use common::*;
 pub use device::DynVirtioDevice;
 pub use device::VirtioDevice;
-pub use in_order::InOrderCompletion;
 pub use transport::*;
 pub use virtio_spec as spec;
 

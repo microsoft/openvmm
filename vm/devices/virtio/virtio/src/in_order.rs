@@ -127,7 +127,9 @@ impl InOrderCompletion {
         if self.order.front() == Some(&idx) {
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
-            self.drain_completed_prefix(queue);
+            if !self.order.is_empty() {
+                self.drain_completed_prefix(queue);
+            }
             return;
         }
 
