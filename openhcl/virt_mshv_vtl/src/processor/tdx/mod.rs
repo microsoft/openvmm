@@ -2840,6 +2840,8 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_msr_tdx(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let state = &mut self.backing.vtls[vtl].private_regs;
 
         match msr {
