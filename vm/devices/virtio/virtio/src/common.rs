@@ -391,6 +391,9 @@ impl VirtioQueue {
     /// the payload, so callers that buffer completions can store only the
     /// token.
     pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+        // The completion token is consumed even if publishing it to the used ring
+        // fails, so release its in-flight capacity before attempting the write.
+        self.core.work_completed(&completion);
         match self
             .complete
             .complete_descriptor(&completion, bytes_written)
