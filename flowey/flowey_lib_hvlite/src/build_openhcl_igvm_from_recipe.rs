@@ -88,6 +88,22 @@ pub enum OpenhclIgvmEndorsements {
         #[serde(rename = "openhcl-vbs.json")]
         #[serde(skip_serializing_if = "Option::is_none")]
         igvm_vbs_json: Option<PathBuf>,
+        /// The unsigned SNP ID block signing payload emitted by `manifest`.
+        /// This travels with the endorsements (rather than the debug-symbol
+        /// extras) because it is a release/signing input consumed alongside the
+        /// `.json` identity documents. SNP-only, so absent for other platforms.
+        #[serde(rename = "openhcl-snp.idblock")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_idblock: Option<PathBuf>,
+        #[serde(rename = "openhcl-tdx.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_tdx_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-snp.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-vbs.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_vbs_corim: Option<PathBuf>,
     },
 }
 
@@ -98,7 +114,21 @@ impl OpenhclIgvmEndorsements {
                 igvm_tdx_json,
                 igvm_snp_json,
                 igvm_vbs_json,
-            } => igvm_tdx_json.is_some() && igvm_snp_json.is_some() && igvm_vbs_json.is_some(),
+                igvm_tdx_corim,
+                igvm_snp_corim,
+                igvm_vbs_corim,
+                // Not part of completeness: the SNP ID block signing payload is
+                // an optional, SNP-only signing input, not a per-platform
+                // release endorsement.
+                igvm_snp_idblock: _,
+            } => {
+                igvm_tdx_json.is_some()
+                    && igvm_snp_json.is_some()
+                    && igvm_vbs_json.is_some()
+                    && igvm_tdx_corim.is_some()
+                    && igvm_snp_corim.is_some()
+                    && igvm_vbs_corim.is_some()
+            }
         }
     }
 }
@@ -154,17 +184,28 @@ impl OpenhclIgvmOutput {
             igvm_tdx_json,
             igvm_snp_json,
             igvm_vbs_json,
+            igvm_snp_idblock,
+            igvm_tdx_corim,
+            igvm_snp_corim,
+            igvm_vbs_corim,
         } = igvm;
-        let mut endorsements =
-            if igvm_tdx_json.is_some() || igvm_snp_json.is_some() || igvm_vbs_json.is_some() {
-                Some(OpenhclIgvmEndorsements::X64 {
-                    igvm_tdx_json,
-                    igvm_snp_json,
-                    igvm_vbs_json,
-                })
-            } else {
-                None
-            };
+        let mut endorsements = if igvm_tdx_json.is_some()
+            || igvm_snp_json.is_some()
+            || igvm_vbs_json.is_some()
+            || igvm_snp_idblock.is_some()
+        {
+            Some(OpenhclIgvmEndorsements::X64 {
+                igvm_tdx_json,
+                igvm_snp_json,
+                igvm_vbs_json,
+                igvm_snp_idblock,
+                igvm_tdx_corim,
+                igvm_snp_corim,
+                igvm_vbs_corim,
+            })
+        } else {
+            None
+        };
         match recipe {
             None => OpenhclIgvmOutput::LocalOnlyCustom {
                 igvm_bin,
@@ -914,6 +955,10 @@ impl SimpleFlowNode for Node {
             resources,
             disable_secure_avic,
             confidential_debug,
+            // Open-source builds embed a temporary-key SNP ID block so the file
+            // launches with `id_block_en = 1`; production pipelines add a
+            // real-key ID block out-of-band instead.
+            add_temp_snp_id_block: true,
             igvm: v,
         });
 

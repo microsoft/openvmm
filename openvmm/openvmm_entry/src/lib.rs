@@ -59,7 +59,6 @@ use gdma_resources::VportDefinition;
 use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
-use io::Read;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -69,7 +68,6 @@ use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
@@ -107,7 +105,6 @@ use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::future::pending;
 use std::io;
 #[cfg(unix)]
 use std::io::IsTerminal;
@@ -184,6 +181,8 @@ pub fn openvmm_main() {
 #[derive(Default)]
 struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
+    /// Keeps the dedicated serial reactor alive while serial I/O objects exist.
+    serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
@@ -232,8 +231,6 @@ async fn vm_config_from_command_line(
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
-    // Ensure the serial driver stays alive with no tasks.
-    serial_driver.spawn("leak", pending::<()>()).detach();
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -857,15 +854,29 @@ async fn vm_config_from_command_line(
         "--amd-iommu and --intel-vtd cannot both be used in the same VM"
     );
 
-    #[cfg(guest_arch = "aarch64")]
-    let mut smmu_names: std::collections::HashSet<&str> =
-        opt.smmu.iter().map(|s| s.as_str()).collect();
     #[cfg(guest_arch = "x86_64")]
     let mut amd_iommu_names: std::collections::HashSet<&str> =
         opt.amd_iommu.iter().map(|s| s.as_str()).collect();
     #[cfg(guest_arch = "x86_64")]
     let mut vtd_names: std::collections::HashSet<&str> =
         opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+
+    // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
+    // entries up front. Entries are removed as they are matched to a root
+    // complex below; any left over refer to unknown root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
+        let mut map = std::collections::HashMap::new();
+        for s in &opt.smmu {
+            if map.insert(s.rc_name.as_str(), s).is_some() {
+                anyhow::bail!(
+                    "--smmu specified multiple times for root complex '{}'",
+                    s.rc_name
+                );
+            }
+        }
+        map
+    };
 
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
@@ -930,9 +941,17 @@ async fn vm_config_from_command_line(
             cxl,
             ports,
             #[cfg(guest_arch = "aarch64")]
-            iommu: smmu_names
-                .remove(rc_cli.name.as_str())
-                .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
+            iommu: smmu_names.remove(rc_cli.name.as_str()).map(|s| {
+                openvmm_defs::config::PcieIommuConfig::Smmu {
+                    accel: s.accel,
+                    oas: match s.oas {
+                        cli_args::SmmuOasCli::Auto => openvmm_defs::config::SmmuOas::Auto,
+                        cli_args::SmmuOasCli::Fixed(bits) => {
+                            openvmm_defs::config::SmmuOas::Fixed(bits)
+                        }
+                    },
+                }
+            }),
             #[cfg(guest_arch = "x86_64")]
             iommu: if amd_iommu_names.remove(rc_cli.name.as_str()) {
                 Some(openvmm_defs::config::PcieIommuConfig::AmdVi)
@@ -947,7 +966,7 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    if let Some(name) = smmu_names.into_iter().next() {
+    if let Some(name) = smmu_names.into_keys().next() {
         anyhow::bail!("--smmu refers to unknown root complex '{name}'");
     }
     #[cfg(guest_arch = "x86_64")]
@@ -1201,19 +1220,11 @@ async fn vm_config_from_command_line(
         (base_secure_boot_template_vars, custom_uefi_vars)
     };
 
-    let efi_diagnostics_log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
-        EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
-        EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
-        EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
-    };
-
     if opt.uefi {
-        let log_level = match efi_diagnostics_log_level {
-            EfiDiagnosticsLogLevelType::Default => {
-                firmware_uefi_resources::LogLevel::make_default()
-            }
-            EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
-            EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
+        let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+            EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
+            EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
+            EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
         let nvram_storage = if opt.vmgs.is_some() {
             VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
@@ -1222,8 +1233,8 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            base_secure_boot_template_vars.clone(),
-            custom_uefi_vars.clone(),
+            base_secure_boot_template_vars,
+            custom_uefi_vars,
             opt.secure_boot,
             log_level,
             None,
@@ -1348,23 +1359,10 @@ async fn vm_config_from_command_line(
             .transpose()
             .context("failed to open initrd")?;
 
-        let custom_dsdt = match &opt.custom_dsdt {
-            Some(path) => {
-                let mut v = Vec::new();
-                fs_err::File::open(path)
-                    .context("failed to open custom dsdt")?
-                    .read_to_end(&mut v)
-                    .context("failed to read custom dsdt")?;
-                Some(v)
-            }
-            None => None,
-        };
-
         load_mode = LoadMode::Linux {
             kernel: kernel.into(),
             initrd: initrd.map(Into::into),
             cmdline,
-            custom_dsdt,
             enable_serial: any_serial_configured,
             boot_mode: if opt.device_tree {
                 openvmm_defs::config::LinuxDirectBootMode::DeviceTree
@@ -1909,23 +1907,35 @@ async fn vm_config_from_command_line(
                 NumaTopology {
                     nodes: nodes
                         .iter()
-                        .map(|n| NumaNode {
-                            mem: Some(MemoryConfig {
-                                mem_size: n.memory.mem_size,
-                                prefetch_memory: n.memory.prefetch,
-                                private_memory: n.memory.shared == Some(false),
-                                transparent_hugepages: n.memory.transparent_hugepages,
-                                hugepages: n.memory.hugepages,
-                                hugepage_size: n.memory.hugepage_size,
-                                host_numa_node: n.host_numa_node,
-                            }),
-                            vps: match &n.vps {
-                                Some(vps) if vps.is_empty() => VpAssignment::Empty,
-                                Some(vps) => VpAssignment::Explicit(vps.clone()),
+                        .map(|n| {
+                            let vps = match &n.vps {
+                                Some(vps) if vps.0.is_empty() => VpAssignment::Empty,
+                                Some(vps) => {
+                                    VpAssignment::Explicit(vps.expand_below(opt.processors)?)
+                                }
                                 None => VpAssignment::FromTopology,
-                            },
+                            };
+                            Ok(NumaNode {
+                                mem: Some(MemoryConfig {
+                                    mem_size: n
+                                        .memory
+                                        .size
+                                        .expect("NUMA memory size was validated")
+                                        .0,
+                                    prefetch_memory: n.memory.prefetch,
+                                    private_memory: n.memory.shared == Some(false),
+                                    transparent_hugepages: n
+                                        .memory
+                                        .transparent_hugepages
+                                        .unwrap_or(!n.memory.hugepages),
+                                    hugepages: n.memory.hugepages,
+                                    hugepage_size: n.memory.hugepage_size.map(|m| m.0),
+                                    host_numa_node: n.host_numa_node,
+                                }),
+                                vps,
+                            })
                         })
-                        .collect(),
+                        .collect::<anyhow::Result<Vec<_>>>()?,
                     distances: opt
                         .numa_distance
                         .as_deref()
@@ -1948,7 +1958,7 @@ async fn vm_config_from_command_line(
                             private_memory: opt.private_memory(),
                             transparent_hugepages: opt.transparent_hugepages(),
                             hugepages: opt.memory.hugepages,
-                            hugepage_size: opt.memory.hugepage_size,
+                            hugepage_size: opt.memory.hugepage_size.map(|m| m.0),
                             host_numa_node: None,
                         }),
                         vps: VpAssignment::FromTopology,
@@ -2012,9 +2022,6 @@ async fn vm_config_from_command_line(
         #[cfg(windows)]
         vpci_resources,
         vmgs,
-        secure_boot_enabled: opt.secure_boot,
-        base_secure_boot_template_vars,
-        custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
@@ -2022,16 +2029,10 @@ async fn vm_config_from_command_line(
         // For `halt` or `exit`, the guest reset must surface as a halt event so
         // the controller can hold the VM or exit instead of rebooting in place.
         automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
-        efi_diagnostics_log_level: {
-            match opt.efi_diagnostics_log_level.unwrap_or_default() {
-                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
-                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
-                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
-            }
-        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    resources.serial_driver = Some(serial_driver);
     Ok((cfg, resources))
 }
 
@@ -2493,35 +2494,49 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     }
 
     #[cfg(any(feature = "grpc", feature = "ttrpc"))]
-    if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        return block_on(async {
-            let _ = std::fs::remove_file(path);
-            let listener =
-                unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
+    {
+        let rpc = opt
+            .rpc
+            .as_ref()
+            .map(|rpc| {
+                let transport = match rpc.transport {
+                    cli_args::RpcTransportCli::Auto => ttrpc::RpcTransport::Auto,
+                    cli_args::RpcTransportCli::Ttrpc => ttrpc::RpcTransport::Ttrpc,
+                    cli_args::RpcTransportCli::Grpc => ttrpc::RpcTransport::Grpc,
+                };
+                (rpc.path.as_path(), transport)
+            })
+            .or_else(|| {
+                opt.ttrpc
+                    .as_deref()
+                    .map(|p| (p, ttrpc::RpcTransport::Ttrpc))
+            })
+            .or_else(|| opt.grpc.as_deref().map(|p| (p, ttrpc::RpcTransport::Grpc)));
 
-            let transport = if opt.ttrpc.is_some() {
-                ttrpc::RpcTransport::Ttrpc
-            } else {
-                ttrpc::RpcTransport::Grpc
-            };
+        if let Some((path, transport)) = rpc {
+            return block_on(async {
+                let _ = std::fs::remove_file(path);
+                let listener =
+                    unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
-            // This is a local launch
-            let mut handle =
-                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
-                    listener,
-                    transport,
-                })
-                .await?;
+                // This is a local launch
+                let mut handle =
+                    mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+                        listener,
+                        transport,
+                    })
+                    .await?;
 
-            tracing::info!(%transport, path = %path.display(), "listening");
+                tracing::info!(%transport, path = %path.display(), "listening");
 
-            // Signal the the parent process that the server is ready.
-            pal::close_stdout().context("failed to close stdout")?;
+                // Signal the parent process that the server is ready.
+                pal::close_stdout().context("failed to close stdout")?;
 
-            handle.join().await?;
+                handle.join().await?;
 
-            Ok(0)
-        });
+                Ok(0)
+            });
+        }
     }
 
     DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
@@ -2738,6 +2753,10 @@ async fn run_control_inner(
     let (vm_controller_event_send, vm_controller_event_recv) = mesh::channel();
 
     let has_vtl2 = resources.vtl2_settings.is_some();
+    let serial_driver = resources
+        .serial_driver
+        .take()
+        .expect("serial driver must outlive serial resources");
 
     // Build the VmController with exclusive resources.
     let controller = vm_controller::VmController {
@@ -2790,6 +2809,7 @@ async fn run_control_inner(
     // Wait for the controller task to finish (it stops the VM worker and
     // shuts down the mesh).
     controller_task.await;
+    drop(serial_driver);
 
     // run_repl returns the exit status: the code the guest drove via an opt-in
     // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.

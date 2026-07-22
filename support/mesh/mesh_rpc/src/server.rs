@@ -135,7 +135,7 @@ impl Server {
             };
             if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
                 tasks.push(async {
-                    let _ = self.serve(conn).await.map_err(|err| {
+                    let _ = self.serve_connection(conn).await.map_err(|err| {
                         tracing::error!(
                             error = err.as_ref() as &dyn std::error::Error,
                             "connection error"
@@ -153,10 +153,16 @@ impl Server {
         driver: &(impl Driver + ?Sized),
         conn: impl AsSockRef + Read + Write,
     ) -> anyhow::Result<()> {
-        self.serve(PolledSocket::new(driver, conn)?).await
+        self.serve_connection(PolledSocket::new(driver, conn)?)
+            .await
     }
 
-    async fn serve(
+    /// Services a single, already-accepted connection using the ttrpc protocol.
+    ///
+    /// This is useful when the caller owns the accept loop, for example to
+    /// dispatch a connection to ttrpc or another protocol based on a sniffed
+    /// prefix byte.
+    pub async fn serve_connection(
         &self,
         stream: PolledSocket<impl AsSockRef + Read + Write>,
     ) -> anyhow::Result<()> {
@@ -351,7 +357,7 @@ mod grpc {
                 };
                 if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
                     tasks.push(async {
-                        let _ = self.serve_grpc(conn).await.map_err(|err| {
+                        let _ = self.serve_connection_grpc(conn).await.map_err(|err| {
                             tracing::error!(
                                 error = err.as_ref() as &dyn std::error::Error,
                                 "connection error"
@@ -363,7 +369,13 @@ mod grpc {
             Ok(())
         }
 
-        async fn serve_grpc(
+        /// Services a single, already-accepted connection using the gRPC
+        /// (HTTP/2) protocol.
+        ///
+        /// This is useful when the caller owns the accept loop, for example to
+        /// dispatch a connection to gRPC or another protocol based on a sniffed
+        /// prefix byte.
+        pub async fn serve_connection_grpc(
             &self,
             stream: PolledSocket<impl AsSockRef + Read + Write>,
         ) -> anyhow::Result<()> {

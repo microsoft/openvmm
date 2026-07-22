@@ -461,6 +461,7 @@ pub mod caps {
             SRIOV = 0x10,
             REBAR = 0x15,
             DVSEC = 0x23,
+            SIOV  = 0x38,
         }
     }
 
@@ -1246,27 +1247,70 @@ pub mod caps {
             /// | Offset    | Bits 31-16              | Bits 15-0               |
             /// |-----------|-------------------------|-------------------------|
             /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
-            /// | Ext + 0x4 | SR-IOV Control          | SR-IOV Capabilities     |
-            /// | Ext + 0x8 | Total VFs               | Initial VFs             |
-            /// | Ext + 0xC | Num VFs                 | Function Dep Link       |
-            /// | Ext + 0x10| First VF Offset         | VF Stride               |
-            /// | Ext + 0x14| VF Device ID            | Reserved                |
-            /// | Ext + 0x18| Supported Page Sizes                              |
-            /// | Ext + 0x1C| System Page Size                                  |
-            /// | Ext + 0x20| VF BAR0                                           |
-            /// | Ext + 0x24| VF BAR1                                           |
-            /// | Ext + 0x28| VF BAR2                                           |
-            /// | Ext + 0x2C| VF BAR3                                           |
-            /// | Ext + 0x30| VF BAR4                                           |
-            /// | Ext + 0x34| VF BAR5                                           |
-            /// | Ext + 0x38| VF Migration State Array Offset                   |
+            /// | Ext + 0x4 | SR-IOV Capabilities                               |
+            /// | Ext + 0x8 | SR-IOV Status           | SR-IOV Control          |
+            /// | Ext + 0xC | Total VFs               | Initial VFs             |
+            /// | Ext + 0x10| Function Dep Link       | Num VFs                 |
+            /// | Ext + 0x14| VF Stride               | First VF Offset         |
+            /// | Ext + 0x18| VF Device ID            | Reserved                |
+            /// | Ext + 0x1C| Supported Page Sizes                              |
+            /// | Ext + 0x20| System Page Size                                  |
+            /// | Ext + 0x24| VF BAR0                                           |
+            /// | Ext + 0x28| VF BAR1                                           |
+            /// | Ext + 0x2C| VF BAR2                                           |
+            /// | Ext + 0x30| VF BAR3                                           |
+            /// | Ext + 0x34| VF BAR4                                           |
+            /// | Ext + 0x38| VF BAR5                                           |
+            /// | Ext + 0x3C| VF Migration State Array Offset                   |
             pub enum SriovExtendedCapabilityHeader: u16 {
                 HEADER = 0x00,
-                CAPS_CONTROL = 0x04,
+                CAPS = 0x04,
+                /// SR-IOV Control (bits 15:0) and SR-IOV Status (bits 31:16).
+                CONTROL_STATUS = 0x08,
                 INITIAL_TOTAL_VFS = 0x0C,
                 VF_OFFSET_STRIDE = 0x14,
                 VF_BAR0 = 0x24,
             }
         }
+
+        /// ARI Capable Hierarchy bit within the 16-bit SR-IOV Control register
+        /// (at [`SriovExtendedCapabilityHeader::CONTROL_STATUS`]).
+        ///
+        /// Source: PCI Express Base Specification §9.4.3.3.5. Present only in
+        /// the lowest-numbered PF of a device; Read Only Zero in other PFs.
+        /// When Set, it hints that ARI has been enabled in the Root Port or
+        /// Switch Downstream Port immediately above the device, allowing VFs to
+        /// be assigned Function Numbers greater than 7 to conserve Bus Numbers.
+        pub const SRIOV_CONTROL_ARI_CAPABLE_HIERARCHY: u16 = 1 << 4;
+    }
+
+    /// Source: PCI Express Base Specification §7.8.8, "ARI Extended Capability"
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod ari {
+        open_enum::open_enum! {
+            /// Offsets into the ARI Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16              | Bits 15-0               |
+            /// |-----------|-------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
+            /// | Ext + 0x4 | ARI Control             | ARI Capability          |
+            ///
+            /// The ARI Capability register (bits 15:0 at Ext + 0x4) holds the
+            /// Next Function Number in bits 15:8; see
+            /// [`ARI_CAPABILITY_NEXT_FUNCTION_SHIFT`].
+            pub enum AriExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPABILITY_CONTROL = 0x04,
+            }
+        }
+
+        /// Bit shift of the Next Function Number field within the ARI
+        /// Capability register (bits 15:8 of the 16-bit register at
+        /// [`AriExtendedCapabilityHeader::CAPABILITY_CONTROL`]).
+        ///
+        /// Source: PCI Express Base Specification §7.8.8.2. Function 0 is the
+        /// head of a linked list of Function Numbers; a value of 0 terminates
+        /// the list. Function Numbers may be sparse and non-sequential.
+        pub const ARI_CAPABILITY_NEXT_FUNCTION_SHIFT: u32 = 8;
     }
 }

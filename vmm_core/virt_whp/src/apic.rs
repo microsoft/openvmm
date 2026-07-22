@@ -740,7 +740,13 @@ impl ApicState {
 
 impl ApicState {
     pub fn reset(&mut self, is_bsp: bool) {
-        self.apic.reset();
-        self.startup_suspend = !is_bsp;
+        let Self {
+            apic,
+            startup_suspend,
+            nmi_pending,
+        } = self;
+        apic.reset();
+        *startup_suspend = !is_bsp;
+        *nmi_pending = false;
     }
 }

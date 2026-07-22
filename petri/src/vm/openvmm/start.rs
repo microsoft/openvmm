@@ -40,6 +40,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file,
 
             memory_backing_file,
+            requested_private_memory: _,
 
             ged,
             framebuffer_view,
@@ -118,6 +119,31 @@ impl PetriVmConfigOpenVmm {
                 openvmm_helpers::shared_memory::open_memory_backing_file(mem_path, total_mem_size)
             })
             .transpose()?;
+
+        // Log the resolved guest RAM backing mode for diagnostics. Read from
+        // the final config so it reflects any backend overrides (e.g.
+        // `with_hugepages` / `with_memory_backing_file` forcing shared). Log
+        // per node, since NUMA nodes can have heterogeneous backings.
+        for (node, mem) in config
+            .numa
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| n.mem.as_ref().map(|m| (i, m)))
+        {
+            tracing::info!(
+                node,
+                mem_size = mem.mem_size,
+                backing_mode = if mem.private_memory {
+                    "private"
+                } else {
+                    "shared"
+                },
+                transparent_hugepages = mem.transparent_hugepages,
+                hugepages = mem.hugepages,
+                "guest RAM backing"
+            );
+        }
 
         let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
             .await

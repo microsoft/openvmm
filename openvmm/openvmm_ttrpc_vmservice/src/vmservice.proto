@@ -592,7 +592,13 @@ message DioBackend {
 }
 
 message TapBackend {
-    string name = 1;
+    oneof source {
+        // Open /dev/net/tun by this device name (existing behavior).
+        string name = 1;
+        // Use the file descriptor registered under this name via the
+        // fd-passing protocol (see fd_passing.md).
+        string fd_name = 2;
+    }
 }
 
 enum IpProtocol {

@@ -15,12 +15,15 @@ fn inspect_meminfo(req: Request<'_>) {
     const FIELDS: &[&str] = &[
         "MemTotal",
         "MemFree",
+        "MemAvailable",
         "Mapped",
         "Slab",
         "AnonPages",
         "Active(anon)",
         "Inactive(anon)",
+        "SReclaimable",
         "SUnreclaim",
+        "Mlocked",
         "KernelStack",
         "PageTables",
         "Shmem",
@@ -117,7 +120,9 @@ fn inspect_interrupts(req: Request<'_>) {
 /// Writes inspection results based on the contents of /proc/<pid>/status for userspace processes
 fn inspect_userspace_procs(req: Request<'_>) {
     const KTHREADD_PID_STRING: &str = "2"; // String so we don't have to parse to check it
-    const FIELDS: &[&str] = &["VmSize", "VmPeak", "VmRSS", "VmHWM", "RssAnon"];
+    const FIELDS: &[&str] = &[
+        "VmSize", "VmPeak", "VmRSS", "VmHWM", "RssAnon", "RssFile", "RssShmem",
+    ];
     let mut resp = req.respond();
 
     fn inner(resp: &mut Response<'_>) -> anyhow::Result<()> {

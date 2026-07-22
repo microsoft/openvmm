@@ -8,6 +8,7 @@
 use super::mappable::Mappable;
 use super::object_cache::ObjectCache;
 use super::object_cache::ObjectId;
+use super::va_mapper::MapperRole;
 use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
@@ -40,17 +41,40 @@ pub struct MappingManager {
 }
 
 impl MappingManager {
-    /// Returns a new mapping manager that can map addresses up to `max_addr`.
+    /// Returns a new mapping manager (mapping addresses up to `max_addr`) and
+    /// its primary VA mapper.
     ///
-    /// Mappers created from this manager will use anonymous private memory for
-    /// guest RAM within `private_ranges` instead of using shared file-backed
-    /// memory.
-    pub fn new(
+    /// The primary mapper is created here, as part of construction, so it is
+    /// necessarily the first mapper in the owning process and is captured by the
+    /// shared cache: every later
+    /// [`new_mapper`](MappingManagerClient::new_mapper) in this process returns
+    /// it. It is the loader's write target and the partition's fault resolver,
+    /// and the only mapper eligible for soft large pages. It is always eager,
+    /// and starts empty — it receives mappings as regions are added.
+    ///
+    /// Private memory imposes a "single local eager mapper" restriction, but
+    /// that is enforced dynamically by the manager task as mappings and mappers
+    /// come and go (private RAM may be added later, e.g. via hotplug) rather
+    /// than captured here at construction time.
+    pub async fn new(
         spawn: impl Spawn,
         max_addr: u64,
-        private_ranges: Vec<MemoryRange>,
         minimum_va_alignment: Option<usize>,
-    ) -> Self {
+    ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
+        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
+        // Create the primary mapper as part of construction. Being first, it is
+        // the instance the shared cache hands to every later `new_mapper` in
+        // this process.
+        let primary = this
+            .client()
+            .get_or_create_mapper(true, MapperRole::Primary)
+            .await?;
+        Ok((this, primary))
+    }
+
+    /// Spawns the manager task and builds the client, without creating a primary
+    /// mapper.
+    fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -65,10 +89,21 @@ impl MappingManager {
                 id: ObjectId::new(),
                 req_send,
                 max_addr,
-                private_ranges,
                 minimum_va_alignment,
             },
         }
+    }
+
+    /// Test-only constructor that builds a manager with no primary mapper (an
+    /// empty mapper cache), so unit tests can exercise secondary/lazy mapper
+    /// mechanics directly. Production code must use [`new`](Self::new).
+    #[cfg(test)]
+    pub(crate) fn new_without_primary(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+    ) -> Self {
+        Self::new_bare(spawn, max_addr, minimum_va_alignment)
     }
 
     /// Returns an object used to access the mapping manager, potentially from a
@@ -84,14 +119,22 @@ pub struct MappingManagerClient {
     req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
-    private_ranges: Vec<MemoryRange>,
     minimum_va_alignment: Option<usize>,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
-    /// Returns a VA mapper for this guest memory.
+    /// Returns a secondary VA mapper for this guest memory.
+    ///
+    /// A *secondary* mapper is any host-side view of guest memory other than the
+    /// primary one that the loader writes through and the partition resolves
+    /// faults against (created by [`MappingManager::new`](MappingManager::new)).
+    /// Secondary mappers are additional, remote views: for example a mapper in
+    /// the VP process for WHP VTL2 emulation, an out-of-process device that needs
+    /// to touch guest memory, or a DMA target. They never own the memory, and
+    /// soft large pages are not applied to them: in soft-large-page mode a
+    /// secondary mapper only ever gets 4 KB pages.
     ///
     /// When `eager` is true, the mapper receives all existing mappings
     /// immediately and gets new ones pushed synchronously. File-backed
@@ -102,26 +145,34 @@ impl MappingManagerClient {
     /// When `eager` is false, the mapper is lazy: mappings are populated
     /// on demand via page faults. This avoids the cost of pushing every
     /// mapping change to processes that rarely access the mapped regions
-    /// (e.g., device-emulation processes with virtio-fs DAX). Lazy
-    /// mappers cannot be used with private memory mode.
+    /// (e.g., device-emulation processes with virtio-fs DAX).
     ///
     /// The mapper is single-instanced per process via a cache. If a lazy
     /// mapper was previously created and an eager one is now requested,
-    /// it is upgraded in place.
+    /// it is upgraded in place. In the process that owns the
+    /// [`GuestMemoryManager`](crate::MemoryManager), that cached instance is the
+    /// primary mapper created by [`MappingManager::new`](MappingManager::new);
+    /// in other processes (device/DMA workers) this creates a fresh secondary
+    /// mapper.
     pub async fn new_mapper(&self, eager: bool) -> Result<Arc<VaMapper>, VaMapperError> {
+        self.get_or_create_mapper(eager, MapperRole::Secondary)
+            .await
+    }
+
+    async fn get_or_create_mapper(
+        &self,
+        eager: bool,
+        role: MapperRole,
+    ) -> Result<Arc<VaMapper>, VaMapperError> {
         let mapper = MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                assert!(
-                    eager || self.private_ranges.is_empty(),
-                    "lazy mappers are not supported with private memory"
-                );
                 VaMapper::new(
                     self.req_send.clone(),
                     self.max_addr,
                     None,
-                    self.private_ranges.clone(),
                     self.minimum_va_alignment,
                     eager,
+                    role,
                 )
                 .await
             })
@@ -145,24 +196,26 @@ impl MappingManagerClient {
     ///
     /// Each call will allocate a new unique mapper.
     ///
-    /// Returns an error if private memory mode is enabled, since private
-    /// anonymous pages would be committed in the remote process and not
-    /// accessible locally.
+    /// If private memory is present, this fails at registration time because it
+    /// would be a second mapper (private RAM requires a single mapper); a remote
+    /// mapper is only rejected on that count, not for being remote.
     pub async fn new_remote_mapper(
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
-        if !self.private_ranges.is_empty() {
-            return Err(VaMapperError::RemoteWithPrivateMemory);
-        }
         Ok(Arc::new(
             VaMapper::new(
                 self.req_send.clone(),
                 self.max_addr,
                 Some(process),
-                Vec::new(),
                 self.minimum_va_alignment,
                 true, // eager — remote mappers used for partition mappings
+                // Secondary: this backs a partition from a remote process, but
+                // the soft-large-page work (deferred protect, first-write 2 MB
+                // populate, fault resolution) runs on the single primary mapper
+                // in the owning process. This mapper shares the same section
+                // pages, so it just maps them plain read-write 4 KB.
+                MapperRole::Secondary,
             )
             .await?,
         ))
@@ -273,11 +326,13 @@ pub enum MappingBacking {
     /// other processes or programmed into DMA targets that require an fd; it is
     /// exposed to DMA targets purely by host VA.
     ///
-    /// Private memory is only valid with a single local eager mapper: lazy
-    /// mappers and remote mappers are rejected when any range is private (see
-    /// [`MappingManagerClient::new_mapper`] and
-    /// [`MappingManagerClient::new_remote_mapper`]). Committing anonymous pages
-    /// into multiple independent mappers would not share storage.
+    /// Private memory is only valid with a single mapper: its anonymous storage
+    /// lives in one mapper's address space, with no backing fd, so it cannot be
+    /// shared to a second mapper. The mapping manager rejects a second mapper
+    /// while private memory is present, and rejects adding private RAM while
+    /// more than one mapper exists (see the `AddMapper` handler and
+    /// [`MappingManagerTask::add_mapping`]). A lone remote mapper is fine — the
+    /// restriction is on mapper *count*, not on locality.
     ///
     /// Unlike file-backed memory, the storage *is* the VA mapping: there is no
     /// fd holding the pages. Tearing the mapping down (via the region manager's
@@ -321,6 +376,12 @@ pub struct MemoryPolicy {
     /// Whether the range is advised as Transparent Huge Page eligible (Linux
     /// `madvise(MADV_HUGEPAGE)`).
     pub transparent_hugepages: bool,
+    /// Whether this range is populated eagerly at build time (prefetch). On
+    /// Windows this selects the *eager* soft-large-page path: the range is
+    /// mapped read-write and its large pages are built up front by the
+    /// build-time populate, with its first-fault windows pre-marked attempted
+    /// (rather than the lazy deferred-protect, fault-time path).
+    pub prefetch: bool,
 }
 
 impl MemoryPolicy {
@@ -334,6 +395,7 @@ impl MemoryPolicy {
         Self {
             numa_node: None,
             transparent_hugepages: false,
+            prefetch: false,
         }
     }
 }
@@ -422,6 +484,21 @@ impl MappingManagerTask {
             match req {
                 MappingRequest::AddMapper(rpc) => {
                     rpc.handle_failable(async |params: AddMapperParams| {
+                        // Private memory is anonymous: its storage *is* a single
+                        // mapper's address space, with no backing fd to share, so
+                        // a second mapper would get its own incoherent copy.
+                        // Private RAM therefore requires at most one mapper.
+                        // Reject a new mapper if private memory is already
+                        // present; the reverse direction (private RAM added
+                        // later) is enforced in `add_mapping`.
+                        if !self.mappers.mappers.is_empty() && self.has_private_mapping() {
+                            return Err(MappingError::new(
+                                MemoryRange::EMPTY,
+                                std::io::Error::other(
+                                    "cannot add a second mapper while private memory is present",
+                                ),
+                            ));
+                        }
                         self.add_mapper(params.send, params.eager).await
                     })
                     .await
@@ -437,7 +514,7 @@ impl MappingManagerTask {
                         .await
                 }
                 MappingRequest::AddMapping(rpc) => {
-                    rpc.handle(async |params| self.add_mapping(params).await)
+                    rpc.handle_failable(async |params| self.add_mapping(params).await)
                         .await
                 }
                 MappingRequest::RemoveMappings(rpc) => {
@@ -620,8 +697,15 @@ impl MappingManagerTask {
         }
     }
 
-    async fn add_mapping(&mut self, params: MappingParams) -> Result<(), RemoteError> {
+    async fn add_mapping(&mut self, params: MappingParams) -> anyhow::Result<()> {
         tracing::debug!(range = %params.range, "adding mapping");
+
+        // Private memory is anonymous and lives in a single mapper's address
+        // space, so it requires at most one mapper. Reject adding private RAM
+        // (e.g. via hotplug) while more than one mapper is present.
+        if matches!(params.backing, MappingBacking::Private) && self.mappers.mappers.len() > 1 {
+            anyhow::bail!("cannot add private memory while multiple mappers are present");
+        }
 
         assert!(!self.mappings.iter().any(|m| m.params.range == params.range));
 
@@ -655,7 +739,7 @@ impl MappingManagerTask {
                             );
                         }
                     }
-                    return Err(e);
+                    return Err(e.into());
                 }
                 Err(_) => {
                     // Mapper gone, skip. VaMapper::drop sends RemoveMapper
@@ -670,6 +754,13 @@ impl MappingManagerTask {
             active_mappers,
         });
         Ok(())
+    }
+
+    /// Returns true if any current mapping is backed by private memory.
+    fn has_private_mapping(&self) -> bool {
+        self.mappings
+            .iter()
+            .any(|m| matches!(m.params.backing, MappingBacking::Private))
     }
 
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
@@ -762,7 +853,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x200000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x200000, None);
         let client = mm.client().clone();
 
         let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
@@ -814,7 +905,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x100000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x100000, None);
         let client = mm.client().clone();
 
         let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
@@ -1388,9 +1479,9 @@ mod tests {
             req_send,
             0x10000,
             None,
-            Vec::new(),
             None,
             true, // eager
+            MapperRole::Primary,
         );
         let (mapper, _) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1426,9 +1517,9 @@ mod tests {
             req_send,
             0x10000,
             None,
-            Vec::new(),
             None,
             true, // eager
+            MapperRole::Primary,
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1459,7 +1550,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping so the lazy mapper can find it.
@@ -1509,7 +1600,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping while no mappers exist — it is stored for replay.
@@ -1547,7 +1638,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x20000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x20000, None);
         let client = mm.client().clone();
 
         // Add a mapping first so replay has something to push.

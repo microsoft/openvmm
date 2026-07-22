@@ -48,7 +48,7 @@ pub struct GuestMemoryManager {
     #[inspect(flatten)]
     region_manager: RegionManager,
 
-    #[inspect(skip)]
+    #[inspect(flatten)]
     va_mapper: Arc<VaMapper>,
 
     #[inspect(skip)]
@@ -56,6 +56,10 @@ pub struct GuestMemoryManager {
 
     vtl0_alias_map_offset: Option<u64>,
     pin_mappings: bool,
+    /// Whether the partition delivers guest-memory-access faults to the VMM,
+    /// enabling on-demand fault resolution via [`VaMapper`]. Recorded here for
+    /// lazy-commit gating.
+    supports_memory_fault_resolution: bool,
 }
 
 /// A single RAM backing allocation — one memfd or anonymous region.
@@ -343,6 +347,7 @@ pub struct GuestMemoryBuilder {
     vtl0_alias_map: Option<u64>,
     pin_mappings: bool,
     x86_legacy_support: bool,
+    supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
 }
 
@@ -353,6 +358,7 @@ impl GuestMemoryBuilder {
             vtl0_alias_map: None,
             pin_mappings: false,
             x86_legacy_support: false,
+            supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
         }
     }
@@ -387,6 +393,14 @@ impl GuestMemoryBuilder {
     /// these ranges.
     pub fn x86_legacy_support(mut self, enable: bool) -> Self {
         self.x86_legacy_support = enable;
+        self
+    }
+
+    /// Records whether the partition delivers guest-memory-access faults to the
+    /// VMM, enabling on-demand fault resolution (soft large pages, lazy commit)
+    /// via [`GuestMemoryManager::memory_fault_resolver`].
+    pub fn supports_memory_fault_resolution(mut self, enable: bool) -> Self {
+        self.supports_memory_fault_resolution = enable;
         self
     }
 
@@ -462,15 +476,13 @@ impl GuestMemoryBuilder {
             max
         };
 
-        // Allocate per-backing memory and collect private ranges.
+        // Allocate per-backing memory.
         let num_backings = backing_requests.len();
         let mut backings = Vec::with_capacity(num_backings);
-        let mut private_ranges = Vec::new();
         for (i, req) in backing_requests.into_iter().enumerate() {
             let size: u64 = req.ranges.iter().map(|r| r.len()).sum();
 
             if req.private_memory {
-                private_ranges.extend_from_slice(&req.ranges);
                 backings.push(RamBacking {
                     mappable: None,
                     ranges: req.ranges,
@@ -556,14 +568,12 @@ impl GuestMemoryBuilder {
             None
         };
 
-        let mapping_manager =
-            MappingManager::new(&spawner, max_addr, private_ranges, max_hugepage_size);
-
-        let va_mapper = mapping_manager
-            .client()
-            .new_mapper(true)
-            .await
-            .map_err(MemoryBuildError::VaMapper)?;
+        // The primary mapper is created as part of `MappingManager::new`: it is
+        // the loader's target and the partition's fault resolver.
+        let (mapping_manager, va_mapper) =
+            MappingManager::new(&spawner, max_addr, max_hugepage_size)
+                .await
+                .map_err(MemoryBuildError::VaMapper)?;
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
@@ -625,6 +635,7 @@ impl GuestMemoryBuilder {
                             MemoryPolicy {
                                 numa_node: backing.host_numa_node,
                                 transparent_hugepages: backing.transparent_hugepages,
+                                prefetch: backing.prefetch,
                             },
                         )
                         .await
@@ -663,6 +674,7 @@ impl GuestMemoryBuilder {
             va_mapper,
             vtl0_alias_map_offset,
             pin_mappings: self.pin_mappings,
+            supports_memory_fault_resolution: self.supports_memory_fault_resolution,
         };
         Ok(gm)
     }
@@ -719,6 +731,17 @@ impl GuestMemoryManager {
         GuestMemoryClient {
             mapping_manager: self.mapping_manager.client().clone(),
         }
+    }
+
+    /// Returns a resolver that prepares guest-memory backing on demand in
+    /// response to partition memory-access faults (soft large pages, lazy
+    /// commit).
+    ///
+    /// Intended for backends that report
+    /// [`virt::ProtoPartition::supports_memory_fault_resolution`]; supply the
+    /// returned resolver via [`virt::PartitionConfig::fault_resolver`].
+    pub fn memory_fault_resolver(&self) -> Arc<dyn virt::ResolveMemoryFault> {
+        self.va_mapper.clone()
     }
 
     /// Returns an object to map device memory into the VM.

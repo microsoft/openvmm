@@ -100,6 +100,7 @@ pub fn github_yaml(
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
+            ref gh_concurrency_group,
             ref gh_permissions,
             cond_param_idx,
             ref parameters_used,
@@ -609,6 +610,12 @@ EOF
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
+                concurrency: gh_concurrency_group.as_ref().map(|group| {
+                    github_yaml_defs::Concurrency {
+                        group: Some(group.name.clone()),
+                        cancel_in_progress: Some(group.cancel_in_progress),
+                    }
+                }),
                 runs_on: gh_pool.clone().map(|runner| {
                     let mut yaml_runner = runner_kind_to_yaml(&runner);
                     if let github_yaml_defs::Runner::SelfHosted(ref mut labels) = yaml_runner {
@@ -717,14 +724,22 @@ EOF
             None => None,
         },
         push: match gh_ci_triggers {
-            Some(gh_ci_triggers) => Some(github_yaml_defs::CiTrigger {
-                branches: gh_ci_triggers.branches,
-                branches_ignore: gh_ci_triggers.exclude_branches,
-                tags: gh_ci_triggers.tags,
-                tags_ignore: gh_ci_triggers.exclude_tags,
-                paths: gh_ci_triggers.paths,
-                paths_ignore: gh_ci_triggers.paths_ignore,
-            }),
+            Some(gh_ci_triggers) => {
+                if let Some(group) = gh_ci_triggers.concurrency_group {
+                    concurrency = Some(github_yaml_defs::Concurrency {
+                        group: Some(group.name),
+                        cancel_in_progress: Some(group.cancel_in_progress),
+                    });
+                }
+                Some(github_yaml_defs::CiTrigger {
+                    branches: gh_ci_triggers.branches,
+                    branches_ignore: gh_ci_triggers.exclude_branches,
+                    tags: gh_ci_triggers.tags,
+                    tags_ignore: gh_ci_triggers.exclude_tags,
+                    paths: gh_ci_triggers.paths,
+                    paths_ignore: gh_ci_triggers.paths_ignore,
+                })
+            }
             None => None,
         },
         schedule: gh_schedule_triggers

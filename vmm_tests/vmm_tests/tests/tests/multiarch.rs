@@ -170,21 +170,17 @@ async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
     Ok(())
 }
 
-/// Boot with private anonymous memory instead of shared memory sections.
+/// Boot with shared (file/memfd-backed) memory sections instead of the
+/// default private anonymous memory.
 #[openvmm_test(
     linux_direct_x64,
     // TODO: add linux_direct_aarch64 (GH #1798)
 )]
-async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn boot_shared_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                for node in &mut c.numa.nodes {
-                    if let Some(mem) = &mut node.mem {
-                        mem.private_memory = true;
-                    }
-                }
-            })
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
         })
         .run()
         .await?;
@@ -626,14 +622,15 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .run_without_agent()
         .await?;
 
-    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
-    // before it hands control to `firmware_uefi::service::diagnostics` to
-    // collect entries. It only appears in the trace stream when:
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware in this
+    // no-boot (frontpage) scenario, right before it hands control to
+    // `firmware_uefi::service::diagnostics` to collect entries. It only
+    // appears in the trace stream when:
     //   1. The diagnostics log level is INFO
     //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
-    //      single burst, and this is one of the very last; with the default
-    //      rate limit it gets dropped.
-    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
+    //      single burst, and this is the very last; with the default rate
+    //      limit it gets dropped.
+    const MARKER: &str = "Signaling Unable To Boot event";
 
     let mut kmsg = vm.kmsg().await?;
 
@@ -949,6 +946,12 @@ async fn vhost_user_blk_device<T>(
     .into_resource();
 
     let (vm, agent) = config
+        // vhost-user requires the guest RAM backing to be shareable with the
+        // backend process, so opt out of the default private memory.
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
+        })
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));

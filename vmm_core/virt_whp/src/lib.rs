@@ -108,6 +108,13 @@ struct WhpPartitionInner {
     mem_layout: MemoryLayout,
     #[inspect(skip)]
     gm: GuestMemory,
+    /// Resolves guest-memory-access faults on demand, letting the memory
+    /// backing commit lazily-backed pages and opportunistically widen the
+    /// mapped range to a soft large page. Set when the memory backing supplies
+    /// one via [`virt::PartitionConfig::fault_resolver`].
+    #[inspect(skip)]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    fault_resolver: Option<Arc<dyn virt::ResolveMemoryFault>>,
     vtl2_emulation: Option<vtl2::Vtl2Emulation>,
     #[cfg(guest_arch = "x86_64")]
     irq_routes: virt::irqcon::IrqRoutes,
@@ -958,6 +965,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             .unwrap()
     }
 
+    fn supports_memory_fault_resolution(&self) -> bool {
+        // WHP forwards guest memory-access faults back to the VMM, so the
+        // memory backing can resolve them on demand (soft large pages, lazy
+        // commit).
+        true
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
@@ -1278,6 +1292,7 @@ impl WhpPartitionInner {
             vps,
             mem_layout: config.mem_layout.clone(),
             gm: config.guest_memory.clone(),
+            fault_resolver: config.fault_resolver.clone(),
             vtl2_emulation,
             #[cfg(guest_arch = "x86_64")]
             irq_routes: Default::default(),

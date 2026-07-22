@@ -89,6 +89,17 @@ impl PciExpressCapability {
     /// * `typ` - The spec-defined device or port type.
     /// * `flr_handler` - Optional handler to be called when FLR is initiated. This emulator will report that FLR is supported if flr_handler = Some(_)
     pub fn new(typ: pci_express::DevicePortType, flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
+        // ARI Forwarding is only meaningful on downstream-facing ports (root port /
+        // switch downstream port) which turn Type 1 config requests into Type 0
+        // requests to the connected device. Advertising it as supported lets an
+        // ARI-aware guest enable ARI Forwarding so that endpoint functions numbered
+        // greater than 7 (e.g. SR-IOV VFs) enumerate correctly instead of being
+        // aliased under multiple device numbers. See PCIe Base Spec 7.0 §6.13.
+        let ari_forwarding_supported = matches!(
+            typ,
+            pci_express::DevicePortType::RootPort
+                | pci_express::DevicePortType::DownstreamSwitchPort
+        );
         Self {
             pcie_capabilities: pci_express::PciExpressCapabilities::new()
                 .with_capability_version(2)
@@ -100,7 +111,8 @@ impl PciExpressCapability {
                 .with_max_link_width(LinkWidth::X16.into_bits()), // x16 link width
             slot_capabilities: pci_express::SlotCapabilities::new(),
             root_capabilities: pci_express::RootCapabilities::new(),
-            device_capabilities_2: pci_express::DeviceCapabilities2::new(),
+            device_capabilities_2: pci_express::DeviceCapabilities2::new()
+                .with_ari_forwarding_supported(ari_forwarding_supported),
             link_capabilities_2: pci_express::LinkCapabilities2::new()
                 .with_supported_link_speeds_vector(SupportedLinkSpeedsVector::UpToGen5.into_bits()), // Support speeds up to PCIe Gen 5 (32.0 GT/s)
             slot_capabilities_2: pci_express::SlotCapabilities2::new(),
@@ -404,6 +416,17 @@ impl PciExpressCapability {
     /// Returns whether the hot plug interrupt is enabled in Slot Control.
     pub fn hot_plug_interrupt_enabled(&self) -> bool {
         self.state.lock().slot_control.hot_plug_interrupt_enable()
+    }
+
+    /// Returns whether ARI Forwarding is enabled in Device Control 2.
+    ///
+    /// When set on a downstream-facing port, the port no longer enforces the
+    /// requirement that the Device Number be 0 when turning a Type 1
+    /// configuration request into a Type 0 request, allowing the full 8-bit
+    /// ARI function number to reach the connected device. See PCIe Base Spec
+    /// 7.0 §6.13.
+    pub fn ari_forwarding_enable(&self) -> bool {
+        self.state.lock().device_control_2.ari_forwarding_enable()
     }
 
     /// Returns a reference to the slot capabilities register.
@@ -802,6 +825,41 @@ mod tests {
             req.respond()
                 .field("flr_initiated", self.flr_initiated.load(Ordering::Acquire));
         }
+    }
+
+    #[test]
+    fn test_ari_forwarding_supported_by_port_type() {
+        // ARI Forwarding Supported (Device Capabilities 2, bit 5 / 0x20) must be
+        // advertised on downstream-facing ports and never on endpoints/upstream ports.
+        for (typ, expected) in [
+            (DevicePortType::RootPort, true),
+            (DevicePortType::DownstreamSwitchPort, true),
+            (DevicePortType::UpstreamSwitchPort, false),
+            (DevicePortType::Endpoint, false),
+        ] {
+            let name = format!("{typ:?}");
+            let cap = PciExpressCapability::new(typ, None);
+            let device_caps_2 = read_cap_u32(&cap, 0x24);
+            let ari_supported = device_caps_2 & 0x20 != 0;
+            assert_eq!(ari_supported, expected, "unexpected ARI support for {name}");
+        }
+    }
+
+    #[test]
+    fn test_ari_forwarding_enable_is_guest_writable() {
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Enable bit starts cleared.
+        assert!(!cap.ari_forwarding_enable());
+
+        // Guest sets ARI Forwarding Enable (Device Control 2, bit 5 / 0x20).
+        write_cap_u32(&mut cap, 0x28, 0x0020);
+        assert!(cap.ari_forwarding_enable());
+        assert_eq!(read_cap_u32(&cap, 0x28) & 0x0020, 0x0020);
+
+        // Guest clears it again.
+        write_cap_u32(&mut cap, 0x28, 0x0000);
+        assert!(!cap.ari_forwarding_enable());
     }
 
     #[test]

@@ -67,13 +67,17 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             bar_pt,
         } = resource;
 
-        if input.dma_target.software_iommu() {
-            anyhow::bail!(
-                "VFIO device {pci_id} is behind a software IOMMU that cannot \
-                 program the host IOMMU for passthrough DMA. Place the device \
-                 on a root complex without a software IOMMU, or wait for \
-                 iommufd nested translation support."
-            );
+        // The legacy VFIO group/type1 path can only do identity DMA, so only a
+        // device with no relevant IOMMU may be passed through here. Match
+        // exhaustively so a new disposition can't silently slip through.
+        match input.dma_target.passthrough() {
+            pci_core::dma::DmaPassthrough::Allowed => {}
+            pci_core::dma::DmaPassthrough::SoftwareBlocked => {
+                anyhow::bail!("VFIO device {pci_id} is behind a software IOMMU")
+            }
+            pci_core::dma::DmaPassthrough::HardwareNestable(_) => anyhow::bail!(
+                "VFIO device {pci_id} needs a hardware-nestable IOMMU: use the cdev path"
+            ),
         }
 
         tracing::info!(pci_id, "opening VFIO device");
@@ -154,6 +158,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             iommu_id,
             bar_pt,
         } = resource;
+
+        // The cdev/iommufd path currently attaches devices to an identity
+        // IOAS; nested stage-1 translation is not yet wired up here. Match
+        // exhaustively so a new disposition can't silently slip through.
+        match input.dma_target.passthrough() {
+            pci_core::dma::DmaPassthrough::Allowed => {}
+            pci_core::dma::DmaPassthrough::SoftwareBlocked => {
+                anyhow::bail!("VFIO device {pci_id} is behind a software IOMMU")
+            }
+            pci_core::dma::DmaPassthrough::HardwareNestable(_) => {
+                anyhow::bail!("VFIO device {pci_id}: iommufd nested translation not yet supported")
+            }
+        }
 
         tracing::info!(pci_id, iommu_id, "opening VFIO cdev device with iommufd");
 

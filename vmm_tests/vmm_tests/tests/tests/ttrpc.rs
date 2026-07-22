@@ -3,18 +3,27 @@
 
 //! Integration tests for OpenVMM's TTRPC interface.
 
+// Tests for the fd-passing protocol, which shares the TTRPC socket. It is
+// UNIX-only and tap `fd_name` resolution is Linux-only, so it only builds on
+// Linux.
+#[cfg(target_os = "linux")]
+mod fd_passing;
+
 use anyhow::Context;
 use futures::AsyncReadExt;
 use guid::Guid;
 use mesh::CancelContext;
 use openvmm_ttrpc_vmservice as vmservice;
+use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
 use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
+use pal_async::task::Task;
 use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts;
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use unix_socket::UnixListener;
@@ -45,78 +54,9 @@ fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
-
-    let (stderr_read, stderr_write) = pal::pipe_pair()?;
-    let (stdout_read, stdout_write) = pal::pipe_pair()?;
-    let child = std::process::Command::new(openvmm)
-        .arg("--ttrpc")
-        .arg(&socket_path)
-        .arg("--pidfile")
-        .arg(&pidfile_path)
-        .stdin(Stdio::null())
-        .stdout(stdout_write)
-        .stderr(stderr_write)
-        .spawn()?;
-
     DefaultPool::run_with(async |driver| {
-        let mut child = PolledChild::<std::process::Child>::new(&driver, child)?;
-
-        // Start pumping stderr immediately so the pipe buffer doesn't fill
-        // up and block the child.
-        let stderr_task = driver.spawn(
-            "stderr",
-            petri::log_task(
-                params.logger.log_file("stderr")?,
-                PolledPipe::new(&driver, stderr_read)?,
-                "openvmm stderr",
-            ),
-        );
-
-        // Wait for stdout to close (readiness signal). If the child
-        // crashes at startup, stdout closes too and we detect the exit
-        // when the pidfile is missing.
-        let mut stdout = PolledPipe::new(&driver, stdout_read)?;
-        let mut buf = [0u8; 1];
-        let n = stdout
-            .read(&mut buf)
-            .await
-            .context("reading from openvmm stdout")?;
-        anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
-        drop(stdout);
-
-        // Verify the pidfile was created with the correct PID. If it's
-        // missing, wait briefly for the child to exit (the PidfileGuard
-        // deletes it on drop) and report the exit status.
-        let pid_content = match std::fs::read_to_string(&pidfile_path) {
-            Ok(s) => s,
-            Err(e) => {
-                let wait_result = CancelContext::new()
-                    .with_timeout(Duration::from_secs(10))
-                    .until_cancelled(child.wait())
-                    .await;
-                match wait_result {
-                    Ok(Ok(status)) => {
-                        let _ = stderr_task.await;
-                        anyhow::bail!("openvmm exited with {status} before pidfile was created");
-                    }
-                    _ => {
-                        return Err(e).context("failed to read pidfile");
-                    }
-                }
-            }
-        };
-        assert_eq!(
-            pid_content,
-            format!("{}\n", child.get().id()),
-            "pidfile should contain the child PID"
-        );
-
-        let ttrpc_path = socket_path.clone();
-        let client = mesh_rpc::Client::new(
-            &driver,
-            mesh_rpc::client::UnixDialier::new(driver.clone(), ttrpc_path),
-        );
+        let (mut child, client, _stderr_task) =
+            launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
         let query_props = || {
             client.call().start(
@@ -683,8 +623,99 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
+/// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
+/// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
+/// validates the pidfile, and connects a ttrpc client.
+///
+/// Returns the child process, a connected ttrpc client, and the stderr-pump
+/// task (which must be kept alive for the child's lifetime).
+async fn launch_openvmm(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    openvmm: &ResolvedArtifact,
+    socket_path: &Path,
+    pidfile_path: &Path,
+) -> anyhow::Result<(
+    PolledChild<std::process::Child>,
+    mesh_rpc::Client,
+    Task<anyhow::Result<()>>,
+)> {
+    tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
+
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
+    let (stdout_read, stdout_write) = pal::pipe_pair()?;
+    let child = std::process::Command::new(openvmm)
+        .arg("--rpc")
+        .arg(format!("path={},transport=ttrpc", socket_path.display()))
+        .arg("--pidfile")
+        .arg(pidfile_path)
+        .stdin(Stdio::null())
+        .stdout(stdout_write)
+        .stderr(stderr_write)
+        .spawn()?;
+
+    let mut child = PolledChild::<std::process::Child>::new(driver, child)?;
+
+    // Start pumping stderr immediately so the pipe buffer doesn't fill up and
+    // block the child.
+    let stderr_task = driver.spawn(
+        "stderr",
+        petri::log_task(
+            params.logger.log_file("stderr")?,
+            PolledPipe::new(driver, stderr_read)?,
+            "openvmm stderr",
+        ),
+    );
+
+    // Wait for stdout to close (readiness signal). If the child crashes at
+    // startup, stdout closes too and we detect the exit when the pidfile is
+    // missing.
+    let mut stdout = PolledPipe::new(driver, stdout_read)?;
+    let mut buf = [0u8; 1];
+    let n = stdout
+        .read(&mut buf)
+        .await
+        .context("reading from openvmm stdout")?;
+    anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
+    drop(stdout);
+
+    // Verify the pidfile was created with the correct PID. If it's missing,
+    // wait briefly for the child to exit (the PidfileGuard deletes it on drop)
+    // and report the exit status.
+    let pid_content = match std::fs::read_to_string(pidfile_path) {
+        Ok(s) => s,
+        Err(e) => {
+            let wait_result = CancelContext::new()
+                .with_timeout(Duration::from_secs(10))
+                .until_cancelled(child.wait())
+                .await;
+            match wait_result {
+                Ok(Ok(status)) => {
+                    let _ = stderr_task.await;
+                    anyhow::bail!("openvmm exited with {status} before pidfile was created");
+                }
+                _ => {
+                    return Err(e).context("failed to read pidfile");
+                }
+            }
+        }
+    };
+    assert_eq!(
+        pid_content,
+        format!("{}\n", child.get().id()),
+        "pidfile should contain the child PID"
+    );
+
+    let client = mesh_rpc::Client::new(
+        driver,
+        mesh_rpc::client::UnixDialier::new(driver.clone(), socket_path.to_path_buf()),
+    );
+
+    Ok((child, client, stderr_task))
+}
+
 /// Builds a file-backed disk backend for the given path.
-fn file_disk(path: &std::path::Path) -> vmservice::DiskBackend {
+fn file_disk(path: &Path) -> vmservice::DiskBackend {
     vmservice::DiskBackend {
         kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
             path: path.to_string_lossy().into(),

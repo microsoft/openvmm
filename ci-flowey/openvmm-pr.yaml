@@ -105,8 +105,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -118,7 +118,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 3
@@ -142,8 +142,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 0 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -153,7 +153,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 0 flowey_lib_common::cache 2
@@ -270,8 +270,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar11
-      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar11
+      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -283,7 +283,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 15 flowey_lib_common::git_checkout 3
@@ -299,8 +299,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar9
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar10
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar9
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar10
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -310,7 +310,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 6
@@ -376,8 +376,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar7
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar8
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar8
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -387,7 +387,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 2
@@ -412,8 +412,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 8
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar5
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-rust' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -432,8 +432,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 7
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 6
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar4
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-openssl' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -452,8 +452,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 9
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 10
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar6
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-symcrypt' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -472,8 +472,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 11
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 2
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 10
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-all' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -506,8 +506,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-base' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -526,8 +526,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 3
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 4
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -598,8 +598,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar10
-      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar10
+      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -611,7 +611,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 14 flowey_lib_common::git_checkout 3
@@ -628,8 +628,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar8
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar9
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar8
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar9
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -639,7 +639,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 6
@@ -685,8 +685,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar6
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -696,7 +696,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 2
@@ -721,8 +721,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 8
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar5
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-crypto-rust' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -741,8 +741,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 7
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 6
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar4
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-crypto-openssl' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -761,8 +761,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 9
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 2
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-crypto-all' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -795,8 +795,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-base' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -815,8 +815,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 3
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 4
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -928,8 +928,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar8
-      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar8
+      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -941,7 +941,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 13 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 13 flowey_lib_common::git_checkout 3
@@ -958,8 +958,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar6
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -969,7 +969,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 6
@@ -1011,8 +1011,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -1022,7 +1022,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 2
@@ -1058,8 +1058,8 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-base' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1078,8 +1078,8 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 2
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1098,8 +1098,8 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 3
       $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 4
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-crypto-rust' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1171,8 +1171,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 12 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -1184,7 +1184,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 12 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 12 flowey_lib_common::git_checkout 3
@@ -1208,8 +1208,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 12 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar1
-      $FLOWEY_BIN v 12 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar1
+      $FLOWEY_BIN v 12 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -1219,7 +1219,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 12 flowey_lib_common::cache 2
@@ -1466,8 +1466,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -1479,7 +1479,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 3
@@ -1503,8 +1503,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar1
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar1
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -1514,7 +1514,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 11 flowey_lib_common::cache 2
@@ -1819,8 +1819,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 10 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -1832,7 +1832,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 10 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 10 flowey_lib_common::git_checkout 3
@@ -1856,8 +1856,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 10 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar1
-      $FLOWEY_BIN v 10 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar1
+      $FLOWEY_BIN v 10 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -1867,7 +1867,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 10 flowey_lib_common::cache 2
@@ -2075,8 +2075,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -2088,7 +2088,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 9 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 9 flowey_lib_common::git_checkout 3
@@ -2105,8 +2105,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2116,7 +2116,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 6
@@ -2278,8 +2278,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2289,7 +2289,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 2
@@ -2429,8 +2429,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -2442,7 +2442,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 8 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 8 flowey_lib_common::git_checkout 3
@@ -2459,8 +2459,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2470,7 +2470,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 6
@@ -2628,8 +2628,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2639,7 +2639,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 2
@@ -2804,8 +2804,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -2817,7 +2817,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 7 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 7 flowey_lib_common::git_checkout 3
@@ -2834,8 +2834,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2845,7 +2845,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 6
@@ -2931,8 +2931,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -2942,7 +2942,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 2
@@ -3095,8 +3095,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 6 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -3108,7 +3108,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 6 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 6 flowey_lib_common::git_checkout 3
@@ -3125,8 +3125,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 6 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 6 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 6 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -3136,7 +3136,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 6 flowey_lib_common::cache 2
@@ -3311,8 +3311,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -3324,7 +3324,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 5 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 5 flowey_lib_common::git_checkout 3
@@ -3341,8 +3341,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -3352,7 +3352,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 6
@@ -3438,8 +3438,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -3449,7 +3449,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 2
@@ -3597,8 +3597,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -3610,7 +3610,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 4 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 4 flowey_lib_common::git_checkout 3
@@ -3627,8 +3627,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 4 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 4 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -3638,7 +3638,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 4 flowey_lib_common::cache 2
@@ -3770,8 +3770,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -3783,7 +3783,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 3 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 3 flowey_lib_common::git_checkout 3
@@ -3800,8 +3800,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 3 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 3 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 3 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 3 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -3811,7 +3811,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 3 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 3 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 3 flowey_lib_common::cache 2
@@ -4110,8 +4110,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4121,7 +4121,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
@@ -4131,8 +4131,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -4144,7 +4144,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 3
@@ -4177,8 +4177,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4188,7 +4188,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 6
@@ -4240,8 +4240,8 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 20 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 20 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'vmm_tests' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -4357,8 +4357,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 2 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -4370,7 +4370,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 2 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 2 flowey_lib_common::git_checkout 3
@@ -4387,8 +4387,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 2 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4398,7 +4398,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 2 flowey_lib_common::cache 2
@@ -4546,8 +4546,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4557,7 +4557,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 2
@@ -4567,8 +4567,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -4580,7 +4580,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 19 flowey_lib_common::git_checkout 3
@@ -4609,8 +4609,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4620,7 +4620,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 6
@@ -4669,8 +4669,8 @@ jobs:
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 19 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 19 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'vmm_tests' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -4843,8 +4843,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4854,7 +4854,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 2
@@ -4864,8 +4864,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -4877,7 +4877,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 3
@@ -4910,8 +4910,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4921,7 +4921,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 6
@@ -4976,8 +4976,8 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 18 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 18 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: stopping test_igvm_agent_rpc_server
   - task: PublishTestResults@2
     inputs:
@@ -5150,8 +5150,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -5161,7 +5161,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 2
@@ -5171,8 +5171,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -5184,7 +5184,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 3
@@ -5217,8 +5217,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -5228,7 +5228,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 6
@@ -5273,8 +5273,8 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 17 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 17 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'vmm_tests' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -5450,8 +5450,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -5461,7 +5461,7 @@ jobs:
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 2
@@ -5471,8 +5471,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -5484,7 +5484,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 3
@@ -5517,8 +5517,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -5528,7 +5528,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 6
@@ -5583,8 +5583,8 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 16 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:79:51' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: stopping test_igvm_agent_rpc_server
   - task: PublishTestResults@2
     inputs:
@@ -5689,8 +5689,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -5702,7 +5702,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:402:29' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 3
@@ -5726,8 +5726,8 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 1 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -5737,7 +5737,7 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
       $(FLOWEY_BIN) e 1 flowey_lib_common::cache 2

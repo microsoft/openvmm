@@ -35,7 +35,6 @@ use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
-use firmware_uefi_resources::LogLevel;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -67,7 +66,6 @@ use openvmm_defs::config::Aarch64TopologyConfig;
 use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -211,9 +209,6 @@ impl Manifest {
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: config.vpci_resources,
             vmgs: config.vmgs,
-            secure_boot_enabled: config.secure_boot_enabled,
-            base_secure_boot_template_vars: config.base_secure_boot_template_vars,
-            custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
@@ -224,11 +219,6 @@ impl Manifest {
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
-            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
-                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
-                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
-                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
-            },
         }
     }
 }
@@ -263,8 +253,6 @@ pub struct Manifest {
     #[cfg(all(windows, feature = "virt_whp"))]
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     vmgs: Option<VmgsResource>,
-    secure_boot_enabled: bool,
-    custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
@@ -275,8 +263,6 @@ pub struct Manifest {
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
-    efi_diagnostics_log_level: LogLevel,
-    base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -1020,7 +1006,7 @@ impl InitializedVm {
             let smmu_count = cfg
                 .pcie_root_complexes
                 .iter()
-                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
+                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
                 .count();
             let result =
                 build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
@@ -1077,6 +1063,11 @@ impl InitializedVm {
             .context("failed to create the prototype partition")?;
 
         let physical_address_size = proto.max_physical_address_size();
+
+        // Whether the partition delivers guest memory-access faults to the VMM
+        // so the memory backing can resolve them on demand (soft large pages,
+        // lazy commit).
+        let supports_memory_fault_resolution = proto.supports_memory_fault_resolution();
 
         // Determine if a special vtl2 memory allocation should be used.
         let vtl2_layout = if let LoadMode::Igvm {
@@ -1222,6 +1213,7 @@ impl InitializedVm {
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
+            .supports_memory_fault_resolution(supports_memory_fault_resolution)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
@@ -1310,6 +1302,8 @@ impl InitializedVm {
                 guest_memory: &gm,
                 cpuid: &cpuid,
                 vtl0_alias_map,
+                fault_resolver: supports_memory_fault_resolution
+                    .then(|| memory_manager.memory_fault_resolver()),
             })
             .context("failed to create the partition")?;
 
@@ -3121,7 +3115,6 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                ref custom_dsdt,
                 boot_mode,
             } => {
                 match boot_mode {
@@ -3138,23 +3131,19 @@ impl LoadedVmInner {
                     isolation: self.hypervisor_cfg.with_isolation,
                 };
                 super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                    let tables = if let Some(dsdt) = custom_dsdt {
-                        acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
-                    } else {
-                        acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                            add_devices_to_dsdt_x64(
-                                dsdt,
-                                &self.chipset_cfg,
-                                &self.chipset_capabilities,
-                                enable_serial,
-                                self.vmbus_server.is_some(),
-                                &self.chipset_mmio,
-                                self.virtio_mmio_region,
-                                self.virtio_mmio_irq,
-                                &self.pci_legacy_interrupts,
-                            )
-                        })
-                    };
+                    let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                        add_devices_to_dsdt_x64(
+                            dsdt,
+                            &self.chipset_cfg,
+                            &self.chipset_capabilities,
+                            enable_serial,
+                            self.vmbus_server.is_some(),
+                            &self.chipset_mmio,
+                            self.virtio_mmio_region,
+                            self.virtio_mmio_irq,
+                            &self.pci_legacy_interrupts,
+                        )
+                    });
 
                     loader::linux::AcpiTables {
                         rsdp: tables.rsdp,
@@ -3168,7 +3157,6 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                custom_dsdt: _,
                 boot_mode,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
@@ -3942,9 +3930,6 @@ impl LoadedVm {
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO
             vmgs: None,             // TODO
-            secure_boot_enabled: false, // TODO
-            base_secure_boot_template_vars: Default::default(), // TODO
-            custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
             debugger_rpc: None,          // TODO
             vmbus_devices: vec![],       // TODO
@@ -3959,7 +3944,6 @@ impl LoadedVm {
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
-            efi_diagnostics_log_level: Default::default(),
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {

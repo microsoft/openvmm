@@ -811,6 +811,8 @@ mod saved_state {
         use crate::transport::saved_state::state::CommonQueueState;
         use crate::transport::saved_state::state::CommonSavedState;
         use mesh::payload::Protobuf;
+        use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
+        use vmcore::save_restore::SaveRestore;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf)]
@@ -833,6 +835,11 @@ mod saved_state {
             pub queues: Vec<SavedQueueState>,
             #[mesh(4)]
             pub interrupt_status: u32,
+            /// PCI configuration space, including the BAR base addresses. This
+            /// must be preserved so that BARs pre-assigned by the host (before
+            /// the guest firmware runs) survive a save/restore cycle.
+            #[mesh(5)]
+            pub cfg_space: <ConfigSpaceType0Emulator as SaveRestore>::SavedState,
         }
 
         #[derive(Protobuf, SavedStateRoot)]
@@ -868,6 +875,7 @@ mod saved_state {
                     })
                     .collect(),
                 interrupt_status: *self.pci.interrupt_status.lock(),
+                cfg_space: self.pci.config_space.save()?,
             })
         }
 
@@ -889,6 +897,10 @@ mod saved_state {
                 line.set_level(state.interrupt_status != 0);
             }
             self.pci.msix_config_vector = state.msix_config_vector;
+
+            // Restore the PCI config space (BARs, command register, etc.) so
+            // that host pre-assigned BARs are preserved across the cycle.
+            self.pci.config_space.restore(state.cfg_space)?;
 
             Ok(())
         }

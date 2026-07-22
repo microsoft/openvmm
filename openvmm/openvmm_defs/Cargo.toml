@@ -16,7 +16,6 @@ vm_resource.workspace = true
 vmgs_resources.workspace = true
 
 vmotherboard.workspace = true
-firmware_uefi_custom_vars.workspace = true
 floppy_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true

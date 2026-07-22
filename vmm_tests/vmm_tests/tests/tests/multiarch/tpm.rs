@@ -3,6 +3,8 @@
 
 use anyhow::Context;
 use anyhow::ensure;
+#[cfg(windows)]
+use petri::IsolationType;
 use petri::PetriGuestStateLifetime;
 #[cfg(windows)]
 use petri::PetriHaltReason;
@@ -780,6 +782,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
+    let isolation = config.isolation();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
     // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
@@ -827,6 +830,26 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
     );
+
+    // On SEV-SNP, the OpenHCL IGVM is built with an ID block (signed by an
+    // ephemeral key in open-source builds), so the guest launches with
+    // `id_block_en = 1` and the PSP records the SHA-384 of the ID key in the
+    // report's `id_key_digest`. A zero digest means no ID block was accepted,
+    // which would indicate a regression in the IGVM ID block. The guest tool
+    // only emits this line for SNP reports.
+    if matches!(isolation, Some(IsolationType::Snp)) {
+        const MARKER: &str = "SNP ID key digest:";
+        let digest = report_output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(MARKER))
+            .map(str::trim)
+            .with_context(|| format!("SNP report missing '{MARKER}' line: {report_output}"))?;
+        ensure!(
+            !digest.is_empty() && digest.chars().any(|c| c != '0'),
+            "SNP id_key_digest is zero, so no ID block was accepted \
+             (id_block_en not set?): {report_output}"
+        );
+    }
 
     // Capture the AK public modulus on this (first) boot for the stability
     // check below.

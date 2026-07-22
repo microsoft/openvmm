@@ -1,8 +1,23 @@
 # gRPC / ttrpc
 
-To enable gRPC or ttrpc management interfaces, pass `--grpc <SOCKETPATH>` or
-`--trpc <SOCKETPATH>`. This will spawn an OpenVMM process acting as a gRPC or
-ttrpc server.
+To enable a gRPC or ttrpc management interface, pass `--rpc`. This spawns an
+OpenVMM process acting as an RPC server on the given Unix socket:
+
+```bash
+--rpc path=/path/to/openvmm.sock[,transport=<TRANSPORT>]
+```
+
+`transport` selects which wire protocol the server accepts:
+
+* `auto` (default) — auto-detect ttrpc vs. gRPC per connection
+* `ttrpc` — accept ttrpc clients only
+* `grpc` — accept gRPC clients only
+
+For example, to accept ttrpc clients only:
+
+```bash
+--rpc path=/path/to/openvmm.sock,transport=ttrpc
+```
 
 Here is a list of supported RPCs:
 
