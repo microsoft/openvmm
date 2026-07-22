@@ -507,9 +507,9 @@ impl HclNetworkVFManagerWorker {
     /// On return, the worker will no longer treat the VF as offered, regardless
     /// of whether notification or revoke operations encountered errors.
     ///
-    /// If the VTL2 device is not `Present`, skip HWC call to move MAC filter.
+    /// If the VTL2 device is not `Present`, skip HWC calls to move the MAC filter.
     ///
-    /// If no vPCI bus is `Present`, then VTL0 VF revoke is skipped.
+    /// If no vPCI bus control is available (neither `Present` nor `HiddenPresent`), then VTL0 VF revoke is skipped.
     async fn try_notify_guest_and_revoke_vtl0_vf(
         &mut self,
         bus_control: &Vtl0Bus,
