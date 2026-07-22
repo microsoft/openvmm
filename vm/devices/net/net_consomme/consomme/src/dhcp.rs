@@ -212,6 +212,7 @@ mod tests {
     const CLIENT_MAC: EthernetAddress = EthernetAddress([0x00, 0x15, 0x5d, 0x12, 0x34, 0x56]);
     const CLIENT_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 2);
     const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
+    const NET_MASK: Ipv4Address = Ipv4Address::new(255, 255, 255, 0);
 
     struct CaptureClient {
         driver: DefaultDriver,
@@ -228,7 +229,7 @@ mod tests {
         }
 
         fn rx_mtu(&mut self) -> usize {
-            1514
+            MIN_MTU
         }
     }
 
@@ -292,6 +293,9 @@ mod tests {
 
     fn capture(driver: DefaultDriver, request: &[u8]) -> Vec<(Vec<u8>, ChecksumState)> {
         let mut params = ConsommeParams::new().unwrap();
+        params.net_mask = NET_MASK;
+        params.gateway_ip = GATEWAY_IP;
+        params.client_ip = CLIENT_IP;
         params.client_mac = CLIENT_MAC;
         let mut consomme = Consomme::new(params);
         let mut client = CaptureClient {
