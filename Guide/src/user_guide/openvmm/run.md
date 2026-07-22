@@ -46,10 +46,10 @@ When running the `openvmm` binary directly, these environment variables are
 
 > fatal error: must provide uefi firmware when booting with uefi
 
-To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
+To fix this, **explicitly pass the firmware** using the `firmware` option:
 
 ```shell
-openvmm --uefi --uefi-firmware path/to/MSVM.fd \
+openvmm --uefi firmware=path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```

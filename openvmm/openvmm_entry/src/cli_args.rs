@@ -710,25 +710,41 @@ options:
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
-    /// boot UEFI firmware
-    #[clap(long, short = 'e')]
-    pub uefi: bool,
+    /// boot UEFI firmware, optionally configured with comma-separated options
+    #[clap(
+        long,
+        short = 'e',
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub uefi: Option<UefiCli>,
 
-    /// UEFI firmware file
-    #[clap(long, requires("uefi"), conflicts_with("igvm"), value_name = "FILE", default_value = default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE"))]
-    pub uefi_firmware: OptionalPathBuf,
+    /// UEFI firmware file (deprecated; use --uefi firmware=FILE)
+    #[clap(
+        long = "uefi-firmware",
+        hide = true,
+        requires("uefi"),
+        conflicts_with("igvm"),
+        value_name = "FILE"
+    )]
+    pub deprecated_uefi_firmware: Option<PathBuf>,
 
-    /// enable UEFI debugging on COM1
-    #[clap(long, requires("uefi"))]
-    pub uefi_debug: bool,
+    /// enable UEFI debugging on COM1 (deprecated; use --uefi debug)
+    #[clap(long = "uefi-debug", hide = true, requires("uefi"))]
+    pub deprecated_uefi_debug: bool,
 
-    /// enable memory protections in UEFI
-    #[clap(long, requires("uefi"))]
-    pub uefi_enable_memory_protections: bool,
+    /// enable memory protections in UEFI (deprecated; use --uefi enable_memory_protections)
+    #[clap(long = "uefi-enable-memory-protections", hide = true, requires("uefi"))]
+    pub deprecated_uefi_enable_memory_protections: bool,
 
-    /// force UEFI to bounce-buffer all DMA traffic
-    #[clap(long, requires("uefi"))]
-    pub uefi_force_dma_bounce: bool,
+    /// force UEFI to bounce-buffer all DMA traffic (deprecated; use --uefi force_dma_bounce)
+    #[clap(long = "uefi-force-dma-bounce", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_dma_bounce: bool,
+
+    /// continue with invalid UEFI firmware version information (deprecated; use --uefi force_firmware_version)
+    #[clap(long = "uefi-force-firmware-version", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_firmware_version: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -915,9 +931,9 @@ Examples:
     #[clap(long, value_name = "PATH")]
     pub device: Vec<String>,
 
-    /// instead of showing the frontpage the VM will shutdown instead
-    #[clap(long, requires("uefi"))]
-    pub disable_frontpage: bool,
+    /// instead of showing the frontpage the VM will shutdown instead (deprecated; use --uefi disable_frontpage)
+    #[clap(long = "disable-frontpage", hide = true, requires("uefi"))]
+    pub deprecated_disable_frontpage: bool,
 
     /// add a vtpm device, optionally selecting version 138 or 185 (default: 185)
     #[clap(
@@ -1160,9 +1176,9 @@ flags:
     #[clap(long)]
     pub hibernation: bool,
 
-    /// set the uefi console mode
-    #[clap(long)]
-    pub uefi_console_mode: Option<UefiConsoleModeCli>,
+    /// set the UEFI console mode (deprecated; use --uefi console=MODE)
+    #[clap(long = "uefi-console-mode", hide = true, requires("uefi"))]
+    pub deprecated_uefi_console_mode: Option<UefiConsoleModeCli>,
 
     /// set the EFI diagnostics log level
     #[clap(long_help = r#"
@@ -1173,12 +1189,12 @@ options:
     info                           info (ERROR, WARN, and INFO)
     full                           full (all log levels)
 "#)]
-    #[clap(long, requires("uefi"))]
-    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    #[clap(long = "efi-diagnostics-log-level", hide = true, requires("uefi"))]
+    pub deprecated_efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
-    /// Perform a default boot even if boot entries exist and fail
-    #[clap(long)]
-    pub default_boot_always_attempt: bool,
+    /// Perform a default boot even if boot entries exist and fail (deprecated; use --uefi default_boot_always_attempt)
+    #[clap(long = "default-boot-always-attempt", hide = true, requires("uefi"))]
+    pub deprecated_default_boot_always_attempt: bool,
 
     /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
     /// Repeat for each root complex that should have an IOMMU, e.g.:
@@ -1394,6 +1410,40 @@ Syntax: id=<name>
 }
 
 impl Options {
+    /// Returns the structured UEFI configuration with deprecated options merged in.
+    pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
+        let Some(mut uefi) = self.uefi.clone() else {
+            return Ok(None);
+        };
+
+        if let Some(firmware) = &self.deprecated_uefi_firmware {
+            if uefi.firmware_explicit {
+                anyhow::bail!("--uefi firmware=... conflicts with --uefi-firmware");
+            }
+            uefi.firmware = Some(firmware.clone());
+        }
+        if let Some(console) = self.deprecated_uefi_console_mode {
+            if uefi.console.is_some() {
+                anyhow::bail!("--uefi console=... conflicts with --uefi-console-mode");
+            }
+            uefi.console = Some(console);
+        }
+        if let Some(diagnostics) = self.deprecated_efi_diagnostics_log_level {
+            if uefi.diagnostics.is_some() {
+                anyhow::bail!("--uefi diagnostics=... conflicts with --efi-diagnostics-log-level");
+            }
+            uefi.diagnostics = Some(diagnostics);
+        }
+
+        uefi.debug |= self.deprecated_uefi_debug;
+        uefi.enable_memory_protections |= self.deprecated_uefi_enable_memory_protections;
+        uefi.force_dma_bounce |= self.deprecated_uefi_force_dma_bounce;
+        uefi.force_firmware_version |= self.deprecated_uefi_force_firmware_version;
+        uefi.disable_frontpage |= self.deprecated_disable_frontpage;
+        uefi.default_boot_always_attempt |= self.deprecated_default_boot_always_attempt;
+        Ok(Some(uefi))
+    }
+
     /// Returns the effective guest RAM size.
     pub fn memory_size(&self) -> u64 {
         self.memory.size.map(|m| m.0).unwrap_or(DEFAULT_MEMORY_SIZE)
@@ -1460,12 +1510,15 @@ impl Options {
             anyhow::bail!("--snp-restricted-injection requires --hypervisor mshv");
         }
         if self.snp_restricted_injection
-            && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
+            && (self.uefi.is_some()
+                || self.pcat
+                || self.igvm.is_some()
+                || self.restore_snapshot.is_some())
         {
             anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
         }
         if matches!(self.isolation, Some(IsolationCli::Snp)) {
-            if self.uefi {
+            if self.uefi.is_some() {
                 anyhow::bail!("SNP isolation currently only supports Linux direct boot");
             }
             if self.memory.hugepages
@@ -1487,6 +1540,131 @@ impl Options {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct UefiCli {
+    pub firmware: Option<PathBuf>,
+    firmware_explicit: bool,
+    pub debug: bool,
+    pub enable_memory_protections: bool,
+    pub force_dma_bounce: bool,
+    pub force_firmware_version: bool,
+    pub disable_frontpage: bool,
+    pub console: Option<UefiConsoleModeCli>,
+    pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
+    pub default_boot_always_attempt: bool,
+}
+
+impl Default for UefiCli {
+    fn default() -> Self {
+        Self {
+            firmware: OptionalPathBuf::from(
+                default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str(),
+            )
+            .0,
+            firmware_explicit: false,
+            debug: false,
+            enable_memory_protections: false,
+            force_dma_bounce: false,
+            force_firmware_version: false,
+            disable_frontpage: false,
+            console: None,
+            diagnostics: None,
+            default_boot_always_attempt: false,
+        }
+    }
+}
+
+impl FromStr for UefiCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut uefi = Self::default();
+        if value.is_empty() {
+            return Ok(uefi);
+        }
+
+        for option in value.split(',') {
+            let (key, value) = option
+                .split_once('=')
+                .map_or((option, None), |(key, value)| (key, Some(value)));
+            match key {
+                "firmware" => {
+                    if uefi.firmware_explicit {
+                        anyhow::bail!("duplicate firmware option");
+                    }
+                    let value = value.context("firmware option requires a value")?;
+                    if value.is_empty() {
+                        anyhow::bail!("firmware option requires a value");
+                    }
+                    uefi.firmware = Some(value.into());
+                    uefi.firmware_explicit = true;
+                }
+                "debug" => parse_flag(value, "debug", &mut uefi.debug)?,
+                "enable_memory_protections" => parse_flag(
+                    value,
+                    "enable_memory_protections",
+                    &mut uefi.enable_memory_protections,
+                )?,
+                "force_dma_bounce" => {
+                    parse_flag(value, "force_dma_bounce", &mut uefi.force_dma_bounce)?
+                }
+                "force_firmware_version" => parse_flag(
+                    value,
+                    "force_firmware_version",
+                    &mut uefi.force_firmware_version,
+                )?,
+                "disable_frontpage" => {
+                    parse_flag(value, "disable_frontpage", &mut uefi.disable_frontpage)?
+                }
+                "console" => {
+                    if uefi.console.is_some() {
+                        anyhow::bail!("duplicate console option");
+                    }
+                    uefi.console =
+                        Some(match value.context("console option requires a value")? {
+                            "default" => UefiConsoleModeCli::Default,
+                            "com1" => UefiConsoleModeCli::Com1,
+                            "com2" => UefiConsoleModeCli::Com2,
+                            "none" => UefiConsoleModeCli::None,
+                            value => anyhow::bail!("invalid console option '{value}'"),
+                        });
+                }
+                "diagnostics" => {
+                    if uefi.diagnostics.is_some() {
+                        anyhow::bail!("duplicate diagnostics option");
+                    }
+                    uefi.diagnostics = Some(
+                        match value.context("diagnostics option requires a value")? {
+                            "default" => EfiDiagnosticsLogLevelCli::Default,
+                            "info" => EfiDiagnosticsLogLevelCli::Info,
+                            "full" => EfiDiagnosticsLogLevelCli::Full,
+                            value => anyhow::bail!("invalid diagnostics option '{value}'"),
+                        },
+                    );
+                }
+                "default_boot_always_attempt" => parse_flag(
+                    value,
+                    "default_boot_always_attempt",
+                    &mut uefi.default_boot_always_attempt,
+                )?,
+                _ => anyhow::bail!("unknown UEFI option '{key}'"),
+            }
+        }
+        Ok(uefi)
+    }
+}
+
+fn parse_flag(value: Option<&str>, name: &str, flag: &mut bool) -> anyhow::Result<()> {
+    if value.is_some() {
+        anyhow::bail!("{name} option does not take a value");
+    }
+    if *flag {
+        anyhow::bail!("duplicate {name} option");
+    }
+    *flag = true;
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5643,7 +5821,7 @@ mod tests {
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "--uefi"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
-        assert!(opt.uefi);
+        assert!(opt.uefi.is_some());
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "138"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
@@ -5655,6 +5833,53 @@ mod tests {
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
 
         assert!(Options::try_parse_from(["openvmm", "--tpm", "137"]).is_err());
+    }
+
+    #[test]
+    fn test_uefi_options() {
+        let options = Options::try_parse_from(["openvmm", "--uefi"]).unwrap();
+        assert!(options.effective_uefi().unwrap().is_some());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=foo/bar,debug,force_firmware_version,console=com1,diagnostics=full",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("foo/bar".into()));
+        assert!(uefi.debug);
+        assert!(uefi.force_firmware_version);
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(matches!(
+            uefi.diagnostics,
+            Some(EfiDiagnosticsLogLevelCli::Full)
+        ));
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "--uefi-firmware",
+            "legacy.fd",
+            "--uefi-debug",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("legacy.fd".into()));
+        assert!(uefi.debug);
+
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "unknown"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "debug=on"]).is_err());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=new.fd",
+            "--uefi-firmware",
+            "legacy.fd",
+        ])
+        .unwrap();
+        assert!(options.effective_uefi().is_err());
     }
 
     #[test]

@@ -23,6 +23,17 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
+    #[error("invalid UEFI firmware version information")]
+    FirmwareVersion(#[source] loader::uefi::firmware_version::Error),
+    #[error(
+        "incompatible UEFI firmware interface version {actual_major}.{actual_minor}; expected {expected_major}.{minimum_minor} or newer compatible minor"
+    )]
+    IncompatibleFirmwareVersion {
+        actual_major: u16,
+        actual_minor: u16,
+        expected_major: u16,
+        minimum_minor: u16,
+    },
     #[error("failed to build PCIe ACPI tables")]
     PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
     #[error("SMBIOS field `{0}` cannot be configured on UEFI boot")]
@@ -61,6 +72,95 @@ pub struct UefiLoadSettings {
     pub hv: bool,
     /// Whether to disable the usage of SHA-1 PCRs.
     pub disable_sha1_pcr: bool,
+    /// Continue loading firmware with malformed or incompatible version information.
+    pub force_firmware_version: bool,
+}
+
+const FIRMWARE_INTERFACE_MAJOR: u16 = 1;
+const FIRMWARE_INTERFACE_MINIMUM_MINOR: u16 = 0;
+
+fn firmware_interface_is_compatible(major: u16, minor: u16) -> bool {
+    major == FIRMWARE_INTERFACE_MAJOR
+        && minor
+            .checked_sub(FIRMWARE_INTERFACE_MINIMUM_MINOR)
+            .is_some()
+}
+
+fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
+    #[cfg(guest_arch = "x86_64")]
+    let dxe_fv = image;
+    #[cfg(guest_arch = "aarch64")]
+    let dxe_fv = image.get(0x20_0000..).ok_or_else(|| {
+        Error::FirmwareVersion(loader::uefi::firmware_version::Error::VolumeHeader)
+    })?;
+
+    let version = match loader::uefi::firmware_version::find_in_firmware_volume(dxe_fv) {
+        Ok(Some(version)) => version,
+        Ok(None) => {
+            tracing::warn!("UEFI firmware does not contain version information");
+            return Ok(());
+        }
+        Err(error) if force => {
+            tracing::warn!(
+                error = &error as &dyn std::error::Error,
+                "UEFI firmware version information is invalid; continuing because force_firmware_version is set"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(Error::FirmwareVersion(error)),
+    };
+
+    tracing::info!(
+        release = version.base_version,
+        interface = format_args!(
+            "{}.{}",
+            version.interface_version_major, version.interface_version_minor
+        ),
+        commit = format_args!(
+            "{}{}",
+            version.git_commit,
+            if version.flags & uefi_specs::hyperv::firmware_version::FLAG_DIRTY != 0 {
+                "-dirty"
+            } else {
+                ""
+            },
+        ),
+        official = version.flags & uefi_specs::hyperv::firmware_version::FLAG_OFFICIAL != 0,
+        "mu_msvm UEFI firmware version",
+    );
+    tracing::debug!(
+        struct_version = version.struct_version,
+        header_size = version.header_size,
+        flags = version.flags,
+        "UEFI firmware version record"
+    );
+
+    if !firmware_interface_is_compatible(
+        version.interface_version_major,
+        version.interface_version_minor,
+    ) {
+        if force {
+            tracing::warn!(
+                actual_interface = format_args!(
+                    "{}.{}",
+                    version.interface_version_major, version.interface_version_minor
+                ),
+                required_interface = format_args!(
+                    "{}.{}+",
+                    FIRMWARE_INTERFACE_MAJOR, FIRMWARE_INTERFACE_MINIMUM_MINOR
+                ),
+                "UEFI firmware interface is incompatible; continuing because force_firmware_version is set"
+            );
+        } else {
+            return Err(Error::IncompatibleFirmwareVersion {
+                actual_major: version.interface_version_major,
+                actual_minor: version.interface_version_minor,
+                expected_major: FIRMWARE_INTERFACE_MAJOR,
+                minimum_minor: FIRMWARE_INTERFACE_MINIMUM_MINOR,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// All inputs needed by [`load_uefi`].
@@ -98,6 +198,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
             .map_err(Error::Firmware)?;
         loaded_image.as_slice()
     };
+
+    check_firmware_version(image, settings.force_firmware_version)?;
 
     let mut entropy = [0; 64];
     getrandom::fill(&mut entropy).expect("rng failure");
@@ -392,5 +494,13 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.complete().len() > baseline);
+    }
+
+    #[test]
+    fn firmware_interface_compatibility() {
+        assert!(firmware_interface_is_compatible(1, 0));
+        assert!(firmware_interface_is_compatible(1, 1));
+        assert!(!firmware_interface_is_compatible(0, 0));
+        assert!(!firmware_interface_is_compatible(2, 0));
     }
 }
