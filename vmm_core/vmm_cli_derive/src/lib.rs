@@ -121,6 +121,58 @@ fn is_bool(ty: &Type) -> bool {
     matches!(ty, Type::Path(tp) if tp.qself.is_none() && tp.path.is_ident("bool"))
 }
 
+fn validate_field_attr(field: &syn::Field, fa: &FieldAttr) -> syn::Result<()> {
+    if !fa.flag && (fa.present.is_some() || fa.absent.is_some()) {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`present`/`absent` require `flag`",
+        ));
+    }
+    if fa.flatten
+        && (fa.key.is_some()
+            || fa.flag
+            || !matches!(fa.default, DefaultKind::None)
+            || fa.present.is_some()
+            || fa.absent.is_some())
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`flatten` cannot be combined with `key`, `flag`, `default`, `present`, or `absent`",
+        ));
+    }
+    if fa.positional
+        && (fa.key.is_some()
+            || fa.flag
+            || fa.flatten
+            || !matches!(fa.default, DefaultKind::None)
+            || fa.present.is_some()
+            || fa.absent.is_some())
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`positional` cannot be combined with `key`, `flag`, `flatten`, `default`, `present`, or `absent`",
+        ));
+    }
+    if fa.flag && !matches!(fa.default, DefaultKind::None) {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`default` is not allowed on a `flag` field",
+        ));
+    }
+    if !fa.flag
+        && !fa.flatten
+        && !fa.positional
+        && option_inner(&field.ty).is_some()
+        && !matches!(fa.default, DefaultKind::None)
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`default` is not allowed on an `Option<T>` field",
+        ));
+    }
+    Ok(())
+}
+
 fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let vis = &input.vis;
@@ -150,15 +202,10 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
         let fname = field.ident.as_ref().unwrap();
         let ty = &field.ty;
         let fa = parse_field_attr(field)?;
+        validate_field_attr(field, &fa)?;
         let key = fa.key.clone().unwrap_or_else(|| fname.to_string());
 
         if fa.positional {
-            if fa.flag || fa.flatten || !matches!(fa.default, DefaultKind::None) {
-                return Err(syn::Error::new_spanned(
-                    field,
-                    "`positional` cannot be combined with `flag`, `flatten`, or `default`",
-                ));
-            }
             if positional.is_some() {
                 return Err(syn::Error::new_spanned(
                     field,
@@ -471,4 +518,63 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn expansion_error(input: DeriveInput) -> String {
+        expand_struct(input).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn rejects_attributes_without_meaning_for_field_kind() {
+        assert_eq!(
+            expansion_error(parse_quote! {
+                struct Args {
+                    #[kv(present = 1, absent = 0)]
+                    value: u8,
+                }
+            }),
+            "`present`/`absent` require `flag`"
+        );
+        assert_eq!(
+            expansion_error(parse_quote! {
+                struct Args {
+                    #[kv(default)]
+                    value: Option<u8>,
+                }
+            }),
+            "`default` is not allowed on an `Option<T>` field"
+        );
+        assert_eq!(
+            expansion_error(parse_quote! {
+                struct Args {
+                    #[kv(flag, default)]
+                    value: bool,
+                }
+            }),
+            "`default` is not allowed on a `flag` field"
+        );
+        assert_eq!(
+            expansion_error(parse_quote! {
+                struct Args {
+                    #[kv(flatten, key = "value")]
+                    value: Nested,
+                }
+            }),
+            "`flatten` cannot be combined with `key`, `flag`, `default`, `present`, or `absent`"
+        );
+        assert_eq!(
+            expansion_error(parse_quote! {
+                struct Args {
+                    #[kv(positional, key = "value")]
+                    value: String,
+                }
+            }),
+            "`positional` cannot be combined with `key`, `flag`, `flatten`, `default`, `present`, or `absent`"
+        );
+    }
 }
