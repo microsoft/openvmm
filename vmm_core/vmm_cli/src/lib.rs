@@ -67,6 +67,9 @@ pub use anyhow;
 pub use vmm_cli_derive::KeyValueArgs;
 pub use vmm_cli_derive::KeyValueGroup;
 
+#[doc(hidden)]
+pub mod private;
+
 /// The error type produced by generated parsers (an [`anyhow::Error`]).
 pub type Error = anyhow::Error;
 /// Result alias used by generated parsers.
@@ -95,145 +98,6 @@ pub trait KeyValueFields: Sized {
     fn finish(accum: Self::Accum) -> Result<Self>;
 }
 
-/// Construct an [`Error`] with the given message.
-///
-/// Used by generated code so it never has to reference `anyhow` macros
-/// directly.
-#[doc(hidden)]
-pub fn error(msg: impl Display) -> Error {
-    anyhow::Error::msg(msg.to_string())
-}
-
-/// Construct an unknown-option error listing all keys accepted by `T`.
-#[doc(hidden)]
-pub fn unknown_option<T: KeyValueFields>(key: &str) -> Error {
-    let mut keys = Vec::new();
-    T::append_keys(&mut keys);
-    error(format!(
-        "unknown option '{key}'; expected one of: {}",
-        keys.iter()
-            .map(|key| format!("'{key}'"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
-}
-
-/// Split a `key=value[,key=value...]` option string on top-level commas,
-/// honoring `[...]` nesting so that a bracketed list value containing commas
-/// (e.g. `vps=[0,1,4-5]`) is not split apart.
-pub fn split_options(s: &str) -> Result<Vec<&str>> {
-    let mut parts = Vec::new();
-    let mut depth = 0u32;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '[' => depth += 1,
-            ']' => {
-                anyhow::ensure!(depth > 0, "unmatched ']' in '{s}'");
-                depth -= 1;
-            }
-            ',' if depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    anyhow::ensure!(depth == 0, "unmatched '[' in '{s}'");
-    parts.push(&s[start..]);
-    Ok(parts)
-}
-
-/// Split one option part into its key and optional value: `a=b` => `("a",
-/// Some("b"))`, `a` => `("a", None)`.
-pub fn split_kv(part: &str) -> (&str, Option<&str>) {
-    match part.split_once('=') {
-        Some((k, v)) => (k, Some(v)),
-        None => (part, None),
-    }
-}
-
-/// Parse a required, non-empty value for `key` via `T`'s [`FromStr`].
-///
-/// An absent or empty value is an error (empty is treated as "no value").
-pub fn parse_value<T>(key: &str, value: Option<&str>) -> Result<T>
-where
-    T: FromStr,
-    T::Err: Display,
-{
-    let value = match value {
-        Some(v) if !v.is_empty() => v,
-        _ => anyhow::bail!("option '{key}' requires a value"),
-    };
-    value
-        .parse::<T>()
-        .map_err(|e| error(format!("invalid value for option '{key}': {e}")))
-}
-
-/// Parse an optional value for `key`: a bare key or empty value yields `None`,
-/// otherwise the value is parsed via `T`'s [`FromStr`].
-pub fn parse_opt_value<T>(key: &str, value: Option<&str>) -> Result<Option<T>>
-where
-    T: FromStr,
-    T::Err: Display,
-{
-    match value {
-        Some(v) if !v.is_empty() => {
-            Ok(Some(v.parse::<T>().map_err(|e| {
-                error(format!("invalid value for option '{key}': {e}"))
-            })?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Parse the leading positional token (the first comma-separated part, taken
-/// verbatim without splitting on `=`) via `T`'s [`FromStr`].
-///
-/// An absent or empty token is an error.
-pub fn parse_positional<T>(name: &str, value: Option<&str>) -> Result<T>
-where
-    T: FromStr,
-    T::Err: Display,
-{
-    let value = match value {
-        Some(v) if !v.is_empty() => v,
-        _ => anyhow::bail!("missing required '{name}'"),
-    };
-    value
-        .parse::<T>()
-        .map_err(|e| error(format!("invalid '{name}': {e}")))
-}
-
-/// Store a parsed value into `slot`, erroring if `key` was already seen.
-pub fn set_once<T>(slot: &mut Option<T>, key: &str, value: T) -> Result<()> {
-    if slot.is_some() {
-        anyhow::bail!("duplicate option '{key}'");
-    }
-    *slot = Some(value);
-    Ok(())
-}
-
-/// Parse a boolean flag/toggle into `slot`, erroring on duplicates.
-///
-/// Accepts three uniform spellings so callers never have to remember which
-/// booleans are bare and which take a value: bare presence (`foo`) and `foo=on`
-/// both mean `true`, and `foo=off` means `false`.
-pub fn set_toggle(slot: &mut Option<bool>, key: &str, value: Option<&str>) -> Result<()> {
-    let v = match value {
-        None | Some("on") => true,
-        Some("off") => false,
-        Some(other) => {
-            anyhow::bail!("flag '{key}' expects no value, 'on', or 'off', got '{other}'")
-        }
-    };
-    if slot.is_some() {
-        anyhow::bail!("duplicate flag '{key}'");
-    }
-    *slot = Some(v);
-    Ok(())
-}
-
 fn strip_brackets(s: &str) -> Result<&str> {
     s.strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
@@ -243,8 +107,8 @@ fn strip_brackets(s: &str) -> Result<&str> {
 /// A bracket-delimited list value, e.g. `[a,b,c]` or the empty list `[]`.
 ///
 /// Implements [`FromStr`], so it composes directly as a `#[derive(KeyValueArgs)]`
-/// field type; because [`split_options`] is bracket-aware, a `BracketList`
-/// value may contain commas.
+/// field type; because option splitting is bracket-aware, a `BracketList` value
+/// may contain commas.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BracketList<T>(pub Vec<T>);
 
@@ -265,7 +129,7 @@ where
             let item = item.trim();
             items.push(
                 item.parse::<T>()
-                    .map_err(|e| error(format!("invalid list item '{item}': {e}")))?,
+                    .map_err(|e| private::error(format!("invalid list item '{item}': {e}")))?,
             );
         }
         Ok(Self(items))
@@ -373,13 +237,13 @@ mod tests {
 
     #[test]
     fn split_options_bracket_aware() {
-        assert_eq!(split_options("a=1,b=2").unwrap(), ["a=1", "b=2"]);
+        assert_eq!(private::split_options("a=1,b=2").unwrap(), ["a=1", "b=2"]);
         assert_eq!(
-            split_options("size=2G,vps=[0,1,4-5]").unwrap(),
+            private::split_options("size=2G,vps=[0,1,4-5]").unwrap(),
             ["size=2G", "vps=[0,1,4-5]"]
         );
-        assert!(split_options("a=[1,2").is_err());
-        assert!(split_options("a=1]").is_err());
+        assert!(private::split_options("a=[1,2").is_err());
+        assert!(private::split_options("a=1]").is_err());
     }
 
     #[test]

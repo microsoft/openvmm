@@ -169,7 +169,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             let pname = fname.to_string();
             finish_fields.push(quote! {
                 #fname: __a.#fname.ok_or_else(
-                    || ::vmm_cli::error(::std::format!("missing required '{}'", #pname)),
+                    || ::vmm_cli::private::error(::std::format!("missing required '{}'", #pname)),
                 )?,
             });
             positional = Some((fname.clone(), ty.clone(), pname));
@@ -190,7 +190,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             append_keys.push(quote! { __keys.push(#key); });
             accum_fields.push(quote! { #fname: ::core::option::Option<bool>, });
             accept_arms.push(quote! {
-                #key => { ::vmm_cli::set_toggle(&mut __a.#fname, #key, __value)?; }
+                #key => { ::vmm_cli::private::set_toggle(&mut __a.#fname, #key, __value)?; }
             });
             if option_inner(ty).is_some_and(is_bool) {
                 if fa.present.is_some() || fa.absent.is_some() {
@@ -220,7 +220,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             accum_fields.push(quote! { #fname: #ty, });
             accept_arms.push(quote! {
                 #key => {
-                    ::vmm_cli::set_once(&mut __a.#fname, #key, ::vmm_cli::parse_value::<#inner>(#key, __value)?)?;
+                    ::vmm_cli::private::set_once(&mut __a.#fname, #key, ::vmm_cli::private::parse_value::<#inner>(#key, __value)?)?;
                 }
             });
             finish_fields.push(quote! { #fname: __a.#fname, });
@@ -229,7 +229,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             accum_fields.push(quote! { #fname: ::core::option::Option<#ty>, });
             accept_arms.push(quote! {
                 #key => {
-                    ::vmm_cli::set_once(&mut __a.#fname, #key, ::vmm_cli::parse_value::<#ty>(#key, __value)?)?;
+                    ::vmm_cli::private::set_once(&mut __a.#fname, #key, ::vmm_cli::private::parse_value::<#ty>(#key, __value)?)?;
                 }
             });
             match &fa.default {
@@ -241,7 +241,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
                 DefaultKind::None => finish_fields.push(quote! {
                     #fname: __a.#fname.ok_or_else(
-                        || ::vmm_cli::error(::std::format!("missing required option '{}'", #key)),
+                        || ::vmm_cli::private::error(::std::format!("missing required option '{}'", #key)),
                     )?,
                 }),
             }
@@ -271,23 +271,23 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     // positional (if any), feed the rest through `accept`, then `finish`.
     let parse_loop = if let Some((pf, pty, pname)) = &positional {
         quote! {
-            let mut __parts = ::vmm_cli::split_options(s)?.into_iter();
+            let mut __parts = ::vmm_cli::private::split_options(s)?.into_iter();
             __a.#pf = ::core::option::Option::Some(
-                ::vmm_cli::parse_positional::<#pty>(#pname, __parts.next())?,
+                ::vmm_cli::private::parse_positional::<#pty>(#pname, __parts.next())?,
             );
             for __part in __parts {
-                let (__key, __value) = ::vmm_cli::split_kv(__part);
+                let (__key, __value) = ::vmm_cli::private::split_kv(__part)?;
                 if !<#name as ::vmm_cli::KeyValueFields>::accept(&mut __a, __key, __value)? {
-                    return ::core::result::Result::Err(::vmm_cli::unknown_option::<#name>(__key));
+                    return ::core::result::Result::Err(::vmm_cli::private::unknown_option::<#name>(__key));
                 }
             }
         }
     } else {
         quote! {
-            for __part in ::vmm_cli::split_options(s)? {
-                let (__key, __value) = ::vmm_cli::split_kv(__part);
+            for __part in ::vmm_cli::private::split_options(s)? {
+                let (__key, __value) = ::vmm_cli::private::split_kv(__part)?;
                 if !<#name as ::vmm_cli::KeyValueFields>::accept(&mut __a, __key, __value)? {
-                    return ::core::result::Result::Err(::vmm_cli::unknown_option::<#name>(__key));
+                    return ::core::result::Result::Err(::vmm_cli::private::unknown_option::<#name>(__key));
                 }
             }
         }
@@ -387,7 +387,7 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
             Fields::Unit => quote! {
                 {
                     if __value.is_some() {
-                        return ::core::result::Result::Err(::vmm_cli::error(
+                        return ::core::result::Result::Err(::vmm_cli::private::error(
                             ::std::format!("flag '{}' does not take a value", #key),
                         ));
                     }
@@ -397,9 +397,9 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
             Fields::Unnamed(f) if f.unnamed.len() == 1 => {
                 let fty = &f.unnamed.first().unwrap().ty;
                 if let Some(inner) = option_inner(fty) {
-                    quote! { #name::#vname(::vmm_cli::parse_opt_value::<#inner>(#key, __value)?) }
+                    quote! { #name::#vname(::vmm_cli::private::parse_opt_value::<#inner>(#key, __value)?) }
                 } else {
-                    quote! { #name::#vname(::vmm_cli::parse_value::<#fty>(#key, __value)?) }
+                    quote! { #name::#vname(::vmm_cli::private::parse_value::<#fty>(#key, __value)?) }
                 }
             }
             _ => {
@@ -431,7 +431,7 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
     let none_case = match &default_variant {
         Some(def) => quote! { ::core::result::Result::Ok(#def) },
         None => quote! {
-            ::core::result::Result::Err(::vmm_cli::error(
+            ::core::result::Result::Err(::vmm_cli::private::error(
                 ::std::format!("one of {} is required", #keys_desc),
             ))
         },
@@ -455,7 +455,7 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
                     _ => return ::core::result::Result::Ok(false),
                 };
                 if __accum.is_some() {
-                    return ::core::result::Result::Err(::vmm_cli::error(
+                    return ::core::result::Result::Err(::vmm_cli::private::error(
                         ::std::format!("only one of {} may be specified", #keys_desc),
                     ));
                 }

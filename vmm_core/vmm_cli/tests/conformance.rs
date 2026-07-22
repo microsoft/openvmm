@@ -88,6 +88,33 @@ fn unknown_key_is_rejected() {
 }
 
 #[test]
+fn malformed_options_are_rejected_clearly() {
+    assert_eq!(
+        "".parse::<Basic>().unwrap_err().to_string(),
+        "missing required option 'name'"
+    );
+    assert_eq!(
+        ",name=foo".parse::<Basic>().unwrap_err().to_string(),
+        "empty option in ',name=foo'"
+    );
+    assert_eq!(
+        "name=foo,".parse::<Basic>().unwrap_err().to_string(),
+        "empty option in 'name=foo,'"
+    );
+    assert_eq!(
+        "name=foo,,count=1"
+            .parse::<Basic>()
+            .unwrap_err()
+            .to_string(),
+        "empty option in 'name=foo,,count=1'"
+    );
+    assert_eq!(
+        "=foo".parse::<Basic>().unwrap_err().to_string(),
+        "option key cannot be empty"
+    );
+}
+
+#[test]
 fn duplicate_key_is_rejected() {
     assert!("name=foo,name=bar".parse::<Basic>().is_err());
     assert!("name=foo,count=1,count=2".parse::<Basic>().is_err());

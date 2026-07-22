@@ -5007,33 +5007,6 @@ mod tests {
     }
 
     #[test]
-    fn test_split_options_brackets() {
-        use vmm_cli::split_options;
-
-        // No brackets — plain comma split.
-        assert_eq!(
-            split_options("a=1,b=2,c=3").unwrap(),
-            vec!["a=1", "b=2", "c=3"]
-        );
-
-        // Brackets protect inner commas.
-        assert_eq!(
-            split_options("size=2G,vps=[0,1,2]").unwrap(),
-            vec!["size=2G", "vps=[0,1,2]"]
-        );
-
-        // Brackets with ranges and trailing option.
-        assert_eq!(
-            split_options("size=2G,vps=[0-1,4-5],host_numa_node=0").unwrap(),
-            vec!["size=2G", "vps=[0-1,4-5]", "host_numa_node=0"]
-        );
-
-        // Unmatched brackets.
-        assert!(split_options("vps=[0,1").is_err());
-        assert!(split_options("vps=0,1]").is_err());
-    }
-
-    #[test]
     fn test_parse_numa_node() {
         use super::parse_numa_node;
 
