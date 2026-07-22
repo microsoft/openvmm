@@ -836,7 +836,6 @@ impl VmService {
             layout: layout_config,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
-            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;

@@ -62,7 +62,6 @@ pub struct Config {
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
-    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -620,15 +619,4 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
-}
-
-#[derive(Copy, Clone, Debug, MeshPayload, Default)]
-pub enum EfiDiagnosticsLogLevelType {
-    /// Default log level
-    #[default]
-    Default,
-    /// Include INFO logs
-    Info,
-    /// All logs
-    Full,
 }

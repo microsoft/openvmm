@@ -35,7 +35,6 @@ use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
-use firmware_uefi_resources::LogLevel;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -67,7 +66,6 @@ use openvmm_defs::config::Aarch64TopologyConfig;
 use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -221,11 +219,6 @@ impl Manifest {
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
-            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
-                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
-                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
-                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
-            },
         }
     }
 }
@@ -270,7 +263,6 @@ pub struct Manifest {
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
-    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -3952,7 +3944,6 @@ impl LoadedVm {
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
-            efi_diagnostics_log_level: Default::default(),
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {
