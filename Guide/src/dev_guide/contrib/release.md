@@ -15,14 +15,14 @@ OpenVMM release branches. OpenVMM normally releases directly from `main` and
 creates a separate on-demand patch branch only when its currently supported
 release requires a security or release-blocking fix.
 ```
-Occasionally, the OpenHCL project will declare upcoming release milestones. We
-stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
+Occasionally, the OpenHCL project will declare upcoming release milestones.
+We stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
 named for the YYMM when the branch was forked. Future references to the release
 number will be shortened to `<RELEASE>` in this doc. We expect a high quality
 bar for all code that goes into the repository's main branch, and we ask
 developers to hold these release branches to the highest quality standards. The
-OpenHCL maintainers will gradually slow the rate of churn into these branches as
-we get closer to a close date.
+OpenHCL maintainers will gradually slow the rate of churn into these branches
+as we get closer to a close date.
 
 ```admonish note
 Some older release branches use the format `release/<YYMM>` without the major

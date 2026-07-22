@@ -74,8 +74,8 @@ Tags must contain exactly three canonical unsigned numeric components.
 Prerelease suffixes, build metadata, leading zeroes, and additional components
 are rejected.
 
-Normal `MAJOR.MINOR.0` tags must point to commits reachable from `main`. A patch
-tag must descend from its immediate predecessor. For example,
+Normal `MAJOR.MINOR.0` tags must point to commits reachable from `main`. A
+patch tag must descend from its immediate predecessor. For example,
 `openvmm-v0.2.2` must descend from `openvmm-v0.2.1`.
 
 More than one `openvmm-v*` tag on the same commit is an error. After Git checks
