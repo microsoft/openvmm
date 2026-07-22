@@ -4974,7 +4974,10 @@ mod tests {
     fn test_parse_vp_list() {
         use vmm_cli::BracketRangeList;
 
-        let parse = |s: &str| s.parse::<BracketRangeList>().map(|v| v.0);
+        let parse = |s: &str| {
+            s.parse::<BracketRangeList>()
+                .and_then(|v| v.expand_below(1024))
+        };
 
         // Individual indices.
         assert_eq!(parse("[0,1,2,3]").unwrap(), vec![0, 1, 2, 3]);
@@ -5044,11 +5047,11 @@ mod tests {
 
         // Node with bracket VP list.
         let n = parse_numa_node("size=1G,vps=[0,1,2,3]").unwrap();
-        assert_eq!(n.vps.unwrap().0, vec![0, 1, 2, 3]);
+        assert_eq!(n.vps.unwrap().expand_below(1024).unwrap(), [0, 1, 2, 3]);
 
         // Node with VP range in brackets.
         let n = parse_numa_node("size=1G,vps=[0-3]").unwrap();
-        assert_eq!(n.vps.unwrap().0, vec![0, 1, 2, 3]);
+        assert_eq!(n.vps.unwrap().expand_below(1024).unwrap(), [0, 1, 2, 3]);
 
         // Node with host_numa_node.
         let n = parse_numa_node("size=1G,host_numa_node=1").unwrap();
@@ -5056,7 +5059,7 @@ mod tests {
 
         // All options together.
         let n = parse_numa_node("size=1G,vps=[0,1],host_numa_node=0,hugepages=on").unwrap();
-        assert_eq!(n.vps.unwrap().0, vec![0, 1]);
+        assert_eq!(n.vps.unwrap().expand_below(1024).unwrap(), [0, 1]);
         assert_eq!(n.host_numa_node, Some(0));
         assert!(n.memory.hugepages);
 
@@ -5074,7 +5077,7 @@ mod tests {
 
         // Empty vps=[] for memory-only node.
         let n = parse_numa_node("size=1G,vps=[]").unwrap();
-        assert_eq!(n.vps.unwrap().0, Vec::<u32>::new());
+        assert!(n.vps.unwrap().0.is_empty());
     }
 
     #[test]

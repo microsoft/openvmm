@@ -1912,26 +1912,31 @@ async fn vm_config_from_command_line(
                 NumaTopology {
                     nodes: nodes
                         .iter()
-                        .map(|n| NumaNode {
-                            mem: Some(MemoryConfig {
-                                mem_size: n.memory.size.map(|m| m.0).unwrap_or(0),
-                                prefetch_memory: n.memory.prefetch,
-                                private_memory: n.memory.shared == Some(false),
-                                transparent_hugepages: n
-                                    .memory
-                                    .transparent_hugepages
-                                    .unwrap_or(!n.memory.hugepages),
-                                hugepages: n.memory.hugepages,
-                                hugepage_size: n.memory.hugepage_size.map(|m| m.0),
-                                host_numa_node: n.host_numa_node,
-                            }),
-                            vps: match &n.vps {
+                        .map(|n| {
+                            let vps = match &n.vps {
                                 Some(vps) if vps.0.is_empty() => VpAssignment::Empty,
-                                Some(vps) => VpAssignment::Explicit(vps.0.clone()),
+                                Some(vps) => {
+                                    VpAssignment::Explicit(vps.expand_below(opt.processors)?)
+                                }
                                 None => VpAssignment::FromTopology,
-                            },
+                            };
+                            Ok(NumaNode {
+                                mem: Some(MemoryConfig {
+                                    mem_size: n.memory.size.map(|m| m.0).unwrap_or(0),
+                                    prefetch_memory: n.memory.prefetch,
+                                    private_memory: n.memory.shared == Some(false),
+                                    transparent_hugepages: n
+                                        .memory
+                                        .transparent_hugepages
+                                        .unwrap_or(!n.memory.hugepages),
+                                    hugepages: n.memory.hugepages,
+                                    hugepage_size: n.memory.hugepage_size.map(|m| m.0),
+                                    host_numa_node: n.host_numa_node,
+                                }),
+                                vps,
+                            })
                         })
-                        .collect(),
+                        .collect::<anyhow::Result<Vec<_>>>()?,
                     distances: opt
                         .numa_distance
                         .as_deref()

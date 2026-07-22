@@ -71,7 +71,7 @@ fn basic_happy_path() {
             fast: true,
             verbose: Some(false),
             size: Some(MemorySize(2 * 1024 * 1024)),
-            vps: Some(BracketRangeList(vec![0, 2, 3])),
+            vps: Some(BracketRangeList(vec![0..=0, 2..=3])),
         }
     );
 }

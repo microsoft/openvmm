@@ -254,10 +254,39 @@ where
     }
 }
 
-/// A bracket-delimited list of unsigned integers that also accepts inclusive
-/// ranges, e.g. `[0,1,4-5]` expands to `[0, 1, 4, 5]`.
+/// A bracket-delimited list of unsigned integers and inclusive ranges, e.g.
+/// `[0,1,4-5]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BracketRangeList(pub Vec<u32>);
+pub struct BracketRangeList(pub Vec<std::ops::RangeInclusive<u32>>);
+
+impl BracketRangeList {
+    /// Expands the ranges after ensuring every value is below `upper_bound`.
+    pub fn expand_below(&self, upper_bound: u32) -> Result<Vec<u32>> {
+        let mut len = 0usize;
+        for range in &self.0 {
+            anyhow::ensure!(
+                range.end() < &upper_bound,
+                "list item {} must be less than {}",
+                range.end(),
+                upper_bound
+            );
+            let range_len = u64::from(*range.end()) - u64::from(*range.start()) + 1;
+            len = len
+                .checked_add(usize::try_from(range_len).context("range is too large")?)
+                .context("expanded list is too large")?;
+            anyhow::ensure!(
+                len <= upper_bound as usize,
+                "expanded list contains more than {upper_bound} items"
+            );
+        }
+
+        let mut items = Vec::with_capacity(len);
+        for range in &self.0 {
+            items.extend(range.clone());
+        }
+        Ok(items)
+    }
+}
 
 impl FromStr for BracketRangeList {
     type Err = Error;
@@ -267,19 +296,20 @@ impl FromStr for BracketRangeList {
         if inner.is_empty() {
             return Ok(Self(Vec::new()));
         }
-        let mut items = Vec::new();
+        let mut ranges = Vec::new();
         for item in inner.split(',') {
             let item = item.trim();
             if let Some((lo, hi)) = item.split_once('-') {
                 let lo = lo.trim().parse::<u32>().context("invalid range bound")?;
                 let hi = hi.trim().parse::<u32>().context("invalid range bound")?;
                 anyhow::ensure!(lo <= hi, "invalid range {lo}-{hi}");
-                items.extend(lo..=hi);
+                ranges.push(lo..=hi);
             } else {
-                items.push(item.parse::<u32>().context("invalid list item")?);
+                let value = item.parse::<u32>().context("invalid list item")?;
+                ranges.push(value..=value);
             }
         }
-        Ok(Self(items))
+        Ok(Self(ranges))
     }
 }
 
@@ -347,12 +377,20 @@ mod tests {
 
     #[test]
     fn bracket_range_list() {
-        assert_eq!(
-            "[0,1,4-5]".parse::<BracketRangeList>().unwrap().0,
-            [0, 1, 4, 5]
+        let list = "[0,1,4-5]".parse::<BracketRangeList>().unwrap();
+        assert_eq!(list.expand_below(6).unwrap(), [0, 1, 4, 5]);
+        assert!(
+            "[]".parse::<BracketRangeList>()
+                .unwrap()
+                .expand_below(0)
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!("[]".parse::<BracketRangeList>().unwrap().0, [] as [u32; 0]);
         assert!("[5-1]".parse::<BracketRangeList>().is_err());
+
+        let huge = "[0-4000000000]".parse::<BracketRangeList>().unwrap();
+        assert_eq!(huge.0, [0..=4_000_000_000]);
+        assert!(huge.expand_below(1024).is_err());
     }
 
     #[test]
