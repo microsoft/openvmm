@@ -117,7 +117,8 @@ pub trait NvramStorage: Send + Sync {
         ))
     }
 
-    /// Called after custom UEFI variables are injected on first boot.
+    /// Called after custom UEFI variables are injected on first boot,
+    /// when secure boot is enabled.
     fn after_custom_vars_injected(&self) {}
 }
 

@@ -242,7 +242,8 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         self.storage.is_empty().await
     }
 
-    /// Called after custom UEFI variables are injected on first boot.
+    /// Called after custom UEFI variables are injected on first boot,
+    /// when secure boot is enabled.
     pub fn after_custom_vars_injected(&self) {
         self.storage.after_custom_vars_injected()
     }

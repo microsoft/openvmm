@@ -36,7 +36,6 @@ use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::in_memory;
 use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
-use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
 use uefi_specs::uefi::nvram::vars;
 use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
 use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
@@ -55,7 +54,14 @@ const INITIAL_NVRAM_SIZE: usize = 32768;
 const MAXIMUM_NVRAM_SIZE: usize = INITIAL_NVRAM_SIZE * 4;
 const WIN_CERT_REVISION_2_0: u16 = 0x0200;
 
-type SignatureSet = BTreeSet<(EFI_SIGNATURE_DATA, Vec<u8>)>;
+/// Signature identity for baseline telemetry; `SignatureOwner` is intentionally ignored.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SignatureValue {
+    X509(Vec<u8>),
+    Sha256(Vec<u8>),
+}
+
+type SignatureSet = BTreeSet<SignatureValue>;
 
 /// Base Secure Boot template variable contents expected to be present in loaded NVRAM.
 #[derive(Clone, Debug)]
@@ -390,6 +396,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                     tracing::warn!(
                         CVM_ALLOWED,
                         variable,
+                        base_template_bytes,
                         "base secure boot template variable contains no signatures"
                     );
                     continue;
@@ -632,13 +639,13 @@ fn collect_signature_set(data: &[u8]) -> Result<SignatureSet, SignatureListParse
             ParseSignatureList::X509(certs) => {
                 for cert in certs {
                     let cert = cert?;
-                    signatures.insert((cert.header, cert.data.0.as_ref().to_vec()));
+                    signatures.insert(SignatureValue::X509(cert.data.0.as_ref().to_vec()));
                 }
             }
             ParseSignatureList::Sha256(digests) => {
                 for digest in digests {
                     let digest = digest?;
-                    signatures.insert((digest.header, digest.data.0.as_ref().to_vec()));
+                    signatures.insert(SignatureValue::Sha256(digest.data.0.as_ref().to_vec()));
                 }
             }
         }
@@ -665,7 +672,9 @@ fn signature_list_payload(data: &[u8]) -> &[u8] {
         return data;
     }
 
-    let auth_len = size_of_val(&auth.timestamp) + cert_len;
+    let Some(auth_len) = size_of_val(&auth.timestamp).checked_add(cert_len) else {
+        return data;
+    };
     data.get(auth_len..).unwrap_or(data)
 }
 
@@ -713,10 +722,10 @@ mod test {
         data4: [0; 8],
     };
 
-    fn x509_variable(certs: &[&'static [u8]]) -> Vec<u8> {
+    fn x509_variable(owner: Guid, certs: &[&'static [u8]]) -> Vec<u8> {
         let mut data = Vec::new();
         for cert in certs {
-            SignatureList::X509(SignatureData::new_x509(TEST_OWNER, Cow::Borrowed(*cert)))
+            SignatureList::X509(SignatureData::new_x509(owner, Cow::Borrowed(*cert)))
                 .extend_as_spec_signature_list(&mut data);
         }
         data
@@ -727,9 +736,14 @@ mod test {
     }
 
     #[test]
+    fn empty_secure_boot_variable_contains_no_signatures() {
+        assert!(signature_set(&[]).is_empty());
+    }
+
+    #[test]
     fn base_secure_boot_template_variable_counts_missing_entries() {
-        let base_data = x509_variable(&[b"cert1", b"cert2"]);
-        let loaded_data = x509_variable(&[b"cert1", b"cert3"]);
+        let base_data = x509_variable(TEST_OWNER, &[b"cert1", b"cert2"]);
+        let loaded_data = x509_variable(TEST_OWNER, &[b"cert1", b"cert3"]);
         let base = signature_set(&base_data);
         let loaded = signature_set(&loaded_data);
         let missing_entries = base.difference(&loaded).count();
@@ -740,12 +754,30 @@ mod test {
     }
 
     #[test]
+    fn secure_boot_template_comparison_ignores_signature_owner() {
+        let baseline = signature_set(&x509_variable(TEST_OWNER, &[b"cert1"]));
+        let loaded = signature_set(&x509_variable(Guid::new_random(), &[b"cert1"]));
+
+        assert_eq!(baseline, loaded);
+    }
+
+    #[test]
     fn secure_boot_template_variable_skips_auth_header() {
-        let data = x509_variable(&[b"cert1"]);
+        let data = x509_variable(TEST_OWNER, &[b"cert1"]);
         let mut authenticated_data = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
         authenticated_data.extend_from_slice(&data);
 
         assert_eq!(signature_set(&authenticated_data), signature_set(&data));
+    }
+
+    #[test]
+    fn secure_boot_template_variable_rejects_invalid_auth_header_length() {
+        let mut data = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+        let length_offset = size_of_val(&EFI_VARIABLE_AUTHENTICATION_2::DUMMY.timestamp);
+        data[length_offset..length_offset + size_of::<u32>()]
+            .copy_from_slice(&u32::MAX.to_ne_bytes());
+
+        assert_eq!(signature_list_payload(&data), data);
     }
 
     /// An ephemeral implementation of [`StorageBackend`] backed by an in-memory
