@@ -186,7 +186,7 @@ impl MshvIrqFd {
 }
 
 impl IrqFd for MshvIrqFd {
-    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+    fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
         let gsi = self
             .partition
             .alloc_gsi()
@@ -198,7 +198,6 @@ impl IrqFd for MshvIrqFd {
         // time and does not retarget on a later routing change, so the routing
         // must be in place *before* the irqfd is armed. Arming lazily also
         // works for x86_64 (enable() arms after setting the route).
-        let event = Event::new();
         Ok(Box::new(MshvIrqFdRoute {
             partition: self.partition.clone(),
             gsi,
@@ -239,7 +238,7 @@ impl IrqFdRoute for MshvIrqFdRoute {
         &self.event
     }
 
-    fn enable(&self, address: u64, data: u32, _devid: Option<u32>) {
+    fn enable(&self, address: u64, data: u32, _devid: Option<u32>) -> bool {
         let mut armed = self.armed.lock();
         let route = MsiRoute {
             address_lo: address as u32,
@@ -248,17 +247,20 @@ impl IrqFdRoute for MshvIrqFdRoute {
         };
         if let Err(e) = self.partition.set_gsi_route(self.gsi, Some(route)) {
             tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to set GSI route");
-            return;
+            return false;
         }
         if !*armed {
             // SAFETY: `self.event` is owned by this struct and will outlive
             // the registration (unregistered in `disarm` or `Drop`).
             if let Err(e) = unsafe { self.partition.register_irqfd(&self.event, self.gsi) } {
                 tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to register irqfd");
-                return;
+                return false;
             }
             *armed = true;
         }
+        // The MSHV backend delivers to the LAPIC, which accepts any MSI
+        // address, so the route is always bound in the kernel here.
+        true
     }
 
     fn disable(&self) {

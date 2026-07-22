@@ -15,12 +15,8 @@
 //!
 //! [`SmmuSignalMsi`] implements [`SignalMsi`], translating the MSI address
 //! (which may be an IOVA) to a GPA before forwarding to the inner MSI
-//! target.
-//!
-//! [`SmmuIrqFd`] implements [`IrqFd`](vmcore::irqfd::IrqFd), producing
-//! [`SmmuIrqFdRoute`] instances that translate the MSI address on
-//! [`enable`](vmcore::irqfd::IrqFdRoute::enable) before forwarding to the
-//! inner irqfd route.
+//! target — both for usermode [`signal_msi`](SignalMsi::signal_msi) and for
+//! kernel-mediated [`bind_msi`](SignalMsi::bind_msi).
 
 use crate::spec::events::EventId;
 use crate::spec::events::EvtEntry;
@@ -34,8 +30,7 @@ use pci_core::msi::SignalMsi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Weak;
-use vmcore::irqfd::IrqFd;
-use vmcore::irqfd::IrqFdRoute;
+use vmcore::irqfd::KernelMsiBinding;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -1331,26 +1326,6 @@ impl SmmuSharedState {
             stream_id_base,
         }
     }
-
-    /// Creates an SMMU irqfd wrapper for a PCI device behind this SMMU.
-    ///
-    /// `stream_id_base` is the offset into this SMMU's stream table for the
-    /// root complex this device belongs to.
-    ///
-    /// Irqfd routes created from the returned wrapper will translate MSI
-    /// addresses through the SMMU page tables before programming the
-    /// kernel route.
-    pub fn wrap_irqfd(
-        self: &Arc<Self>,
-        stream_id_base: u32,
-        inner: Arc<dyn IrqFd>,
-    ) -> Arc<SmmuIrqFd> {
-        Arc::new(SmmuIrqFd {
-            shared: self.clone(),
-            stream_id_base,
-            inner,
-        })
-    }
 }
 
 /// An [`IommuTranslator`](iommu_common::IommuTranslator) for the ARM SMMUv3.
@@ -1505,65 +1480,27 @@ impl SignalMsi for SmmuSignalMsi {
             }
         }
     }
-}
 
-/// An [`IrqFd`] wrapper that produces SMMU-translating irqfd routes.
-///
-/// When a device behind the SMMU programs its MSI-X table, the MSI address
-/// may be an IOVA. This wrapper creates [`SmmuIrqFdRoute`] instances that
-/// translate the address through the SMMU before forwarding to the inner
-/// irqfd route (which may itself be an ITS wrapper).
-pub struct SmmuIrqFd {
-    shared: Arc<SmmuSharedState>,
-    /// Offset into the SMMU's stream table for this root complex.
-    stream_id_base: u32,
-    inner: Arc<dyn IrqFd>,
-}
-
-impl IrqFd for SmmuIrqFd {
-    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
-        let inner_route = self.inner.new_irqfd_route()?;
-        Ok(Box::new(SmmuIrqFdRoute {
-            shared: self.shared.clone(),
-            stream_id_base: self.stream_id_base,
-            inner: inner_route,
-        }))
-    }
-}
-
-/// An [`IrqFdRoute`] wrapper that translates the MSI address through the
-/// SMMU on [`enable`](IrqFdRoute::enable).
-///
-/// Translation happens at route-programming time (when the guest writes
-/// the MSI-X table), not per-interrupt. If the guest changes SMMU page
-/// tables after programming MSI-X, it must also re-program the MSI-X
-/// entry (which is the normal flow — the IOMMU driver does this).
-struct SmmuIrqFdRoute {
-    shared: Arc<SmmuSharedState>,
-    /// Offset into the SMMU's stream table for this root complex.
-    stream_id_base: u32,
-    inner: Box<dyn IrqFdRoute>,
-}
-
-impl IrqFdRoute for SmmuIrqFdRoute {
-    fn event(&self) -> &Event {
-        self.inner.event()
-    }
-
-    fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
-        // MsiRoute resolves devid to a BDF before calling us.
-        let Some(bdf) = devid else {
-            return;
-        };
+    fn bind_msi(
+        &self,
+        fd: &Event,
+        devid: Option<u32>,
+        address: u64,
+        data: u32,
+    ) -> Option<Box<dyn KernelMsiBinding>> {
+        // Translate the (possibly IOVA) MSI address through the SMMU, then bind
+        // the fd against the underlying sink at the translated address.
+        // Translation happens at route-programming time (when the guest writes
+        // the MSI-X table), not per-interrupt; a later page-table change
+        // requires the guest to re-program MSI-X (the normal IOMMU flow).
+        //
+        // `MsiTarget` resolves devid to a BDF before calling us.
+        let bdf = devid?;
         let sid = self.stream_id_base + (bdf & 0xFFFF);
 
         match self.shared.translate(sid, address, true) {
-            TranslateResult::Bypass => {
-                self.inner.enable(address, data, devid);
-            }
-            TranslateResult::Translated(gpa) => {
-                self.inner.enable(gpa, data, devid);
-            }
+            TranslateResult::Bypass => self.inner.bind_msi(fd, devid, address, data),
+            TranslateResult::Translated(gpa) => self.inner.bind_msi(fd, devid, gpa, data),
             TranslateResult::GlobalAbort | TranslateResult::Abort => {
                 // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
                 // STE with `Config[2]==0`. Drop the route.
@@ -1572,6 +1509,7 @@ impl IrqFdRoute for SmmuIrqFdRoute {
                     address,
                     "smmu: irqfd MSI route aborted, no event"
                 );
+                None
             }
             TranslateResult::Fault(event) => {
                 self.shared.write_event(event);
@@ -1580,12 +1518,9 @@ impl IrqFdRoute for SmmuIrqFdRoute {
                     address,
                     "smmu: irqfd MSI route translation fault"
                 );
+                None
             }
         }
-    }
-
-    fn disable(&self) {
-        self.inner.disable();
     }
 }
 

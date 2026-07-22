@@ -4,32 +4,49 @@
 //! Traits for working with MSI interrupts.
 
 use crate::bus_range::AssignedBusRange;
+pub use chipset_device::msi::SignalMsi;
+use pal_async::driver::SpawnDriver;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
+use pal_async::wait::PolledWait;
 use pal_event::Event;
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use vmcore::irqfd::IrqFd;
-use vmcore::irqfd::IrqFdRoute;
-
-/// An object that can signal MSI interrupts.
-pub trait SignalMsi: Send + Sync {
-    /// Signals a message-signaled interrupt at the specified address with the specified data.
-    ///
-    /// `devid` is an optional device identity. Its meaning is layer-dependent:
-    /// at the device layer it is a BDF for multi-function devices (`None` for
-    /// single-function); at the ITS wrapper layer it is the fully composed ITS
-    /// device ID; backends that don't need it ignore it.
-    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32);
-}
+use vmcore::irqfd::KernelMsiBinding;
 
 /// A kernel-mediated MSI interrupt route for a single vector.
 ///
-/// Each route has an associated event. Signaling the event causes the
-/// hypervisor to inject the configured MSI into the guest without a
-/// userspace transition. This is used for device passthrough (VFIO)
-/// where the physical device signals the event on interrupt.
+/// Each route owns an [`Event`] (fd). Signaling the event delivers the MSI —
+/// either directly in the hypervisor (when the guest-programmed address decodes
+/// to a kernel-serviceable sink) or in usermode (when it decodes to an emulated
+/// controller). The route owns the fd rather than the backend minting it, so a
+/// single fd — the one handed to VFIO — can be rebound across backends as the
+/// guest reprograms the MSI address. Exactly one consumer reads the fd at a
+/// time: the kernel binding, or the usermode fallback task.
+///
+/// The route does not hold a fixed backend: on each [`enable`](Self::enable) it
+/// binds through the connection's router ([`SignalMsi::bind_msi`]), which
+/// decodes the guest-programmed address to a sink afresh. A reprogram that
+/// keeps the same sink updates the binding in place
+/// ([`KernelMsiBinding::update`]) with no fd churn; a reprogram that changes
+/// the sink drops the old binding (unbinding the fd) before binding the new
+/// one.
 pub struct MsiRoute {
-    inner: Box<dyn IrqFdRoute>,
     default_rid: DefaultRid,
+    /// The shared backend slot — read live for the router (`signal_msi` /
+    /// `bind_msi`) and the driver that runs the usermode fallback task.
+    connection: Arc<RwLock<MsiTargetInner>>,
+    /// The fd both VFIO and the usermode fallback consume — one at a time.
+    event: Event,
+    /// The current kernel binding, when the guest-programmed address decodes to
+    /// a kernel-serviceable sink. `None` while delivering in usermode (or
+    /// disabled). Dropping it unbinds the fd from the kernel.
+    binding: Mutex<Option<Box<dyn KernelMsiBinding>>>,
+    /// The usermode fallback task. Present only while the address decodes to a
+    /// sink the kernel cannot service; dropping it cancels the poll and
+    /// releases the fd.
+    usermode: Mutex<Option<Task<()>>>,
 }
 
 impl MsiRoute {
@@ -37,7 +54,7 @@ impl MsiRoute {
     ///
     /// Pass this to VFIO `map_msix` or any other interrupt source.
     pub fn event(&self) -> &Event {
-        self.inner.event()
+        &self.event
     }
 
     /// Configures the MSI address and data for this route, using the route's
@@ -49,10 +66,10 @@ impl MsiRoute {
         // `resolve_default_rid` emits the ratelimited warning when the
         // resolved bus is out of range; just leave the route disabled here.
         let Some(resolved) = resolve_default_rid(&self.default_rid) else {
-            self.inner.disable();
+            self.disable();
             return;
         };
-        self.inner.enable(address, data, Some(resolved))
+        self.set(address, data, resolved);
     }
 
     /// Configures the MSI address and data for this route, using
@@ -76,10 +93,45 @@ impl MsiRoute {
                 subordinate,
                 "refusing to enable MSI route: rid bus outside assigned bus range"
             );
-            self.inner.disable();
+            self.disable();
             return;
         }
-        self.inner.enable(address, data, Some(rid.into()))
+        self.set(address, data, rid.into());
+    }
+
+    /// Programs the route for the given address/data with the resolved
+    /// requester ID: bind the kernel route when the address decodes to a
+    /// kernel sink, otherwise fall back to usermode delivery.
+    fn set(&self, address: u64, data: u32, rid: u32) {
+        // Fast path: if the address still resolves to the sink we're already
+        // bound to, re-point the routing entry in place without touching the fd
+        // assignment (the common case: the guest reprogrammed only the vector).
+        if let Some(binding) = &*self.binding.lock() {
+            if binding.update(Some(rid), address, data) {
+                return;
+            }
+        }
+
+        // Slow path: the backend changed (or there was no binding). Tear down
+        // the old consumer of the fd before establishing the new one — an
+        // eventfd has exactly one consumer, so the kernel binding must be
+        // dropped (unbinding the fd) and the usermode poll stopped before we
+        // bind or poll again. A device signal that lands in the gap is not
+        // lost: the fd stays readable and the new consumer picks it up.
+        self.stop_usermode();
+        *self.binding.lock() = None;
+
+        let router = self.connection.read().signal_msi.clone();
+        match router.bind_msi(&self.event, Some(rid), address, data) {
+            Some(binding) => *self.binding.lock() = Some(binding),
+            None => {
+                // The address does not decode to a kernel-serviceable sink (an
+                // emulated controller, or — pending the per-segment guard — a
+                // foreign sink). Deliver in usermode by polling our fd and
+                // dispatching through the connection's router.
+                self.start_usermode(Some(rid), address, data);
+            }
+        }
     }
 
     /// Disables the MSI route. Interrupts that arrive while disabled
@@ -87,13 +139,58 @@ impl MsiRoute {
     /// [`enable`](Self::enable) is called, or can be drained via
     /// [`consume_pending`](Self::consume_pending).
     pub fn disable(&self) {
-        self.inner.disable()
+        self.stop_usermode();
+        // Dropping the binding unbinds the fd from the kernel.
+        *self.binding.lock() = None;
     }
 
     /// Drains pending interrupt state and returns whether an interrupt
     /// was pending while the route was masked.
     pub fn consume_pending(&self) -> bool {
-        self.event().try_wait()
+        self.event.try_wait()
+    }
+
+    /// Stops the usermode fallback task, if running, releasing the fd.
+    fn stop_usermode(&self) {
+        // Dropping the task cancels the poll loop.
+        *self.usermode.lock() = None;
+    }
+
+    /// Starts the usermode fallback: a task that waits on our fd and, on each
+    /// signal, dispatches through the connection's router (the address decodes
+    /// to the emulated sink there). No-ops with a warning if no driver was
+    /// supplied (e.g. in tests), matching the prior drop-on-miss behavior.
+    fn start_usermode(&self, devid: Option<u32>, address: u64, data: u32) {
+        let driver = self.connection.read().driver.clone();
+        let Some(driver) = driver else {
+            tracelimit::warn_ratelimited!(
+                address,
+                data,
+                "MSI route not kernel-serviceable and no driver for usermode fallback; dropping"
+            );
+            return;
+        };
+        let wait = match PolledWait::new(&*driver, self.event.clone()) {
+            Ok(wait) => wait,
+            Err(e) => {
+                tracelimit::error_ratelimited!(
+                    error = &e as &dyn std::error::Error,
+                    "failed to create usermode MSI wait"
+                );
+                return;
+            }
+        };
+        let connection = self.connection.clone();
+        let task = driver.spawn("msi-usermode-route", async move {
+            let mut wait = wait;
+            loop {
+                wait.wait().await.expect("wait should not fail");
+                // Read the router live so a reconnect is picked up.
+                let signal = connection.read().signal_msi.clone();
+                signal.signal_msi(devid, address, data);
+            }
+        });
+        *self.usermode.lock() = Some(task);
     }
 }
 
@@ -170,7 +267,7 @@ impl MsiTarget {
         Self {
             inner: Arc::new(RwLock::new(MsiTargetInner {
                 signal_msi: Arc::new(DisconnectedMsiTarget),
-                irqfd: None,
+                driver: None,
             })),
             default_rid: DefaultRid {
                 bus_range: AssignedBusRange::new(),
@@ -190,17 +287,23 @@ impl std::fmt::Debug for MsiTarget {
 
 struct MsiTargetInner {
     signal_msi: Arc<dyn SignalMsi>,
-    irqfd: Option<Arc<dyn IrqFd>>,
+    /// Driver used to run [`MsiRoute`]s. Its presence also gates whether direct
+    /// (fd-based / passthrough) routes are supported: it is set by the wiring
+    /// only on platforms that support kernel-mediated routes. A route binds its
+    /// fd through the connection's router ([`SignalMsi::bind_msi`]); when the
+    /// guest-programmed address does not decode to a kernel sink, the route
+    /// polls the fd on this driver and delivers via `signal_msi`.
+    driver: Option<Arc<dyn SpawnDriver>>,
 }
 
 impl std::fmt::Debug for MsiTargetInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             signal_msi: _,
-            irqfd,
+            driver,
         } = self;
         f.debug_struct("MsiTargetInner")
-            .field("has_irqfd", &irqfd.is_some())
+            .field("has_driver", &driver.is_some())
             .finish()
     }
 }
@@ -216,7 +319,7 @@ impl MsiConnection {
         Self {
             inner: Arc::new(RwLock::new(MsiTargetInner {
                 signal_msi: Arc::new(DisconnectedMsiTarget),
-                irqfd: None,
+                driver: None,
             })),
         }
     }
@@ -227,13 +330,18 @@ impl MsiConnection {
         inner.signal_msi = signal_msi;
     }
 
-    /// Sets the [`IrqFd`] for kernel-mediated MSI route allocation.
+    /// Enables kernel-mediated (fd-based / passthrough) MSI routes on this
+    /// connection, supplying the `driver` used to run them.
     ///
-    /// When present, [`MsiTarget::new_route`] can create [`MsiRoute`]
-    /// instances for direct interrupt delivery.
-    pub fn connect_irqfd(&self, irqfd: Arc<dyn IrqFd>) {
+    /// The wiring calls this only on platforms that support kernel-mediated
+    /// routes. After it is called, [`MsiTarget::new_route`] can create
+    /// [`MsiRoute`] instances: each binds its fd through the connection's
+    /// router ([`SignalMsi::bind_msi`]), and falls back to a usermode poll on
+    /// this driver when the guest-programmed address does not decode to a
+    /// kernel sink.
+    pub fn enable_msi_routes(&self, driver: Arc<dyn SpawnDriver>) {
         let mut inner = self.inner.write();
-        inner.irqfd = Some(irqfd);
+        inner.driver = Some(driver);
     }
 
     /// Derives an MSI target with the given identity, sharing this
@@ -365,23 +473,31 @@ impl MsiTarget {
     ///
     /// The route inherits this target's default BDF source so that
     /// [`MsiRoute::enable`] resolves the BDF the same way
-    /// [`signal_msi`](Self::signal_msi) does.
+    /// [`signal_msi`](Self::signal_msi) does. It owns a fresh fd and binds it,
+    /// on each [`enable`](MsiRoute::enable), through the connection's router
+    /// ([`SignalMsi::bind_msi`]) — so the fd (the one handed to VFIO) follows
+    /// the guest across sinks as it reprograms the MSI address.
     ///
-    /// Returns `None` if no [`IrqFd`] has been connected.
+    /// Returns `None` if kernel-mediated routes have not been enabled on the
+    /// connection (see [`MsiConnection::enable_msi_routes`]).
     pub fn new_route(&self) -> Option<anyhow::Result<MsiRoute>> {
         let inner = self.inner.read();
-        inner.irqfd.as_ref().map(|fd| {
-            Ok(MsiRoute {
-                inner: fd.new_irqfd_route()?,
-                default_rid: self.default_rid.clone(),
-            })
-        })
+        // Routes are supported iff the wiring enabled them (which also supplies
+        // the driver for the usermode fallback leg).
+        inner.driver.as_ref()?;
+        Some(Ok(MsiRoute {
+            default_rid: self.default_rid.clone(),
+            connection: self.inner.clone(),
+            event: Event::new(),
+            binding: Mutex::new(None),
+            usermode: Mutex::new(None),
+        }))
     }
 
     /// Returns whether this target supports direct MSI routes.
     pub fn supports_direct_msi(&self) -> bool {
         let inner = self.inner.read();
-        inner.irqfd.is_some()
+        inner.driver.is_some()
     }
 }
 
@@ -389,6 +505,8 @@ impl MsiTarget {
 mod tests {
     use super::*;
     use crate::bus_range::AssignedBusRange;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use pal_event::Event;
     use parking_lot::Mutex;
     use std::collections::VecDeque;
@@ -416,67 +534,49 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq)]
-    enum RouteCall {
-        Enable {
+    /// A recording MSI router whose `bind_msi` logs each bind and hands back a
+    /// binding that always requests a rebind (so every route `enable` re-binds
+    /// and is captured). Models a kernel-serviceable sink for route tests.
+    struct RecordingRouter {
+        binds: Arc<Mutex<Vec<(Option<u32>, u64, u32)>>>,
+    }
+
+    impl SignalMsi for RecordingRouter {
+        fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {}
+
+        fn bind_msi(
+            &self,
+            _fd: &Event,
+            devid: Option<u32>,
             address: u64,
             data: u32,
-            devid: Option<u32>,
-        },
-        Disable,
-    }
-
-    struct MockIrqFdRoute {
-        event: Event,
-        calls: Arc<Mutex<Vec<RouteCall>>>,
-    }
-
-    impl IrqFdRoute for MockIrqFdRoute {
-        fn event(&self) -> &Event {
-            &self.event
-        }
-
-        fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
-            self.calls.lock().push(RouteCall::Enable {
-                address,
-                data,
-                devid,
-            });
-        }
-
-        fn disable(&self) {
-            self.calls.lock().push(RouteCall::Disable);
+        ) -> Option<Box<dyn KernelMsiBinding>> {
+            self.binds.lock().push((devid, address, data));
+            Some(Box::new(RecordingBinding))
         }
     }
 
-    fn mock_irqfd(count: usize) -> (Arc<dyn IrqFd>, Vec<Arc<Mutex<Vec<RouteCall>>>>) {
-        let mut call_logs = Vec::new();
-        let route_params = Arc::new(Mutex::new(Vec::new()));
-        for _ in 0..count {
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            call_logs.push(calls.clone());
-            route_params.lock().push(calls);
-        }
+    struct RecordingBinding;
 
-        struct MockIrqFd {
-            routes: Mutex<Vec<Arc<Mutex<Vec<RouteCall>>>>>,
+    impl KernelMsiBinding for RecordingBinding {
+        fn update(&self, _devid: Option<u32>, _address: u64, _data: u32) -> bool {
+            // Force a full rebind on every reprogram so each `enable` is logged.
+            false
         }
-        impl IrqFd for MockIrqFd {
-            fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
-                let calls = self.routes.lock().remove(0);
-                Ok(Box::new(MockIrqFdRoute {
-                    event: Event::new(),
-                    calls,
-                }))
-            }
-        }
+    }
 
-        (
-            Arc::new(MockIrqFd {
-                routes: Mutex::new(call_logs.clone()),
-            }),
-            call_logs,
-        )
+    /// Builds a connection with routes enabled (via `driver`) and a recording
+    /// router, returning the connection and the shared bind log.
+    fn route_conn(
+        driver: Arc<dyn SpawnDriver>,
+    ) -> (MsiConnection, Arc<Mutex<Vec<(Option<u32>, u64, u32)>>>) {
+        let binds = Arc::new(Mutex::new(Vec::new()));
+        let msi_conn = MsiConnection::new();
+        msi_conn.connect(Arc::new(RecordingRouter {
+            binds: binds.clone(),
+        }));
+        msi_conn.enable_msi_routes(driver);
+        (msi_conn, binds)
     }
 
     #[test]
@@ -561,13 +661,11 @@ mod tests {
         assert!(recorder.pop().is_some());
     }
 
-    #[test]
-    fn route_enable_resolves_default_rid() {
+    #[async_test]
+    async fn route_enable_resolves_default_rid(driver: DefaultDriver) {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(3, 8);
-        let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new();
-        msi_conn.connect_irqfd(irqfd);
+        let (msi_conn, binds) = route_conn(Arc::new(driver));
 
         let route = msi_conn
             .msi_target(bus_range, 0x10)
@@ -576,25 +674,16 @@ mod tests {
             .unwrap();
         route.enable(0xFEE0_0000, 55);
 
-        let log = calls[0].lock();
+        let log = binds.lock();
         assert_eq!(log.len(), 1);
-        assert_eq!(
-            log[0],
-            RouteCall::Enable {
-                address: 0xFEE0_0000,
-                data: 55,
-                devid: Some((3 << 8) | 0x10),
-            }
-        );
+        assert_eq!(log[0], (Some((3 << 8) | 0x10), 0xFEE0_0000, 55));
     }
 
-    #[test]
-    fn route_enable_with_rid_accepts_bus_in_range() {
+    #[async_test]
+    async fn route_enable_with_rid_accepts_bus_in_range(driver: DefaultDriver) {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new();
-        msi_conn.connect_irqfd(irqfd);
+        let (msi_conn, binds) = route_conn(Arc::new(driver));
 
         let route = msi_conn
             .msi_target(bus_range, 0)
@@ -604,38 +693,27 @@ mod tests {
         let rid: u16 = (7 << 8) | 0x0A;
         route.enable_with_rid(rid, 0xBEEF, 77);
 
-        let log = calls[0].lock();
+        let log = binds.lock();
         assert_eq!(log.len(), 1);
-        assert_eq!(
-            log[0],
-            RouteCall::Enable {
-                address: 0xBEEF,
-                data: 77,
-                devid: Some(rid as u32),
-            }
-        );
+        assert_eq!(log[0], (Some(rid as u32), 0xBEEF, 77));
     }
 
-    #[test]
-    fn route_enable_with_rid_disables_when_bus_outside_range() {
+    #[async_test]
+    async fn route_enable_with_rid_disables_when_bus_outside_range(driver: DefaultDriver) {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new();
-        msi_conn.connect_irqfd(irqfd);
+        let (msi_conn, binds) = route_conn(Arc::new(driver));
 
         let route = msi_conn
             .msi_target(bus_range, 0)
             .new_route()
             .unwrap()
             .unwrap();
-        // bus=11, above subordinate → should disable
+        // bus=11, above subordinate → route left disabled, no bind
         let rid: u16 = 11 << 8;
         route.enable_with_rid(rid, 0xBEEF, 77);
 
-        let log = calls[0].lock();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0], RouteCall::Disable);
+        assert!(binds.lock().is_empty());
     }
 
     #[test]
@@ -715,22 +793,18 @@ mod tests {
         assert!(recorder.pop().is_none());
     }
 
-    #[test]
-    fn with_rid_route_enable_disables_when_bus_outside_range() {
+    #[async_test]
+    async fn with_rid_route_enable_disables_when_bus_outside_range(driver: DefaultDriver) {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(5, 10);
-        let (irqfd, calls) = mock_irqfd(1);
-        let msi_conn = MsiConnection::new();
-        msi_conn.connect_irqfd(irqfd);
+        let (msi_conn, binds) = route_conn(Arc::new(driver));
 
         // Derive a target whose override bus (11) is outside [5, 10], then
-        // enable a route from it: the route must be disabled, not enabled.
+        // enable a route from it: the route must be left disabled, not bound.
         let derived = msi_conn.msi_target(bus_range, 0).with_rid(11 << 8);
         let route = derived.new_route().unwrap().unwrap();
         route.enable(0xBEEF, 77);
 
-        let log = calls[0].lock();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0], RouteCall::Disable);
+        assert!(binds.lock().is_empty());
     }
 }

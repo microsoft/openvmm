@@ -622,6 +622,7 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
+ "pal_event",
  "tdisp",
  "vmcore",
  "zerocopy",
@@ -5947,6 +5948,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "pci_bus",
  "pci_core",
@@ -6556,6 +6558,7 @@ dependencies = [
  "inspect",
  "mesh",
  "open_enum",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "thiserror 2.0.16",
@@ -8022,7 +8025,6 @@ dependencies = [
 name = "smmu"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "bitfield-struct 0.11.0",
  "chipset_device",
  "guestmem",
