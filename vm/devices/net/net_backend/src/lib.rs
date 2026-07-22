@@ -558,10 +558,20 @@ enum DisconnectableEndpointUpdate {
 
 pub struct DisconnectableEndpointControl {
     send_update: mesh::Sender<DisconnectableEndpointUpdate>,
+    is_ordered: Option<bool>,
 }
 
 impl DisconnectableEndpointControl {
     pub fn connect(&mut self, endpoint: Box<dyn Endpoint>) -> anyhow::Result<()> {
+        let new_is_ordered = endpoint.is_ordered();
+        if let Some(is_ordered) = self.is_ordered {
+            anyhow::ensure!(
+                !is_ordered || new_is_ordered,
+                "network endpoint cannot be reattached as unordered after being ordered"
+            );
+        } else {
+            self.is_ordered = Some(new_is_ordered);
+        }
         self.send_update
             .send(DisconnectableEndpointUpdate::EndpointConnected(endpoint));
         Ok(())
@@ -605,6 +615,7 @@ impl DisconnectableEndpoint {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
         let control = DisconnectableEndpointControl {
             send_update: endpoint_tx,
+            is_ordered: None,
         };
         (
             Self {
@@ -722,13 +733,6 @@ impl Endpoint for DisconnectableEndpoint {
                 let old_endpoint = self.endpoint.take();
                 assert!(old_endpoint.is_none());
                 self.endpoint = Some(endpoint);
-                // Ordering is pinned at the first connect and reported
-                // unchanged for the endpoint's lifetime. Consumers bake the
-                // value into correctness decisions (e.g. virtio-net advertises
-                // VIRTIO_F_IN_ORDER to the guest based on it), so a reattach
-                // MUST NOT downgrade an ordered endpoint to an unordered one.
-                // Upgrading (unordered -> ordered) is harmless but we keep
-                // reporting the original conservative value for stability.
                 let new_is_ordered = self.current().is_ordered();
                 let is_ordered = if let Some(prev) = &self.cached_state {
                     assert!(
@@ -768,5 +772,64 @@ impl Endpoint for DisconnectableEndpoint {
             .as_ref()
             .expect("Endpoint needs connected at least once before use")
             .link_speed
+    }
+}
+
+#[cfg(test)]
+mod disconnectable_endpoint_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[derive(InspectMut)]
+    struct TestEndpoint {
+        is_ordered: bool,
+    }
+
+    #[async_trait]
+    impl Endpoint for TestEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        async fn get_queues(
+            &mut self,
+            _config: Vec<QueueConfig>,
+            _rss: Option<&RssConfig<'_>>,
+            _queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn stop(&mut self) {
+            unreachable!()
+        }
+
+        fn is_ordered(&self) -> bool {
+            self.is_ordered
+        }
+    }
+
+    #[test]
+    fn connect_pins_endpoint_ordering() {
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
+
+        let err = control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "network endpoint cannot be reattached as unordered after being ordered"
+        );
+
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
     }
 }
