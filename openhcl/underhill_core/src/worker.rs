@@ -2541,34 +2541,25 @@ async fn new_underhill_vm(
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
         // map the GET's template enum onto the hardcoded secureboot template type
-        let (base_vars, base_secure_boot_template_revision) = match dps.general.secure_boot_template
-        {
-            SecureBootTemplateType::None => (CustomVars::default(), None),
+        let base_vars = match dps.general.secure_boot_template {
+            SecureBootTemplateType::None => CustomVars::default(),
             SecureBootTemplateType::MicrosoftWindows => {
-                let vars = if cfg!(guest_arch = "x86_64") {
+                if cfg!(guest_arch = "x86_64") {
                     hyperv_secure_boot_templates::x64::microsoft_windows()
                 } else if cfg!(guest_arch = "aarch64") {
                     hyperv_secure_boot_templates::aarch64::microsoft_windows()
                 } else {
                     anyhow::bail!("no secure boot template for current guest_arch")
-                };
-                (
-                    vars,
-                    Some(hyperv_secure_boot_templates::BASELINE_REVISION.to_owned()),
-                )
+                }
             }
             SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                let vars = if cfg!(guest_arch = "x86_64") {
+                if cfg!(guest_arch = "x86_64") {
                     hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
                 } else if cfg!(guest_arch = "aarch64") {
                     hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
                 } else {
                     anyhow::bail!("no secure boot template for current guest_arch")
-                };
-                (
-                    vars,
-                    Some(hyperv_secure_boot_templates::BASELINE_REVISION.to_owned()),
-                )
+                }
             }
         };
         let base_secure_boot_template_vars = base_vars.clone();
@@ -2612,7 +2603,6 @@ async fn new_underhill_vm(
         let config = firmware_uefi_resources::UefiConfig {
             base_secure_boot_template_vars,
             custom_uefi_vars,
-            base_secure_boot_template_revision,
             custom_uefi_config_present,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,

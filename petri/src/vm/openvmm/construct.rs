@@ -412,9 +412,6 @@ impl PetriVmConfigOpenVmm {
                     (_, None) => Default::default(),
                 });
             let custom_uefi_vars = base_secure_boot_template_vars.clone();
-            let base_secure_boot_template_revision = uefi_cfg
-                .and_then(|c| c.secure_boot_template)
-                .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_owned());
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
                 .map(|c| c.efi_diagnostics_log_level)
@@ -439,7 +436,6 @@ impl PetriVmConfigOpenVmm {
                 },
                 base_secure_boot_template_vars,
                 custom_uefi_vars,
-                base_secure_boot_template_revision,
                 false,
                 secure_boot,
                 log_level,

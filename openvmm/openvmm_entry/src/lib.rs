@@ -1177,12 +1177,7 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let (
-        base_secure_boot_template_vars,
-        custom_uefi_vars,
-        base_secure_boot_template_revision,
-        custom_uefi_config_present,
-    ) = {
+    let (base_secure_boot_template_vars, custom_uefi_vars, custom_uefi_config_present) = {
         use firmware_uefi_custom_vars::CustomVars;
 
         // load base vars from specified template, or use an empty set of base
@@ -1205,9 +1200,6 @@ async fn vm_config_from_command_line(
             None => CustomVars::default(),
         };
         let base_secure_boot_template_vars = base_vars.clone();
-        let base_secure_boot_template_revision = opt
-            .secure_boot_template
-            .map(|_| hyperv_secure_boot_templates::BASELINE_REVISION.to_owned());
 
         // TODO: fallback to VMGS read if no command line flag was given
 
@@ -1229,7 +1221,6 @@ async fn vm_config_from_command_line(
         (
             base_secure_boot_template_vars,
             custom_uefi_vars,
-            base_secure_boot_template_revision,
             custom_uefi_config_present,
         )
     };
@@ -1249,7 +1240,6 @@ async fn vm_config_from_command_line(
             arch,
             base_secure_boot_template_vars,
             custom_uefi_vars,
-            base_secure_boot_template_revision,
             custom_uefi_config_present,
             opt.secure_boot,
             log_level,

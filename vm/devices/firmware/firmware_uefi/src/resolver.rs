@@ -200,12 +200,14 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             storage_quirks,
         );
         let nvram_storage = if config.secure_boot {
+            let baseline_configured = config.base_secure_boot_template_vars.signatures.is_some();
             tracing::info!(
-                baseline_configured = config.base_secure_boot_template_vars.signatures.is_some(),
-                baseline_revision = config
-                    .base_secure_boot_template_revision
-                    .as_deref()
-                    .unwrap_or("none"),
+                baseline_configured,
+                baseline_revision = if baseline_configured {
+                    hyperv_secure_boot_templates::BASELINE_REVISION
+                } else {
+                    "none"
+                },
                 custom_uefi_config_present = config.custom_uefi_config_present,
                 "secure boot configuration"
             );
