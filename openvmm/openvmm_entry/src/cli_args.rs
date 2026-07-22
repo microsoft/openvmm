@@ -4807,6 +4807,7 @@ mod tests {
         let c = NvmeControllerCli::from_str("id=nvme1,vpci").unwrap();
         assert_eq!(c.id, "nvme1");
         assert!(matches!(c.transport, NvmeControllerTransport::Vpci(None)));
+        assert!(NvmeControllerCli::from_str("id=nvme1,vpci=").is_err());
     }
 
     #[test]

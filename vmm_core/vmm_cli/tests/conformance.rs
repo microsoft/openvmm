@@ -249,6 +249,7 @@ fn group_selects_one_variant() {
         "id=a,unix=/run/s".parse::<WithGroup>().unwrap().transport,
         Transport::Unix(Some("/run/s".into()))
     );
+    assert!("id=a,unix=".parse::<WithGroup>().is_err());
     // Unit variant.
     assert_eq!(
         "id=a,none".parse::<WithGroup>().unwrap().transport,

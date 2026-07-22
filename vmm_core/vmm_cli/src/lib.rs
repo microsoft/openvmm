@@ -127,6 +127,7 @@ where
         let mut items = Vec::new();
         for item in inner.split(',') {
             let item = item.trim();
+            anyhow::ensure!(!item.is_empty(), "list item cannot be empty");
             items.push(
                 item.parse::<T>()
                     .map_err(|e| private::error(format!("invalid list item '{item}': {e}")))?,
@@ -255,6 +256,9 @@ mod tests {
         assert_eq!("[]".parse::<BracketList<u32>>().unwrap().0, [] as [u32; 0]);
         assert!("a,b".parse::<BracketList<String>>().is_err());
         assert!("[1,x]".parse::<BracketList<u32>>().is_err());
+        assert!("[a,,b]".parse::<BracketList<String>>().is_err());
+        assert!("[,]".parse::<BracketList<String>>().is_err());
+        assert!("[a, ,b]".parse::<BracketList<String>>().is_err());
     }
 
     #[test]

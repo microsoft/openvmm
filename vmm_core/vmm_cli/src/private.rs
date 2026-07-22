@@ -82,19 +82,20 @@ where
         .map_err(|e| error(format!("invalid value for option '{key}': {e}")))
 }
 
-/// Parse an optional value for `key`, returning `None` for no value.
+/// Parse an optional value for `key`, returning `None` when `=` is omitted.
 pub fn parse_opt_value<T>(key: &str, value: Option<&str>) -> Result<Option<T>>
 where
     T: FromStr,
     T::Err: Display,
 {
     match value {
-        Some(v) if !v.is_empty() => {
-            Ok(Some(v.parse::<T>().map_err(|e| {
+        Some("") => anyhow::bail!("option '{key}' requires a value after '='"),
+        Some(value) => {
+            Ok(Some(value.parse::<T>().map_err(|e| {
                 error(format!("invalid value for option '{key}': {e}"))
             })?))
         }
-        _ => Ok(None),
+        None => Ok(None),
     }
 }
 
