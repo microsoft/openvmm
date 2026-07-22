@@ -178,6 +178,7 @@ impl<T: Client> Access<'_, T> {
         let mut resp_ipv4_packet = Ipv4Packet::new_unchecked(resp_eth_packet.payload_mut());
         resp_ipv4.emit(&mut resp_ipv4_packet, &ChecksumCapabilities::default());
         let mut resp_udp_packet = UdpPacket::new_unchecked(resp_ipv4_packet.payload_mut());
+        let mut dhcp_emit_result = Ok(());
         resp_udp.emit(
             &mut resp_udp_packet,
             &IpAddress::Ipv4(resp_ipv4.src_addr),
@@ -185,10 +186,11 @@ impl<T: Client> Access<'_, T> {
             resp_dhcp_len,
             |udp_payload| {
                 let mut resp_dhcp_packet = DhcpPacket::new_unchecked(udp_payload);
-                resp_dhcp.emit(&mut resp_dhcp_packet).unwrap();
+                dhcp_emit_result = resp_dhcp.emit(&mut resp_dhcp_packet);
             },
             &ChecksumCapabilities::default(),
         );
+        dhcp_emit_result?;
 
         self.client.recv(
             &resp_buffer[..resp_eth.buffer_len()
