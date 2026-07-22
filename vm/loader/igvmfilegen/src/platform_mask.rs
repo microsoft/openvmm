@@ -73,3 +73,42 @@ pub fn lookup_compatibility_mask(
             .join(", ")
     )
 }
+
+/// Format a compatibility mask as a human-readable platform list using
+/// the platform headers from the IGVM file.
+pub fn format_platform_mask(platforms: &[IgvmPlatformHeader], mask: u32) -> String {
+    let mut names = Vec::new();
+    for header in platforms {
+        match header {
+            IgvmPlatformHeader::SupportedPlatform(info) => {
+                if mask & info.compatibility_mask != 0 {
+                    names.push(format!("{:?}", info.platform_type));
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        "Unknown".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// Map a compatibility mask to a lowercase platform name suitable for use in
+/// file names. Returns the platform's canonical short name (`"vbs"`, `"snp"`,
+/// `"tdx"`) when the mask matches a known platform header; otherwise
+/// `platform_<Debug>` for a matching header whose platform type has no
+/// canonical short name, or `mask_0x<hex>` if the mask matches no platform
+/// header at all.
+pub fn platform_name_for_mask(platforms: &[IgvmPlatformHeader], mask: u32) -> String {
+    for header in platforms {
+        match header {
+            IgvmPlatformHeader::SupportedPlatform(info) => {
+                if info.compatibility_mask == mask {
+                    return isolation_label(info.platform_type);
+                }
+            }
+        }
+    }
+    format!("mask_0x{mask:x}")
+}

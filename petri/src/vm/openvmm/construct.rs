@@ -13,6 +13,7 @@ use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
 use crate::PcieNvmeDrive;
+use crate::PcieVirtioBlkDrive;
 use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -121,6 +122,7 @@ impl PetriVmConfigOpenVmm {
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
+            pcie_virtio_blk_drives,
             physical_nvme_devices,
         } = petri_vm_config;
 
@@ -247,6 +249,28 @@ impl PetriVmConfigOpenVmm {
                     }],
                     requests: None,
                 }
+                .into_resource(),
+            });
+        }
+
+        for PcieVirtioBlkDrive {
+            port_name,
+            drive: Drive { disk, .. },
+        } in pcie_virtio_blk_drives
+        {
+            let disk = disk.ok_or_else(|| {
+                anyhow::anyhow!("missing disk for PCIe virtio-blk drive on port '{port_name}'")
+            })?;
+            let disk = petri_disk_to_openvmm(&disk).await?;
+            pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk,
+                        read_only: false,
+                    }
+                    .into_resource(),
+                )
                 .into_resource(),
             });
         }

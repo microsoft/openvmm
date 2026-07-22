@@ -80,6 +80,7 @@ sparse_mmap.workspace = true
 term.workspace = true
 tracelimit.workspace = true
 tracing_helpers.workspace = true
+vmm_cli.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }

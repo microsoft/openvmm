@@ -22,6 +22,7 @@ use Memory::PAGE_NOACCESS;
 use Memory::PAGE_READONLY;
 use Memory::PAGE_READWRITE;
 use Memory::PAGE_WRITECOPY;
+use Memory::PrefetchVirtualMemory;
 use Memory::SEC_COMMIT;
 use Memory::SEC_LARGE_PAGES;
 use Memory::SECTION_MAP_READ;
@@ -29,6 +30,8 @@ use Memory::SECTION_MAP_WRITE;
 use Memory::UnmapViewOfFile2;
 use Memory::VirtualAlloc2;
 use Memory::VirtualFreeEx;
+use Memory::VirtualProtectEx;
+use Memory::WIN32_MEMORY_RANGE_ENTRY;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::Process;
 use parking_lot::Mutex;
@@ -129,6 +132,30 @@ unsafe fn virtual_free(
     flags: u32,
 ) -> Result<(), Error> {
     if unsafe { VirtualFreeEx(process.handle(), address, size, flags) } == 0 {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
+unsafe fn virtual_protect(
+    process: Option<&Process>,
+    address: *mut c_void,
+    size: usize,
+    page_protection: u32,
+) -> Result<(), Error> {
+    let mut old_protection = 0;
+    // SAFETY: caller guarantees `address..address + size` is a committed range
+    // within a mapping owned by this `SparseMapping`.
+    if unsafe {
+        VirtualProtectEx(
+            process.handle(),
+            address,
+            size,
+            page_protection,
+            &mut old_protection,
+        )
+    } == 0
+    {
         return Err(Error::last_os_error());
     }
     Ok(())
@@ -490,6 +517,75 @@ impl SparseMapping {
         self.virtual_alloc(offset, len, PAGE_READWRITE, numa_node)
     }
 
+    /// Changes the page protection of a committed range to `protection` (a
+    /// `PAGE_*` flag).
+    ///
+    /// The range must be committed. This does not allocate physical pages; on
+    /// Windows those are still materialized on first write.
+    pub fn protect(&self, offset: usize, len: usize, protection: u32) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: `validate_offset_len` confirmed the range lies within the
+        // reservation.
+        unsafe {
+            virtual_protect(
+                self.process.as_ref(),
+                self.address.wrapping_add(offset),
+                len,
+                protection,
+            )
+        }
+    }
+
+    /// Prefetches a committed range into the working set, faulting the whole
+    /// range in with a single call.
+    ///
+    /// This is the soft-large-page primitive: faulting an entire 2 MB-aligned,
+    /// read-write window in one operation gives the OS the opportunity to back
+    /// it with a large page, which in turn allows a large second-level address
+    /// translation (SLAT) entry for a guest. Faulting the pages individually
+    /// instead tends to leave the window backed by scattered small pages. This
+    /// is best-effort: if a large page is unavailable, the range is simply
+    /// backed by small pages. The range must already be **read-write** —
+    /// prefetching a read-only range only maps the shared zero page.
+    ///
+    /// Uses the documented `PrefetchVirtualMemory` API with a flag that brings
+    /// the pages fully into the working set. That flag requires Windows 11;
+    /// older releases fail the call, so callers must treat an error as a
+    /// best-effort miss (the range stays valid, just not necessarily large-page
+    /// backed).
+    pub fn prefetch(&self, offset: usize, len: usize) -> Result<(), Error> {
+        // `PrefetchVirtualMemory` flag (Windows 11+) that brings the pages fully
+        // into the working set rather than only paging in file backing. Not yet
+        // exposed as a named constant by the `windows-sys` bindings.
+        const VM_PREFETCH_TO_WORKING_SET: u32 = 0x1;
+
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        let entry = WIN32_MEMORY_RANGE_ENTRY {
+            VirtualAddress: self.address.wrapping_add(offset),
+            NumberOfBytes: len,
+        };
+        // SAFETY: calling per the API contract; `entry` describes a range that
+        // `validate_offset_len` confirmed lies within this reservation.
+        let ret = unsafe {
+            PrefetchVirtualMemory(
+                self.process.as_ref().handle(),
+                1,
+                &entry,
+                VM_PREFETCH_TO_WORKING_SET,
+            )
+        };
+        if ret == 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Maps read-only zero pages at the given offset within the mapping.
     pub fn map_zero(&self, offset: usize, len: usize) -> Result<(), Error> {
         self.virtual_alloc(offset, len, PAGE_READONLY, None)
@@ -632,18 +728,52 @@ impl SparseMapping {
         protect: u32,
         numa_node: Option<u32>,
     ) -> Result<(), Error> {
+        let access = match protect & 0xff {
+            PAGE_NOACCESS => 0,
+            PAGE_READONLY
+            | PAGE_WRITECOPY
+            | PAGE_EXECUTE
+            | PAGE_EXECUTE_READ
+            | PAGE_EXECUTE_WRITECOPY => SECTION_MAP_READ,
+            PAGE_READWRITE | PAGE_EXECUTE_READWRITE => SECTION_MAP_READ | SECTION_MAP_WRITE,
+            p => panic!("unknown protection {:#x}", p),
+        };
+        self.map_view_of_file_access(
+            offset,
+            len,
+            file_mapping,
+            file_offset,
+            protect,
+            access,
+            numa_node,
+        )
+    }
+
+    /// Maps a portion of a file mapping with an explicit section `access`
+    /// (`SECTION_MAP_*`) and page `protect` (`PAGE_*`), optionally bound to a
+    /// specific host NUMA node.
+    ///
+    /// Unlike [`map_view_of_file`](Self::map_view_of_file), which derives the
+    /// section access from the page protection, this lets the caller request
+    /// broader section access than the initial protection — e.g. a read-only
+    /// view backed by a write-capable section, so the view can later be raised
+    /// to read-write via [`protect`](Self::protect).
+    pub fn map_view_of_file_access(
+        &self,
+        offset: usize,
+        len: usize,
+        file_mapping: impl AsHandle,
+        file_offset: u64,
+        protect: u32,
+        access: u32,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
         assert_ne!(len, 0);
         self.map(offset, len, |addr| unsafe {
-            let access = match protect & 0xff {
-                PAGE_NOACCESS => 0,
-                PAGE_READONLY
-                | PAGE_WRITECOPY
-                | PAGE_EXECUTE
-                | PAGE_EXECUTE_READ
-                | PAGE_EXECUTE_WRITECOPY => SECTION_MAP_READ,
-                PAGE_READWRITE | PAGE_EXECUTE_READWRITE => SECTION_MAP_READ | SECTION_MAP_WRITE,
-                p => panic!("unknown protection {:#x}", p),
-            };
+            // Keep a handle for the mapping's lifetime (unmap/split re-map
+            // through it), restricted to just `access` as mild defense in depth.
+            // Either handle works for the initial map below (same section), so
+            // use the caller's original.
             let section = file_mapping.as_handle().duplicate(false, Some(access))?;
             let mut param = numa_extended_param(numa_node);
             map_view_of_file(

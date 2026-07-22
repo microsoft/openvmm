@@ -6,6 +6,7 @@
 
 mod packed;
 mod split;
+use crate::VirtioQueueCallbackWork;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use guestmem::GuestMemory;
@@ -64,26 +65,32 @@ pub enum QueueError {
     InvalidQueueSize(u16),
 }
 
-pub struct QueueDescriptor {
+struct QueueDescriptor {
     address: u64,
     length: u32,
     flags: DescriptorFlags,
-    pub(crate) buffer_id: Option<u16>,
+    buffer_id: Option<u16>,
     next: Option<u16>,
 }
 
-pub enum QueueCompletionContext {
+enum QueueCompletionContext {
     Split,
     Packed(PackedQueueCompletionContext),
 }
 
-pub struct QueueWork {
+/// The minimal state required to publish a completion to the used ring.
+///
+/// This is everything `complete_descriptor` needs — notably *not* the payload
+/// buffer descriptors, which are only used while the device is reading/writing
+/// guest memory. Devices that must buffer completions (e.g. in-order
+/// publication) can hold a `QueueCompletion` instead of a full
+/// `VirtioQueueCallbackWork` to avoid retaining the payload.
+pub struct QueueCompletion {
     context: QueueCompletionContext,
     descriptor_index: u16,
-    pub payload: Vec<VirtioQueuePayload>,
 }
 
-impl QueueWork {
+impl QueueCompletion {
     pub fn descriptor_index(&self) -> u16 {
         self.descriptor_index
     }
@@ -184,10 +191,10 @@ impl QueueCoreGetWork {
         })
     }
 
-    pub fn try_next_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
+    pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         match self.try_peek_work() {
             Ok(Some(work)) => {
-                self.advance(&work);
+                self.advance(work.completion());
                 Ok(Some(work))
             }
             r => r,
@@ -199,7 +206,7 @@ impl QueueCoreGetWork {
     /// consume the peeked descriptor and move to the next one. Calling this
     /// again without advancing will return the same descriptor, but note that
     /// the guest may have modified the descriptor memory in the meantime.
-    pub fn try_peek_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
+    pub fn try_peek_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         let index = match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.is_available()?,
             QueueGetWorkInner::Packed(packed) => packed.is_available()?,
@@ -263,11 +270,11 @@ impl QueueCoreGetWork {
 
     /// Advances the available index after a successful
     /// [`try_peek_work`](Self::try_peek_work) call.
-    pub fn advance(&mut self, work: &QueueWork) {
+    pub fn advance(&mut self, completion: &QueueCompletion) {
         match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.advance(),
             QueueGetWorkInner::Packed(packed) => {
-                let QueueCompletionContext::Packed(ctx) = &work.context else {
+                let QueueCompletionContext::Packed(ctx) = &completion.context else {
                     unreachable!();
                 };
                 packed.advance(ctx.descriptor_count());
@@ -275,17 +282,19 @@ impl QueueCoreGetWork {
         }
     }
 
-    fn work_from_index(&mut self, index: u16) -> Result<QueueWork, QueueError> {
+    fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
         if let QueueGetWorkInner::Split(split) = &mut self.inner {
             let descriptor_index = split.get_available_descriptor_index(index)?;
             let payload = self
                 .reader(descriptor_index)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(QueueWork {
-                descriptor_index,
-                context: QueueCompletionContext::Split,
+            Ok(VirtioQueueCallbackWork::from_parts(
+                QueueCompletion {
+                    descriptor_index,
+                    context: QueueCompletionContext::Split,
+                },
                 payload,
-            })
+            ))
         } else {
             let (payload, last_primary_desc_index) = {
                 let mut reader = self.reader(index);
@@ -302,11 +311,13 @@ impl QueueCoreGetWork {
                 self.queue_size - index + last_primary_desc_index + 1
             };
             let completion_context = PackedQueueCompletionContext::new(&last, count);
-            Ok(QueueWork {
-                context: QueueCompletionContext::Packed(completion_context),
+            Ok(VirtioQueueCallbackWork::from_parts(
+                QueueCompletion {
+                    context: QueueCompletionContext::Packed(completion_context),
+                    descriptor_index: index,
+                },
                 payload,
-                descriptor_index: index,
-            })
+            ))
         }
     }
 
@@ -378,7 +389,7 @@ impl QueueCoreGetWork {
 }
 
 #[derive(Debug, Inspect)]
-pub struct QueueCoreCompleteWork {
+pub(crate) struct QueueCoreCompleteWork {
     #[inspect(flatten)]
     inner: QueueCompleteWorkInner,
 }
@@ -424,15 +435,15 @@ impl QueueCoreCompleteWork {
 
     pub fn complete_descriptor(
         &mut self,
-        work: &QueueWork,
+        completion: &QueueCompletion,
         bytes_written: u32,
     ) -> Result<bool, QueueError> {
         match &mut self.inner {
             QueueCompleteWorkInner::Split(split) => {
-                split.complete_descriptor(work.descriptor_index, bytes_written)
+                split.complete_descriptor(completion.descriptor_index, bytes_written)
             }
             QueueCompleteWorkInner::Packed(packed) => {
-                let QueueCompletionContext::Packed(context) = &work.context else {
+                let QueueCompletionContext::Packed(context) = &completion.context else {
                     panic!("mismatched queue completion context for packed queue");
                 };
                 packed.complete_descriptor(context, bytes_written)
@@ -452,7 +463,7 @@ pub(crate) fn new_queue(
     Ok((get_work, complete_work))
 }
 
-pub struct DescriptorReader<'a> {
+struct DescriptorReader<'a> {
     chain: DescriptorChain<'a>,
 }
 
@@ -482,7 +493,7 @@ impl Iterator for DescriptorReader<'_> {
     }
 }
 
-pub struct DescriptorChain<'a> {
+struct DescriptorChain<'a> {
     queue: &'a QueueCoreGetWork,
     /// Maximum chain length — always the original ring queue size (spec §2.7.5.3.1).
     queue_size: u16,

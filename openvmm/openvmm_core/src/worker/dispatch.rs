@@ -1076,6 +1076,11 @@ impl InitializedVm {
 
         let physical_address_size = proto.max_physical_address_size();
 
+        // Whether the partition delivers guest memory-access faults to the VMM
+        // so the memory backing can resolve them on demand (soft large pages,
+        // lazy commit).
+        let supports_memory_fault_resolution = proto.supports_memory_fault_resolution();
+
         // Determine if a special vtl2 memory allocation should be used.
         let vtl2_layout = if let LoadMode::Igvm {
             vtl2_base_address, ..
@@ -1220,6 +1225,7 @@ impl InitializedVm {
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
+            .supports_memory_fault_resolution(supports_memory_fault_resolution)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
@@ -1308,6 +1314,8 @@ impl InitializedVm {
                 guest_memory: &gm,
                 cpuid: &cpuid,
                 vtl0_alias_map,
+                fault_resolver: supports_memory_fault_resolution
+                    .then(|| memory_manager.memory_fault_resolver()),
             })
             .context("failed to create the partition")?;
 

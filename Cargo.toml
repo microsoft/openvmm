@@ -436,6 +436,8 @@ virt_support_x86emu = { path = "vmm_core/virt_support_x86emu" }
 virt_whp = { path = "vmm_core/virt_whp" }
 vm_loader = { path = "vmm_core/vm_loader" }
 vm_manifest_builder = { path = "vmm_core/vm_manifest_builder" }
+vmm_cli = { path = "vmm_core/vmm_cli" }
+vmm_cli_derive = { path = "vmm_core/vmm_cli_derive" }
 vmm_core = { path = "vmm_core" }
 vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
@@ -500,6 +502,7 @@ target-lexicon = "0.13.2"
 base64 = "0.22.1"
 base64-serde = "0.8"
 cargo_toml = "0.22"
+corim = "0.1.3"
 heck = "0.5"
 hex = "0.4"
 pbjson = "0.5"

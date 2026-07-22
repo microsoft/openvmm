@@ -3763,6 +3763,7 @@ dependencies = [
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
  "clap",
+ "corim",
  "crypto",
  "der",
  "fs-err",
@@ -4419,16 +4420,19 @@ dependencies = [
  "guestmem",
  "hvdef",
  "inspect",
+ "inspect_counters",
  "memory_range",
  "mesh",
  "pal_async",
  "parking_lot",
+ "range_map_vec",
  "slab",
  "sparse_mmap",
  "thiserror 2.0.16",
  "tracing",
  "virt",
  "vmcore",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -4836,6 +4840,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -5779,6 +5784,7 @@ dependencies = [
  "vmcore",
  "vmgs_format",
  "vmgs_resources",
+ "vmm_cli",
  "vmm_core_defs",
  "vmotherboard",
  "vmswitch",
@@ -10418,6 +10424,24 @@ checksum = "506c62fdf617a5176827c2f9afbcf1be155b03a9b4bf9617a60dbc07e3a1642f"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
+]
+
+[[package]]
+name = "vmm_cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "vmm_cli_derive",
+]
+
+[[package]]
+name = "vmm_cli_derive"
+version = "0.0.0"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]

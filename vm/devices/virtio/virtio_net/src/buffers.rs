@@ -29,6 +29,18 @@ pub struct VirtioWorkPool {
     rx_packets: Vec<Option<RxPacket>>,
 }
 
+/// Reason a submitted RX buffer could not be queued to the backend, returned
+/// with the original work item so the caller can decide how to handle it.
+pub enum RxQueueError {
+    /// The descriptor index is already in use (duplicate guest submission).
+    /// This is a fatal protocol violation: the pool slot is already taken, so
+    /// the buffer cannot be tracked.
+    DuplicateIndex(VirtioQueueCallbackWork),
+    /// The buffer is smaller than the virtio-net header. It must be completed
+    /// (dropped) in avail order rather than posted to the backend.
+    TooSmall(VirtioQueueCallbackWork),
+}
+
 impl VirtioWorkPool {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field(
@@ -71,17 +83,15 @@ impl VirtioWorkPool {
 
     /// Add a virtio work instance to the buffers available for use.
     ///
-    /// Returns `Err` with the work item if the descriptor index is already in
-    /// use (duplicate submission by the guest).
-    pub fn queue_work(
-        &mut self,
-        work: VirtioQueueCallbackWork,
-    ) -> Result<RxId, VirtioQueueCallbackWork> {
+    /// Returns `Err` with the work item if the buffer cannot be posted to the
+    /// backend, distinguishing a fatal duplicate descriptor index from a
+    /// too-small buffer that should be dropped in order.
+    pub fn queue_work(&mut self, work: VirtioQueueCallbackWork) -> Result<RxId, RxQueueError> {
         let idx = work.descriptor_index();
         let packet = &mut self.rx_packets[idx as usize];
         if packet.is_some() {
             tracelimit::warn_ratelimited!("dropping RX buffer: descriptor index already in use");
-            return Err(work);
+            return Err(RxQueueError::DuplicateIndex(work));
         }
         let payload_length = work.get_payload_length(true) as u32;
         let Some(cap) = payload_length.checked_sub(header_size() as u32) else {
@@ -89,7 +99,7 @@ impl VirtioWorkPool {
                 len = payload_length,
                 "dropping RX buffer: payload length smaller than virtio-net header size"
             );
-            return Err(work);
+            return Err(RxQueueError::TooSmall(work));
         };
         *packet = Some(RxPacket { len: 0, cap, work });
         Ok(RxId(idx.into()))

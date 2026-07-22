@@ -5351,3 +5351,163 @@ async fn packed_full_ring_chain_toggles_wrap_counters(driver: DefaultDriver) {
         "used wrap counter must toggle after a full-ring lap"
     );
 }
+
+/// Directly exercises the in-order completion helper: with it in front of the
+/// queue, descriptors completed out of order are published to the used ring
+/// strictly in avail (consumption) order.
+#[async_test]
+async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let interrupt_event = Event::new();
+    let notify = Interrupt::from_event(interrupt_event);
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Make three writeable descriptors available.
+    let mut avail_idx = 0;
+    for i in 0..3u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+
+    let w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w2 = in_order.try_next(&mut queue).unwrap().unwrap();
+
+    let mut used_idx = 0;
+
+    // Complete the last descriptor first: nothing may be published yet.
+    in_order.complete(&mut queue, w2.into_completion(), 22);
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 0: it publishes, but descriptor 2 must wait for 1.
+    in_order.complete(&mut queue, w0.into_completion(), 10);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((0, 10))
+    );
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 1: now 1 and the already-filled 2 flush in order.
+    in_order.complete(&mut queue, w1.into_completion(), 11);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((1, 11))
+    );
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((2, 22))
+    );
+}
+
+/// Completing the same descriptor twice while it is still outstanding is an
+/// internal invariant violation (the device rejects guest-induced duplicates
+/// upstream), so the in-order helper must fail fast rather than silently
+/// stalling the used ring.
+#[async_test]
+#[should_panic(expected = "completed more than once")]
+async fn in_order_double_complete_panics(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let notify = Interrupt::from_event(Event::new());
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Descriptors 0 and 1, with 1 made available twice so two works share
+    // descriptor index 1.
+    let mut avail_idx = 0;
+    for i in 0..2u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+    make_available(&mem, avail_addr, size, 1, &mut avail_idx);
+
+    let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1b = in_order.try_next(&mut queue).unwrap().unwrap();
+
+    // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
+    // behind it; completing index 1 twice while buffered must panic.
+    in_order.complete(&mut queue, w1a.into_completion(), 1);
+    in_order.complete(&mut queue, w1b.into_completion(), 1);
+}

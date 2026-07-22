@@ -1234,7 +1234,7 @@ mod tests {
             }
         }
 
-        let mm = MappingManager::new(spawn, 0x200000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(spawn, 0x200000, None);
         let mut task = TestTask(RegionManagerTask::new(mm.client().clone()));
 
         let high = task.add(1, 0x1000..0x3000).await.unwrap();
@@ -1265,7 +1265,7 @@ mod tests {
 
     impl DmaTestTask {
         fn new(spawn: impl Spawn) -> Self {
-            let mm = MappingManager::new(spawn, 0x200000, Vec::new(), None);
+            let mm = MappingManager::new_without_primary(spawn, 0x200000, None);
             Self {
                 task: RegionManagerTask::new(mm.client().clone()),
                 mappable: test_mappable(),

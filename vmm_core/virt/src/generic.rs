@@ -17,6 +17,7 @@ use crate::x86::DebugState;
 use crate::x86::HardwareBreakpoint;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryBackingError;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -246,6 +247,41 @@ pub struct PartitionConfig<'a> {
     /// The offset of the VTL0 alias map. This maps VTL0's view of memory into
     /// VTL2 at the specified offset (which must be a power of 2).
     pub vtl0_alias_map: Option<u64>,
+    /// An optional resolver used to prepare guest-memory backing on demand when
+    /// the partition delivers memory-access faults back to the VMM.
+    ///
+    /// This is set only when the backend reports
+    /// [`ProtoPartition::supports_memory_fault_resolution`]. The backend calls
+    /// it from its memory-fault handler to commit lazily-backed pages and to
+    /// learn the (possibly widened) GPA range to map; the backend retains the
+    /// final per-page safety decision over the returned range.
+    pub fault_resolver: Option<Arc<dyn ResolveMemoryFault>>,
+}
+
+/// Prepares guest-memory backing to resolve a memory-access fault, and reports
+/// the GPA range the partition should map in response.
+///
+/// This is implemented by the memory backing and called by hypervisor backends
+/// (e.g. WHP) that forward guest memory-access faults to the VMM. It lets the
+/// backing commit lazily-backed pages and opportunistically widen the mapped
+/// range to a large page (soft large pages), while the backend keeps the final
+/// per-page safety decision over the returned range.
+pub trait ResolveMemoryFault: Send + Sync {
+    /// Prepares backing for the faulting range `fault` and returns the GPA range
+    /// the partition should map.
+    ///
+    /// The caller passes the range it needs backed (expressed in whatever page
+    /// granularity the backend uses), so this layer never needs to know the
+    /// guest page size. The returned range is always a superset of `fault`,
+    /// clamped to a single uniform RAM region. It is widened (e.g. to 2 MB) only
+    /// on the first fault of a large-page-eligible region that fully contains
+    /// `fault`; otherwise `fault` is returned unchanged. Subsequent faults of an
+    /// already-attempted region are not widened.
+    fn resolve(
+        &self,
+        fault: MemoryRange,
+        write: bool,
+    ) -> Result<MemoryRange, GuestMemoryBackingError>;
 }
 
 /// Trait for a prototype partition, one that is partially created but still
@@ -268,6 +304,18 @@ pub trait ProtoPartition {
     /// interfaces by default, and it may be larger or smaller than what the VMM
     /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
+
+    /// Whether the partition delivers guest-memory-access faults back to the
+    /// VMM and resolves them through a [`ResolveMemoryFault`] supplied in
+    /// [`PartitionConfig::fault_resolver`].
+    ///
+    /// Defaults to `false`. A backend that forwards memory faults to the VMM
+    /// (e.g. WHP) overrides this to `true`. The code assembling
+    /// [`PartitionConfig`] uses it to decide whether to supply a resolver, and
+    /// the memory backing uses it to select a lazy commit strategy.
+    fn supports_memory_fault_resolution(&self) -> bool {
+        false
+    }
 
     /// Constructs the full partition.
     fn build(
