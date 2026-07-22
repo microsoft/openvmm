@@ -99,16 +99,11 @@ impl InOrderCompletion {
     ///
     /// Use this in place of [`VirtioQueue::complete_prepared`].
     ///
-    /// # Panics
-    ///
-    /// Panics if `completion` was not produced by a descriptor from
-    /// [`try_next`](Self::try_next) on this tracker, or if the same descriptor
-    /// is completed more than once while outstanding. These are internal
-    /// invariant violations (a *guest*-induced duplicate is rejected upstream by
-    /// the device before it ever reaches here), and silently dropping the
-    /// completion would stall the used ring — hanging the guest and corrupting
-    /// the `[used_index, avail_index)` outstanding range — so we fail fast
-    /// instead.
+    /// Each `completion` must be for a descriptor still outstanding from
+    /// [`try_next`](Self::try_next), completed once. Some violations panic (an
+    /// out-of-range index, or a collision with a still-buffered slot); a
+    /// completion for a no-longer-outstanding descriptor is not caught and
+    /// would strand an entry in `completed`, eventually stalling publication.
     pub fn complete(
         &mut self,
         queue: &mut VirtioQueue,
