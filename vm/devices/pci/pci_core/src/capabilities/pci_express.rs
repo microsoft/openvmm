@@ -360,7 +360,7 @@ impl PciExpressCapability {
             .device_capabilities_2
             .with_extended_fmt_field_supported(true)
             .with_end_end_tlp_prefix_supported(true)
-            .with_max_end_end_tlp_prefixes(max_prefixes.into_bits());
+            .with_max_end_end_tlp_prefixes(max_prefixes);
         self
     }
 
@@ -877,6 +877,29 @@ mod tests {
         // Guest clears it again.
         write_cap_u32(&mut cap, 0x28, 0x0000);
         assert!(!cap.ari_forwarding_enable());
+    }
+
+    #[test]
+    fn test_tlp_prefixing_supported_max_prefixes() {
+        for max_prefixes in [
+            MaxEndEndTlpPrefixes::One,
+            MaxEndEndTlpPrefixes::Two,
+            MaxEndEndTlpPrefixes::Three,
+            MaxEndEndTlpPrefixes::Four,
+        ] {
+            let cap = PciExpressCapability::new(DevicePortType::Endpoint, None)
+                .with_tlp_prefixing_supported(max_prefixes);
+            let device_caps_2 =
+                pci_express::DeviceCapabilities2::from_bits(read_cap_u32(&cap, 0x24));
+
+            assert!(device_caps_2.extended_fmt_field_supported());
+            assert!(device_caps_2.end_end_tlp_prefix_supported());
+            assert_eq!(
+                device_caps_2.max_end_end_tlp_prefixes().into_bits(),
+                max_prefixes.into_bits(),
+                "unexpected max TLP prefix encoding for {max_prefixes:?}"
+            );
+        }
     }
 
     #[test]

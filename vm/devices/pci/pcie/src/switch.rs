@@ -736,6 +736,13 @@ mod tests {
         GenericPcieSwitch::new(definition).unwrap()
     }
 
+    fn tlp_prefixing_settings(max_prefixes: MaxEndEndTlpPrefixes) -> PciePortSettings {
+        PciePortSettings {
+            tlp_prefixing_supported: Some(max_prefixes),
+            ..PciePortSettings::default()
+        }
+    }
+
     #[test]
     fn test_upstream_switch_port_creation() {
         // Verify that we can read the vendor/device ID from config space
@@ -748,6 +755,76 @@ mod tests {
         let vendor_device_id = port.cfg_space.read_u32(0x0);
         let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
+    }
+
+    #[test]
+    fn test_switch_rejects_inconsistent_tlp_prefixing_support() {
+        let mut definition = switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        );
+        definition.downstream_ports[1].settings =
+            tlp_prefixing_settings(MaxEndEndTlpPrefixes::Four);
+
+        let Err(err) = GenericPcieSwitch::new(definition) else {
+            panic!("switch with inconsistent TLP prefixing support should fail");
+        };
+        assert!(matches!(
+            err,
+            InvalidSwitchError::InconsistentEndToEndTlpPrefixing
+        ));
+    }
+
+    #[test]
+    fn test_switch_rejects_non_four_tlp_prefixing_support() {
+        for max_prefixes in [
+            MaxEndEndTlpPrefixes::One,
+            MaxEndEndTlpPrefixes::Two,
+            MaxEndEndTlpPrefixes::Three,
+        ] {
+            let definition = switch_def(
+                "test-switch",
+                2,
+                false,
+                tlp_prefixing_settings(max_prefixes),
+                MsiTarget::disconnected(),
+            );
+
+            let Err(err) = GenericPcieSwitch::new(definition) else {
+                panic!("switch with {max_prefixes:?} TLP prefixes should fail");
+            };
+            assert!(matches!(
+                err,
+                InvalidSwitchError::InvalidMaxEndToEndTlpPrefixing {
+                    supported_prefixes,
+                    ..
+                } if supported_prefixes == max_prefixes.into_bits()
+            ));
+        }
+    }
+
+    #[test]
+    fn test_switch_with_four_tlp_prefixes_reports_upstream_support() {
+        let switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            tlp_prefixing_settings(MaxEndEndTlpPrefixes::Four),
+            MsiTarget::disconnected(),
+        ));
+        let device_caps_2 = pci_core::spec::caps::pci_express::DeviceCapabilities2::from_bits(
+            switch.upstream_port.cfg_space().read_u32(0x64),
+        );
+
+        assert!(device_caps_2.extended_fmt_field_supported());
+        assert!(device_caps_2.end_end_tlp_prefix_supported());
+        assert_eq!(
+            device_caps_2.max_end_end_tlp_prefixes().into_bits(),
+            MaxEndEndTlpPrefixes::Four.into_bits()
+        );
     }
 
     #[test]

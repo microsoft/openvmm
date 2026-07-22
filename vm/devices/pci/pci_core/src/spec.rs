@@ -638,7 +638,7 @@ pub mod caps {
         }
 
         impl MaxEndEndTlpPrefixes {
-            pub const fn from_bits(bits: u32) -> Self {
+            pub(crate) const fn from_bits(bits: u32) -> Self {
                 match bits {
                     0b01 => MaxEndEndTlpPrefixes::One,
                     0b10 => MaxEndEndTlpPrefixes::Two,
@@ -1023,7 +1023,7 @@ pub mod caps {
             pub extended_fmt_field_supported: bool,
             pub end_end_tlp_prefix_supported: bool,
             #[bits(2)]
-            pub max_end_end_tlp_prefixes: u32,
+            pub max_end_end_tlp_prefixes: MaxEndEndTlpPrefixes,
             #[bits(2)]
             pub emergency_power_reduction_supported: u32,
             pub emergency_power_reduction_init_required: bool,
