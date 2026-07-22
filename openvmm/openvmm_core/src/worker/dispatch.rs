@@ -2091,7 +2091,7 @@ impl InitializedVm {
                             let root_port_definitions = rc
                                 .ports
                                 .iter()
-                                .map(pcie_topology::build_root_port_definition)
+                                .map(pcie_topology::build_port_definition)
                                 .collect();
                             GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
@@ -2219,7 +2219,7 @@ impl InitializedVm {
                     let downstream_ports = switch
                         .ports
                         .iter()
-                        .map(pcie_topology::build_root_port_definition)
+                        .map(pcie_topology::build_port_definition)
                         .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),

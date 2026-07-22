@@ -34,6 +34,7 @@ use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
+use pci_core::spec::caps::pci_express::MaxEndEndTlpPrefixes;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -52,7 +53,13 @@ pub struct UpstreamSwitchPort {
 
 impl UpstreamSwitchPort {
     /// Constructs a new [`UpstreamSwitchPort`] emulator.
-    pub fn new() -> Self {
+    pub fn new(end_end_tlp_prefixing_supported: bool) -> Self {
+        let mut pcie_cap = PciExpressCapability::new(DevicePortType::UpstreamSwitchPort, None);
+
+        if end_end_tlp_prefixing_supported {
+            pcie_cap = pcie_cap.with_tlp_prefixing_supported(MaxEndEndTlpPrefixes::Four);
+        }
+
         let cfg_space = ConfigSpaceType1Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -64,10 +71,7 @@ impl UpstreamSwitchPort {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(PciExpressCapability::new(
-                DevicePortType::UpstreamSwitchPort,
-                None,
-            ))],
+            vec![Box::new(pcie_cap)],
             vec![],
         );
         Self { cfg_space }
@@ -178,6 +182,19 @@ pub enum InvalidSwitchError {
     /// A downstream port's devfn could not be assigned.
     #[error(transparent)]
     Devfn(#[from] PortDevfnError),
+    /// All ports within a switch have to expose the same value for TLP prefixing support.
+    #[error("End-to-End TLP prefixing support is inconsistent within the switch")]
+    InconsistentEndToEndTlpPrefixing,
+    /// If the switch supports End-to-End TLP Prefixing, all downstream ports must support up to 4 prefixes.
+    #[error(
+        "downstream port '{name}' has invalid max end-to-end TLP prefixing support ({supported_prefixes} != 0)"
+    )]
+    InvalidMaxEndToEndTlpPrefixing {
+        /// Name of the offending downstream port.
+        name: Arc<str>,
+        /// The encoded MaxEndToEndTlpPrefixes value read from the downstream port's config space.
+        supported_prefixes: u32,
+    },
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -204,17 +221,41 @@ pub struct GenericPcieSwitch {
 impl GenericPcieSwitch {
     /// Constructs a new [`GenericPcieSwitch`] emulator.
     pub fn new(definition: GenericPcieSwitchDefinition) -> Result<Self, InvalidSwitchError> {
-        let upstream_port = UpstreamSwitchPort::new();
+        let any_port_supports_tlp_prefixing = definition
+            .downstream_ports
+            .iter()
+            .any(|port_def| port_def.settings.tlp_prefixing_supported.is_some());
 
-        // CXL is not supported on switch downstream ports (there is no CHBCR /
-        // component-register infrastructure behind a switch).
         for port_def in &definition.downstream_ports {
+            // CXL is not supported on switch downstream ports (there is no CHBCR /
+            // component-register infrastructure behind a switch).
             if port_def.settings.cxl_flex_bus_port_capability.is_some() {
                 return Err(InvalidSwitchError::CxlUnsupported {
                     name: port_def.name.clone(),
                 });
             }
+
+            // If any port supports End-to-End TLP prefixing, all ports must support it.
+            // See PCI Express Base Specification, Revision 7.0 Section 7.5.3.15
+            if any_port_supports_tlp_prefixing
+                != port_def.settings.tlp_prefixing_supported.is_some()
+            {
+                return Err(InvalidSwitchError::InconsistentEndToEndTlpPrefixing);
+            }
+
+            // If the switch supports End-to-End TLP prefixing, all downstream ports must support up to 4 prefixes.
+            // See PCI Express Base Specification, Revision 7.0 Section 7.5.3.15
+            if let Some(max_prefixes) = port_def.settings.tlp_prefixing_supported {
+                if max_prefixes.into_bits() != MaxEndEndTlpPrefixes::Four.into_bits() {
+                    return Err(InvalidSwitchError::InvalidMaxEndToEndTlpPrefixing {
+                        name: port_def.name.clone(),
+                        supported_prefixes: max_prefixes.into_bits(),
+                    });
+                }
+            }
         }
+
+        let upstream_port = UpstreamSwitchPort::new(any_port_supports_tlp_prefixing);
 
         // Assign each downstream port a devfn, shared with the root-complex
         // root-port assignment. Honors explicit devfns and packs the rest from
@@ -697,9 +738,13 @@ mod tests {
 
     #[test]
     fn test_upstream_switch_port_creation() {
-        let port = UpstreamSwitchPort::new();
-
         // Verify that we can read the vendor/device ID from config space
+        let port = UpstreamSwitchPort::new(false);
+        let vendor_device_id = port.cfg_space.read_u32(0x0);
+        let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(vendor_device_id, expected);
+
+        let port = UpstreamSwitchPort::new(true);
         let vendor_device_id = port.cfg_space.read_u32(0x0);
         let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);

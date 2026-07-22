@@ -1120,6 +1120,7 @@ Options:
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
+    `pasid`                        enables PASID for devices downstream of this port
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -1143,6 +1144,9 @@ Examples:
     # Enable hotplug on all downstream switch ports of switch0
     --pcie-switch rp0:switch0,hotplug
 
+    # Enable PASID on all downstream switch ports of switch0
+    --pcie-switch rp0:switch0,pasid
+
 Syntax: <port_name>:<name>[,opt,opt=arg,...]
 
     port_name can be:
@@ -1153,6 +1157,7 @@ Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
+    `pasid`                         enables PASID for devices downstream of this switch
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
@@ -3221,6 +3226,7 @@ pub struct PcieRootPortCli {
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
+    pub pasid: bool,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -3245,6 +3251,7 @@ impl FromStr for PcieRootPortCli {
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
         let mut cxl = false;
+        let mut pasid = false;
 
         // Parse optional flags
         for opt in opts {
@@ -3279,6 +3286,12 @@ impl FromStr for PcieRootPortCli {
                     }
                     cxl = true;
                 }
+                "pasid" => {
+                    if value.is_some() {
+                        anyhow::bail!("pasid option does not take a value")
+                    }
+                    pasid = true;
+                }
                 _ => anyhow::bail!("unexpected option: '{opt}'"),
             }
         }
@@ -3290,6 +3303,7 @@ impl FromStr for PcieRootPortCli {
             hotplug,
             acs_capabilities_supported,
             cxl,
+            pasid,
         })
     }
 }
@@ -3331,6 +3345,7 @@ pub struct GenericPcieSwitchCli {
     pub num_downstream_ports: u8,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
+    pub pasid: bool,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -3354,6 +3369,7 @@ impl FromStr for GenericPcieSwitchCli {
         let mut num_downstream_ports = 4u8; // Default value
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
+        let mut pasid = false;
 
         for opt in opts {
             let mut kv = opt.split('=');
@@ -3380,6 +3396,12 @@ impl FromStr for GenericPcieSwitchCli {
                     }
                     acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
                 }
+                "pasid" => {
+                    if kv.next().is_some() {
+                        anyhow::bail!("pasid option does not take a value")
+                    }
+                    pasid = true;
+                }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
         }
@@ -3390,6 +3412,7 @@ impl FromStr for GenericPcieSwitchCli {
             num_downstream_ports,
             hotplug,
             acs_capabilities_supported,
+            pasid,
         })
     }
 }
@@ -4870,6 +4893,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             }
         );
 
@@ -4882,6 +4906,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             }
         );
 
@@ -4895,6 +4920,7 @@ mod tests {
                 hotplug: true,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             }
         );
 
@@ -4907,6 +4933,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
+                pasid: false,
             }
         );
 
@@ -4919,6 +4946,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
+                pasid: false,
             }
         );
 
@@ -4931,6 +4959,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: true,
+                pasid: false,
             }
         );
 
@@ -4944,6 +4973,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             }
         );
         assert_eq!(
@@ -4955,6 +4985,7 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             }
         );
         assert_eq!(
@@ -4966,6 +4997,20 @@ mod tests {
                 hotplug: false,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port8,pasid").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port8".to_string(),
+                devfn: None,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
+                pasid: true,
             }
         );
 
@@ -4980,6 +5025,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr=0.8").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr=1.2.3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,addr").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,pasid=foo").is_err());
     }
 
     #[test]
@@ -5021,6 +5067,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5032,6 +5079,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5043,6 +5091,7 @@ mod tests {
                 num_downstream_ports: 8,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5055,6 +5104,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5067,6 +5117,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: true,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5079,6 +5130,7 @@ mod tests {
                 num_downstream_ports: 8,
                 hotplug: true,
                 acs_capabilities_supported: None,
+                pasid: false,
             }
         );
 
@@ -5090,6 +5142,7 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
+                pasid: false,
             }
         );
 
@@ -5101,6 +5154,19 @@ mod tests {
                 num_downstream_ports: 4,
                 hotplug: false,
                 acs_capabilities_supported: Some(95),
+                pasid: false,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,pasid").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: None,
+                pasid: true,
             }
         );
 
@@ -5112,6 +5178,7 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,pasid=bar").is_err());
     }
 
     #[test]
