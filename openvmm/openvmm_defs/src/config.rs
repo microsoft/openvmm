@@ -47,8 +47,6 @@ pub struct Config {
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     pub vmgs: Option<VmgsResource>,
-    pub secure_boot_enabled: bool,
-    pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
     pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
@@ -64,7 +62,6 @@ pub struct Config {
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
-    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -594,15 +591,4 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
-}
-
-#[derive(Copy, Clone, Debug, MeshPayload, Default)]
-pub enum EfiDiagnosticsLogLevelType {
-    /// Default log level
-    #[default]
-    Default,
-    /// Include INFO logs
-    Info,
-    /// All logs
-    Full,
 }
