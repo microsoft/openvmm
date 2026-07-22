@@ -192,7 +192,7 @@ pub enum InvalidSwitchError {
     InvalidMaxEndToEndTlpPrefixing {
         /// Name of the offending downstream port.
         name: Arc<str>,
-        /// The encoded MaxEndToEndTlpPrefixes value read from the downstream port's config space.
+        /// The MaxEndToEndTlpPrefixes value, encoded as defined by the PCIe specification.
         supported_prefixes: u32,
     },
 }
