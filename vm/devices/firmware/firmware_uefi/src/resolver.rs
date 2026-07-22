@@ -203,10 +203,10 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             tracing::info!(
                 baseline_configured = config.base_secure_boot_template_vars.signatures.is_some(),
                 baseline_revision = config
-                    .base_secure_boot_template_vars
-                    .baseline_revision()
+                    .base_secure_boot_template_revision
+                    .as_deref()
                     .unwrap_or("none"),
-                custom_uefi_config_present = config.custom_uefi_vars.custom_uefi_config_present(),
+                custom_uefi_config_present = config.custom_uefi_config_present,
                 "secure boot configuration"
             );
 

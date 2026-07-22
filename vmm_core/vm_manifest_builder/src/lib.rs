@@ -115,6 +115,8 @@ impl UefiManifest {
         arch: MachineArch,
         base_secure_boot_template_vars: CustomVars,
         custom_uefi_vars: CustomVars,
+        base_secure_boot_template_revision: Option<String>,
+        custom_uefi_config_present: bool,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
         diagnostics_rate_limit: Option<u32>,
@@ -127,6 +129,8 @@ impl UefiManifest {
             config: UefiConfig {
                 base_secure_boot_template_vars,
                 custom_uefi_vars,
+                base_secure_boot_template_revision,
+                custom_uefi_config_present,
                 secure_boot,
                 initial_generation_id,
                 use_mmio: !matches!(arch, MachineArch::X86_64),

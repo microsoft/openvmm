@@ -21,8 +21,6 @@ pub struct CustomVars {
     pub signatures: Option<Signatures>,
     /// Any additional custom vars
     pub custom_vars: Vec<(String, CustomVar)>,
-    baseline_revision: Option<String>,
-    custom_uefi_config_present: bool,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -84,34 +82,6 @@ impl CustomVars {
         CustomVars::default()
     }
 
-    /// Create a set of custom variables from signatures and additional variables.
-    pub fn from_parts(
-        signatures: Option<Signatures>,
-        custom_vars: Vec<(String, CustomVar)>,
-    ) -> Self {
-        Self {
-            signatures,
-            custom_vars,
-            ..Default::default()
-        }
-    }
-
-    /// Associate these variables with the built-in baseline revision they represent.
-    pub fn with_baseline_revision(mut self, revision: impl Into<String>) -> Self {
-        self.baseline_revision = Some(revision.into());
-        self
-    }
-
-    /// Return the built-in baseline revision associated with these variables.
-    pub fn baseline_revision(&self) -> Option<&str> {
-        self.baseline_revision.as_deref()
-    }
-
-    /// Return whether customer-provided custom UEFI configuration was applied.
-    pub fn custom_uefi_config_present(&self) -> bool {
-        self.custom_uefi_config_present
-    }
-
     /// Apply a delta on-top of an existing set of CustomVars.
     pub fn apply_delta(self, delta: delta::CustomVarsDelta) -> Result<CustomVars, ApplyDeltaError> {
         use delta::SignatureDelta;
@@ -120,7 +90,6 @@ impl CustomVars {
         use delta::SignaturesDelta;
         use delta::SignaturesReplace;
 
-        let baseline_revision = self.baseline_revision;
         let signatures = match (self.signatures, delta.signatures) {
             (None, SignaturesDelta::Append(..)) => return Err(ApplyDeltaError::AppendWithoutBase),
             (
@@ -282,37 +251,6 @@ impl CustomVars {
         Ok(CustomVars {
             signatures: Some(signatures),
             custom_vars,
-            baseline_revision,
-            custom_uefi_config_present: true,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn apply_delta_preserves_template_provenance() {
-        let signature = || Signature::Sha256(Vec::new());
-        let delta = delta::CustomVarsDelta {
-            signatures: delta::SignaturesDelta::Replace(delta::SignaturesReplace {
-                pk: delta::SignatureDelta::Sig(signature()),
-                kek: delta::SignatureDeltaVec::Sigs(Vec::new()),
-                db: delta::SignatureDeltaVec::Sigs(Vec::new()),
-                dbx: delta::SignatureDeltaVec::Sigs(Vec::new()),
-                moklist: None,
-                moklistx: None,
-            }),
-            custom_vars: Vec::new(),
-        };
-
-        let vars = CustomVars::new()
-            .with_baseline_revision("July 2026")
-            .apply_delta(delta)
-            .unwrap();
-
-        assert_eq!(vars.baseline_revision(), Some("July 2026"));
-        assert!(vars.custom_uefi_config_present());
     }
 }
