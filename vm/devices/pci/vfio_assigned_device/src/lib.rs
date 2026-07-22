@@ -825,12 +825,18 @@ fn apply_bar_addresses(
     for i in 0..6 {
         let address = match bar_addresses[i] {
             BarAddressConfig::GuestAssigned => continue,
-            BarAddressConfig::HostAssigned => physical_addresses.as_ref().unwrap()[i],
+            BarAddressConfig::HostAssigned => {
+                let address = physical_addresses.as_ref().unwrap()[i];
+                if address == 0 {
+                    anyhow::bail!(
+                        "BAR {i} host address reported by sysfs is 0; use an explicit address for a VFIO variant-driver BAR"
+                    );
+                }
+                address
+            }
+            BarAddressConfig::Fixed(0) => anyhow::bail!("BAR {i} fixed address is 0"),
             BarAddressConfig::Fixed(address) => address,
         };
-        if address == 0 {
-            anyhow::bail!("BAR {i} address is 0");
-        }
         let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
         if !is_64bit && address > u32::MAX as u64 {
             anyhow::bail!("BAR {i} is 32-bit but address {address:#x} exceeds 4 GB");
@@ -1630,7 +1636,18 @@ mod tests {
         let mut bar_masks = [0; 6];
         bar_masks[0] = 0xffff_f000;
 
-        for address in [0, 0x8000_0001, 0x1_0000_0000] {
+        let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[0] = BarAddressConfig::Fixed(0);
+        let error = apply_bar_addresses(
+            "not-a-real-device",
+            &bar_flags,
+            &bar_masks,
+            &bar_addresses,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "BAR 0 fixed address is 0");
+
+        for address in [0x8000_0001, 0x1_0000_0000] {
             let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
             bar_addresses[0] = BarAddressConfig::Fixed(address);
             assert!(
