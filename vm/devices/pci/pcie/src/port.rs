@@ -228,12 +228,13 @@ pub(crate) fn filter_acs_capabilities_for_bridge(
     port_type: &DevicePortType,
     requested: u16,
 ) -> u16 {
-    let type_mask = match port_type {
+    let type_mask = match *port_type {
         DevicePortType::RootPort | DevicePortType::DownstreamSwitchPort => {
             ACS_CAPABILITY_ALLOWED_ROOT_OR_DSP_MASK
         }
         DevicePortType::UpstreamSwitchPort => ACS_CAPABILITY_ALLOWED_USP_MASK,
         DevicePortType::Endpoint => 0,
+        _ => 0,
     };
 
     requested & ACS_CAPABILITY_IMPLEMENTED_MASK & type_mask
