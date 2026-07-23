@@ -82,9 +82,7 @@ impl PciExpressState {
         pci_express::LinkStatus::new()
             .with_current_link_speed(LinkSpeed::Speed32_0GtS)
             .with_negotiated_link_width(LinkWidth::X16)
-            .with_data_link_layer_link_active(
-                self.presence_detect_state && !self.registers.link_control.link_disable(),
-            )
+            .with_data_link_layer_link_active(self.presence_detect_state)
     }
 }
 
@@ -308,13 +306,15 @@ impl PciExpressCapability {
     fn link_control_writable_mask(&self) -> u16 {
         let port_type = self.pcie_capabilities.device_port_type();
         let downstream_port = Self::is_downstream_port(port_type);
+        // The PCIe spec requires Link Disable to be writable on downstream ports.
+        // Keep it read-only because this emulator intentionally does not disable
+        // downstream transaction forwarding when the bit is set.
         pci_express::LinkControl::new()
             .with_aspm_control(0b11)
             .with_read_completion_boundary(matches!(
                 port_type,
                 pci_express::DevicePortType::Endpoint
             ) as u16)
-            .with_link_disable(downstream_port)
             .with_common_clock_configuration(true)
             .with_extended_synch(true)
             .with_enable_clock_power_management(
@@ -1153,7 +1153,7 @@ mod tests {
         write_cap_u32(&mut root_port, 0x30, u32::MAX);
 
         assert_eq!(read_cap_u32(&root_port, 0x08), 0x0000_78ff);
-        assert_eq!(read_cap_u32(&root_port, 0x10) & 0xffff, 0x00d3);
+        assert_eq!(read_cap_u32(&root_port, 0x10) & 0xffff, 0x00c3);
         assert_eq!(read_cap_u32(&root_port, 0x1c), 0x0000_000f);
         assert_eq!(read_cap_u32(&root_port, 0x28), 0x0000_0020);
         assert_eq!(read_cap_u32(&root_port, 0x30), 0x0000_ffbf);
@@ -1458,22 +1458,14 @@ mod tests {
     }
 
     #[test]
-    fn test_link_disable_controls_dll_active() {
+    fn test_link_disable_is_read_only() {
         let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
         cap.set_presence_detect_state(true);
 
-        assert!(
-            pci_express::LinkStatus::from_bits((read_cap_u32(&cap, 0x10) >> 16) as u16)
-                .data_link_layer_link_active()
-        );
-
         write_cap_u32(&mut cap, 0x10, 0x0010);
-        assert!(
-            !pci_express::LinkStatus::from_bits((read_cap_u32(&cap, 0x10) >> 16) as u16)
-                .data_link_layer_link_active()
-        );
 
-        write_cap_u32(&mut cap, 0x10, 0);
+        let link_control = pci_express::LinkControl::from_bits(read_cap_u32(&cap, 0x10) as u16);
+        assert!(!link_control.link_disable());
         assert!(
             pci_express::LinkStatus::from_bits((read_cap_u32(&cap, 0x10) >> 16) as u16)
                 .data_link_layer_link_active()
@@ -2006,7 +1998,7 @@ mod tests {
 
         let saved2 = cap2.save().expect("second save should succeed");
         assert_eq!(saved2.device_control, 0x78ff);
-        assert_eq!(saved2.link_control, 0x00d3);
+        assert_eq!(saved2.link_control, 0x00c3);
         assert_eq!(saved2.slot_control, 0);
         assert_eq!(saved2.slot_status_events, 0);
         assert_eq!(saved2.root_control, 0x000f);
