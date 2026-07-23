@@ -2120,6 +2120,10 @@ mod tests {
     struct MockStreamBackend;
 
     impl crate::shared::AcceleratedStreamBackend for MockStreamBackend {
+        fn set_stream_id(&self, _sid: Option<u32>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
         fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             Ok(())
         }
@@ -2134,15 +2138,16 @@ mod tests {
     /// disabled, so the stream's policy is bypass — SID-based invalidations
     /// for it are not forwarded.
     fn register_test_stream(dev: &SmmuDevice, secondary_bus: u8) -> u32 {
-        use pci_core::bus_range::AssignedBusRange;
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(secondary_bus, secondary_bus);
-        // Test streams stay registered for the device's lifetime, so the
-        // registration id is intentionally unused.
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend))
+            .register_accel_device(0, Arc::new(MockStreamBackend))
             .expect("register stream");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration
+            .set_requester_id(u16::from(secondary_bus) << 8)
+            .expect("bind requester ID");
+        // Test streams stay registered for the device's lifetime.
+        std::mem::forget(registration);
         (secondary_bus as u32) << 8
     }
 
@@ -2183,6 +2188,7 @@ mod tests {
 
     /// A recording accel backend that captures each config applied to it.
     struct RecordingBackend {
+        stream_ids: parking_lot::Mutex<Vec<Option<u32>>>,
         configs: parking_lot::Mutex<Vec<crate::shared::StreamConfig>>,
         fail_next: std::sync::atomic::AtomicBool,
     }
@@ -2190,6 +2196,7 @@ mod tests {
     impl RecordingBackend {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                stream_ids: parking_lot::Mutex::new(Vec::new()),
                 configs: parking_lot::Mutex::new(Vec::new()),
                 fail_next: std::sync::atomic::AtomicBool::new(false),
             })
@@ -2199,6 +2206,10 @@ mod tests {
             std::mem::take(&mut *self.configs.lock())
         }
 
+        fn take_stream_ids(&self) -> Vec<Option<u32>> {
+            std::mem::take(&mut *self.stream_ids.lock())
+        }
+
         fn fail_next(&self) {
             self.fail_next
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2206,6 +2217,11 @@ mod tests {
     }
 
     impl crate::shared::AcceleratedStreamBackend for RecordingBackend {
+        fn set_stream_id(&self, sid: Option<u32>) -> anyhow::Result<()> {
+            self.stream_ids.lock().push(sid);
+            Ok(())
+        }
+
         fn set_stream_config(&self, config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             self.configs.lock().push(config);
             if self
@@ -2245,41 +2261,50 @@ mod tests {
         dev.guest_memory.write_plain(addr, &ste).expect("write STE");
     }
 
-    /// Registering while disabled (GBPA.ABORT=0) synchronously applies Bypass,
-    /// even before the device's bus is assigned.
+    /// Registration starts aborting until PCI routing publishes the RID. Once
+    /// bound while the SMMU is disabled, the device receives bypass.
     #[test]
     fn test_register_applies_bypass_when_disabled() {
-        use pci_core::bus_range::AssignedBusRange;
         let dev = make_accel_device();
         let backend = RecordingBackend::new();
-        // Bus not yet assigned; SMMU disabled with GBPA.ABORT=0 (reset default).
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x100)]);
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
-    /// Registering while disabled with GBPA.ABORT=1 synchronously applies Abort.
+    /// Binding while disabled with GBPA.ABORT=1 keeps the device aborting.
     #[test]
     fn test_register_applies_abort_when_disabled_gbpa_abort() {
-        use pci_core::bus_range::AssignedBusRange;
         let dev = make_accel_device();
         dev.shared_state.set_gbpa_abort(true);
         let backend = RecordingBackend::new();
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
-        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        assert_eq!(
+            backend.take(),
+            vec![
+                crate::shared::StreamConfig::Abort,
+                crate::shared::StreamConfig::Abort,
+            ]
+        );
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x100)]);
     }
 
-    /// Registering while enabled with an assigned bus applies the stream's
-    /// STE-derived policy synchronously.
+    /// Publishing a RID while enabled applies that stream's STE policy.
     #[test]
     fn test_register_applies_ste_policy_when_enabled() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
@@ -2288,42 +2313,38 @@ mod tests {
         let sid = 0x100u32; // bus 1, dev 0, fn 0
         write_test_ste(&dev, sid, SteConfig::BYPASS);
 
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
         let backend = RecordingBackend::new();
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
-    /// Registering while enabled but with the bus unassigned explicitly aborts
-    /// the device; a later CFGI_STE catches it up to Translate.
+    /// Registering while enabled remains aborting until RID publication, which
+    /// immediately applies the RID's translating STE.
     #[test]
     fn test_register_enabled_unassigned_bus_then_cfgi() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
         dev.shared_state.set_enabled(true);
 
-        let bus_range = AssignedBusRange::new(); // unassigned
         let backend = RecordingBackend::new();
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(bus_range.clone(), 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
 
-        // Guest assigns the bus, programs a translating STE, then CFGI_STE.
-        bus_range.set_bus_range(1, 1);
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        dev.shared_state
-            .apply_stream_config(sid)
-            .expect("apply stream config");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
         let applied = backend.take();
         assert_eq!(applied.len(), 1);
         assert!(
@@ -2333,19 +2354,118 @@ mod tests {
         );
     }
 
-    /// Enabling the SMMU before PCI bus assignment replaces the disabled-state
-    /// bypass policy with abort, so the device cannot retain boot-time bypass.
+    /// A changed RID rebinds the backend before applying the new stream's
+    /// policy. Repeating that RID is a no-op once policy application succeeds.
+    #[test]
+    fn test_requester_id_change_rebinds_stream() {
+        use crate::spec::ste::SteConfig;
+
+        let dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+        write_test_ste(&dev, 0x100, SteConfig::BYPASS);
+        write_test_ste(&dev, 0x200, SteConfig::ABORT);
+
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+
+        registration
+            .set_requester_id(0x100)
+            .expect("bind first RID");
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x100)]);
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+
+        registration.set_requester_id(0x200).expect("rebind RID");
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x200)]);
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+
+        registration.set_requester_id(0x200).expect("repeat RID");
+        assert!(backend.take_stream_ids().is_empty());
+        assert!(backend.take().is_empty());
+    }
+
+    /// If applying a newly bound RID's policy fails, the backend remains on
+    /// abort and the next write to the same RID retries policy without another
+    /// identity transition.
+    #[test]
+    fn test_requester_id_policy_failure_retries_same_rid() {
+        use crate::spec::ste::SteConfig;
+
+        let dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+        write_test_ste(&dev, 0x100, SteConfig::BYPASS);
+
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        backend.take();
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+
+        backend.fail_next();
+        registration
+            .set_requester_id(0x100)
+            .expect_err("policy application must fail");
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x100)]);
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+
+        registration
+            .set_requester_id(0x100)
+            .expect("retry same RID policy");
+        assert!(backend.take_stream_ids().is_empty());
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+    }
+
+    /// Reset-time RID clearing retires the current identity and leaves the
+    /// device aborting until a later routed write publishes a new RID.
+    #[test]
+    fn test_requester_id_clear_and_rebind() {
+        let dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        backend.take();
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+
+        registration.set_requester_id(0x100).expect("bind RID");
+        backend.take_stream_ids();
+        backend.take();
+
+        registration.clear_requester_id().expect("clear RID");
+        assert_eq!(backend.take_stream_ids(), vec![None]);
+        assert!(dev.shared_state.pin_translating_backend(0x100).is_none());
+
+        dev.shared_state
+            .apply_all_stream_configs()
+            .expect("re-drive without RID");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+
+        registration.set_requester_id(0x200).expect("bind new RID");
+        assert_eq!(backend.take_stream_ids(), vec![Some(0x200)]);
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+    }
+
+    /// Enabling the SMMU before RID capture leaves the device aborting.
     #[test]
     fn test_enable_aborts_unassigned_stream() {
-        use pci_core::bus_range::AssignedBusRange;
-
         let dev = make_accel_device();
         let backend = RecordingBackend::new();
         let _id = dev
             .shared_state
-            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
-        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
 
         dev.shared_state.set_enabled(true);
         dev.shared_state
@@ -2359,19 +2479,18 @@ mod tests {
     #[test]
     fn test_redrive_reapplies_all() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
 
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
         let backend = RecordingBackend::new();
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register backend");
-        // Disabled + GBPA.ABORT=0 applies Bypass at registration.
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        // Disabled + GBPA.ABORT=0 applies Bypass after RID capture.
         assert_eq!(
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Bypass)
@@ -2396,7 +2515,6 @@ mod tests {
     #[test]
     fn test_cfgi_failure_preserves_old_translation_state() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
 
         let mut dev = make_cmdq_test_device();
         dev.shared_state
@@ -2405,13 +2523,13 @@ mod tests {
 
         let sid = 0x100;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
         let backend = RecordingBackend::new();
-        let _id = dev
+        let id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, backend.clone())
+            .register_accel_device(0, backend.clone())
             .expect("register translating backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
         assert!(dev.shared_state.pin_translating_backend(sid).is_some());
 
         write_test_ste(&dev, sid, SteConfig::BYPASS);
@@ -2447,6 +2565,10 @@ mod tests {
     }
 
     impl crate::shared::AcceleratedStreamBackend for DropTrackingBackend {
+        fn set_stream_id(&self, _sid: Option<u32>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
         fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             Ok(())
         }
@@ -2464,7 +2586,6 @@ mod tests {
     #[test]
     fn test_unregister_removes_and_drops_backend() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
 
@@ -2476,21 +2597,20 @@ mod tests {
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
 
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
         let dropped = Arc::new(AtomicBool::new(false));
         // Register a translating stream. Do NOT keep a clone of the backend, so
         // the shared table holds the only `Arc`.
         let id = dev
             .shared_state
             .register_accel_device(
-                bus_range,
                 0,
                 Arc::new(DropTrackingBackend {
                     dropped: dropped.clone(),
                 }),
             )
             .expect("register backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
         // Device present, translating → its SID-based invalidations forward.
         assert!(dev.shared_state.pin_translating_backend(sid).is_some());
         assert!(!dropped.load(Ordering::Relaxed));
@@ -2508,19 +2628,14 @@ mod tests {
     /// removed/hot-unplugged device while the emulator is stopped.
     #[test]
     fn test_accel_registration_guard_unregisters_on_drop() {
-        use pci_core::bus_range::AssignedBusRange;
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
 
         let dev = make_accel_device();
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
-
         let dropped = Arc::new(AtomicBool::new(false));
         let id = dev
             .shared_state
             .register_accel_device(
-                bus_range,
                 0,
                 Arc::new(DropTrackingBackend {
                     dropped: dropped.clone(),
@@ -2542,7 +2657,6 @@ mod tests {
     #[test]
     fn test_invalidation_batch_pins_backend_during_unregister() {
         use crate::spec::ste::SteConfig;
-        use pci_core::bus_range::AssignedBusRange;
         use std::sync::Weak;
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::AtomicU64;
@@ -2574,19 +2688,19 @@ mod tests {
 
         let sid = 0x100;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        let bus_range = AssignedBusRange::new();
-        bus_range.set_bus_range(1, 1);
         let dropped = Arc::new(AtomicBool::new(false));
         let id = dev
             .shared_state
             .register_accel_device(
-                bus_range,
                 0,
                 Arc::new(DropTrackingBackend {
                     dropped: dropped.clone(),
                 }),
             )
             .expect("register translating backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        std::mem::forget(registration);
 
         let sink = Arc::new(UnregisteringSink {
             shared: Arc::downgrade(&dev.shared_state),

@@ -194,7 +194,6 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
                 params.guest_memory.clone(),
                 Arc::new(smmu::SmmuNestingContext {
                     shared: shared.clone(),
-                    bus_range: params.bus_range.clone(),
                     stream_id_base: 0,
                 }),
                 params.msi,
