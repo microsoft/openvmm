@@ -169,9 +169,11 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
+use vmgs_format::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE;
 use vmgs_format::VmgsProvisioner;
 use vmgs_format::VmgsProvisioningMarker;
 use vmgs_format::VmgsProvisioningReason;
+use vmgs_format::hibernate_token;
 use vmgs_resources::VmgsFileHandle;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -2350,7 +2352,7 @@ async fn new_underhill_vm(
                                 CVM_ALLOWED,
                                 firmware_size,
                                 device_size,
-                                minimum_size = VMGS_FIRMWARE_THRESHOLD_BYTES,
+                                minimum_size = VMGS_HIBERNATION_FIRMWARE_MIN_SIZE,
                                 "VMGS backing store too small to preserve UEFI firmware across hibernation"
                             );
                             false
@@ -4043,24 +4045,6 @@ where
     reg_state
 }
 
-/// A VMGS backing store must be at least this large to store a firmware image
-/// snapshot for hibernation. This is a minimum overall size so that the
-/// firmware image fits alongside the other VMGS files, not just a tight fit of
-/// the image itself.
-const VMGS_FIRMWARE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`] on a power
-/// transition, mirroring the legacy HCL `HclPowerServices` behavior. The token
-/// is written on power off and consumed/cleared on resume.
-mod hibernate_token {
-    /// Written on hibernate when a firmware image snapshot is stored in VMGS.
-    pub const FIRMWARE_STORED: u64 = u64::MAX;
-    /// Written on hibernate when no firmware image snapshot is stored.
-    pub const HIBERNATED: u64 = 0x1;
-    /// Written on a clean power off / reset to clear any prior hibernate state.
-    pub const NONE: u64 = 0x0;
-}
-
 /// Best-effort write of an 8-byte hibernate token to the VMGS. Failures are logged
 /// but never block the power transition.
 async fn write_hibernate_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
@@ -4136,14 +4120,15 @@ async fn store_firmware_to_vmgs(
         .device_size()
         .await
         .context("failed to query VMGS size")?;
-    if device_size < VMGS_FIRMWARE_THRESHOLD_BYTES || len > device_size {
+    if device_size < VMGS_HIBERNATION_FIRMWARE_MIN_SIZE || len > device_size {
         return Ok(StoreFirmwareOutcome::InsufficientSpace {
             firmware_size: len,
             device_size,
         });
     }
 
-    let mut firmware = vec![0u8; len as usize];
+    let firmware_len = usize::try_from(len).context("firmware image size does not fit in usize")?;
+    let mut firmware = vec![0u8; firmware_len];
     gm.read_at(firmware_memory.start(), &mut firmware)
         .context("failed to read UEFI firmware image from VTL0 memory")?;
     vmgs_client
@@ -4185,8 +4170,8 @@ async fn load_firmware_from_vmgs(
         .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
         .await
         .context("failed to read UEFI firmware snapshot from VMGS")?;
-    let region_len = firmware_memory.len() as usize;
-    if firmware.len() != region_len {
+    let region_len = firmware_memory.len();
+    if firmware.len() as u64 != region_len {
         anyhow::bail!(
             "stored firmware image size {} does not match firmware region size {region_len}",
             firmware.len(),
