@@ -87,6 +87,16 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
                     .0,
                 handle,
             ),
+            TpmAkCertTypeResource::HostCertified(request_ak_cert, handle) => {
+                TpmAkCertType::HostCertified(
+                    resolver
+                        .resolve(request_ak_cert, &())
+                        .await
+                        .map_err(ResolveTpmError::ResolveRequestAkCert)?
+                        .0,
+                    handle,
+                )
+            }
             TpmAkCertTypeResource::None => TpmAkCertType::None,
         };
 

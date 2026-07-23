@@ -59,6 +59,8 @@ pub enum TpmAkCertTypeResource {
     /// whether OpenHCL handles renewal.
     /// Used by TVM
     Trusted(Resource<RequestAkCertKind>, Option<bool>),
+    /// Authorized TVM AK cert with host-certification evidence.
+    HostCertified(Resource<RequestAkCertKind>, Option<bool>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM

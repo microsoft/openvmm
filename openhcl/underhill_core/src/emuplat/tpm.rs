@@ -29,6 +29,7 @@ pub struct TpmRequestAkCertHelper {
     attestation_type: AttestationType,
     attestation_vm_config: AttestationVmConfig,
     attestation_agent_data: Option<Vec<u8>>,
+    tvm_host_certification: bool,
 }
 
 impl TpmRequestAkCertHelper {
@@ -38,6 +39,7 @@ impl TpmRequestAkCertHelper {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     ) -> Self {
         Self {
             get_client,
@@ -45,6 +47,7 @@ impl TpmRequestAkCertHelper {
             attestation_type,
             attestation_vm_config,
             attestation_agent_data,
+            tvm_host_certification,
         }
     }
 }
@@ -67,7 +70,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
             AttestationType::Host => None,
         };
-        let ak_cert_request_helper =
+        let mut ak_cert_request_helper =
             underhill_attestation::IgvmAttestRequestHelper::prepare_ak_cert_request(
                 tee_type,
                 ak_pub_exponent,
@@ -77,6 +80,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
                 &self.attestation_vm_config,
                 guest_input,
             );
+        ak_cert_request_helper.set_request_tvm_host_certification(self.tvm_host_certification);
 
         let attestation_report = if let Some(tee_call) = &self.tee_call {
             tee_call
@@ -106,7 +110,10 @@ impl RequestAkCert for TpmRequestAkCertHelper {
     async fn request_ak_cert(
         &self,
         request: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    ) -> Result<
+        tpm_device::ak_cert::AkCertRequestResult,
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
         let agent_data = self.attestation_agent_data.clone().unwrap_or_default();
         let result = self
             .get_client
@@ -116,10 +123,16 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             underhill_attestation::parse_ak_cert_response(&result.response)?
         } else {
             // Let the caller to handle the empty response.
-            vec![]
+            underhill_attestation::AkCertResponse {
+                ak_cert: vec![],
+                host_certification_evidence: None,
+            }
         };
 
-        Ok(payload)
+        Ok(tpm_device::ak_cert::AkCertRequestResult {
+            ak_cert: payload.ak_cert,
+            host_certification_evidence: payload.host_certification_evidence,
+        })
     }
 }
 
@@ -181,6 +194,7 @@ pub mod resources {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     }
 
     impl GetTpmRequestAkCertHelperHandle {
@@ -188,11 +202,13 @@ pub mod resources {
             attestation_type: AttestationType,
             attestation_vm_config: AttestationVmConfig,
             attestation_agent_data: Option<Vec<u8>>,
+            tvm_host_certification: bool,
         ) -> Self {
             Self {
                 attestation_type,
                 attestation_vm_config,
                 attestation_agent_data,
+                tvm_host_certification,
             }
         }
     }
@@ -242,6 +258,7 @@ pub mod resources {
                 handle.attestation_type,
                 handle.attestation_vm_config,
                 handle.attestation_agent_data,
+                handle.tvm_host_certification,
             )
             .into())
         }

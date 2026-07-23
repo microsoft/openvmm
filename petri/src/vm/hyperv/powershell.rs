@@ -237,7 +237,8 @@ pub struct HyperVManagementVtlFeatureFlags {
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    pub tvm_host_certification: bool,
+    #[bits(58)]
     pub _reserved2: u64,
 }
 
