@@ -936,7 +936,8 @@ pub(crate) struct CdevPrepareRequest {
     /// accel-capable SMMU and needs iommufd nested translation. When set,
     /// the IoasManager allocates the S2 parent HWPT, queries host SMMU
     /// capabilities, and creates (or reuses, matched by `Arc::ptr_eq`) the
-    /// per-vSMMU vIOMMU.
+    /// per-vSMMU vIOMMU. The resolver guarantees that one vSMMU is routed to
+    /// only one `IoasManager`; a vSMMU cannot span independent IOAS contexts.
     pub vsmmu: Option<Arc<smmu::SmmuSharedState>>,
 }
 
@@ -964,7 +965,7 @@ pub(crate) struct CdevPrepareResponse {
 /// SMMU.
 pub(crate) struct NestingOutput {
     /// Shared per-vSMMU accel state (vIOMMU + S2 parent), reused across all
-    /// devices behind the same emulated SMMU.
+    /// devices behind the same emulated SMMU and host IOMMU context.
     pub accel_state: Arc<crate::iommufd_nesting::SmmuAccelState>,
     /// Host SMMU capabilities, to finalize the emulated SMMU's parameters.
     pub host_caps: smmu::HostSmmuCaps,

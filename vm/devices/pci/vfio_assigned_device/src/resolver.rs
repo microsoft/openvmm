@@ -193,6 +193,16 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         // `Arc` directly; `None` signals the plain identity-DMA path (no
         // nesting).
         let vsmmu = nesting_ctx.as_ref().map(|ctx| ctx.shared.clone());
+        // One emulated SMMU has one host vIOMMU, so every device behind it
+        // must use the same host IOMMU/IOAS context. Reserve the association
+        // before the manager RPC so a mismatched context cannot allocate a
+        // second vIOMMU. The tentative reservation is released automatically
+        // if any subsequent setup step fails.
+        let mut accel_iommu_association = nesting_ctx
+            .as_ref()
+            .map(|ctx| ctx.shared.reserve_accel_iommu(&iommu_id))
+            .transpose()
+            .with_context(|| format!("device {pci_id} has an incompatible IOMMU context"))?;
 
         tracing::info!(
             pci_id,
@@ -212,6 +222,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             })
             .await
             .context("VFIO cdev manager failed")?;
+
+        // A successful nested manager response means the vIOMMU now exists
+        // (or was reused) in this context. Make that association permanent
+        // even if a later resolver step fails; otherwise a retry through a
+        // different context could create a second vIOMMU while the first is
+        // still cached by its manager.
+        match (accel_iommu_association.take(), resp.nesting.is_some()) {
+            (Some(association), true) => association.commit(),
+            (None, false) => {}
+            _ => anyhow::bail!(
+                "VFIO cdev manager returned nesting state inconsistent with device {pci_id}"
+            ),
+        }
 
         // One owned handle to the VFIO device, shared (via `Arc`) by the PCI
         // emulation and, for a nested device, the iommufd stream backend — so a
@@ -237,8 +260,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
 
             // Register the per-vIOMMU invalidation sink. All devices behind
             // this emulated SMMU share one `SmmuAccelState` (vIOMMU), so this
-            // registers the sink once; subsequent devices' registrations are
-            // ignored by the SMMU.
+            // registers the sink once; the association reservation above
+            // guarantees subsequent devices receive the same sink.
             ctx.shared
                 .register_invalidation_sink(nesting.accel_state.clone());
 
@@ -250,8 +273,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
 
             // Register the backend and keep the returned guard on the device,
             // so removing/hot-unplugging the device unregisters the backend
-            // (and tears it down on the emulator thread) instead of leaking it
-            // for the vSMMU's lifetime.
+            // synchronously instead of leaking it for the vSMMU's lifetime.
             let id = ctx
                 .shared
                 .register_accel_device(ctx.bus_range.clone(), ctx.stream_id_base, backend)
