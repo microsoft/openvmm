@@ -2298,8 +2298,8 @@ mod tests {
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
-    /// Registering while enabled but with the bus unassigned leaves the device
-    /// fail-closed (no apply); a later CFGI_STE catches it up to Translate.
+    /// Registering while enabled but with the bus unassigned explicitly aborts
+    /// the device; a later CFGI_STE catches it up to Translate.
     #[test]
     fn test_register_enabled_unassigned_bus_then_cfgi() {
         use crate::spec::ste::SteConfig;
@@ -2315,8 +2315,7 @@ mod tests {
             .shared_state
             .register_accel_device(bus_range.clone(), 0, backend.clone())
             .expect("register backend");
-        // Fail-closed: nothing applied yet.
-        assert!(backend.take().is_empty());
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
 
         // Guest assigns the bus, programs a translating STE, then CFGI_STE.
         bus_range.set_bus_range(1, 1);
@@ -2332,6 +2331,27 @@ mod tests {
             "expected Translate for sid {sid:#x}, got {:?}",
             applied[0]
         );
+    }
+
+    /// Enabling the SMMU before PCI bus assignment replaces the disabled-state
+    /// bypass policy with abort, so the device cannot retain boot-time bypass.
+    #[test]
+    fn test_enable_aborts_unassigned_stream() {
+        use pci_core::bus_range::AssignedBusRange;
+
+        let dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        let _id = dev
+            .shared_state
+            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .expect("register backend");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+
+        dev.shared_state.set_enabled(true);
+        dev.shared_state
+            .apply_all_stream_configs()
+            .expect("apply enabled policy");
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
     }
 
     /// Shared policy re-drive applies every registered backend's current
