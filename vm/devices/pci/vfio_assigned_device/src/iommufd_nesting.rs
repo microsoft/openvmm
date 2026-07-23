@@ -74,6 +74,51 @@ const ABORT_STE_DWORDS: [u64; 2] = [0b1, 0];
 /// All other fields RES0.
 const BYPASS_STE_DWORDS: [u64; 2] = [0b1001, 0];
 
+/// Owns a newly allocated iommufd object until its ID is transferred into
+/// long-lived state. Uncommitted objects are destroyed on scope exit.
+struct PendingIommufdObject<'a> {
+    ctx: &'a IommufdCtx,
+    id: Option<u32>,
+    kind: &'static str,
+}
+
+impl<'a> PendingIommufdObject<'a> {
+    fn new(ctx: &'a IommufdCtx, id: u32, kind: &'static str) -> Self {
+        Self {
+            ctx,
+            id: Some(id),
+            kind,
+        }
+    }
+
+    fn id(&self) -> u32 {
+        self.id.expect("pending iommufd object must have an ID")
+    }
+
+    fn into_id(mut self) -> u32 {
+        self.id
+            .take()
+            .expect("pending iommufd object must have an ID")
+    }
+
+    fn replace(mut self, slot: &mut Option<u32>) {
+        std::mem::swap(&mut self.id, slot);
+    }
+}
+
+impl Drop for PendingIommufdObject<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.ctx.destroy(id).unwrap_or_else(|e| {
+                panic!(
+                    "smmu accel: failed to destroy pending {} {id:#x}: {e:#}",
+                    self.kind
+                )
+            });
+        }
+    }
+}
+
 /// Per-SMMU iommufd objects for HW-accelerated nested translation.
 ///
 /// Created lazily on first VFIO device attachment for an accel-capable SMMU.
@@ -114,13 +159,16 @@ impl SmmuAccelState {
     /// `s2_parent_hwpt_id` is the S2 parent HWPT, previously allocated
     /// via `IOMMU_HWPT_ALLOC` with `NEST_PARENT`.
     pub fn new(ctx: Arc<IommufdCtx>, dev_id: u32, s2_parent_hwpt_id: u32) -> anyhow::Result<Self> {
-        let viommu_id = ctx
-            .viommu_alloc(
+        let viommu = PendingIommufdObject::new(
+            &ctx,
+            ctx.viommu_alloc(
                 vfio_sys::iommufd::IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
                 dev_id,
                 s2_parent_hwpt_id,
             )
-            .context("failed to allocate vIOMMU for accel SMMU")?;
+            .context("failed to allocate vIOMMU for accel SMMU")?,
+            "vIOMMU",
+        );
 
         // Pre-allocate the persistent abort and bypass nested HWPTs under this
         // vIOMMU (matching QEMU). Every device is always attached to a nested
@@ -128,36 +176,46 @@ impl SmmuAccelState {
         // BYPASS attach to these shared HWPTs rather than detaching or attaching
         // to the raw S2 parent, keeping every device within the vIOMMU nesting
         // and fault domain. Only STE.V and STE.Config are set; all else RES0.
-        let abort_hwpt_id = ctx
-            .hwpt_alloc(
+        let abort_hwpt = PendingIommufdObject::new(
+            &ctx,
+            ctx.hwpt_alloc(
                 0,
                 dev_id,
-                viommu_id,
+                viommu.id(),
                 vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
                 Some(&vfio_sys::iommufd::IommuHwptArmSmmuv3 {
                     ste: ABORT_STE_DWORDS,
                 }),
             )
-            .context("failed to allocate abort HWPT for accel SMMU")?;
-        let bypass_hwpt_id = ctx
-            .hwpt_alloc(
+            .context("failed to allocate abort HWPT for accel SMMU")?,
+            "abort HWPT",
+        );
+        let bypass_hwpt = PendingIommufdObject::new(
+            &ctx,
+            ctx.hwpt_alloc(
                 0,
                 dev_id,
-                viommu_id,
+                viommu.id(),
                 vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
                 Some(&vfio_sys::iommufd::IommuHwptArmSmmuv3 {
                     ste: BYPASS_STE_DWORDS,
                 }),
             )
-            .context("failed to allocate bypass HWPT for accel SMMU")?;
+            .context("failed to allocate bypass HWPT for accel SMMU")?,
+            "bypass HWPT",
+        );
 
         tracing::info!(
-            viommu_id,
+            viommu_id = viommu.id(),
             s2_parent_hwpt_id,
-            abort_hwpt_id,
-            bypass_hwpt_id,
+            abort_hwpt_id = abort_hwpt.id(),
+            bypass_hwpt_id = bypass_hwpt.id(),
             "created SMMU accel state (vIOMMU)"
         );
+
+        let viommu_id = viommu.into_id();
+        let abort_hwpt_id = abort_hwpt.into_id();
+        let bypass_hwpt_id = bypass_hwpt.into_id();
 
         Ok(Self {
             ctx,
@@ -378,38 +436,34 @@ impl IommufdStreamBackend {
         );
 
         // Allocate a new nested HWPT under the vIOMMU.
-        let new_hwpt = self
-            .accel
-            .ctx
-            .hwpt_alloc(
-                0, // flags: not a nest parent
-                self.dev_id,
-                self.accel.viommu_id, // parent is the vIOMMU
-                vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
-                Some(&ste_data),
-            )
-            .context("failed to allocate nested HWPT for S1_TRANS")?;
+        let new_hwpt = PendingIommufdObject::new(
+            &self.accel.ctx,
+            self.accel
+                .ctx
+                .hwpt_alloc(
+                    0, // flags: not a nest parent
+                    self.dev_id,
+                    self.accel.viommu_id, // parent is the vIOMMU
+                    vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
+                    Some(&ste_data),
+                )
+                .context("failed to allocate nested HWPT for S1_TRANS")?,
+            "nested HWPT",
+        );
 
         // Attach to the new nested HWPT. `attach` replaces the current
         // attachment (the shared abort/bypass HWPT, or an old per-device nested
         // HWPT) atomically, so the device is never transiently detached.
-        // Replacement is atomic: on failure the old HWPT remains attached.
-        // Destroy the unattached candidate before returning so both backend
-        // state and the SMMU's forwarding state continue to describe the old
-        // translation exactly.
-        if let Err(e) = self.attach(state, new_hwpt, "nested HWPT") {
-            self.destroy_owned(new_hwpt, "unattached nested HWPT");
-            return Err(e);
-        }
+        // Replacement is atomic: on failure the old HWPT remains attached and
+        // the pending candidate is destroyed on scope exit.
+        self.attach(state, new_hwpt.id(), "nested HWPT")?;
 
-        // Destroy the old nested HWPT (if any).
-        if let Some(old_hwpt) = state.current_nested_hwpt.replace(new_hwpt) {
-            self.destroy_owned(old_hwpt, "nested HWPT");
-        }
+        let new_hwpt_id = new_hwpt.id();
+        new_hwpt.replace(&mut state.current_nested_hwpt);
 
         tracing::debug!(
             dev_id = self.dev_id,
-            nested_hwpt = new_hwpt,
+            nested_hwpt = new_hwpt_id,
             "SMMU accel: STE → S1_TRANS (nested HWPT)"
         );
         Ok(())
