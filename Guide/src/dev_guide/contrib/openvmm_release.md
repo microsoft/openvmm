@@ -139,7 +139,8 @@ the OpenVMM product version.
 
 ## Release assets
 
-The initial release contains:
+The initial release contains nine archives plus a separate `SHA256SUMS`
+checksum file:
 
 - `openvmm-<VERSION>-windows-x64.zip`;
 - `openvmm-<VERSION>-windows-x64-symbols.zip`;
