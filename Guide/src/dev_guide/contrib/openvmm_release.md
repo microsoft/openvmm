@@ -86,6 +86,13 @@ exactly one OpenVMM release tag. Pushed release tags are immutable.
 
 ## Build identity
 
+```admonish note
+The source-identity versioning described here is under development. It is the
+intended model, not current behavior: today `openvmm --version` reports the
+Cargo package version. Treat this section as planned until the implementation
+lands.
+```
+
 OpenVMM resolves its displayed version from source identity:
 
 | Source state | Displayed version |
