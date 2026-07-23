@@ -174,6 +174,7 @@ impl NvmeWorkers {
                 }
             }
         }
+        self.doorbells.write().reset();
     }
 }
 

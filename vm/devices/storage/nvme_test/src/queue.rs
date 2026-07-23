@@ -20,6 +20,7 @@ use vmcore::interrupt::Interrupt;
 
 pub struct DoorbellMemory {
     mem: GuestMemory,
+    private_mem: GuestMemory,
     offset: u64,
     event_idx_offset: Option<u64>,
     wakers: Vec<Option<Waker>>,
@@ -29,12 +30,23 @@ pub struct InvalidDoorbell;
 
 impl DoorbellMemory {
     pub fn new(num_qids: u16) -> Self {
+        let private_mem = GuestMemory::allocate((num_qids as usize) << DOORBELL_STRIDE_BITS);
         Self {
-            mem: GuestMemory::allocate((num_qids as usize) << DOORBELL_STRIDE_BITS),
+            mem: private_mem.clone(),
+            private_mem,
             offset: 0,
             event_idx_offset: None,
             wakers: (0..num_qids).map(|_| None).collect(),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.private_mem
+            .fill_at(0, 0, self.wakers.len() << DOORBELL_STRIDE_BITS)
+            .expect("private doorbell memory must be writable");
+        self.mem = self.private_mem.clone();
+        self.offset = 0;
+        self.event_idx_offset = None;
     }
 
     /// Update the memory used to store the doorbell values. This is used to
