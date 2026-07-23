@@ -10546,6 +10546,7 @@ dependencies = [
  "get_resources",
  "guid",
  "hyperv_ic_resources",
+ "initrd_cpio",
  "inspect",
  "jiff",
  "kmsg",

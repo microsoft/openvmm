@@ -62,6 +62,7 @@ use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieGenericInitiatorConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -785,22 +786,21 @@ impl VmService {
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
-        let (pcie_root_complexes, pcie_switches, pcie_devices) =
-            if let Some(pcie) = req_config.pcie.take() {
-                build_pcie_topology(pcie, &registry).await?
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
+        let pcie = if let Some(pcie) = req_config.pcie.take() {
+            build_pcie_topology(pcie, &registry).await?
+        } else {
+            BuiltPcieTopology::default()
+        };
 
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
-            pcie_root_complexes,
-            pcie_devices,
-            pcie_switches,
-            pcie_generic_initiators: vec![],
+            pcie_root_complexes: pcie.root_complexes,
+            pcie_devices: pcie.devices,
+            pcie_switches: pcie.switches,
+            pcie_generic_initiators: pcie.generic_initiators,
             vpci_devices: vec![],
             numa,
             chipset: chipset.chipset,
@@ -1484,16 +1484,21 @@ fn pcie_mmio_range_config(size: u64, base: Option<u64>) -> anyhow::Result<PcieMm
 /// a list of root complexes (each carrying its root ports), a list of switches
 /// (each referencing its parent port), and a list of devices (each referencing
 /// the port it sits behind).
+#[derive(Default)]
+struct BuiltPcieTopology {
+    root_complexes: Vec<PcieRootComplexConfig>,
+    switches: Vec<PcieSwitchConfig>,
+    devices: Vec<PcieDeviceConfig>,
+    generic_initiators: Vec<PcieGenericInitiatorConfig>,
+}
+
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
     registry: &FdRegistry,
-) -> anyhow::Result<(
-    Vec<PcieRootComplexConfig>,
-    Vec<PcieSwitchConfig>,
-    Vec<PcieDeviceConfig>,
-)> {
+) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
+        generic_initiators,
     } = topology;
     let mut root_complexes = Vec::new();
     let mut switches = Vec::new();
@@ -1522,6 +1527,7 @@ async fn build_pcie_topology(
                 hotplug,
                 attached,
                 devfn,
+                acs_capabilities_supported,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1529,7 +1535,9 @@ async fn build_pcie_topology(
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
                 hotplug,
-                acs_capabilities_supported: None,
+                acs_capabilities_supported: acs_capabilities_supported
+                    .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                    .transpose()?,
                 cxl: false,
             });
             if let Some(attached) = attached {
@@ -1562,7 +1570,20 @@ async fn build_pcie_topology(
         });
     }
 
-    Ok((root_complexes, switches, devices))
+    let generic_initiators = generic_initiators
+        .into_iter()
+        .map(|initiator| PcieGenericInitiatorConfig {
+            port_name: initiator.port_name,
+            node: initiator.node,
+        })
+        .collect();
+
+    Ok(BuiltPcieTopology {
+        root_complexes,
+        switches,
+        devices,
+        generic_initiators,
+    })
 }
 
 /// Walks a single proto `PcieAttachment` (the thing behind one port): either an
@@ -1591,6 +1612,7 @@ fn walk_pcie_attachment(
                     hotplug,
                     attached,
                     devfn,
+                    acs_capabilities_supported,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -1598,7 +1620,9 @@ fn walk_pcie_attachment(
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
                     hotplug,
-                    acs_capabilities_supported: None,
+                    acs_capabilities_supported: acs_capabilities_supported
+                        .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                        .transpose()?,
                     cxl: false,
                 });
                 if let Some(attached) = attached {
