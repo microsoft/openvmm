@@ -1678,6 +1678,7 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
     .into_resource())
 }
 
+#[cfg(target_os = "linux")]
 fn parse_vfio_bar_addresses(
     entries: Vec<vmservice::VfioBarAddress>,
 ) -> anyhow::Result<[vfio_assigned_device_resources::BarAddressConfig; 6]> {
@@ -1949,7 +1950,7 @@ fn build_vhost_user_device(
     anyhow::bail!("vhost-user is only supported on unix hosts")
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use vfio_assigned_device_resources::BarAddressConfig;
