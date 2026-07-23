@@ -212,10 +212,13 @@ impl NvramServices {
         use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
         use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 
-        let final_vars = final_vars.into_uefi_vars();
+        let firmware_uefi_custom_vars::UefiVars {
+            signatures,
+            non_signature_vars,
+        } = final_vars.into_uefi_vars();
 
         // Inject non-signature vars first, as some may require an auth bypass.
-        for (name, UefiVar { guid, attr, value }) in final_vars.non_signature_vars {
+        for (name, UefiVar { guid, attr, value }) in non_signature_vars {
             tracing::trace!(%name, "Injecting UEFI var");
 
             // the value might need to be prepended with an auth header,
@@ -250,7 +253,7 @@ impl NvramServices {
         }
 
         // inject structured signature vars
-        if let Some(sigs) = final_vars.signatures {
+        if let Some(sigs) = signatures {
             use uefi_specs::linux::nvram::vars as linux_vars;
             use uefi_specs::uefi::nvram::vars as uefi_vars;
 
