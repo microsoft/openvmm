@@ -33,11 +33,11 @@ const APPEND_WITHOUT_BASE_JSON: &[u8] = include_bytes!("custom_uefi_json/append_
 
 //  Custom variable properties
 const CUSTOM_UEFI_VAR_NAME: &str = "PetriCustomVar";
-const CUSTOM_UEFI_VAR_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const CUSTOM_UEFI_VAR_VALUE: &[u8] = b"petri-uefi-delta";
 const REPLACE_UEFI_VAR_NAME: &str = "PetriReplaceVar";
 const REPLACE_UEFI_VAR_VALUE: &[u8] = b"petri-uefi-replace";
 const APPENDED_DBX_SHA256: &[u8; 32] = b"petri-uefi-sha256-test-digest!!!";
+const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 const EFIVARFS_ATTRIBUTES_SIZE: usize = size_of::<u32>();
 
@@ -101,7 +101,7 @@ async fn custom_uefi_append_non_signature_var<T: PetriVmmBackend>(
     // Test that the custom UEFI variable exists in the guest
     let shell = agent.unix_shell();
     let var_path =
-        format!("/sys/firmware/efi/efivars/{CUSTOM_UEFI_VAR_NAME}-{CUSTOM_UEFI_VAR_GUID}");
+        format!("/sys/firmware/efi/efivars/{CUSTOM_UEFI_VAR_NAME}-{EFI_GLOBAL_VARIABLE_GUID}");
     let output = cmd!(shell, "sudo")
         .args([
             "dd",
@@ -148,7 +148,7 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
 
     let shell = agent.unix_shell();
     let var_path =
-        format!("/sys/firmware/efi/efivars/{REPLACE_UEFI_VAR_NAME}-{CUSTOM_UEFI_VAR_GUID}");
+        format!("/sys/firmware/efi/efivars/{REPLACE_UEFI_VAR_NAME}-{EFI_GLOBAL_VARIABLE_GUID}");
     let output = cmd!(shell, "sudo")
         .args([
             "dd",
@@ -165,7 +165,7 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
     );
     assert_eq!(output.stdout, REPLACE_UEFI_VAR_VALUE);
 
-    let pk_path = format!("/sys/firmware/efi/efivars/PK-{CUSTOM_UEFI_VAR_GUID}");
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{EFI_GLOBAL_VARIABLE_GUID}");
     let pk_exists = cmd!(shell, "sudo")
         .args(["test", "-f", &pk_path])
         .output()
