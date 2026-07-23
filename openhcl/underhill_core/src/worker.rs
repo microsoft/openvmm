@@ -2587,17 +2587,6 @@ async fn new_underhill_vm(
             None => None,
         };
 
-        if let Err(err) = firmware_uefi_custom_vars::FinalVars::validate(
-            base_template.as_ref(),
-            custom_template_delta.as_ref(),
-        ) {
-            tracing::error!(CVM_ALLOWED, "Failed to apply custom UEFI vars");
-            get_client
-                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                .await;
-            return Err(err).context("failed to apply custom UEFI variables");
-        }
-
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
             custom_template_delta,

@@ -41,12 +41,20 @@ use watchdog_core::platform::WatchdogPlatform;
 /// VMM specific infrastructure (via some kind of compile-time feature flag
 /// infrastructure).
 pub mod platform {
+    use async_trait::async_trait;
+
     /// A UEFI event that should be surfaced to the host.
     #[derive(Debug)]
     pub enum UefiEvent {
         BootSuccess(BootInfo),
         BootFailure(BootInfo),
         NoBootDevice,
+    }
+
+    /// A failure encountered while initializing the UEFI device.
+    #[derive(Debug, Clone, Copy)]
+    pub enum UefiInitializationFailure {
+        CustomVars,
     }
 
     /// Information about a boot attempt.
@@ -56,8 +64,11 @@ pub mod platform {
     }
 
     /// Interface to log UEFI events.
+    #[async_trait]
     pub trait UefiLogger: Send {
         fn log_event(&self, event: UefiEvent);
+
+        async fn log_initialization_failure(&mut self, _failure: UefiInitializationFailure) {}
     }
 
     /// Callbacks that enable nvram services to revoke VSM on

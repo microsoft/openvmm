@@ -8,6 +8,7 @@ use firmware_pcat::PcatLogger;
 use firmware_uefi_resources::ResolvedUefiLogger;
 use firmware_uefi_resources::UefiLoggerHandleKind;
 use firmware_uefi_resources::platform::UefiEvent;
+use firmware_uefi_resources::platform::UefiInitializationFailure;
 use firmware_uefi_resources::platform::UefiLogger;
 use get_resources::ged::FirmwareEvent;
 use vm_resource::PlatformResource;
@@ -31,6 +32,7 @@ impl MeshLogger {
     }
 }
 
+#[async_trait::async_trait]
 impl UefiLogger for MeshLogger {
     fn log_event(&self, event: UefiEvent) {
         let event = match event {
@@ -39,6 +41,10 @@ impl UefiLogger for MeshLogger {
             UefiEvent::NoBootDevice => FirmwareEvent::NoBootDevice,
         };
         self.send(event);
+    }
+
+    async fn log_initialization_failure(&mut self, _failure: UefiInitializationFailure) {
+        self.send(FirmwareEvent::BootFailed);
     }
 }
 

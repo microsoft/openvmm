@@ -3,6 +3,7 @@
 
 use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi_resources::platform::UefiEvent;
+use firmware_uefi_resources::platform::UefiInitializationFailure;
 use firmware_uefi_resources::platform::UefiLogger;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
@@ -15,6 +16,7 @@ pub struct UnderhillLogger {
     pub get: GuestEmulationTransportClient,
 }
 
+#[async_trait::async_trait]
 impl UefiLogger for UnderhillLogger {
     fn log_event(&self, event: UefiEvent) {
         let log_event_id = match event {
@@ -35,6 +37,13 @@ impl UefiLogger for UnderhillLogger {
             UefiEvent::NoBootDevice => EventLogId::NO_BOOT_DEVICE,
         };
         self.get.event_log(log_event_id);
+    }
+
+    async fn log_initialization_failure(&mut self, failure: UefiInitializationFailure) {
+        let event_id = match failure {
+            UefiInitializationFailure::CustomVars => EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED,
+        };
+        self.get.event_log_fatal(event_id).await;
     }
 }
 

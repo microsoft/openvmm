@@ -155,7 +155,7 @@ impl UefiDevice {
         let UefiRuntimeDeps {
             gm,
             nvram_storage,
-            logger,
+            mut logger,
             vmtime,
             watchdog_platform,
             watchdog_recv,
@@ -166,7 +166,18 @@ impl UefiDevice {
         let final_vars = firmware_uefi_custom_vars::FinalVars::resolve(
             cfg.base_template,
             cfg.custom_template_delta,
-        )?;
+        );
+        let final_vars = match final_vars {
+            Ok(final_vars) => final_vars,
+            Err(err) => {
+                logger
+                    .log_initialization_failure(
+                        firmware_uefi_resources::platform::UefiInitializationFailure::CustomVars,
+                    )
+                    .await;
+                return Err(err.into());
+            }
+        };
 
         // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
