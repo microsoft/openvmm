@@ -214,10 +214,8 @@ impl NvramServices {
 
         let final_vars = final_vars.into_uefi_vars();
 
-        tracing::trace!(?final_vars, "final UEFI vars");
-
-        // Inject additional vars first, as some may require an auth bypass.
-        for (name, UefiVar { guid, attr, value }) in final_vars.additional_vars {
+        // Inject non-signature vars first, as some may require an auth bypass.
+        for (name, UefiVar { guid, attr, value }) in final_vars.non_signature_vars {
             tracing::trace!(%name, "Injecting UEFI var");
 
             // the value might need to be prepended with an auth header,

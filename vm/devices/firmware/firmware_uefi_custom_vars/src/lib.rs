@@ -13,13 +13,13 @@ use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 
 pub mod delta;
 
-/// Collection of UEFI nvram variables that that will be injected on first boot.
+/// Collection of UEFI nvram variables that will be injected on first boot.
 #[derive(Debug, Default, Clone, Protobuf)]
 pub struct UefiVars {
     /// Secure Boot signature vars
     pub signatures: Option<Signatures>,
-    /// Any additional UEFI vars
-    pub additional_vars: Vec<(String, UefiVar)>,
+    /// UEFI vars that are not Secure Boot signature vars
+    pub non_signature_vars: Vec<(String, UefiVar)>,
 }
 
 /// A complete set of variables supplied by a built-in template.
@@ -262,10 +262,10 @@ impl UefiVars {
             },
         };
 
-        let mut additional_vars = self.additional_vars;
+        let mut non_signature_vars = self.non_signature_vars;
 
         // Replace overwritten vars, append new vars
-        'outer: for (new_key, new_val) in delta.additional_vars {
+        'outer: for (new_key, new_val) in delta.non_signature_vars {
             if new_key.as_str() == "dbDefault" && new_val.guid == EFI_GLOBAL_VARIABLE {
                 return Err(ApplyDeltaError::RestrictedUefiVar {
                     name: new_key,
@@ -273,18 +273,18 @@ impl UefiVars {
                 });
             }
 
-            for (old_key, old_val) in &mut additional_vars {
+            for (old_key, old_val) in &mut non_signature_vars {
                 if *old_key == new_key {
                     *old_val = new_val;
                     continue 'outer;
                 }
             }
-            additional_vars.push((new_key, new_val));
+            non_signature_vars.push((new_key, new_val));
         }
 
         Ok(UefiVars {
             signatures: Some(signatures),
-            additional_vars,
+            non_signature_vars,
         })
     }
 }
@@ -301,7 +301,7 @@ mod tests {
         let vars = FinalVars::resolve(None, None).unwrap().into_uefi_vars();
 
         assert!(vars.signatures.is_none());
-        assert!(vars.additional_vars.is_empty());
+        assert!(vars.non_signature_vars.is_empty());
     }
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
                 moklist: None,
                 moklistx: None,
             }),
-            additional_vars: Vec::new(),
+            non_signature_vars: Vec::new(),
         };
 
         assert!(matches!(

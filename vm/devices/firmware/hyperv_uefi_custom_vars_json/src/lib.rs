@@ -5,7 +5,7 @@
 //! files.
 //!
 //! Depending on the type of JSON (template vs. user-defined custom vars), the
-//! correspond Rust type will either be a
+//! corresponding Rust type will either be a
 //! [`UefiVars`](firmware_uefi_custom_vars::UefiVars) or a
 //! [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta).
 
@@ -65,12 +65,12 @@ pub fn load_template_from_json(
 
     let UefiVarsDelta {
         signatures,
-        additional_vars,
+        non_signature_vars,
     } = load_delta_from_json(data)?;
 
     Ok(UefiVars {
         signatures: Some(match signatures {
-            SignaturesDelta::Append(_) => panic!("hardcoded templates cannot use append"),
+            SignaturesDelta::Append(_) => return Err(JsonToTemplateError::CannotUseAppend.into()),
             SignaturesDelta::Replace(signatures) => Signatures {
                 pk: deny_default(signatures.pk)?,
                 kek: deny_default_vec(signatures.kek)?,
@@ -88,7 +88,7 @@ pub fn load_template_from_json(
                     .unwrap_or_default(),
             },
         }),
-        additional_vars,
+        non_signature_vars,
     })
 }
 
@@ -363,7 +363,7 @@ mod convert {
     pub(super) fn json_to_delta(
         json: json::JsonRoot,
     ) -> Result<delta::UefiVarsDelta, JsonToDeltaError> {
-        let additional_vars: Vec<(String, base::UefiVar)> = json
+        let non_signature_vars: Vec<(String, base::UefiVar)> = json
             .properties
             .uefi_settings
             .custom_vars
@@ -386,7 +386,7 @@ mod convert {
                     moklist: moklist.map(json_to_base_sig_vec).transpose()?,
                     moklistx: moklistx.map(json_to_base_sig_vec).transpose()?,
                 }),
-                additional_vars,
+                non_signature_vars,
             },
             json::Signatures::Replace(json::SignaturesReplace {
                 pk,
@@ -408,7 +408,7 @@ mod convert {
                         .map(|sigs| validate_default(json_to_delta_sig_vec(sigs)))
                         .transpose()?,
                 }),
-                additional_vars,
+                non_signature_vars,
             },
         };
 

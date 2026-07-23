@@ -13,8 +13,8 @@ use mesh_protobuf::Protobuf;
 pub struct UefiVarsDelta {
     /// Secure Boot signature vars
     pub signatures: SignaturesDelta,
-    /// Any additional UEFI vars
-    pub additional_vars: Vec<(String, UefiVar)>,
+    /// UEFI vars that are not Secure Boot signature vars
+    pub non_signature_vars: Vec<(String, UefiVar)>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
