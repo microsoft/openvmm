@@ -152,9 +152,9 @@ impl PciExpressCapability {
             // PCI Express, Data Link Feature (for downstream ports), Physical Layer 16.0 GT/s,
             // and Physical Layer 32.0 GT/s Extended Capabilities.
             link_capabilities: pci_express::LinkCapabilities::new()
-                .with_max_link_speed(LinkSpeed::Speed32_0GtS) // PCIe 32.0 GT/s speed
+                .with_max_link_speed(LinkSpeed::Speed32_0GtS)
                 .with_max_link_width(LinkWidth::X16)
-                .with_aspm_optionality_compliance(true), // x16 link width
+                .with_aspm_optionality_compliance(true),
             slot_capabilities: pci_express::SlotCapabilities::new(),
             root_capabilities: pci_express::RootCapabilities::new(),
             device_capabilities_2: pci_express::DeviceCapabilities2::new()
