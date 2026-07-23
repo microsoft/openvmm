@@ -24,6 +24,8 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::MappableGuestMemory;
@@ -214,10 +216,15 @@ pub(crate) struct VfioAssignedPciDevice {
     /// Accelerated (iommufd-nested) SMMU registration guard, present only for
     /// a device behind an accel-capable SMMU. Dropped when this device is
     /// removed/hot-unplugged, which enqueues the unregister so the emulated
-    /// SMMU removes and tears down the device's stream backend. Held purely
-    /// for its `Drop`.
+    /// SMMU removes and tears down the device's stream backend. It also receives
+    /// the guest RequesterID from routed config-space writes.
     #[inspect(skip)]
-    _accel_registration: Option<smmu::AccelRegistration>,
+    accel_registration: Option<smmu::AccelRegistration>,
+
+    /// Guest RequesterID most recently bound successfully to the accelerated
+    /// SMMU. Config writes with the same RID stay on the local fast path.
+    #[inspect(hex)]
+    requester_id: Option<u16>,
 }
 
 #[derive(Inspect)]
@@ -584,7 +591,8 @@ impl VfioAssignedPciDevice {
             bar_direct_maps,
             config_patches,
             binding,
-            _accel_registration: accel_registration,
+            accel_registration,
+            requester_id: None,
         })
     }
 
@@ -1246,8 +1254,20 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             supports_reset,
             config_patches: _,      // immutable — built at init
             binding: _,             // lifetime handle — no reset needed
-            _accel_registration: _, // SMMU registration guard — persists across reset
+            ref accel_registration, // SMMU registration guard — persists across reset
+            ref mut requester_id,
         } = *self;
+
+        *requester_id = None;
+        if let Some(registration) = accel_registration {
+            if let Err(error) = registration.clear_requester_id() {
+                tracing::warn!(
+                    pci_id = pci_id.as_str(),
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to clear SMMU requester ID during reset"
+                );
+            }
+        }
 
         // Reset emulated MSI-X table and capability to power-on defaults
         // (all vectors masked, address/data zeroed). The capability and
@@ -1290,6 +1310,36 @@ impl ChipsetDevice for VfioAssignedPciDevice {
 }
 
 impl PciConfigSpace for VfioAssignedPciDevice {
+    fn pci_cfg_write_with_routing(
+        &mut self,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
+        if access_type != PciConfigAccessType::Type0 || address.devfn != 0 {
+            return IoResult::Ok;
+        }
+
+        if let Some(registration) = &self.accel_registration {
+            let rid = (u16::from(address.bus) << 8) | u16::from(address.devfn);
+            if self.requester_id != Some(rid) {
+                match registration.set_requester_id(rid) {
+                    Ok(()) => self.requester_id = Some(rid),
+                    Err(error) => {
+                        tracelimit::warn_ratelimited!(
+                            pci_id = self.pci_id.as_str(),
+                            rid,
+                            error = error.as_ref() as &dyn std::error::Error,
+                            "failed to bind VFIO device requester ID"
+                        );
+                    }
+                }
+            }
+        }
+
+        self.pci_cfg_write(address.byte_offset(), value)
+    }
+
     fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         match HeaderType00(offset) {
             // BAR registers: return locally cached values.

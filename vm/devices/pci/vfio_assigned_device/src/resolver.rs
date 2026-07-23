@@ -276,7 +276,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             // synchronously instead of leaking it for the vSMMU's lifetime.
             let id = ctx
                 .shared
-                .register_accel_device(ctx.bus_range.clone(), ctx.stream_id_base, backend)
+                .register_accel_device(ctx.stream_id_base, backend)
                 .with_context(|| format!("failed to register device {pci_id} with the SMMU"))?;
             accel_registration = Some(smmu::AccelRegistration::new(&ctx.shared, id));
 

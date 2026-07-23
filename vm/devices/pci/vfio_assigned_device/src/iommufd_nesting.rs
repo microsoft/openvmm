@@ -245,14 +245,11 @@ impl IommufdStreamBackend {
     /// `device` is the shared VFIO device handle (bound to iommufd), also held
     /// by the PCI emulation — one fd serves both.
     ///
-    /// The device is detached (blocking domain = abort) immediately after
-    /// bind; this is the backend's initial internal state (`attached: false`,
-    /// `current_nested_hwpt: None`). The SMMU emulator drives the device to
-    /// its correct initial policy when it registers the backend (see
-    /// `SmmuSharedState::register_accel_device`): bypass (attach to the shared
-    /// bypass HWPT) while the SMMU is disabled with `GBPA.ABORT=0`, or abort
-    /// (attach to the shared abort HWPT) otherwise. After this first attach the
-    /// device is always attached to some nested HWPT and is never detached
+    /// The device is detached (kernel blocking domain) immediately after bind.
+    /// SMMU registration first attaches the shared abort HWPT. The backend
+    /// remains aborting until PCI routing publishes the guest RequesterID and
+    /// the SMMU applies that stream's current policy. After this first attach,
+    /// the device is always attached to some nested HWPT and is never detached
     /// again until teardown.
     pub fn new(accel: Arc<SmmuAccelState>, dev_id: u32, device: Arc<vfio_sys::Device>) -> Self {
         Self {
@@ -420,6 +417,24 @@ impl IommufdStreamBackend {
 }
 
 impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
+    fn set_stream_id(&self, sid: Option<u32>) -> anyhow::Result<()> {
+        let mut state = self.state.lock();
+
+        // Stop DMA under the old identity before retiring any object that an
+        // incoming transaction or invalidation could still reference.
+        self.handle_abort(&mut state)?;
+        if let Some(vdevice_id) = state.vdevice_id.take() {
+            self.destroy_owned(vdevice_id, "vDevice");
+        }
+
+        tracing::debug!(
+            dev_id = self.dev_id,
+            virtual_sid = sid,
+            "SMMU accel: rebound StreamID"
+        );
+        Ok(())
+    }
+
     fn set_stream_config(&self, config: smmu::StreamConfig) -> anyhow::Result<()> {
         let mut state = self.state.lock();
         match config {
