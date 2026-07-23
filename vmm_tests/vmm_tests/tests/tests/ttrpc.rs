@@ -872,7 +872,7 @@ async fn validate_pcie_config(agent: &pipette_client::PipetteClient) -> anyhow::
 
         let next_offset = (header >> 20) as usize;
         anyhow::ensure!(
-            next_offset > capability_offset && next_offset % 4 == 0,
+            next_offset > capability_offset && next_offset.is_multiple_of(4),
             "parent port has no ACS capability"
         );
         capability_offset = next_offset;
