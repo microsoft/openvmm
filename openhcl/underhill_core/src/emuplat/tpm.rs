@@ -29,6 +29,7 @@ pub struct TpmRequestAkCertHelper {
     attestation_type: AttestationType,
     attestation_vm_config: AttestationVmConfig,
     attestation_agent_data: Option<Vec<u8>>,
+    tvm_host_certification: bool,
 }
 
 impl TpmRequestAkCertHelper {
@@ -38,6 +39,7 @@ impl TpmRequestAkCertHelper {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     ) -> Self {
         Self {
             get_client,
@@ -45,6 +47,7 @@ impl TpmRequestAkCertHelper {
             attestation_type,
             attestation_vm_config,
             attestation_agent_data,
+            tvm_host_certification,
         }
     }
 }
@@ -65,7 +68,9 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
             AttestationType::Cca => Some(tee_call::TeeType::Cca),
             AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
-            AttestationType::Host => None,
+            AttestationType::Host => self
+                .tvm_host_certification
+                .then_some(tee_call::TeeType::Host),
         };
         let ak_cert_request_helper =
             underhill_attestation::IgvmAttestRequestHelper::prepare_ak_cert_request(
@@ -181,6 +186,7 @@ pub mod resources {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     }
 
     impl GetTpmRequestAkCertHelperHandle {
@@ -188,11 +194,13 @@ pub mod resources {
             attestation_type: AttestationType,
             attestation_vm_config: AttestationVmConfig,
             attestation_agent_data: Option<Vec<u8>>,
+            tvm_host_certification: bool,
         ) -> Self {
             Self {
                 attestation_type,
                 attestation_vm_config,
                 attestation_agent_data,
+                tvm_host_certification,
             }
         }
     }
@@ -233,6 +241,9 @@ pub mod resources {
                     tracing::warn!("CCA: resolve: tee_call is not implemented yet");
                     None
                 }
+                AttestationType::Host if handle.tvm_host_certification => {
+                    Some(Arc::new(tee_call::HostCall))
+                }
                 AttestationType::Host => None,
             };
 
@@ -242,6 +253,7 @@ pub mod resources {
                 handle.attestation_type,
                 handle.attestation_vm_config,
                 handle.attestation_agent_data,
+                handle.tvm_host_certification,
             )
             .into())
         }

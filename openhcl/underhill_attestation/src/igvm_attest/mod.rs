@@ -76,6 +76,8 @@ pub enum ReportType {
     Cca,
     /// Trusted VM report
     Tvm,
+    /// Trusted VM report signed by the host IDK_S key
+    TvmHostCertified,
 }
 
 impl ReportType {
@@ -86,7 +88,7 @@ impl ReportType {
             Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
             Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
             Self::Cca => IgvmAttestReportType::CCA_VM_REPORT,
-            Self::Tvm => IgvmAttestReportType::TVM_REPORT,
+            Self::Tvm | Self::TvmHostCertified => IgvmAttestReportType::TVM_REPORT,
         }
     }
 }
@@ -120,6 +122,7 @@ impl IgvmAttestRequestHelper {
             TeeType::Tdx => ReportType::Tdx,
             TeeType::Cca => ReportType::Cca,
             TeeType::Vbs => ReportType::Vbs,
+            TeeType::Host => ReportType::TvmHostCertified,
         };
 
         let attestation_vm_config =
@@ -157,6 +160,7 @@ impl IgvmAttestRequestHelper {
             Some(TeeType::Tdx) => ReportType::Tdx,
             Some(TeeType::Cca) => ReportType::Cca,
             Some(TeeType::Vbs) => ReportType::Vbs,
+            Some(TeeType::Host) => ReportType::TvmHostCertified,
             None => ReportType::Tvm,
         };
 
@@ -335,6 +339,7 @@ fn get_report_size(report_type: &ReportType) -> usize {
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ReportType::TvmHostCertified => tee_call::TVM_REPORT_SIZE,
         ReportType::Cca => todo!(),
     }
 }
@@ -385,6 +390,41 @@ mod tests {
             IgvmAttestHashType::SHA_256,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_tvm_requests() {
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+
+        let legacy = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[],
+            &ReportType::Tvm,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(legacy.is_ok());
+
+        let host_certified = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[0u8; tee_call::TVM_REPORT_SIZE],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(host_certified.is_ok());
+
+        let missing_report = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(missing_report.is_err());
     }
 
     #[test]

@@ -40,11 +40,15 @@ pub const HW_DERIVED_KEY_LENGTH: usize = x86defs::snp::SNP_DERIVED_KEY_SIZE;
 // DEVNOTE: This value should be upper bound among all the supported TEE types.
 pub const REPORT_DATA_SIZE: usize = x86defs::snp::SNP_REPORT_DATA_SIZE;
 
+/// Size of `TVM_REPORT_V1`.
+pub const TVM_REPORT_SIZE: usize = 396;
+
 // TDX and SNP report data size are equal so we can use either of them
 static_assertions::const_assert_eq!(
     x86defs::snp::SNP_REPORT_DATA_SIZE,
     x86defs::tdx::TDX_REPORT_DATA_SIZE
 );
+static_assertions::const_assert!(TVM_REPORT_SIZE <= hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE);
 
 /// Type of the TEE
 #[derive(Debug)]
@@ -57,6 +61,8 @@ pub enum TeeType {
     Cca,
     /// Virtualization-based Security (VBS)
     Vbs,
+    /// Trusted Launch host certification
+    Host,
 }
 
 /// The result of the `get_attestation_report`.
@@ -209,16 +215,22 @@ impl TeeCall for TdxCall {
 /// Implementation of [`TeeCall`] for VBS
 pub struct VbsCall;
 
+fn get_vbs_vm_report(
+    report_data: &[u8; REPORT_DATA_SIZE],
+) -> Result<[u8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE], Error> {
+    let mshv_hvcall = MshvHvcall::new().map_err(Error::OpenDevVbsGuest)?;
+    mshv_hvcall.set_allowed_hypercalls(&[HypercallCode::HvCallVbsVmCallReport]);
+    mshv_hvcall
+        .vbs_vm_call_report(report_data)
+        .map_err(Error::GetVbsReport)
+}
+
 impl TeeCall for VbsCall {
     fn get_attestation_report(
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let mshv_hvcall = MshvHvcall::new().map_err(Error::OpenDevVbsGuest)?;
-        mshv_hvcall.set_allowed_hypercalls(&[HypercallCode::HvCallVbsVmCallReport]);
-        let report = mshv_hvcall
-            .vbs_vm_call_report(report_data)
-            .map_err(Error::GetVbsReport)?;
+        let report = get_vbs_vm_report(report_data)?;
 
         Ok(GetAttestationReportResult {
             report: report[..hvdef::vbs::VBS_REPORT_SIZE].to_vec(),
@@ -235,5 +247,30 @@ impl TeeCall for VbsCall {
     /// Return TeeType::Vbs.
     fn tee_type(&self) -> TeeType {
         TeeType::Vbs
+    }
+}
+
+/// Implementation of [`TeeCall`] for Trusted Launch host certification.
+pub struct HostCall;
+
+impl TeeCall for HostCall {
+    fn get_attestation_report(
+        &self,
+        report_data: &[u8; REPORT_DATA_SIZE],
+    ) -> Result<GetAttestationReportResult, Error> {
+        let report = get_vbs_vm_report(report_data)?;
+
+        Ok(GetAttestationReportResult {
+            report: report[..TVM_REPORT_SIZE].to_vec(),
+            tcb_version: None,
+        })
+    }
+
+    fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey> {
+        None
+    }
+
+    fn tee_type(&self) -> TeeType {
+        TeeType::Host
     }
 }

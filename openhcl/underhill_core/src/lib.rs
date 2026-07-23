@@ -355,6 +355,7 @@ async fn launch_workers(
         efi_diagnostics_rate_limit: opt.efi_diagnostics_rate_limit,
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
+        tvm_host_certification: opt.tvm_host_certification,
         enable_vpci_relay: opt.enable_vpci_relay,
         disable_proxy_redirect: opt.disable_proxy_redirect,
         disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
