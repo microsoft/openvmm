@@ -30,6 +30,21 @@ error: Cannot build '/nix/store/spg5vbm6mzmsxpg5v2ibg97qrz8khc70-openhcl-kernel-
 
 Given this error, you would update the corresponding hash to `sha256-An1N76i1MPb+rrQ1nBpoiuxnNeD0E+VuwqXdkPzaZn0=` in the `openhcl_kernel.nix` file.
 
+### OpenHCL dev kernel packages
+
+The Nix shell does not evaluate or export OpenHCL dev kernel packages by
+default. The main and dev kernels often contain the same promoted changes, so
+building both variants adds unnecessary download and build work.
+
+To restore the dev kernel packages when the branches diverge:
+
+1. Set `enableDevKernel` to `true` in `shell.nix`.
+2. Update the dev version in `nix/openhcl_kernel.nix`.
+3. Clear and replace the dev hashes using the procedure above.
+
+This restores the `NIX_KERNEL_*_DEV` paths and
+`CARGO_BUILD_ARGS_*_DEVKERN` arguments in the Nix shell.
+
 ## Updating the Rust Version
 
 The Nix shell derives its Rust toolchain version from `rust-version` in the root `Cargo.toml` and resolves it against a pinned [rust-overlay](https://github.com/oxalica/rust-overlay) commit in `shell.nix`. When `rust-version` is bumped in `Cargo.toml`, the pinned rust-overlay may not yet include the new version, causing an error like:
