@@ -2350,15 +2350,10 @@ pub struct MemoryConfig {
     ///
     /// Defaults to `true`. Applies to private anonymous guest RAM and to
     /// shared memfd-backed RAM, on Linux (via `madvise`) and on Windows (via
-    /// soft large pages).
-    ///
-    /// It has no effect where THP does not apply, and some backend helpers
-    /// force it off:
-    /// - [`with_hugepages`](crate::openvmm::PetriVmConfigOpenVmm::with_hugepages)
-    ///   uses explicit hugetlb/large pages, which are already huge.
-    /// - [`with_memory_backing_file`](crate::openvmm::PetriVmConfigOpenVmm::with_memory_backing_file)
-    ///   uses a file-backed mapping (for snapshot save/restore) rather than an
-    ///   anonymous memfd.
+    /// soft large pages). It has no effect on explicit hugetlb/large-page
+    /// backings (see
+    /// [`with_hugepages`](crate::openvmm::PetriVmConfigOpenVmm::with_hugepages)),
+    /// which are already huge.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub transparent_hugepages: bool,
