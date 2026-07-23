@@ -2386,7 +2386,7 @@ pub struct UefiConfig {
     pub secure_boot_enabled: bool,
     /// Secure boot template
     pub secure_boot_template: Option<SecureBootTemplate>,
-    /// Customer UEFI variable delta JSON
+    /// Custom UEFI variable delta JSON
     pub custom_uefi_json: Option<Vec<u8>>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
