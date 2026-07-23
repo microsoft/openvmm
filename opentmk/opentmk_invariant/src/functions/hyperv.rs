@@ -47,7 +47,6 @@ pub fn hvcall(
         *init = true;
     }
 
-
     let mut in_args = vec![0; in_page_len];
     match mem.try_read_mem(in_page, &mut in_args) {
         Ok(_) => (),
