@@ -145,20 +145,6 @@ pub struct SmmuDevice {
     #[inspect(skip)]
     shared_state: Arc<SmmuSharedState>,
 
-    // Accelerated (iommufd-nested) stream registration table, owned by this
-    // single-threaded emulator. Cross-thread registrations arrive via the
-    // shared `pending_accel_ops` queue and are drained into this table on the
-    // emulator thread (see `drain_accel_ops`), so it needs no lock — unlike the
-    // old shared, per-command-locked table.
-    #[inspect(skip)]
-    accel_devices: Vec<crate::shared::AccelDeviceRegistration>,
-
-    // Per-vIOMMU invalidation sink for accelerated mode, adopted from the first
-    // `SetSink` op drained. `None` for emulated-only SMMUs. Owned here (it was a
-    // shared `OnceLock`) so the CMDQ flush path reads it without a lock.
-    #[inspect(skip)]
-    invalidation_sink: Option<Arc<dyn crate::shared::AcceleratedInvalidationSink>>,
-
     // Identification registers (read-only, set at construction).
     idr0: registers::Idr0,
     idr1: registers::Idr1,
@@ -203,6 +189,12 @@ pub struct SmmuDevice {
     // batching adds no per-command allocation.
     #[inspect(skip)]
     invalidation_batch: Vec<[u64; 2]>,
+
+    // Backend references for SID-based commands in `invalidation_batch`.
+    // These pins keep host vDevices alive if the owning VFIO device is removed
+    // concurrently; they are dropped only after the host consumes the batch.
+    #[inspect(skip)]
+    invalidation_batch_pins: Vec<Arc<dyn crate::shared::AcceleratedStreamBackend>>,
 
     // Event queue base register (raw value for MMIO read/write).
     // EVTQ producer/consumer state lives in SmmuSharedState.
@@ -319,9 +311,6 @@ impl SmmuDevice {
             guest_memory,
             shared_state,
 
-            accel_devices: Vec::new(),
-            invalidation_sink: None,
-
             idr0,
             idr1,
             idr2: 0,
@@ -348,6 +337,7 @@ impl SmmuDevice {
             cmdq_cons: registers::CmdqCons::new(),
 
             invalidation_batch: Vec::new(),
+            invalidation_batch_pins: Vec::new(),
 
             evtq_base: 0,
 
@@ -451,12 +441,10 @@ impl SmmuDevice {
                 // Immediate acknowledge — no async enable sequence.
                 self.cr0ack = self.cr0;
                 self.shared_state.set_evtq_enabled(self.cr0.eventqen());
-                // Sync enable state to shared state for per-device wrappers.
                 // A SMMUEN change flips the disabled-state policy
-                // (bypass/abort) to/from the per-stream STE policy, so re-drive
-                // the owned accel backends afterward.
+                // (bypass/abort) to/from the per-stream STE policy.
                 self.shared_state.set_enabled(self.cr0.smmuen());
-                self.redrive_accel();
+                self.shared_state.apply_all_stream_configs();
             }
             registers::CR1 => {
                 self.cr1 = registers::Cr1::from(value);
@@ -473,9 +461,9 @@ impl SmmuDevice {
                 // GBPA.ABORT selects bypass vs abort while the SMMU is
                 // disabled. Mirror it into shared state (consulted by the
                 // non-accel translate path and the accel policy computation),
-                // then re-drive the owned accel backends.
+                // then re-drive the accelerated backends.
                 self.shared_state.set_gbpa_abort(self.gbpa.abort());
-                self.redrive_accel();
+                self.shared_state.apply_all_stream_configs();
             }
             registers::IRQ_CTRL => {
                 self.irq_ctrl = registers::IrqCtrl::from(value);
@@ -658,165 +646,6 @@ impl SmmuDevice {
         self.shared_state.cmdq_err_active()
     }
 
-    /// Process all pending commands in the command queue.
-    ///
-    /// Called when the guest writes CMDQ_PROD. Consumes commands from
-    /// CMDQ_CONS up to CMDQ_PROD, dispatching each by opcode.
-    /// Drains the shared pending-op queue into the emulator's owned accel
-    /// registration table, applying initial policy to newly registered devices
-    /// and adopting the invalidation sink.
-    ///
-    /// Runs only on the emulator thread (top of `process_cmdq` and each policy
-    /// re-drive point), so the owned table needs no lock. A registration is
-    /// caught up to the SMMU's current policy immediately on drain: the
-    /// stream-specific policy if its bus is assigned, else the disabled-state
-    /// (StreamID-independent) policy, else left fail-closed until its
-    /// `CFGI_STE`.
-    fn drain_accel_ops(&mut self) {
-        for op in self.shared_state.drain_pending_accel_ops() {
-            match op {
-                crate::shared::PendingAccelOp::Register {
-                    id,
-                    bus_range,
-                    stream_id_base,
-                    backend,
-                } => {
-                    let mut reg = crate::shared::AccelDeviceRegistration {
-                        id,
-                        bus_range: bus_range.clone(),
-                        stream_id_base,
-                        backend,
-                        translating_sid: None,
-                    };
-                    // Catch the new device up to the current policy. If the bus
-                    // is assigned, use the stream-specific policy; otherwise the
-                    // disabled-state (StreamID-independent) policy lets a boot
-                    // device reach bypass/abort before enumeration. With the
-                    // SMMU enabled and no bus yet there is no policy to apply —
-                    // leave it fail-closed until its `CFGI_STE`.
-                    let config =
-                        match crate::shared::compose_stream_id(&bus_range, stream_id_base, None) {
-                            Some(sid) => Some(self.shared_state.current_stream_config(sid)),
-                            None => self.shared_state.disabled_policy(),
-                        };
-                    if let Some(config) = config {
-                        Self::apply_accel_config(&mut reg, config);
-                    }
-                    self.accel_devices.push(reg);
-                }
-                crate::shared::PendingAccelOp::Unregister { id } => {
-                    // Remove the device's registration. This emulator holds the
-                    // sole `Arc` to the backend, so dropping the entry runs the
-                    // backend's `Drop` (device detach + vDevice/HWPT destroy)
-                    // right here on the emulator thread. Drains happen at a
-                    // batch boundary (top of `process_cmdq`, or after the
-                    // pending batch is flushed at a re-drive point), so this
-                    // teardown cannot race a live invalidation batch that still
-                    // references the device's vSID.
-                    if let Some(pos) = self.accel_devices.iter().position(|reg| reg.id == id) {
-                        let reg = self.accel_devices.swap_remove(pos);
-                        drop(reg);
-                    }
-                }
-                crate::shared::PendingAccelOp::SetSink(sink) => {
-                    // First sink wins; all devices behind one vIOMMU share it.
-                    self.invalidation_sink.get_or_insert(sink);
-                }
-            }
-        }
-    }
-
-    /// Applies `config` to a registered device's backend and records the stream
-    /// ID for which the device is now translating (`S1_TRANS`), or `None` for
-    /// bypass/abort.
-    ///
-    /// The recorded `translating_sid` is the exact vSID the backend used to
-    /// allocate the host vDevice and attach the nested HWPT; it gates SID-based
-    /// invalidation forwarding. A failed apply leaves the host state uncertain,
-    /// so it is cleared to `None`: fail closed and do not forward invalidations
-    /// the host could not resolve.
-    fn apply_accel_config(
-        reg: &mut crate::shared::AccelDeviceRegistration,
-        config: crate::shared::StreamConfig,
-    ) {
-        let translating_sid = match config {
-            crate::shared::StreamConfig::Translate { sid, .. } => Some(sid),
-            crate::shared::StreamConfig::Bypass | crate::shared::StreamConfig::Abort => None,
-        };
-        match reg.backend.set_stream_config(config) {
-            Ok(()) => reg.translating_sid = translating_sid,
-            Err(e) => {
-                reg.translating_sid = None;
-                tracelimit::warn_ratelimited!(
-                    error = &*e as &dyn std::error::Error,
-                    "smmu: failed to apply stream config"
-                );
-            }
-        }
-    }
-
-    /// Re-computes and applies the current policy for a single stream's owned
-    /// accel backend (if one is registered). Used for `CFGI_STE`.
-    fn apply_stream_config(&mut self, sid: u32) {
-        let config = self.shared_state.current_stream_config(sid);
-        if let Some(reg) = self.accel_devices.iter_mut().find(|reg| {
-            crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid)
-        }) {
-            Self::apply_accel_config(reg, config);
-        }
-    }
-
-    /// Re-computes and applies the current policy for every owned accel
-    /// backend. Used for `CFGI_STE_RANGE`/`CFGI_ALL`.
-    fn apply_all_stream_configs(&mut self) {
-        for i in 0..self.accel_devices.len() {
-            self.apply_stream_config_at(i);
-        }
-    }
-
-    /// Re-drives the accel backend at index `i` to its current policy.
-    /// Assigned-bus devices only; an unassigned device has no stream ID yet and
-    /// is left as-is until its `CFGI_STE`.
-    fn apply_stream_config_at(&mut self, i: usize) {
-        let reg = &self.accel_devices[i];
-        let Some(sid) = crate::shared::compose_stream_id(&reg.bus_range, reg.stream_id_base, None)
-        else {
-            return;
-        };
-        let config = self.shared_state.current_stream_config(sid);
-        Self::apply_accel_config(&mut self.accel_devices[i], config);
-    }
-
-    /// Whether a SID-based invalidation (`CFGI_CD`/`CFGI_CD_ALL`/`ATC_INV`)
-    /// targeting `sid` should be forwarded to the host vIOMMU: true only when an
-    /// owned accel device is currently attached translating (`S1_TRANS`) for
-    /// exactly `sid`. Lock-free lookup over the emulator-owned table.
-    fn sid_invalidation_forwardable(&self, sid: u32) -> bool {
-        self.accel_devices
-            .iter()
-            .any(|reg| reg.translating_sid == Some(sid))
-    }
-
-    /// Drains pending registrations (catching up any new devices and tearing
-    /// down removed ones), then re-drives the pre-existing owned backends to
-    /// the current policy. Called after a state-mutating policy change
-    /// (CR0/GBPA writes, reset, restore) that alters the disabled-state or
-    /// per-stream policy for all streams at once.
-    ///
-    /// Only the pre-existing devices are re-driven here: `drain_accel_ops`
-    /// already applied initial policy to the devices it just added. Devices are
-    /// tracked by id (not index) because a drained `Unregister` can remove an
-    /// entry and shuffle the table.
-    fn redrive_accel(&mut self) {
-        let existing: Vec<u64> = self.accel_devices.iter().map(|reg| reg.id).collect();
-        self.drain_accel_ops();
-        for id in existing {
-            if let Some(i) = self.accel_devices.iter().position(|reg| reg.id == id) {
-                self.apply_stream_config_at(i);
-            }
-        }
-    }
-
     fn process_cmdq(&mut self) {
         if !self.cmdq_enabled() {
             return;
@@ -826,11 +655,6 @@ impl SmmuDevice {
         if self.cmdq_has_error() {
             return;
         }
-
-        // Pick up any cross-thread registrations (and the invalidation sink)
-        // before processing commands, so newly bound devices are visible to the
-        // whole batch and their initial policy is applied.
-        self.drain_accel_ops();
 
         let log2size = self.cmdq_log2size() as u32;
         let max_entries = 1u32 << log2size;
@@ -919,8 +743,11 @@ impl SmmuDevice {
                     opcode,
                     CmdOpcode::CFGI_CD | CmdOpcode::CFGI_CD_ALL | CmdOpcode::ATC_INV
                 );
-                if sid_based && !self.sid_invalidation_forwardable(CmdCfgiCd::from(entry.qw0).sid())
-                {
+                let backend_pin = sid_based.then(|| {
+                    self.shared_state
+                        .pin_translating_backend(CmdCfgiCd::from(entry.qw0).sid())
+                });
+                if matches!(backend_pin, Some(None)) {
                     // Flush the pending batch first so its CMDQ indices stay
                     // contiguous (the partial-failure → CMDQ_CONS mapping
                     // assumes no gaps), then consume this command as a no-op.
@@ -934,6 +761,9 @@ impl SmmuDevice {
                 }
                 if self.invalidation_batch.is_empty() {
                     batch_start_cons = cons;
+                }
+                if let Some(Some(backend)) = backend_pin {
+                    self.invalidation_batch_pins.push(backend);
                 }
                 self.invalidation_batch.push([entry.qw0, entry.qw1]);
                 cons = (cons + 1) & index_mask;
@@ -958,7 +788,7 @@ impl SmmuDevice {
                     let cmd = CmdCfgiSte::from(entry.qw0);
                     // Emulated devices: no-op (no STE cache). Accelerated
                     // streams: the emulator re-reads and re-applies the STE.
-                    self.apply_stream_config(cmd.sid());
+                    self.shared_state.apply_stream_config(cmd.sid());
                 }
 
                 // CFGI_STE_RANGE: re-drive every registered backend.
@@ -968,7 +798,7 @@ impl SmmuDevice {
                     // but Range=31 is the only value Linux uses at init.
                     // For now, treat all ranges as broadcast to all backends.
                     // Empty for emulated-only configurations (loop is a no-op).
-                    self.apply_all_stream_configs();
+                    self.shared_state.apply_all_stream_configs();
                 }
 
                 // Prefetch hint — no-op (no caching to warm).
@@ -1031,12 +861,9 @@ impl SmmuDevice {
         if self.invalidation_batch.is_empty() {
             return Ok(());
         }
-        let result = match &self.invalidation_sink {
-            Some(sink) => sink.invalidate(&self.invalidation_batch),
-            // Emulated-only SMMU: no host to forward to.
-            None => Ok(()),
-        };
+        let result = self.shared_state.invalidate(&self.invalidation_batch);
         self.invalidation_batch.clear();
+        self.invalidation_batch_pins.clear();
         result
     }
 
@@ -1115,12 +942,6 @@ impl ChangeDeviceState for SmmuDevice {
             guest_memory: _,
             shared_state,
 
-            // Accelerated stream state — the devices remain assigned across a
-            // guest reset, so keep the registration table and sink; they are
-            // re-driven to the post-reset (bypass) policy below.
-            accel_devices: _,
-            invalidation_sink: _,
-
             // Identification registers — read-only, not reset.
             idr0: _,
             idr1: _,
@@ -1153,6 +974,7 @@ impl ChangeDeviceState for SmmuDevice {
 
             // Scratch batch buffer — transient; cleared on reset.
             invalidation_batch,
+            invalidation_batch_pins,
 
             // Event queue base register.
             evtq_base,
@@ -1182,6 +1004,7 @@ impl ChangeDeviceState for SmmuDevice {
         *cmdq_cons = registers::CmdqCons::new();
 
         invalidation_batch.clear();
+        invalidation_batch_pins.clear();
 
         *evtq_base = 0;
 
@@ -1196,9 +1019,9 @@ impl ChangeDeviceState for SmmuDevice {
         // Reset GERROR state and deassert interrupt.
         shared_state.reset_queue_state();
 
-        // Re-drive the owned accel backends to the post-reset policy (bypass),
+        // Re-drive the accelerated backends to the post-reset policy (bypass),
         // now that the shared translation state reflects the reset.
-        self.redrive_accel();
+        shared_state.apply_all_stream_configs();
     }
 }
 
@@ -1212,12 +1035,6 @@ impl SaveRestore for SmmuDevice {
             mmio_base: _,
             guest_memory: _,
             ref shared_state,
-
-            // Accelerated stream state — rebuilt from device re-registration
-            // and the restored register state (re-driven on restore), not
-            // serialized.
-            accel_devices: _,
-            invalidation_sink: _,
 
             // Identification registers — read-only, not saved.
             idr0: _,
@@ -1252,6 +1069,7 @@ impl SaveRestore for SmmuDevice {
             // Scratch batch buffer — transient, fully drained between CMDQ
             // processing passes, so there is nothing to save.
             invalidation_batch: _,
+            invalidation_batch_pins: _,
 
             // Event queue base register.
             evtq_base,
@@ -1332,7 +1150,7 @@ impl SaveRestore for SmmuDevice {
 
         // Re-sync derived state in SmmuSharedState. Apply the policy-relevant
         // translation state (enable, GBPA.ABORT, stream table) as one atomic
-        // transition; the owned accel backends are re-driven to the restored
+        // transition; the accelerated backends are re-driven to the restored
         // policy below.
         let strtab_base = registers::StrtabBase::from(self.strtab_base).addr();
         let strtab_log2size = self.strtab_base_cfg.log2size();
@@ -1354,8 +1172,8 @@ impl SaveRestore for SmmuDevice {
                 gerrorn,
             });
 
-        // Re-drive the owned accel backends to the restored policy.
-        self.redrive_accel();
+        // Re-drive the accelerated backends to the restored policy.
+        self.shared_state.apply_all_stream_configs();
 
         Ok(())
     }
@@ -2285,10 +2103,11 @@ mod tests {
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(secondary_bus, secondary_bus);
         // Test streams stay registered for the device's lifetime, so the
-        // registration id / guard is dropped (no `Unregister` enqueued).
+        // registration id is intentionally unused.
         let _id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend));
+            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend))
+            .expect("register stream");
         (secondary_bus as u32) << 8
     }
 
@@ -2323,10 +2142,8 @@ mod tests {
     // =========================================================================
     // Accel registration initial-policy tests
     //
-    // Registration only enqueues a `PendingAccelOp`; the emulator applies the
-    // device's initial policy when it drains the queue (here driven explicitly
-    // via `redrive_accel`, as `process_cmdq`/CR0/GBPA/reset/restore do at
-    // runtime). These pin that drain-time catch-up behavior.
+    // Registration applies initial policy synchronously through shared state,
+    // including while the chipset emulator is stopped.
     // =========================================================================
 
     /// A recording accel backend that captures each config applied to it.
@@ -2380,42 +2197,42 @@ mod tests {
         dev.guest_memory.write_plain(addr, &ste).expect("write STE");
     }
 
-    /// Registering while disabled (GBPA.ABORT=0) applies Bypass on the next
-    /// drain, even before the device's bus is assigned.
+    /// Registering while disabled (GBPA.ABORT=0) synchronously applies Bypass,
+    /// even before the device's bus is assigned.
     #[test]
     fn test_register_applies_bypass_when_disabled() {
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         let backend = RecordingBackend::new();
         // Bus not yet assigned; SMMU disabled with GBPA.ABORT=0 (reset default).
-        let _id =
-            dev.shared_state
-                .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
-        dev.redrive_accel();
+        let _id = dev
+            .shared_state
+            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .expect("register backend");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
-    /// Registering while disabled with GBPA.ABORT=1 applies Abort on drain.
+    /// Registering while disabled with GBPA.ABORT=1 synchronously applies Abort.
     #[test]
     fn test_register_applies_abort_when_disabled_gbpa_abort() {
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         dev.shared_state.set_gbpa_abort(true);
         let backend = RecordingBackend::new();
-        let _id =
-            dev.shared_state
-                .register_accel_device(AssignedBusRange::new(), 0, backend.clone());
-        dev.redrive_accel();
+        let _id = dev
+            .shared_state
+            .register_accel_device(AssignedBusRange::new(), 0, backend.clone())
+            .expect("register backend");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
     }
 
     /// Registering while enabled with an assigned bus applies the stream's
-    /// STE-derived policy on drain.
+    /// STE-derived policy synchronously.
     #[test]
     fn test_register_applies_ste_policy_when_enabled() {
         use crate::spec::ste::SteConfig;
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
         dev.shared_state.set_enabled(true);
@@ -2428,8 +2245,8 @@ mod tests {
         let backend = RecordingBackend::new();
         let _id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, backend.clone());
-        dev.redrive_accel();
+            .register_accel_device(bus_range, 0, backend.clone())
+            .expect("register backend");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
@@ -2439,7 +2256,7 @@ mod tests {
     fn test_register_enabled_unassigned_bus_then_cfgi() {
         use crate::spec::ste::SteConfig;
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
         dev.shared_state.set_enabled(true);
@@ -2448,8 +2265,8 @@ mod tests {
         let backend = RecordingBackend::new();
         let _id = dev
             .shared_state
-            .register_accel_device(bus_range.clone(), 0, backend.clone());
-        dev.redrive_accel();
+            .register_accel_device(bus_range.clone(), 0, backend.clone())
+            .expect("register backend");
         // Fail-closed: nothing applied yet.
         assert!(backend.take().is_empty());
 
@@ -2457,7 +2274,7 @@ mod tests {
         bus_range.set_bus_range(1, 1);
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        dev.apply_stream_config(sid);
+        dev.shared_state.apply_stream_config(sid);
         let applied = backend.take();
         assert_eq!(applied.len(), 1);
         assert!(
@@ -2467,13 +2284,13 @@ mod tests {
         );
     }
 
-    /// `redrive_accel` re-drives every registered backend to the current
+    /// Shared policy re-drive applies every registered backend's current
     /// policy (used on CR0/GBPA writes, reset, restore, and CFGI_ALL).
     #[test]
     fn test_redrive_reapplies_all() {
         use crate::spec::ste::SteConfig;
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
 
@@ -2482,9 +2299,9 @@ mod tests {
         let backend = RecordingBackend::new();
         let _id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, backend.clone());
-        // Disabled + GBPA.ABORT=0 → initial drain applies Bypass.
-        dev.redrive_accel();
+            .register_accel_device(bus_range, 0, backend.clone())
+            .expect("register backend");
+        // Disabled + GBPA.ABORT=0 applies Bypass at registration.
         assert_eq!(
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Bypass)
@@ -2494,15 +2311,14 @@ mod tests {
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::ABORT);
         dev.shared_state.set_enabled(true);
-        dev.redrive_accel();
+        dev.shared_state.apply_all_stream_configs();
         assert_eq!(
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Abort)
         );
     }
 
-    /// A backend that flips a shared flag when dropped, to observe that the
-    /// emulator holds the sole `Arc` and tears the backend down on unregister.
+    /// A backend that flips a shared flag when dropped.
     struct DropTrackingBackend {
         dropped: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -2520,9 +2336,8 @@ mod tests {
         }
     }
 
-    /// Unregistering removes the device from the forwarding table and, because
-    /// the emulator holds the sole backend `Arc`, drops (tears down) the
-    /// backend on the emulator thread at the next drain.
+    /// Unregistering synchronously removes the device from the forwarding table
+    /// and drops the backend without requiring emulator activity.
     #[test]
     fn test_unregister_removes_and_drops_backend() {
         use crate::spec::ste::SteConfig;
@@ -2530,7 +2345,7 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
 
-        let mut dev = make_accel_device();
+        let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
         dev.shared_state.set_enabled(true);
@@ -2542,50 +2357,129 @@ mod tests {
         bus_range.set_bus_range(1, 1);
         let dropped = Arc::new(AtomicBool::new(false));
         // Register a translating stream. Do NOT keep a clone of the backend, so
-        // the emulator's table holds the only `Arc`.
-        let id = dev.shared_state.register_accel_device(
-            bus_range,
-            0,
-            Arc::new(DropTrackingBackend {
-                dropped: dropped.clone(),
-            }),
-        );
-        dev.redrive_accel();
+        // the shared table holds the only `Arc`.
+        let id = dev
+            .shared_state
+            .register_accel_device(
+                bus_range,
+                0,
+                Arc::new(DropTrackingBackend {
+                    dropped: dropped.clone(),
+                }),
+            )
+            .expect("register backend");
         // Device present, translating → its SID-based invalidations forward.
-        assert!(dev.sid_invalidation_forwardable(sid));
+        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
         assert!(!dropped.load(Ordering::Relaxed));
 
-        // Unregister and drain: the entry is removed and the backend dropped.
+        // Unregister without touching the stopped emulator.
         dev.shared_state.unregister_accel_device(id);
-        dev.redrive_accel();
-        assert!(!dev.sid_invalidation_forwardable(sid));
-        assert!(dev.accel_devices.is_empty());
+        assert!(dev.shared_state.pin_translating_backend(sid).is_none());
         assert!(
             dropped.load(Ordering::Relaxed),
-            "backend should be torn down on the emulator thread"
+            "backend should be torn down synchronously"
         );
     }
 
-    /// Dropping the [`AccelRegistration`] guard enqueues the unregister, so a
-    /// removed/hot-unplugged device is torn down at the next drain.
+    /// Dropping the [`AccelRegistration`] guard synchronously unregisters a
+    /// removed/hot-unplugged device while the emulator is stopped.
     #[test]
     fn test_accel_registration_guard_unregisters_on_drop() {
         use pci_core::bus_range::AssignedBusRange;
-        let mut dev = make_accel_device();
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        let dev = make_accel_device();
         let bus_range = AssignedBusRange::new();
         bus_range.set_bus_range(1, 1);
 
+        let dropped = Arc::new(AtomicBool::new(false));
         let id = dev
             .shared_state
-            .register_accel_device(bus_range, 0, Arc::new(MockStreamBackend));
+            .register_accel_device(
+                bus_range,
+                0,
+                Arc::new(DropTrackingBackend {
+                    dropped: dropped.clone(),
+                }),
+            )
+            .expect("register backend");
         let guard = crate::shared::AccelRegistration::new(&dev.shared_state, id);
-        dev.redrive_accel();
-        assert_eq!(dev.accel_devices.len(), 1);
+        assert!(!dropped.load(Ordering::Relaxed));
 
-        // Device teardown drops the guard, which enqueues the unregister.
+        // Device teardown drops the guard; no emulator turn is needed.
         drop(guard);
-        dev.redrive_accel();
-        assert!(dev.accel_devices.is_empty());
+        assert!(dropped.load(Ordering::Relaxed));
+    }
+
+    /// Synchronous removal during a host invalidation cannot destroy the
+    /// vDevice referenced by that in-flight batch. The emulator's batch pin
+    /// keeps the backend alive until the sink returns, then teardown completes
+    /// without another emulator turn.
+    #[test]
+    fn test_invalidation_batch_pins_backend_during_unregister() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+        use std::sync::Weak;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering;
+
+        struct UnregisteringSink {
+            shared: Weak<SmmuSharedState>,
+            registration_id: AtomicU64,
+            backend_dropped: Arc<AtomicBool>,
+            stayed_alive_during_invalidate: AtomicBool,
+        }
+
+        impl crate::shared::AcceleratedInvalidationSink for UnregisteringSink {
+            fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
+                let shared = self.shared.upgrade().expect("SMMU shared state");
+                shared.unregister_accel_device(self.registration_id.load(Ordering::Relaxed));
+                self.stayed_alive_during_invalidate.store(
+                    !self.backend_dropped.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+                Ok(())
+            }
+        }
+
+        let mut dev = make_cmdq_test_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+
+        let sid = 0x100;
+        write_test_ste(&dev, sid, SteConfig::S1_TRANS);
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let id = dev
+            .shared_state
+            .register_accel_device(
+                bus_range,
+                0,
+                Arc::new(DropTrackingBackend {
+                    dropped: dropped.clone(),
+                }),
+            )
+            .expect("register translating backend");
+
+        let sink = Arc::new(UnregisteringSink {
+            shared: Arc::downgrade(&dev.shared_state),
+            registration_id: AtomicU64::new(id),
+            backend_dropped: dropped.clone(),
+            stayed_alive_during_invalidate: AtomicBool::new(false),
+        });
+        dev.shared_state.register_invalidation_sink(sink.clone());
+
+        write_cmdq_entry(&dev, 0, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0));
+        write_cmdq_entry(&dev, 1, &sync_entry());
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        assert!(sink.stayed_alive_during_invalidate.load(Ordering::Relaxed));
+        assert!(dropped.load(Ordering::Relaxed));
+        assert!(dev.shared_state.pin_translating_backend(sid).is_none());
     }
 
     /// Build a SID-based `CFGI_CD`/`CFGI_CD_ALL` entry for `sid`.
@@ -2907,7 +2801,7 @@ mod tests {
             .read_plain(TEST_EVTQ_GPA)
             .expect("read event");
         assert_eq!(
-            written.event_id(),
+            written.header.event_id(),
             crate::spec::events::EventId::F_TRANSLATION
         );
         assert_eq!(written.sid, 42);
@@ -3492,7 +3386,7 @@ mod tests {
         // Read the event from guest memory.
         let event: EvtEntry = gm.read_plain(EVTQ_GPA).expect("read fault event");
         assert_eq!(
-            event.event_id(),
+            event.header.event_id(),
             EventId::F_TRANSLATION,
             "Fault must be a translation fault"
         );

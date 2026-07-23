@@ -77,7 +77,7 @@ impl SmmuFault {
         SmmuFault {
             event: EvtEntry {
                 header: crate::spec::events::EvtHeader::new()
-                    .with_event_id(EventId::C_BAD_STREAMID.0),
+                    .with_event_id(EventId::C_BAD_STREAMID),
                 sid,
                 ..EvtEntry::new()
             },
@@ -549,7 +549,7 @@ mod tests {
 
         let result = lookup_ste(&gm, STRTAB_BASE, STRTAB_LOG2SIZE, 3, OAS_MASK);
         let fault = result.expect_err("Should fault on V=0");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_STE);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_STE);
         assert_eq!(fault.event.sid, 3);
     }
 
@@ -559,7 +559,7 @@ mod tests {
         // Stream ID 2048 is out of range for log2size=10 (max 1024).
         let result = lookup_ste(&gm, STRTAB_BASE, STRTAB_LOG2SIZE, 2048, OAS_MASK);
         let fault = result.expect_err("Should fault on out-of-range SID");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_STREAMID);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_STREAMID);
     }
 
     // =========================================================================
@@ -646,7 +646,7 @@ mod tests {
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
         let fault = result.expect_err("Should fault on V=0 CD");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_CD);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_CD);
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod tests {
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
         let fault = result.expect_err("Should fault on non-AA64 CD");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_CD);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_CD);
     }
 
     // =========================================================================
@@ -948,7 +948,7 @@ mod tests {
         // L1[0] is all zeros (invalid).
         let result = walk_s1(&gm, &ctx, 0, false, 42);
         let fault = result.expect_err("should fault");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
         assert_eq!(fault.event.sid, 42);
     }
 
@@ -972,7 +972,7 @@ mod tests {
         // Write should fault.
         let result = walk_s1(&gm, &ctx, 0, true, 0);
         let fault = result.expect_err("should fault on write to RO");
-        assert_eq!(fault.event.event_id(), EventId::F_PERMISSION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_PERMISSION);
     }
 
     #[test]
@@ -990,7 +990,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 0);
         let fault = result.expect_err("should fault on AF=0");
-        assert_eq!(fault.event.event_id(), EventId::F_ACCESS);
+        assert_eq!(fault.event.header.event_id(), EventId::F_ACCESS);
     }
 
     #[test]
@@ -1017,7 +1017,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 0);
         let fault = result.expect_err("should fault on addr size");
-        assert_eq!(fault.event.event_id(), EventId::F_ADDR_SIZE);
+        assert_eq!(fault.event.header.event_id(), EventId::F_ADDR_SIZE);
     }
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
         // IOVA = 0x1_0000_0000 (exceeds 32-bit range).
         let result = walk_s1(&gm, &ctx, 0x1_0000_0000, false, 0);
         let fault = result.expect_err("should fault on out-of-range IOVA");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
     }
 
     #[test]
@@ -1114,7 +1114,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 99);
         let fault = result.expect_err("degenerate T0SZ must fault, not panic");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
         assert_eq!(fault.event.sid, 99);
     }
 }
