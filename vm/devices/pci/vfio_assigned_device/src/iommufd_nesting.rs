@@ -396,7 +396,14 @@ impl IommufdStreamBackend {
         // Attach to the new nested HWPT. `attach` replaces the current
         // attachment (the shared abort/bypass HWPT, or an old per-device nested
         // HWPT) atomically, so the device is never transiently detached.
-        self.attach(state, new_hwpt, "nested HWPT")?;
+        // Replacement is atomic: on failure the old HWPT remains attached.
+        // Destroy the unattached candidate before returning so both backend
+        // state and the SMMU's forwarding state continue to describe the old
+        // translation exactly.
+        if let Err(e) = self.attach(state, new_hwpt, "nested HWPT") {
+            self.destroy_owned(new_hwpt, "unattached nested HWPT");
+            return Err(e);
+        }
 
         // Destroy the old nested HWPT (if any).
         if let Some(old_hwpt) = state.current_nested_hwpt.replace(new_hwpt) {

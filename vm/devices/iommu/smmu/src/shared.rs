@@ -83,6 +83,10 @@ pub trait AcceleratedStreamBackend: Send + Sync {
     /// the STE into `config`. Only [`StreamConfig::Translate`] carries a
     /// stream ID (for lazy vDevice allocation); the bypass and abort cases
     /// have no per-stream identity to act on.
+    ///
+    /// On error, the backend must leave its previously applied configuration
+    /// active. The emulator preserves the corresponding forwarding state and
+    /// reports a guest configuration command as a command-queue abort.
     fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()>;
 }
 
@@ -1044,46 +1048,42 @@ impl SmmuSharedState {
             StreamConfig::Translate { sid, .. } => Some(sid),
             StreamConfig::Bypass | StreamConfig::Abort => None,
         };
-        if let Err(e) = reg.backend.set_stream_config(config) {
-            reg.translating_sid = None;
-            return Err(e);
-        }
+        // A failed atomic replacement leaves the previous host attachment
+        // active, so update forwarding state only after backend success.
+        reg.backend.set_stream_config(config)?;
         reg.translating_sid = translating_sid;
         Ok(())
     }
 
     /// Recomputes and applies the current policy for one stream.
-    pub(crate) fn apply_stream_config(&self, sid: u32) {
+    pub(crate) fn apply_stream_config(&self, sid: u32) -> anyhow::Result<()> {
         let config = self.current_stream_config(sid);
         let mut devices = self.accel_devices.lock();
         let Some(reg) = devices
             .iter_mut()
             .find(|reg| compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid))
         else {
-            return;
+            return Ok(());
         };
-        if let Err(e) = Self::apply_config(reg, config) {
-            tracelimit::warn_ratelimited!(
-                error = &*e as &dyn std::error::Error,
-                "smmu: failed to apply stream config"
-            );
-        }
+        Self::apply_config(reg, config)
     }
 
     /// Recomputes and applies the current policy for every registered stream.
-    pub(crate) fn apply_all_stream_configs(&self) {
+    pub(crate) fn apply_all_stream_configs(&self) -> anyhow::Result<()> {
         let mut devices = self.accel_devices.lock();
+        let mut first_error = None;
         for reg in devices.iter_mut() {
             let Some(sid) = compose_stream_id(&reg.bus_range, reg.stream_id_base, None) else {
                 continue;
             };
             let config = self.current_stream_config(sid);
-            if let Err(e) = Self::apply_config(reg, config) {
-                tracelimit::warn_ratelimited!(
-                    error = &*e as &dyn std::error::Error,
-                    "smmu: failed to apply stream config"
-                );
+            if let Err(error) = Self::apply_config(reg, config) {
+                first_error.get_or_insert(error);
             }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 

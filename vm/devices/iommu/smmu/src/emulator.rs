@@ -444,7 +444,12 @@ impl SmmuDevice {
                 // A SMMUEN change flips the disabled-state policy
                 // (bypass/abort) to/from the per-stream STE policy.
                 self.shared_state.set_enabled(self.cr0.smmuen());
-                self.shared_state.apply_all_stream_configs();
+                if let Err(e) = self.shared_state.apply_all_stream_configs() {
+                    tracelimit::warn_ratelimited!(
+                        error = &*e as &dyn std::error::Error,
+                        "smmu: failed to apply SMMU enable policy"
+                    );
+                }
             }
             registers::CR1 => {
                 self.cr1 = registers::Cr1::from(value);
@@ -463,7 +468,12 @@ impl SmmuDevice {
                 // non-accel translate path and the accel policy computation),
                 // then re-drive the accelerated backends.
                 self.shared_state.set_gbpa_abort(self.gbpa.abort());
-                self.shared_state.apply_all_stream_configs();
+                if let Err(e) = self.shared_state.apply_all_stream_configs() {
+                    tracelimit::warn_ratelimited!(
+                        error = &*e as &dyn std::error::Error,
+                        "smmu: failed to apply GBPA policy"
+                    );
+                }
             }
             registers::IRQ_CTRL => {
                 self.irq_ctrl = registers::IrqCtrl::from(value);
@@ -753,7 +763,7 @@ impl SmmuDevice {
                     // assumes no gaps), then consume this command as a no-op.
                     if let Err(failed_index) = self.flush_invalidation_batch() {
                         cons = (batch_start_cons + failed_index as u32) & index_mask;
-                        self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
                         break;
                     }
                     cons = (cons + 1) & index_mask;
@@ -788,7 +798,15 @@ impl SmmuDevice {
                     let cmd = CmdCfgiSte::from(entry.qw0);
                     // Emulated devices: no-op (no STE cache). Accelerated
                     // streams: the emulator re-reads and re-applies the STE.
-                    self.shared_state.apply_stream_config(cmd.sid());
+                    if let Err(e) = self.shared_state.apply_stream_config(cmd.sid()) {
+                        tracelimit::warn_ratelimited!(
+                            error = &*e as &dyn std::error::Error,
+                            sid = cmd.sid(),
+                            "smmu: failed to apply CFGI_STE"
+                        );
+                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
+                        break;
+                    }
                 }
 
                 // CFGI_STE_RANGE: re-drive every registered backend.
@@ -798,7 +816,14 @@ impl SmmuDevice {
                     // but Range=31 is the only value Linux uses at init.
                     // For now, treat all ranges as broadcast to all backends.
                     // Empty for emulated-only configurations (loop is a no-op).
-                    self.shared_state.apply_all_stream_configs();
+                    if let Err(e) = self.shared_state.apply_all_stream_configs() {
+                        tracelimit::warn_ratelimited!(
+                            error = &*e as &dyn std::error::Error,
+                            "smmu: failed to apply CFGI_STE_RANGE"
+                        );
+                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
+                        break;
+                    }
                 }
 
                 // Prefetch hint — no-op (no caching to warm).
@@ -1021,7 +1046,12 @@ impl ChangeDeviceState for SmmuDevice {
 
         // Re-drive the accelerated backends to the post-reset policy (bypass),
         // now that the shared translation state reflects the reset.
-        shared_state.apply_all_stream_configs();
+        if let Err(e) = shared_state.apply_all_stream_configs() {
+            tracelimit::warn_ratelimited!(
+                error = &*e as &dyn std::error::Error,
+                "smmu: failed to apply reset policy"
+            );
+        }
     }
 }
 
@@ -1173,7 +1203,12 @@ impl SaveRestore for SmmuDevice {
             });
 
         // Re-drive the accelerated backends to the restored policy.
-        self.shared_state.apply_all_stream_configs();
+        if let Err(e) = self.shared_state.apply_all_stream_configs() {
+            tracelimit::warn_ratelimited!(
+                error = &*e as &dyn std::error::Error,
+                "smmu: failed to apply restored policy"
+            );
+        }
 
         Ok(())
     }
@@ -2149,23 +2184,36 @@ mod tests {
     /// A recording accel backend that captures each config applied to it.
     struct RecordingBackend {
         configs: parking_lot::Mutex<Vec<crate::shared::StreamConfig>>,
+        fail_next: std::sync::atomic::AtomicBool,
     }
 
     impl RecordingBackend {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 configs: parking_lot::Mutex::new(Vec::new()),
+                fail_next: std::sync::atomic::AtomicBool::new(false),
             })
         }
 
         fn take(&self) -> Vec<crate::shared::StreamConfig> {
             std::mem::take(&mut *self.configs.lock())
         }
+
+        fn fail_next(&self) {
+            self.fail_next
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     impl crate::shared::AcceleratedStreamBackend for RecordingBackend {
         fn set_stream_config(&self, config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             self.configs.lock().push(config);
+            if self
+                .fail_next
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                anyhow::bail!("injected stream config failure");
+            }
             Ok(())
         }
     }
@@ -2274,7 +2322,9 @@ mod tests {
         bus_range.set_bus_range(1, 1);
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        dev.shared_state.apply_stream_config(sid);
+        dev.shared_state
+            .apply_stream_config(sid)
+            .expect("apply stream config");
         let applied = backend.take();
         assert_eq!(applied.len(), 1);
         assert!(
@@ -2311,10 +2361,63 @@ mod tests {
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::ABORT);
         dev.shared_state.set_enabled(true);
-        dev.shared_state.apply_all_stream_configs();
+        dev.shared_state
+            .apply_all_stream_configs()
+            .expect("apply all stream configs");
         assert_eq!(
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Abort)
+        );
+    }
+
+    /// A failed host policy replacement leaves the old attachment active, so
+    /// the SMMU preserves its forwarding state and reports a command abort
+    /// without consuming the failing CFGI_STE or following CMD_SYNC.
+    #[test]
+    fn test_cfgi_failure_preserves_old_translation_state() {
+        use crate::spec::ste::SteConfig;
+        use pci_core::bus_range::AssignedBusRange;
+
+        let mut dev = make_cmdq_test_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        dev.shared_state.set_enabled(true);
+
+        let sid = 0x100;
+        write_test_ste(&dev, sid, SteConfig::S1_TRANS);
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(1, 1);
+        let backend = RecordingBackend::new();
+        let _id = dev
+            .shared_state
+            .register_accel_device(bus_range, 0, backend.clone())
+            .expect("register translating backend");
+        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
+
+        write_test_ste(&dev, sid, SteConfig::BYPASS);
+        backend.fail_next();
+        let cfgi = CmdCfgiSte::new()
+            .with_opcode(CmdOpcode::CFGI_STE.0)
+            .with_sid(sid);
+        write_cmdq_entry(
+            &dev,
+            0,
+            &CmdEntry {
+                qw0: cfgi.into(),
+                qw1: 0,
+            },
+        );
+        write_cmdq_entry(&dev, 1, &sync_entry());
+
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 0);
+        assert_eq!(cons.err(), CmdqError::CERROR_ABT.0);
+        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
+        assert_eq!(
+            backend.take().last().copied(),
+            Some(crate::shared::StreamConfig::Bypass)
         );
     }
 
