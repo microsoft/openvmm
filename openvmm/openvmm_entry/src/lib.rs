@@ -1177,28 +1177,20 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let custom_uefi_vars = {
-        use firmware_uefi_custom_vars::CustomVars;
-
-        // load base vars from specified template, or use an empty set of base
-        // vars if none was specified.
-        let base_vars = match opt.secure_boot_template {
-            Some(template) => match (arch, template) {
-                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                }
-                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                }
-            },
-            None => CustomVars::default(),
+    let (base_template, custom_template_delta) = {
+        // Load the selected base template, if any.
+        let template_arch = match arch {
+            MachineArch::X86_64 => hyperv_secure_boot_templates::GuestArch::X64,
+            MachineArch::Aarch64 => hyperv_secure_boot_templates::GuestArch::Aarch64,
         };
+        let base_template = opt.secure_boot_template.map(|template| match template {
+            SecureBootTemplateCli::Windows => {
+                hyperv_secure_boot_templates::microsoft_windows(template_arch)
+            }
+            SecureBootTemplateCli::UefiCa => {
+                hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch)
+            }
+        });
 
         // TODO: fallback to VMGS read if no command line flag was given
 
@@ -1207,14 +1199,11 @@ async fn vm_config_from_command_line(
             None => None,
         };
 
-        // obtain the final custom uefi vars by applying the delta onto the base vars
-        match custom_uefi_json_data {
-            Some(data) => {
-                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
-            }
-            None => base_vars,
-        }
+        let custom_template_delta = custom_uefi_json_data
+            .map(|data| hyperv_uefi_custom_vars_json::load_delta_from_json(&data))
+            .transpose()?;
+
+        (base_template, custom_template_delta)
     };
 
     if opt.uefi {
@@ -1230,7 +1219,8 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            custom_uefi_vars,
+            base_template,
+            custom_template_delta,
             opt.secure_boot,
             log_level,
             None,

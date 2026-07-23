@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Types and methods for defining and layering sets of custom UEFI nvram
-//! variables
+//! Types and methods for defining and layering sets of UEFI nvram variables.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -16,11 +15,46 @@ pub mod delta;
 
 /// Collection of UEFI nvram variables that that will be injected on first boot.
 #[derive(Debug, Default, Clone, Protobuf)]
-pub struct CustomVars {
+pub struct UefiVars {
     /// Secure Boot signature vars
     pub signatures: Option<Signatures>,
-    /// Any additional custom vars
-    pub custom_vars: Vec<(String, CustomVar)>,
+    /// Any additional UEFI vars
+    pub additional_vars: Vec<(String, UefiVar)>,
+}
+
+/// A complete set of variables supplied by a built-in template.
+#[derive(Debug, Default, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct BaseTemplateVars(UefiVars);
+
+/// A complete set of variables ready for NVRAM injection.
+#[derive(Debug)]
+pub struct FinalVars(UefiVars);
+
+impl From<UefiVars> for BaseTemplateVars {
+    fn from(vars: UefiVars) -> Self {
+        Self(vars)
+    }
+}
+
+impl FinalVars {
+    /// Resolve an optional base template and custom delta into final variables.
+    pub fn resolve(
+        base_template: Option<BaseTemplateVars>,
+        custom_template_delta: Option<delta::UefiVarsDelta>,
+    ) -> Result<Self, ApplyDeltaError> {
+        let base_vars = base_template.map_or_else(UefiVars::default, |base| base.0);
+        let final_vars = match custom_template_delta {
+            Some(delta) => base_vars.apply_delta(delta)?,
+            None => base_vars,
+        };
+        Ok(Self(final_vars))
+    }
+
+    /// Return the finalized UEFI variables.
+    pub fn into_uefi_vars(self) -> UefiVars {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -40,7 +74,7 @@ pub enum Signature {
 }
 
 #[derive(Debug, Clone, Protobuf)]
-pub struct CustomVar {
+pub struct UefiVar {
     pub guid: Guid,
     pub attr: u32,
     pub value: Vec<u8>,
@@ -73,17 +107,17 @@ pub enum ApplyDeltaError {
     #[error("cannot use \"Default\" variable type if no base signatures are provided")]
     DefaultWithoutBase,
     #[error("cannot set restricted variable: {name}:{guid}")]
-    RestrictedCustomVar { name: String, guid: Guid },
+    RestrictedUefiVar { name: String, guid: Guid },
 }
 
-impl CustomVars {
-    /// Create a new, blank set of CustomVars.
-    pub fn new() -> CustomVars {
-        CustomVars::default()
+impl UefiVars {
+    /// Create a new, blank set of UEFI variables.
+    pub fn new() -> UefiVars {
+        UefiVars::default()
     }
 
-    /// Apply a delta on-top of an existing set of CustomVars.
-    pub fn apply_delta(self, delta: delta::CustomVarsDelta) -> Result<CustomVars, ApplyDeltaError> {
+    /// Apply a delta on top of an existing set of UEFI variables.
+    pub fn apply_delta(self, delta: delta::UefiVarsDelta) -> Result<UefiVars, ApplyDeltaError> {
         use delta::SignatureDelta;
         use delta::SignatureDeltaVec;
         use delta::SignaturesAppend;
@@ -228,29 +262,64 @@ impl CustomVars {
             },
         };
 
-        let mut custom_vars = self.custom_vars;
+        let mut additional_vars = self.additional_vars;
 
         // Replace overwritten vars, append new vars
-        'outer: for (new_key, new_val) in delta.custom_vars {
+        'outer: for (new_key, new_val) in delta.additional_vars {
             if new_key.as_str() == "dbDefault" && new_val.guid == EFI_GLOBAL_VARIABLE {
-                return Err(ApplyDeltaError::RestrictedCustomVar {
+                return Err(ApplyDeltaError::RestrictedUefiVar {
                     name: new_key,
                     guid: new_val.guid,
                 });
             }
 
-            for (old_key, old_val) in &mut custom_vars {
+            for (old_key, old_val) in &mut additional_vars {
                 if *old_key == new_key {
                     *old_val = new_val;
                     continue 'outer;
                 }
             }
-            custom_vars.push((new_key, new_val));
+            additional_vars.push((new_key, new_val));
         }
 
-        Ok(CustomVars {
+        Ok(UefiVars {
             signatures: Some(signatures),
-            custom_vars,
+            additional_vars,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delta::SignaturesAppend;
+    use crate::delta::SignaturesDelta;
+    use crate::delta::UefiVarsDelta;
+
+    #[test]
+    fn no_templates_resolve_to_empty_final_vars() {
+        let vars = FinalVars::resolve(None, None).unwrap().into_uefi_vars();
+
+        assert!(vars.signatures.is_none());
+        assert!(vars.additional_vars.is_empty());
+    }
+
+    #[test]
+    fn custom_delta_without_required_base_fails() {
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Append(SignaturesAppend {
+                kek: None,
+                db: None,
+                dbx: None,
+                moklist: None,
+                moklistx: None,
+            }),
+            additional_vars: Vec::new(),
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(None, Some(delta)),
+            Err(ApplyDeltaError::AppendWithoutBase)
+        ));
     }
 }

@@ -38,7 +38,7 @@ use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
-use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_custom_vars::BaseTemplateVars;
 use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
@@ -113,7 +113,8 @@ impl UefiManifest {
     /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
     pub fn new(
         arch: MachineArch,
-        custom_uefi_vars: CustomVars,
+        base_template: Option<BaseTemplateVars>,
+        custom_template_delta: Option<firmware_uefi_custom_vars::delta::UefiVarsDelta>,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
         diagnostics_rate_limit: Option<u32>,
@@ -124,7 +125,8 @@ impl UefiManifest {
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
         Self {
             config: UefiConfig {
-                custom_uefi_vars,
+                base_template,
+                custom_template_delta,
                 secure_boot,
                 initial_generation_id,
                 use_mmio: !matches!(arch, MachineArch::X86_64),

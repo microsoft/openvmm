@@ -75,6 +75,8 @@ use watchdog_core::platform::WatchdogPlatform;
 
 #[derive(Debug, Error)]
 pub enum UefiInitError {
+    #[error("failed to apply custom UEFI template variables")]
+    ApplyCustomTemplate(#[from] firmware_uefi_custom_vars::ApplyDeltaError),
     #[error("nvram setup error")]
     NvramSetup(#[from] service::nvram::NvramSetupError),
     #[error("nvram error")]
@@ -145,7 +147,7 @@ pub struct UefiDevice {
 }
 
 impl UefiDevice {
-    pub async fn new(
+    pub(crate) async fn new(
         runtime_deps: UefiRuntimeDeps<'_>,
         cfg: UefiConfig,
         is_restoring: bool,
@@ -161,6 +163,10 @@ impl UefiDevice {
             vsm_config,
             time_source,
         } = runtime_deps;
+        let final_vars = firmware_uefi_custom_vars::FinalVars::resolve(
+            cfg.base_template,
+            cfg.custom_template_delta,
+        )?;
 
         // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
@@ -173,7 +179,7 @@ impl UefiDevice {
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
-                    cfg.custom_uefi_vars,
+                    final_vars,
                     cfg.secure_boot,
                     vsm_config,
                     is_restoring,

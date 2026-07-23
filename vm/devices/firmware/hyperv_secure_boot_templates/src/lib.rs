@@ -11,12 +11,34 @@
 //! gates! Unused templates should be stripped from the final binary by the
 //! linker.
 
+use firmware_uefi_custom_vars::BaseTemplateVars;
+
+#[derive(Clone, Copy, Debug)]
+pub enum GuestArch {
+    X64,
+    Aarch64,
+}
+
+pub fn microsoft_windows(arch: GuestArch) -> BaseTemplateVars {
+    match arch {
+        GuestArch::X64 => x64::microsoft_windows(),
+        GuestArch::Aarch64 => aarch64::microsoft_windows(),
+    }
+}
+
+pub fn microsoft_uefi_ca(arch: GuestArch) -> BaseTemplateVars {
+    match arch {
+        GuestArch::X64 => x64::microsoft_uefi_ca(),
+        GuestArch::Aarch64 => aarch64::microsoft_uefi_ca(),
+    }
+}
+
 macro_rules! include_templates {
     (
         $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
-            pub fn $fn_name() -> firmware_uefi_custom_vars::CustomVars {
+            pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplateVars {
                 // DEVNOTE: in the future, it may be interesting to explore
                 // parsing the JSON at compile time, and then "baking" the
                 // parsed templates into the binary as a `const` value, instead
@@ -27,7 +49,7 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                hyperv_uefi_custom_vars_json::load_template_from_json(include_bytes!(concat!(env!("OUT_DIR"), "/", $path))).unwrap()
+                hyperv_uefi_custom_vars_json::load_template_from_json(include_bytes!(concat!(env!("OUT_DIR"), "/", $path))).unwrap().into()
             }
         )*
 

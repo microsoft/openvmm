@@ -393,23 +393,19 @@ impl PetriVmConfigOpenVmm {
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
             let uefi_cfg = firmware.uefi_config();
-            let custom_uefi_vars =
-                uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
-                    (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                        hyperv_secure_boot_templates::x64::microsoft_windows()
+            let template_arch = match arch {
+                MachineArch::X86_64 => hyperv_secure_boot_templates::GuestArch::X64,
+                MachineArch::Aarch64 => hyperv_secure_boot_templates::GuestArch::Aarch64,
+            };
+            let base_template = uefi_cfg
+                .and_then(|c| c.secure_boot_template)
+                .map(|template| match template {
+                    SecureBootTemplate::MicrosoftWindows => {
+                        hyperv_secure_boot_templates::microsoft_windows(template_arch)
                     }
-                    (
-                        MachineArch::X86_64,
-                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                    (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
+                        hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch)
                     }
-                    (
-                        MachineArch::Aarch64,
-                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                    (_, None) => Default::default(),
                 });
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
@@ -433,7 +429,8 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                custom_uefi_vars,
+                base_template,
+                None,
                 secure_boot,
                 log_level,
                 diagnostics_rate_limit,

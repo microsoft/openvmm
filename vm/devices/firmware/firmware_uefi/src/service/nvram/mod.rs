@@ -17,7 +17,7 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
-use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_custom_vars::FinalVars;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -50,10 +50,10 @@ pub enum NvramSetupError {
         EfiStatus,
         #[source] Option<NvramError>,
     ),
-    #[error("could not inject custom var '{0}': {1:?}")]
-    InjectCustomVar(String, EfiStatus, #[source] Option<NvramError>),
-    #[error("custom variable name is not valid UCS-2")]
-    CustomVarNotUcs2,
+    #[error("could not inject UEFI var '{0}': {1:?}")]
+    InjectUefiVar(String, EfiStatus, #[source] Option<NvramError>),
+    #[error("UEFI variable name is not valid UCS-2")]
+    UefiVarNotUcs2,
 }
 
 /// Implements Hyper-V specific nvram service interfaces, extensions, and
@@ -73,7 +73,7 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        custom_vars: CustomVars,
+        final_vars: FinalVars,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
         is_restoring: bool,
@@ -84,7 +84,7 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            nvram.inject_vars_on_first_boot(custom_vars).await?;
+            nvram.inject_vars_on_first_boot(final_vars).await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
         }
@@ -100,10 +100,10 @@ impl NvramServices {
     }
 
     /// Check if this is the VM's first boot, and if so, inject various
-    /// hard-coded and custom UEFI vars.
+    /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        custom_vars: CustomVars,
+        final_vars: FinalVars,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -159,7 +159,7 @@ impl NvramServices {
             })?
         }
 
-        self.inject_custom_vars(custom_vars).await?;
+        self.inject_final_vars(final_vars).await?;
 
         Ok(())
     }
@@ -202,28 +202,30 @@ impl NvramServices {
         Ok(())
     }
 
-    async fn inject_custom_vars(&mut self, custom_vars: CustomVars) -> Result<(), NvramSetupError> {
-        use firmware_uefi_custom_vars::CustomVar;
+    async fn inject_final_vars(&mut self, final_vars: FinalVars) -> Result<(), NvramSetupError> {
         use firmware_uefi_custom_vars::Sha256Digest;
         use firmware_uefi_custom_vars::Signature;
+        use firmware_uefi_custom_vars::UefiVar;
         use firmware_uefi_custom_vars::X509Cert;
         use uefi_nvram_specvars::signature_list::SignatureData;
         use uefi_nvram_specvars::signature_list::SignatureList;
         use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
         use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 
-        tracing::trace!(custom_vars = ?custom_vars.custom_vars, "custom uefi vars");
+        let final_vars = final_vars.into_uefi_vars();
 
-        // inject freeform custom vars first, as some may require an auth bypass
-        for (name, CustomVar { guid, attr, value }) in custom_vars.custom_vars {
-            tracing::trace!(%name, "Injecting custom var");
+        tracing::trace!(?final_vars, "final UEFI vars");
+
+        // Inject additional vars first, as some may require an auth bypass.
+        for (name, UefiVar { guid, attr, value }) in final_vars.additional_vars {
+            tracing::trace!(%name, "Injecting UEFI var");
 
             // the value might need to be prepended with an auth header,
             // depending on what auth mode the variable is using.
             let value = {
                 let attr = EfiVariableAttributes::from(attr);
                 if attr.contains_unsupported_bits() {
-                    return Err(NvramSetupError::InjectCustomVar(
+                    return Err(NvramSetupError::InjectUefiVar(
                         name,
                         EfiStatus::INVALID_PARAMETER,
                         Some(NvramError::AttributeNonSpec),
@@ -246,11 +248,11 @@ impl NvramServices {
             self.services
                 .set_variable(guid, &name, attr, value)
                 .await
-                .map_err(|(status, err)| NvramSetupError::InjectCustomVar(name, status, err))?;
+                .map_err(|(status, err)| NvramSetupError::InjectUefiVar(name, status, err))?;
         }
 
         // inject structured signature vars
-        if let Some(sigs) = custom_vars.signatures {
+        if let Some(sigs) = final_vars.signatures {
             use uefi_specs::linux::nvram::vars as linux_vars;
             use uefi_specs::uefi::nvram::vars as uefi_vars;
 
