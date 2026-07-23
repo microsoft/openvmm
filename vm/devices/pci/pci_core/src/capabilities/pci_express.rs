@@ -406,23 +406,12 @@ impl PciExpressCapability {
     /// # Arguments
     /// * `slot_number` - The physical slot number to assign to this hotplug-capable port
     pub fn with_hotplug_support(mut self, slot_number: u32) -> Self {
-        use pci_express::DevicePortType;
-
-        // Validate that hotplug is only enabled for appropriate port types
         let port_type = self.pcie_capabilities.device_port_type();
-        match port_type {
-            DevicePortType::RootPort | DevicePortType::DownstreamSwitchPort => {
-                // Valid port types for hotplug support
-            }
-            DevicePortType::Endpoint | DevicePortType::UpstreamSwitchPort => {
-                panic!(
-                    "Hotplug support is not valid for device port type {:?}. \
-                     Only RootPort and DownstreamSwitchPort support hotplug.",
-                    port_type
-                );
-            }
-            _ => panic!("unknown PCIe device port type {port_type:?}"),
-        }
+        assert!(
+            Self::is_downstream_port(port_type),
+            "Hotplug support is not valid for device port type {port_type:?}. \
+             Only RootPort and DownstreamSwitchPort support hotplug."
+        );
 
         // Enable slot implemented in PCIe capabilities when hotplug is enabled
         self.pcie_capabilities = self.pcie_capabilities.with_slot_implemented(true);
@@ -808,17 +797,17 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub device_control: u16,
-            #[mesh(3)]
+            #[mesh(2)]
             pub link_control: u16,
-            #[mesh(5)]
+            #[mesh(3)]
             pub slot_control: u16,
-            #[mesh(6)]
+            #[mesh(4)]
             pub slot_status_events: u16,
-            #[mesh(7)]
+            #[mesh(5)]
             pub root_control: u16,
-            #[mesh(9)]
+            #[mesh(6)]
             pub device_control_2: u16,
-            #[mesh(11)]
+            #[mesh(7)]
             pub link_control_2: u16,
         }
     }
