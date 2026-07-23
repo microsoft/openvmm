@@ -255,7 +255,7 @@ async fn custom_uefi_append_without_base_fails<T: PetriVmmBackend>(
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_persistent_vmgs(&vmgs_path)
         .with_custom_uefi_json(APPEND_WITHOUT_BASE_JSON)
-        .with_expect_no_boot_event()
+        .with_expect_boot_failure()
         .run_without_agent()
         .await?;
 
