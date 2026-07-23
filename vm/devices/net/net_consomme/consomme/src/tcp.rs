@@ -674,7 +674,19 @@ struct Sender<'a, T> {
 }
 
 impl<T: Client> Sender<'_, T> {
-    fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
+    /// Assemble and deliver a TCP packet to the client.
+    ///
+    /// When `tso_mss` is `Some(mss)`, the packet is delivered with
+    /// [`ChecksumState::tso`] set so the frontend can present it to the guest as
+    /// an LRO/GSO packet. In that mode the TCP checksum field holds only the
+    /// pseudo-header partial checksum (`VIRTIO_NET_HDR_F_NEEDS_CSUM`); the guest
+    /// completes each segment's checksum.
+    fn send_packet(
+        &mut self,
+        tcp: &TcpRepr<'_>,
+        payload: Option<ring::View<'_>>,
+        tso_mss: Option<u16>,
+    ) {
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.state.params.client_mac);
@@ -714,23 +726,44 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
-        // Checksum is filled by `fill_checksum` below, after the payload is copied in.
+        // Skip the TCP checksum during emit; it is filled in below after the
+        // payload has been copied in.
         tcp.emit(
             &mut tcp_packet,
             &dst_ip_addr,
             &src_ip_addr,
             &ChecksumCapabilities::ignored(),
         );
-
         // Copy payload into TCP packet
         if let Some(payload) = &payload {
             payload.copy_to_slice(tcp_packet.payload_mut());
         }
-        tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+
+        if tso_mss.is_none() {
+            // Normal single-segment packet: compute the full checksum.
+            tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+        } else {
+            // TSO packet (NEEDS_CSUM): seed the field with the pseudo-header
+            // partial checksum so the guest can complete each segment. smoltcp
+            // leaves it zero when checksum emission is disabled, which would
+            // yield invalid per-segment checksums.
+            let tcp_len = tcp.header_len() + payload.as_ref().map_or(0, |p| p.len());
+            let pseudo = tcp_pseudo_header_checksum(&src_ip_addr, &dst_ip_addr, tcp_len as u16);
+            tcp_packet.set_checksum(pseudo);
+        }
+
         let n = ETHERNET_HEADER_LEN + ip_total_len;
-        let checksum_state = match self.ft.dst {
-            SocketAddr::V4(_) => ChecksumState::TCP4,
-            SocketAddr::V6(_) => ChecksumState::TCP6,
+        let checksum_state = match (self.ft.dst, tso_mss) {
+            (SocketAddr::V4(_), Some(mss)) => ChecksumState {
+                tso: Some(mss),
+                ..ChecksumState::TCP4
+            },
+            (SocketAddr::V6(_), Some(mss)) => ChecksumState {
+                tso: Some(mss),
+                ..ChecksumState::TCP6
+            },
+            (SocketAddr::V4(_), None) => ChecksumState::TCP4,
+            (SocketAddr::V6(_), None) => ChecksumState::TCP6,
         };
 
         self.client.recv(&buffer[..n], &checksum_state);
@@ -754,7 +787,7 @@ impl<T: Client> Sender<'_, T> {
 
         trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
-        self.send_packet(&tcp, None);
+        self.send_packet(&tcp, None, None);
     }
 }
 
@@ -1332,7 +1365,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
 
-        sender.send_packet(&tcp, None);
+        sender.send_packet(&tcp, None, None);
         self.tx_send += 1;
         if ack_number.is_some() {
             // The guest reads the SYN-ACK window unscaled, so record that value.
@@ -1359,6 +1392,10 @@ impl TcpConnectionInner {
         if self.tx_send < tx_end && tx_window_end <= self.tx_send {
             self.stats.tx_blocked_window_full.increment();
         }
+
+        let lro_supported = sender
+            .client
+            .lro_supported(matches!(sender.ft.dst, SocketAddr::V6(_)));
 
         while self.needs_ack || self.tx_send < tx_done {
             let rx_mtu = sender.client.rx_mtu();
@@ -1390,7 +1427,9 @@ impl TcpConnectionInner {
             // exceeding:
             // 1. The available buffer length.
             // 2. The current window.
-            // 3. The configured maximum segment size.
+            // 3. The configured maximum segment size (only when the client
+            //    buffer is not large enough for LRO — when it is, we emit one
+            //    large frame and let the guest segment it).
             // 4. The client MTU.
             let tx_segment_end = {
                 let ip_header_len = match sender.ft.dst {
@@ -1398,12 +1437,29 @@ impl TcpConnectionInner {
                     SocketAddr::V6(_) => IPV6_HEADER_LEN,
                 };
                 let header_len = ETHERNET_HEADER_LEN + ip_header_len + tcp.header_len();
-                let mtu = rx_mtu.min(sender.state.buffer.len());
+                // Cap MTU to avoid overflowing the IP total-length field
+                // (u16, max 65535 bytes of IP payload + header).
+                let max_ip_frame = u16::MAX as usize + ETHERNET_HEADER_LEN;
+                let mtu = rx_mtu.min(sender.state.buffer.len()).min(max_ip_frame);
+                let max_payload = mtu.saturating_sub(header_len);
+                if max_payload == 0 {
+                    // Buffer too small to fit even the headers.
+                    break;
+                }
+                // When the client buffer can hold more than one MSS of
+                // payload, skip the MSS cap and fill the whole buffer —
+                // the packet will be delivered as an LRO/TSO frame.
+                // Otherwise, apply the MSS limit for normal segmentation.
+                let mss_limit = if lro_supported && max_payload > self.tx_mss {
+                    tx_next + max_payload
+                } else {
+                    tx_next + self.tx_mss
+                };
                 seq_min([
                     tx_payload_end,
                     tx_window_end,
-                    tx_next + self.tx_mss,
-                    tx_next + (mtu - header_len),
+                    mss_limit,
+                    tx_next + max_payload,
                 ])
             };
 
@@ -1454,7 +1510,15 @@ impl TcpConnectionInner {
                 .tx_buffer
                 .view(payload_start..payload_start + payload_len);
 
-            sender.send_packet(&tcp, Some(payload));
+            // When the payload exceeds a single MSS, deliver the frame as a
+            // TSO/LRO packet so the guest can re-segment it.
+            let tso_mss = if lro_supported && payload_len > self.tx_mss {
+                Some(self.tx_mss.min(u16::MAX as usize) as u16)
+            } else {
+                None
+            };
+
+            sender.send_packet(&tcp, Some(payload), tso_mss);
             self.stats.pkts_tx_to_guest.increment();
             self.stats.bytes_tx_to_guest.add(payload_len as u64);
             self.stats.tx_segment_size.add_sample(payload_len as u64);
@@ -1510,7 +1574,7 @@ impl TcpConnectionInner {
 
         trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
-        sender.send_packet(&tcp, None);
+        sender.send_packet(&tcp, None, None);
         self.stats.standalone_acks_tx.increment();
         self.record_advertised_window(window_len);
     }
@@ -1900,6 +1964,41 @@ fn is_connect_incomplete_error(err: &io::Error) -> bool {
         return true;
     }
     false
+}
+
+/// Computes the TCP pseudo-header checksum used to seed a TSO segment's
+/// checksum field for `VIRTIO_NET_HDR_F_NEEDS_CSUM`.
+fn tcp_pseudo_header_checksum(src: &IpAddress, dst: &IpAddress, length: u16) -> u16 {
+    fn sum_bytes(mut data: &[u8], mut accum: u32) -> u32 {
+        while data.len() >= 2 {
+            accum += u16::from_be_bytes([data[0], data[1]]) as u32;
+            data = &data[2..];
+        }
+        if let Some(&b) = data.first() {
+            accum += (b as u32) << 8;
+        }
+        accum
+    }
+
+    let mut accum = 0u32;
+    match (src, dst) {
+        (IpAddress::Ipv4(src), IpAddress::Ipv4(dst)) => {
+            accum = sum_bytes(&src.octets(), accum);
+            accum = sum_bytes(&dst.octets(), accum);
+        }
+        (IpAddress::Ipv6(src), IpAddress::Ipv6(dst)) => {
+            accum = sum_bytes(&src.octets(), accum);
+            accum = sum_bytes(&dst.octets(), accum);
+        }
+        _ => unreachable!("mismatched IP address families"),
+    }
+    accum += u8::from(IpProtocol::Tcp) as u32;
+    accum += length as u32;
+    // Fold carries per RFC 1071; no final one's-complement.
+    while accum >> 16 != 0 {
+        accum = (accum & 0xffff) + (accum >> 16);
+    }
+    accum as u16
 }
 
 /// Finds the smallest sequence number in a set. To get a coherent result, all

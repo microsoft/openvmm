@@ -1836,6 +1836,70 @@ async fn test_tcp_tx_buffer_autotune_caps_at_max(driver: DefaultDriver) {
     );
 }
 
+#[test]
+fn test_tcp_pseudo_header_seed_completes_to_valid_checksum() {
+    let src_ip = Ipv4Address::new(10, 0, 0, 2);
+    let dst_ip = Ipv4Address::new(10, 0, 0, 1);
+    // A payload larger than a single MSS, i.e. the LRO/TSO case.
+    let payload = [0xA5u8; 3000];
+
+    let tcp = TcpRepr {
+        src_port: 1234,
+        dst_port: 80,
+        control: TcpControl::None,
+        seq_number: TcpSeqNumber(1000),
+        ack_number: Some(TcpSeqNumber(1)),
+        window_len: 1024,
+        window_scale: None,
+        max_seg_size: None,
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &payload,
+    };
+    let seg_len = tcp.header_len() + payload.len();
+    let mut buf = vec![0u8; seg_len];
+
+    // Emit the segment with TCP checksum computation disabled (as send_packet
+    // does), then capture the reference checksum a full computation produces.
+    let correct = {
+        let mut pkt = TcpPacket::new_unchecked(&mut buf);
+        let mut caps = ChecksumCapabilities::default();
+        caps.tcp = smoltcp::phy::Checksum::None;
+        tcp.emit(&mut pkt, &src_ip.into(), &dst_ip.into(), &caps);
+        pkt.fill_checksum(&src_ip.into(), &dst_ip.into());
+        let correct = pkt.checksum();
+        // Now seed the field with the pseudo-header partial, as the fix does.
+        let pseudo = tcp_pseudo_header_checksum(&src_ip.into(), &dst_ip.into(), seg_len as u16);
+        pkt.set_checksum(pseudo);
+        correct
+    };
+    assert_ne!(correct, 0, "reference checksum should be non-zero");
+
+    // Reproduce the guest's NEEDS_CSUM completion: the ones-complement sum over
+    // the whole segment (whose checksum field currently holds the pseudo seed),
+    // folded and complemented.
+    let mut accum = 0u32;
+    let mut d: &[u8] = &buf[..seg_len];
+    while d.len() >= 2 {
+        accum += u16::from_be_bytes([d[0], d[1]]) as u32;
+        d = &d[2..];
+    }
+    if let Some(&b) = d.first() {
+        accum += (b as u32) << 8;
+    }
+    while accum >> 16 != 0 {
+        accum = (accum & 0xffff) + (accum >> 16);
+    }
+    let completed = !(accum as u16);
+
+    assert_eq!(
+        completed, correct,
+        "guest-completed checksum from the pseudo-header seed must equal the \
+         fully computed TCP checksum"
+    );
+}
+
 /// Regression test: after the guest egress fills the receive window and it
 /// later reopens (host drains), consomme must send an unsolicited window-update
 /// ACK rather than waiting for the guest's zero-window probe.
