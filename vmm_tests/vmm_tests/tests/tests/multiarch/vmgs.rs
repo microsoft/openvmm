@@ -69,7 +69,7 @@ async fn create_custom_uefi_vmgs(
     Ok((temp_dir, vmgs_path))
 }
 
-/// Verify that customer UEFI variable deltas are applied on first boot.
+/// Verify that custom UEFI variable deltas are applied on first boot.
 ///
 /// Direct UEFI receives the JSON through Petri configuration. OpenHCL receives
 /// the same JSON through the production VMGS `CUSTOM_UEFI` path because it owns

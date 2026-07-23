@@ -38,6 +38,14 @@ impl From<UefiVars> for BaseTemplateVars {
 }
 
 impl FinalVars {
+    /// Validate that a base template and custom delta can be resolved.
+    pub fn validate(
+        base_template: Option<&BaseTemplateVars>,
+        custom_template_delta: Option<&delta::UefiVarsDelta>,
+    ) -> Result<(), ApplyDeltaError> {
+        Self::resolve(base_template.cloned(), custom_template_delta.cloned()).map(drop)
+    }
+
     /// Resolve an optional base template and custom delta into final variables.
     pub fn resolve(
         base_template: Option<BaseTemplateVars>,
@@ -321,7 +329,7 @@ mod tests {
         };
 
         assert!(matches!(
-            FinalVars::resolve(None, Some(delta)),
+            FinalVars::validate(None, Some(&delta)),
             Err(ApplyDeltaError::AppendWithoutBase)
         ));
     }

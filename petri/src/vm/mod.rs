@@ -1290,7 +1290,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Apply a customer UEFI variable delta encoded as JSON.
+    /// Apply a custom UEFI variable delta encoded as JSON.
     pub fn with_custom_uefi_json(mut self, json: impl Into<Vec<u8>>) -> Self {
         self.config
             .firmware
