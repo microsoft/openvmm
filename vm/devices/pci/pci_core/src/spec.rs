@@ -621,6 +621,39 @@ pub mod caps {
             }
         }
 
+        /// PCIe max TLP prefix values for use in Device Capabilities 2.
+        ///
+        /// Values are defined in PCIe Base Specification for the Max End-End TLP Prefixes
+        /// field in Device Capabilities 2 Register and similar fields.
+        #[derive(Copy, Clone, Debug)]
+        #[repr(u32)]
+        pub enum MaxEndEndTlpPrefixes {
+            /// 1 End-End TLP Prefix / OHC-E1
+            One = 0b01,
+            /// 2 End-End TLP Prefixes / OHC-E2
+            Two = 0b10,
+            /// 3 End-End TLP Prefixes / OHC-E4
+            Three = 0b11,
+            /// 4 End-End TLP Prefixes / OHC-E4
+            Four = 0b00,
+        }
+
+        impl MaxEndEndTlpPrefixes {
+            pub(crate) const fn from_bits(bits: u32) -> Self {
+                match bits {
+                    0b01 => MaxEndEndTlpPrefixes::One,
+                    0b10 => MaxEndEndTlpPrefixes::Two,
+                    0b11 => MaxEndEndTlpPrefixes::Three,
+                    0b00 => MaxEndEndTlpPrefixes::Four,
+                    _ => unreachable!(),
+                }
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self as u32
+            }
+        }
+
         /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
         ///
         /// Values are defined in PCIe Base Specification for the Max Link Width field
@@ -991,7 +1024,7 @@ pub mod caps {
             pub extended_fmt_field_supported: bool,
             pub end_end_tlp_prefix_supported: bool,
             #[bits(2)]
-            pub max_end_end_tlp_prefixes: u32,
+            pub max_end_end_tlp_prefixes: MaxEndEndTlpPrefixes,
             #[bits(2)]
             pub emergency_power_reduction_supported: u32,
             pub emergency_power_reduction_init_required: bool,

@@ -303,6 +303,8 @@ name:
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
 - `cxl`: marks the root port as CXL-capable.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 `--pcie-switch` accepts optional comma-separated options as well:
 
@@ -315,6 +317,8 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 ### Generic initiators
 

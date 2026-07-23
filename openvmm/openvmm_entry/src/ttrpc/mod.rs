@@ -1528,6 +1528,7 @@ async fn build_pcie_topology(
                 hotplug,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1597,6 +1598,7 @@ fn walk_pcie_attachment(
                     hotplug,
                     acs_capabilities_supported: None,
                     cxl: false,
+                    pasid: false,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));

@@ -31,6 +31,7 @@ use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
+use pci_core::spec::caps::pci_express::MaxEndEndTlpPrefixes;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
 use vmcore::save_restore::RestoreError;
@@ -71,6 +72,11 @@ pub struct PciePortSettings {
     /// CXL DVSECs are added only when this is `Some` and either `cache_capable`
     /// or `mem_capable` is set.
     pub cxl_flex_bus_port_capability: Option<CxlFlexBusPortDvsecCapability>,
+
+    /// Whether End-to-End TLP prefixing is supported for this port.
+    ///
+    /// If supported, the max number of TLP prefixes to advertise.
+    pub tlp_prefixing_supported: Option<MaxEndEndTlpPrefixes>,
 }
 
 /// A description of a generic PCIe port (a root-complex root port or a switch
@@ -366,12 +372,15 @@ impl PcieDownstreamPort {
         let acs_supported =
             filter_acs_capabilities_for_bridge(&port_type, settings.acs_capabilities_supported);
 
-        let pcie_cap = if hotplug {
+        let mut pcie_cap = PciExpressCapability::new(port_type, None);
+        if hotplug {
             let slot_num = slot_number.unwrap_or(0);
-            PciExpressCapability::new(port_type, None).with_hotplug_support(slot_num)
-        } else {
-            PciExpressCapability::new(port_type, None)
-        };
+            pcie_cap = pcie_cap.with_hotplug_support(slot_num);
+        }
+
+        if let Some(max_prefixes) = settings.tlp_prefixing_supported {
+            pcie_cap = pcie_cap.with_tlp_prefixing_supported(max_prefixes);
+        }
 
         let extended_capabilities = if acs_supported != 0 {
             vec![
@@ -943,6 +952,7 @@ mod tests {
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
+                tlp_prefixing_supported: None,
             },
             Some(&mut mmio),
             Some(PortBarDefinition {
@@ -1545,6 +1555,7 @@ mod tests {
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
+                tlp_prefixing_supported: None,
             },
             None,
             Some(PortBarDefinition {

@@ -219,6 +219,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
                     hotplug: switch_cli.hotplug,
                     acs_capabilities_supported: switch_cli.acs_capabilities_supported,
                     cxl: false,
+                    pasid: switch_cli.pasid,
                 })
                 .collect(),
         })
@@ -890,6 +891,7 @@ async fn vm_config_from_command_line(
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
                 cxl: port_cli.cxl,
+                pasid: port_cli.pasid,
             })
             .collect();
 

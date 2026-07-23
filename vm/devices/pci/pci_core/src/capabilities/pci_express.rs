@@ -6,9 +6,11 @@
 use super::PciCapability;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::pci_express;
-use crate::spec::caps::pci_express::{
-    LinkSpeed, LinkWidth, PciExpressCapabilityHeader, SupportedLinkSpeedsVector,
-};
+use crate::spec::caps::pci_express::LinkSpeed;
+use crate::spec::caps::pci_express::LinkWidth;
+use crate::spec::caps::pci_express::MaxEndEndTlpPrefixes;
+use crate::spec::caps::pci_express::PciExpressCapabilityHeader;
+use crate::spec::caps::pci_express::SupportedLinkSpeedsVector;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use inspect::Inspect;
@@ -344,6 +346,21 @@ impl PciExpressCapability {
             .link_capabilities
             .with_data_link_layer_link_active_reporting(true);
 
+        self
+    }
+
+    /// Enable TLP prefixing support for this PCIe capability.
+    ///
+    /// This configures the appropriate registers to indicate that the function supports
+    /// end-to-end TLP prefixes. We do not currently implement TLP prefixing in endpoint
+    /// DMA APIs but this still may be required for ports upstream of passthrough devices
+    /// that support TLP prefixing (ex. for guest controlled PASID with a virtual IOMMU).
+    pub fn with_tlp_prefixing_supported(mut self, max_prefixes: MaxEndEndTlpPrefixes) -> Self {
+        self.device_capabilities_2 = self
+            .device_capabilities_2
+            .with_extended_fmt_field_supported(true)
+            .with_end_end_tlp_prefix_supported(true)
+            .with_max_end_end_tlp_prefixes(max_prefixes);
         self
     }
 
@@ -860,6 +877,29 @@ mod tests {
         // Guest clears it again.
         write_cap_u32(&mut cap, 0x28, 0x0000);
         assert!(!cap.ari_forwarding_enable());
+    }
+
+    #[test]
+    fn test_tlp_prefixing_supported_max_prefixes() {
+        for max_prefixes in [
+            MaxEndEndTlpPrefixes::One,
+            MaxEndEndTlpPrefixes::Two,
+            MaxEndEndTlpPrefixes::Three,
+            MaxEndEndTlpPrefixes::Four,
+        ] {
+            let cap = PciExpressCapability::new(DevicePortType::Endpoint, None)
+                .with_tlp_prefixing_supported(max_prefixes);
+            let device_caps_2 =
+                pci_express::DeviceCapabilities2::from_bits(read_cap_u32(&cap, 0x24));
+
+            assert!(device_caps_2.extended_fmt_field_supported());
+            assert!(device_caps_2.end_end_tlp_prefix_supported());
+            assert_eq!(
+                device_caps_2.max_end_end_tlp_prefixes().into_bits(),
+                max_prefixes.into_bits(),
+                "unexpected max TLP prefix encoding for {max_prefixes:?}"
+            );
+        }
     }
 
     #[test]

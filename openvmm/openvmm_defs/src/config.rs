@@ -260,6 +260,8 @@ pub struct PciePortConfig {
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+    /// Enables PASID support for functions downstream of this port.
+    pub pasid: bool,
 }
 
 #[derive(Debug, MeshPayload)]
