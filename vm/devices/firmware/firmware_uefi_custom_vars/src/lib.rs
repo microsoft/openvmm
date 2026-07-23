@@ -292,8 +292,11 @@ impl UefiVars {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delta::SignatureDelta;
+    use crate::delta::SignatureDeltaVec;
     use crate::delta::SignaturesAppend;
     use crate::delta::SignaturesDelta;
+    use crate::delta::SignaturesReplace;
     use crate::delta::UefiVarsDelta;
 
     #[test]
@@ -305,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_delta_without_required_base_fails() {
+    fn append_without_base_fails() {
         let delta = UefiVarsDelta {
             signatures: SignaturesDelta::Append(SignaturesAppend {
                 kek: None,
@@ -320,6 +323,65 @@ mod tests {
         assert!(matches!(
             FinalVars::resolve(None, Some(delta)),
             Err(ApplyDeltaError::AppendWithoutBase)
+        ));
+    }
+
+    #[test]
+    fn default_without_base_fails() {
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Replace(SignaturesReplace {
+                pk: SignatureDelta::Default,
+                kek: SignatureDeltaVec::Default,
+                db: SignatureDeltaVec::Default,
+                dbx: SignatureDeltaVec::Default,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: Vec::new(),
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(None, Some(delta)),
+            Err(ApplyDeltaError::DefaultWithoutBase)
+        ));
+    }
+
+    #[test]
+    fn restricted_uefi_var_fails() {
+        let base_template = UefiVars {
+            signatures: Some(Signatures {
+                pk: Signature::X509(Vec::new()),
+                kek: Vec::new(),
+                db: Vec::new(),
+                dbx: Vec::new(),
+                moklist: Vec::new(),
+                moklistx: Vec::new(),
+            }),
+            non_signature_vars: Vec::new(),
+        }
+        .into();
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Append(SignaturesAppend {
+                kek: None,
+                db: None,
+                dbx: None,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: vec![(
+                "dbDefault".into(),
+                UefiVar {
+                    guid: EFI_GLOBAL_VARIABLE,
+                    attr: 0,
+                    value: Vec::new(),
+                },
+            )],
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(Some(base_template), Some(delta)),
+            Err(ApplyDeltaError::RestrictedUefiVar { name, guid })
+                if name == "dbDefault" && guid == EFI_GLOBAL_VARIABLE
         ));
     }
 }

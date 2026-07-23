@@ -407,6 +407,10 @@ impl PetriVmConfigOpenVmm {
                         hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch)
                     }
                 });
+            let custom_template_delta = uefi_cfg
+                .and_then(|c| c.custom_uefi_json.as_deref())
+                .map(hyperv_uefi_custom_vars_json::load_delta_from_json)
+                .transpose()?;
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
                 .map(|c| c.efi_diagnostics_log_level)
@@ -430,7 +434,7 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
                 base_template,
-                None,
+                custom_template_delta,
                 secure_boot,
                 log_level,
                 diagnostics_rate_limit,
@@ -905,6 +909,7 @@ impl PetriVmConfigSetupCore<'_> {
                         UefiConfig {
                             secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
+                            custom_uefi_json: _,     // applied device-side via UefiManifest::new
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
@@ -1086,6 +1091,7 @@ impl PetriVmConfigSetupCore<'_> {
             UefiConfig {
                 secure_boot_enabled,
                 secure_boot_template,
+                custom_uefi_json: _, // OpenHCL reads this from VMGS CUSTOM_UEFI.
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,

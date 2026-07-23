@@ -1,0 +1,9 @@
+{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Append",
+            "signatures": {}
+        }
+    }
+}

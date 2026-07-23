@@ -25,6 +25,7 @@ openvmm_helpers.workspace = true
 openvmm_pcat_locator.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
+hyperv_uefi_custom_vars_json.workspace = true
 gdma_resources.workspace = true
 vmbus_serial_resources.workspace = true
 underhill_confidentiality.workspace = true
