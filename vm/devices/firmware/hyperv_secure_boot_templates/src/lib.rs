@@ -14,22 +14,22 @@
 use firmware_uefi_custom_vars::BaseTemplateVars;
 
 #[derive(Clone, Copy, Debug)]
-pub enum GuestArch {
+pub enum UefiArch {
     X64,
     Aarch64,
 }
 
-pub fn microsoft_windows(arch: GuestArch) -> BaseTemplateVars {
+pub fn microsoft_windows(arch: UefiArch) -> BaseTemplateVars {
     match arch {
-        GuestArch::X64 => x64::microsoft_windows(),
-        GuestArch::Aarch64 => aarch64::microsoft_windows(),
+        UefiArch::X64 => x64::microsoft_windows(),
+        UefiArch::Aarch64 => aarch64::microsoft_windows(),
     }
 }
 
-pub fn microsoft_uefi_ca(arch: GuestArch) -> BaseTemplateVars {
+pub fn microsoft_uefi_ca(arch: UefiArch) -> BaseTemplateVars {
     match arch {
-        GuestArch::X64 => x64::microsoft_uefi_ca(),
-        GuestArch::Aarch64 => aarch64::microsoft_uefi_ca(),
+        UefiArch::X64 => x64::microsoft_uefi_ca(),
+        UefiArch::Aarch64 => aarch64::microsoft_uefi_ca(),
     }
 }
 

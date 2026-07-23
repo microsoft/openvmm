@@ -2541,9 +2541,9 @@ async fn new_underhill_vm(
 
         // map the GET's template enum onto the hardcoded secureboot template type
         let template_arch = if cfg!(guest_arch = "x86_64") {
-            hyperv_secure_boot_templates::GuestArch::X64
+            hyperv_secure_boot_templates::UefiArch::X64
         } else if cfg!(guest_arch = "aarch64") {
-            hyperv_secure_boot_templates::GuestArch::Aarch64
+            hyperv_secure_boot_templates::UefiArch::Aarch64
         } else {
             anyhow::bail!("no secure boot template for current guest_arch")
         };
