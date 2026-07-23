@@ -543,9 +543,8 @@ impl VfioAssignedPciDevice {
             "VFIO assigned PCI device initialized"
         );
 
-        // Build initial BAR values. Start from bar_flags (encoding bits
-        // only — guaranteed clean). For passthrough BARs, overlay the
-        // physical addresses from sysfs.
+        // Build initial BAR values from clean encoding bits, applying any
+        // configured host-assigned or fixed physical addresses.
         let bars = apply_bar_addresses(&pci_id, &bar_flags, &bar_masks, &bar_addresses)?;
         let bar_reset_defaults = bars;
 
@@ -805,6 +804,9 @@ fn apply_bar_addresses(
         if bar_masks[i] == 0 {
             anyhow::bail!("BAR {i} is not implemented by the device");
         }
+        if i == 5 && cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit() {
+            anyhow::bail!("64-bit BAR at index 5 is invalid");
+        }
         // If the previous BAR is 64-bit, this index is its upper half.
         if i > 0
             && cfg_space::BarEncodingBits::from(bar_flags[i - 1]).type_64_bit()
@@ -822,9 +824,11 @@ fn apply_bar_addresses(
         .then(|| read_physical_bar_addresses(pci_id))
         .transpose()?;
     let mut bars = *bar_flags;
-    for i in 0..6 {
+    let mut i = 0;
+    while i < 6 {
+        let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
         let address = match bar_addresses[i] {
-            BarAddressConfig::GuestAssigned => continue,
+            BarAddressConfig::GuestAssigned => None,
             BarAddressConfig::HostAssigned => {
                 let address = physical_addresses.as_ref().unwrap()[i];
                 if address == 0 {
@@ -832,34 +836,36 @@ fn apply_bar_addresses(
                         "BAR {i} host address reported by sysfs is 0; use an explicit address for a VFIO variant-driver BAR"
                     );
                 }
-                address
+                Some(address)
             }
             BarAddressConfig::Fixed(0) => anyhow::bail!("BAR {i} fixed address is 0"),
-            BarAddressConfig::Fixed(address) => address,
+            BarAddressConfig::Fixed(address) => Some(address),
         };
-        let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
-        if !is_64bit && address > u32::MAX as u64 {
-            anyhow::bail!("BAR {i} is 32-bit but address {address:#x} exceeds 4 GB");
+        if let Some(address) = address {
+            if !is_64bit && address > u32::MAX as u64 {
+                anyhow::bail!("BAR {i} is 32-bit but address {address:#x} exceeds 4 GB");
+            }
+            let address_mask = if is_64bit {
+                (bar_masks[i + 1] as u64) << 32 | (bar_masks[i] as u64 & !0xf)
+            } else {
+                (bar_masks[i] as i32 as i64 as u64) & !0xf
+            };
+            let size = (!address_mask).wrapping_add(1);
+            if address & (size - 1) != 0 {
+                anyhow::bail!("BAR {i} address {address:#x} is not aligned to its size {size:#x}");
+            }
+            bars[i] = (address as u32 & !0xf) | bar_flags[i];
+            if is_64bit {
+                bars[i + 1] = (address >> 32) as u32;
+            }
+            tracing::info!(
+                pci_id,
+                bar_index = i,
+                address = format_args!("{address:#x}"),
+                "pre-programmed BAR address"
+            );
         }
-        let address_mask = if is_64bit {
-            (bar_masks[i + 1] as u64) << 32 | (bar_masks[i] as u64 & !0xf)
-        } else {
-            (bar_masks[i] as i32 as i64 as u64) & !0xf
-        };
-        let size = (!address_mask).wrapping_add(1);
-        if address & (size - 1) != 0 {
-            anyhow::bail!("BAR {i} address {address:#x} is not aligned to its size {size:#x}");
-        }
-        bars[i] = (address as u32 & !0xf) | bar_flags[i];
-        if is_64bit {
-            bars[i + 1] = (address >> 32) as u32;
-        }
-        tracing::info!(
-            pci_id,
-            bar_index = i,
-            address = format_args!("{address:#x}"),
-            "pre-programmed BAR address"
-        );
+        i += if is_64bit { 2 } else { 1 };
     }
     Ok(bars)
 }
@@ -1638,13 +1644,9 @@ mod tests {
 
         let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
         bar_addresses[0] = BarAddressConfig::Fixed(0);
-        let error = apply_bar_addresses(
-            "not-a-real-device",
-            &bar_flags,
-            &bar_masks,
-            &bar_addresses,
-        )
-        .unwrap_err();
+        let error =
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .unwrap_err();
         assert_eq!(error.to_string(), "BAR 0 fixed address is 0");
 
         for address in [0x8000_0001, 0x1_0000_0000] {
@@ -1678,6 +1680,17 @@ mod tests {
             apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
                 .is_err()
         );
+
+        bar_flags = [0; 6];
+        bar_flags[5] = 0x4;
+        bar_masks = [0; 6];
+        bar_masks[5] = 0xffff_f004;
+        bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[5] = BarAddressConfig::Fixed(0x8000_0000);
+        let error =
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .unwrap_err();
+        assert_eq!(error.to_string(), "64-bit BAR at index 5 is invalid");
     }
 
     /// In-memory config space backing store for unit tests.
