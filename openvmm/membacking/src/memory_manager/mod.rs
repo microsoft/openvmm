@@ -1143,4 +1143,67 @@ mod tests {
             assert_eq!(buf, pattern_b);
         });
     }
+
+    /// Builds a manager with a single THP-enabled shared RAM backing and
+    /// returns a [`GuestMemory`] over the **primary** mapper. Soft large pages
+    /// (the Windows deferred-protect scheme that maps guest RAM read-only until
+    /// the first write) apply only to the primary mapper, so locking behavior
+    /// must be exercised through it rather than through
+    /// [`GuestMemoryClient::guest_memory`], which hands out a secondary mapper.
+    async fn build_thp_primary_memory(size: u64) -> (GuestMemoryManager, GuestMemory) {
+        let mgr = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..size)]).transparent_hugepages(true),
+            )
+            .build(size)
+            .await
+            .unwrap();
+        let primary = GuestMemory::new("test-primary", mgr.va_mapper.clone());
+        (mgr, primary)
+    }
+
+    /// Locking guest RAM for write must make it writable through the returned
+    /// raw pointer, even when the backing is only lazily made writable on the
+    /// first write (Windows soft large pages map primary-mapper guest RAM
+    /// read-only until then). The write here goes through the locked pointer
+    /// directly, bypassing the fault-handling `write_*` path, so if the lock
+    /// had only faulted the page in for read the store would access-violate.
+    /// This is the regression guard for read-only-locking a page that is then
+    /// written via zero-copy DMA.
+    #[async_test]
+    async fn test_lock_for_write_makes_page_writable() {
+        use std::sync::atomic::Ordering;
+
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
+
+        let locked = gm
+            .lock_gpns(guestmem::AccessType::Write, false, &[0])
+            .unwrap();
+        // Store directly through the locked pointer (not via `write_at`, which
+        // would fault the page in on its own).
+        locked.pages()[0][0].store(0xAB, Ordering::SeqCst);
+        locked.pages()[0][1].store(0xCD, Ordering::SeqCst);
+        drop(locked);
+
+        // The stores must be visible through a normal read.
+        assert_eq!(gm.read_plain::<u8>(0).unwrap(), 0xAB);
+        assert_eq!(gm.read_plain::<u8>(1).unwrap(), 0xCD);
+    }
+
+    /// A read-only lock succeeds and reads back the freshly zeroed page without
+    /// forcing the page writable.
+    #[async_test]
+    async fn test_lock_for_read_succeeds() {
+        use std::sync::atomic::Ordering;
+
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
+
+        let locked = gm
+            .lock_gpns(guestmem::AccessType::Read, false, &[0])
+            .unwrap();
+        assert_eq!(locked.pages()[0][0].load(Ordering::SeqCst), 0);
+        drop(locked);
+    }
 }

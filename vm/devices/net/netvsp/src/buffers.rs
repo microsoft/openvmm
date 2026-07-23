@@ -109,7 +109,7 @@ impl GuestBuffers {
 
         let gpns = gpadl.first().unwrap().gpns().to_vec();
         let locked_pages = mem
-            .lock_gpns(false, &gpns)
+            .lock_gpns(guestmem::AccessType::Write, false, &gpns)
             .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
