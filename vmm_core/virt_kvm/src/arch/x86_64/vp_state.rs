@@ -328,6 +328,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         };
         self.kvm().set_mp_state(state)?;
 
+        let mut event_flags = 0;
+        if value.nmi_pending {
+            event_flags |= kvm::KVM_VCPUEVENT_VALID_NMI_PENDING;
+        }
+        if value.interrupt_shadow {
+            event_flags |= kvm::KVM_VCPUEVENT_VALID_SHADOW;
+        }
+
         let mut events = kvm::kvm_vcpu_events {
             exception: kvm::kvm_vcpu_events__bindgen_ty_1 {
                 injected: 0,
@@ -349,7 +357,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 pad: 0,
             },
             sipi_vector: 0,
-            flags: kvm::KVM_VCPUEVENT_VALID_NMI_PENDING | kvm::KVM_VCPUEVENT_VALID_SHADOW,
+            flags: event_flags,
             exception_has_payload: 0,
             exception_payload: 0,
             ..Default::default()
