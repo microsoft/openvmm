@@ -1478,10 +1478,18 @@ impl HclVp {
         // This is only used on CVMs. Skip it otherwise, since run page accesses
         // will fault on VPs that are still in the sidecar kernel.
         if isolation_type.is_hardware_isolated() {
-            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-            // so we know we have exclusive access.
-            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-            proxy_irr_blocked.fill(!0);
+            // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+            // (`HclVp` creation), so we know we have exclusive access.
+            unsafe {
+                (*run.as_ptr()).proxy_irr_blocked.fill(!0);
+                if isolation_type == IsolationType::Snp {
+                    let context: &mut protocol::snp_vp_context =
+                        &mut *(&raw mut (*run.as_ptr()).context).cast();
+                    context
+                        .vmsa_tweak_bitmap
+                        .copy_from_slice(&hcl.snp_register_bitmap);
+                }
+            }
         }
 
         let backing = match isolation_type {
