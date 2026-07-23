@@ -2348,11 +2348,17 @@ pub struct MemoryConfig {
     /// Mark guest RAM as eligible for Transparent Huge Pages (THP),
     /// improving performance for large allocations.
     ///
-    /// Defaults to `true`. Applies to both private anonymous and shared
-    /// (file/memfd) guest RAM, on Linux (via `madvise`) and on Windows (via
-    /// soft large pages). It is silently ignored where it does not apply, such
-    /// as explicit hugetlb/large-page (`with_hugepages`) backings, which are
-    /// already huge.
+    /// Defaults to `true`. Applies to private anonymous guest RAM and to
+    /// shared memfd-backed RAM, on Linux (via `madvise`) and on Windows (via
+    /// soft large pages).
+    ///
+    /// It has no effect where THP does not apply, and some backend helpers
+    /// force it off:
+    /// - [`with_hugepages`](crate::openvmm::PetriVmConfigOpenVmm::with_hugepages)
+    ///   uses explicit hugetlb/large pages, which are already huge.
+    /// - [`with_memory_backing_file`](crate::openvmm::PetriVmConfigOpenVmm::with_memory_backing_file)
+    ///   uses a file-backed mapping (for snapshot save/restore) rather than an
+    ///   anonymous memfd.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub transparent_hugepages: bool,
