@@ -238,6 +238,46 @@ pub struct AccelRegistration {
     id: u64,
 }
 
+/// Reservation tying an accelerated vSMMU to one host IOMMU context.
+///
+/// Device resolution reserves the context before asking the VFIO manager to
+/// create iommufd objects, then commits the reservation once the manager has
+/// created or reused the vIOMMU. If manager setup fails, dropping the
+/// uncommitted reservation allows a later device to establish a different
+/// context. Once committed, the association remains fixed for the lifetime of
+/// the vSMMU, matching its single invalidation sink and QEMU's
+/// one-vIOMMU-per-SMMUv3 model.
+pub struct AccelIommuAssociation {
+    shared: Arc<SmmuSharedState>,
+    committed: bool,
+}
+
+impl AccelIommuAssociation {
+    /// Commits this vSMMU's association after successful vIOMMU preparation.
+    pub fn commit(mut self) {
+        if self.committed {
+            return;
+        }
+        let mut association = self.shared.accel_iommu_association.lock();
+        association.reservations -= 1;
+        association.committed = true;
+        self.committed = true;
+    }
+}
+
+impl Drop for AccelIommuAssociation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut association = self.shared.accel_iommu_association.lock();
+        association.reservations -= 1;
+        if association.reservations == 0 && !association.committed {
+            association.iommu_id = None;
+        }
+    }
+}
+
 impl AccelRegistration {
     /// Creates a guard for registration `id` on `shared`.
     pub fn new(shared: &Arc<SmmuSharedState>, id: u64) -> Self {
@@ -342,11 +382,21 @@ pub struct SmmuSharedState {
     accel_devices: Mutex<Vec<AccelDeviceRegistration>>,
     /// Per-vIOMMU invalidation sink. The first registered sink wins.
     invalidation_sink: OnceLock<Arc<dyn AcceleratedInvalidationSink>>,
+    /// Host IOMMU context backing this accelerated vSMMU. A vSMMU has one
+    /// vIOMMU and therefore cannot span independently managed IOAS contexts.
+    accel_iommu_association: Mutex<AccelIommuAssociationState>,
     /// Monotonic source of accelerated-registration ids. Each
     /// [`register_accel_device`](Self::register_accel_device) hands back a
     /// fresh id (via its [`AccelRegistration`] guard) that identifies the
     /// entry for later removal by its [`AccelRegistration`] guard.
     next_accel_id: AtomicU64,
+}
+
+#[derive(Default)]
+struct AccelIommuAssociationState {
+    iommu_id: Option<String>,
+    reservations: usize,
+    committed: bool,
 }
 
 struct SharedStateInner {
@@ -463,6 +513,7 @@ impl SmmuSharedState {
             oas_policy,
             accel_devices: Mutex::new(Vec::new()),
             invalidation_sink: OnceLock::new(),
+            accel_iommu_association: Mutex::new(AccelIommuAssociationState::default()),
             next_accel_id: AtomicU64::new(0),
         })
     }
@@ -470,6 +521,43 @@ impl SmmuSharedState {
     /// Returns whether this SMMU is in accelerated mode (iommufd nested).
     pub fn is_accel(&self) -> bool {
         self.accel
+    }
+
+    /// Reserves `iommu_id` as the sole host IOMMU context backing this vSMMU.
+    ///
+    /// Concurrent setup through the same context is allowed. A different
+    /// context is rejected whether the first association is still being
+    /// prepared or has already been committed. Dropping the returned guard
+    /// before [`AccelIommuAssociation::commit`] releases a tentative
+    /// association, allowing retry after failed device setup.
+    pub fn reserve_accel_iommu(
+        self: &Arc<Self>,
+        iommu_id: &str,
+    ) -> anyhow::Result<AccelIommuAssociation> {
+        let mut association = self.accel_iommu_association.lock();
+        if let Some(existing) = &association.iommu_id {
+            if existing != iommu_id {
+                anyhow::bail!(
+                    "SMMU is already associated with host IOMMU context {existing:?}; \
+                     it cannot also use {iommu_id:?}"
+                );
+            }
+        } else {
+            association.iommu_id = Some(iommu_id.to_owned());
+        }
+
+        if association.committed {
+            return Ok(AccelIommuAssociation {
+                shared: self.clone(),
+                committed: true,
+            });
+        }
+
+        association.reservations += 1;
+        Ok(AccelIommuAssociation {
+            shared: self.clone(),
+            committed: false,
+        })
     }
 
     /// Returns the currently advertised output address size in bits.
@@ -2284,6 +2372,44 @@ mod tests {
         state.resolve_host_caps(compatible_host_caps()).unwrap();
         // Same caps again (another device behind the same physical SMMU).
         state.resolve_host_caps(compatible_host_caps()).unwrap();
+    }
+
+    #[test]
+    fn accel_iommu_association_reuses_committed_context() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        state.reserve_accel_iommu("iommu0").unwrap().commit();
+        state.reserve_accel_iommu("iommu0").unwrap().commit();
+
+        let err = state
+            .reserve_accel_iommu("iommu1")
+            .err()
+            .expect("different context must be rejected")
+            .to_string();
+        assert!(err.contains("already associated"), "{err}");
+    }
+
+    #[test]
+    fn accel_iommu_association_rejects_competing_context() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let reservation = state.reserve_accel_iommu("iommu0").unwrap();
+
+        let err = state
+            .reserve_accel_iommu("iommu1")
+            .err()
+            .expect("competing context must be rejected")
+            .to_string();
+        assert!(err.contains("already associated"), "{err}");
+
+        reservation.commit();
+    }
+
+    #[test]
+    fn accel_iommu_association_releases_failed_setup() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        let reservation = state.reserve_accel_iommu("iommu0").unwrap();
+        drop(reservation);
+
+        state.reserve_accel_iommu("iommu1").unwrap().commit();
     }
 
     // =========================================================================
