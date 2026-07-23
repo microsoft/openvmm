@@ -300,31 +300,23 @@ impl Drop for AccelRegistration {
     }
 }
 
-/// Composes an SMMU-local stream ID from a bus range, a base offset,
-/// and an optional per-device BDF.
+/// Composes the SMMU-local stream ID for the endpoint behind a downstream port.
 ///
-/// The stream ID is `stream_id_base + (bdf & 0xFFFF)`. When `devid`
-/// is `None`, the default BDF `(secondary_bus, dev 0, fn 0)` is used.
+/// A downstream port exposes its connected endpoint at device 0, function 0 on
+/// its secondary bus, so the stream ID is
+/// `stream_id_base + (secondary_bus << 8)`.
 ///
 /// Returns `None` if the secondary bus has not been assigned yet
-/// (still 0) or if the BDF's bus number falls outside the port's
-/// assigned range.
-pub(crate) fn compose_stream_id(
+/// (still 0).
+fn registered_stream_id(
     bus_range: &AssignedBusRange,
     stream_id_base: u32,
-    devid: Option<u32>,
 ) -> Option<u32> {
-    let (secondary, subordinate) = bus_range.bus_range();
+    let (secondary, _) = bus_range.bus_range();
     if secondary == 0 {
         return None;
     }
-    let bdf = devid.unwrap_or((secondary as u32) << 8);
-    let bus = (bdf >> 8) as u8;
-    if bus < secondary || bus > subordinate {
-        tracelimit::warn_ratelimited!(bus, secondary, subordinate, "BDF out of port bus range");
-        return None;
-    }
-    Some(stream_id_base + (bdf & 0xFFFF))
+    Some(stream_id_base + ((secondary as u32) << 8))
 }
 
 /// Result of an SMMU translation attempt.
@@ -922,13 +914,11 @@ impl SmmuSharedState {
             backend,
             translating_sid: None,
         };
-        let config = match compose_stream_id(&bus_range, stream_id_base, None) {
-            Some(sid) => Some(self.current_stream_config(sid)),
-            None => self.disabled_policy(),
+        let config = match registered_stream_id(&bus_range, stream_id_base) {
+            Some(sid) => self.current_stream_config(sid),
+            None => self.unassigned_stream_config(),
         };
-        if let Some(config) = config {
-            Self::apply_config(&mut reg, config)?;
-        }
+        Self::apply_config(&mut reg, config)?;
         devices.push(reg);
         Ok(id)
     }
@@ -1018,19 +1008,17 @@ impl SmmuSharedState {
         }
     }
 
-    /// Returns the StreamID-independent policy that applies while the SMMU is
-    /// disabled (`Some(Bypass)` or `Some(Abort)` per `GBPA.ABORT`), or `None`
-    /// when the SMMU is enabled (the policy then depends on the per-stream
-    /// STE).
-    fn disabled_policy(&self) -> Option<StreamConfig> {
+    /// Returns the policy for a device whose PCI bus has not been assigned, so
+    /// no StreamID exists yet. While the SMMU is disabled this follows
+    /// `GBPA.ABORT`; while enabled it aborts explicitly so boot-time bypass
+    /// cannot remain active until a later `CFGI_STE`.
+    fn unassigned_stream_config(&self) -> StreamConfig {
         let inner = self.inner.read();
-        (!inner.enabled).then(|| {
-            if inner.gbpa_abort {
-                StreamConfig::Abort
-            } else {
-                StreamConfig::Bypass
-            }
-        })
+        if inner.enabled || inner.gbpa_abort {
+            StreamConfig::Abort
+        } else {
+            StreamConfig::Bypass
+        }
     }
 
     /// Registers the per-vIOMMU invalidation sink for accelerated mode.
@@ -1061,7 +1049,7 @@ impl SmmuSharedState {
         let mut devices = self.accel_devices.lock();
         let Some(reg) = devices
             .iter_mut()
-            .find(|reg| compose_stream_id(&reg.bus_range, reg.stream_id_base, None) == Some(sid))
+            .find(|reg| registered_stream_id(&reg.bus_range, reg.stream_id_base) == Some(sid))
         else {
             return Ok(());
         };
@@ -1073,10 +1061,10 @@ impl SmmuSharedState {
         let mut devices = self.accel_devices.lock();
         let mut first_error = None;
         for reg in devices.iter_mut() {
-            let Some(sid) = compose_stream_id(&reg.bus_range, reg.stream_id_base, None) else {
-                continue;
+            let config = match registered_stream_id(&reg.bus_range, reg.stream_id_base) {
+                Some(sid) => self.current_stream_config(sid),
+                None => self.unassigned_stream_config(),
             };
-            let config = self.current_stream_config(sid);
             if let Err(error) = Self::apply_config(reg, config) {
                 first_error.get_or_insert(error);
             }
