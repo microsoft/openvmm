@@ -707,11 +707,17 @@ impl SmmuDevice {
                         "smmu: failed to read CMDQ entry from guest memory"
                     );
                     // Forward any already-validated commands preceding the
-                    // faulting entry before aborting (program order); the
-                    // abort is the reported error.
-                    let _ = self.flush_invalidation_batch();
-                    // Set CMDQ error: abort.
-                    self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
+                    // faulting entry before reporting the fetch abort. If the
+                    // host rejects part of that earlier batch, stop at its
+                    // first unhandled command instead; advancing to the later
+                    // unreadable entry would lose an invalidation.
+                    match self.flush_invalidation_batch() {
+                        Err(failed_index) => {
+                            cons = (batch_start_cons + failed_index as u32) & index_mask;
+                            self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
+                        }
+                        Ok(()) => self.set_cmdq_error(registers::CmdqError::CERROR_ABT),
+                    }
                     break;
                 }
             };
@@ -2982,6 +2988,47 @@ mod tests {
         write32(&mut dev, CMDQ_PROD, 4);
 
         // Batch started at index 0, host processed 1 → offending entry = 1.
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 1);
+        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
+    }
+
+    /// A host failure flushing commands before an unreadable CMDQ entry takes
+    /// precedence, so `CMDQ_CONS` does not advance past an invalidation the
+    /// host never handled.
+    #[test]
+    fn test_cmdq_partial_failure_precedes_fetch_abort() {
+        // Place exactly two entries at the end of mapped memory. PROD=3 makes
+        // the third fetch cross the boundary and fail.
+        const FETCH_ABORT_CMDQ_GPA: u64 = 0x3fe0;
+        let gm = GuestMemory::allocate(0x4000);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let cmdq_base = QueueBase::new()
+            .with_log2size(TEST_CMDQ_LOG2SIZE)
+            .with_addr_bits(FETCH_ABORT_CMDQ_GPA >> 5);
+        write64(&mut dev, CMDQ_BASE, cmdq_base.into());
+        write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
+
+        let sink = MockInvalidationSink::new();
+        sink.set_accept_limit(1);
+        dev.shared_state.register_invalidation_sink(sink);
+
+        dev.guest_memory
+            .write_plain(
+                FETCH_ABORT_CMDQ_GPA,
+                &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xA),
+            )
+            .expect("write first CMDQ entry");
+        dev.guest_memory
+            .write_plain(
+                FETCH_ABORT_CMDQ_GPA + size_of::<CmdEntry>() as u64,
+                &tlbi_entry(CmdOpcode::TLBI_NH_VA, 0xB),
+            )
+            .expect("write second CMDQ entry");
+        write32(&mut dev, CMDQ_PROD, 3);
+
+        // The host accepted entry 0 and rejected entry 1. The later fetch
+        // abort at entry 2 must not move CONS past the rejected invalidation.
         let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
         assert_eq!(cons.rd(), 1);
         assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
