@@ -43,15 +43,15 @@ pub fn read_ioport_u8(
     let port = validate_ioport(port.expect_int("Port")? as u16);
     let value = value.expect_int("Value")? as usize;
     if let Some(port) = port {
-        // Do a sanity check first on whether if the memory address is valid
-        mem.try_write_mem(value, &[0])?;
-
         // Perform and write inb result
         let res = unsafe {
             // SAFETY: this is called within a fuzzer context. We assume all unsafe risks
             arch::io::inb(port)
         };
-        mem.write_mem(value, &[res]);
+
+        if let Err(e) = mem.try_write_mem(value, &[res]) {
+            log::warn!("Failed to write inb output: {e}")
+        }
     }
     Ok(FuzzFunctionVariable::Void)
 }
@@ -82,15 +82,15 @@ pub fn read_ioport_u16(
     let port = validate_ioport(port.expect_int("Port")? as u16);
     let value = value.expect_int("Value")? as usize;
     if let Some(port) = port {
-        // Do a sanity check first on whether if the memory address is valid
-        mem.try_write_mem(value, &[0; 2])?;
-
-        // Perform and write inb result
+        // Perform and write inh result
         let res = unsafe {
             // SAFETY: this is called within a fuzzer context. We assume all unsafe risks
             arch::io::inw(port)
         };
-        mem.write_mem(value, &res.to_le_bytes());
+
+        if let Err(e) = mem.try_write_mem(value, &res.to_le_bytes()) {
+            log::warn!("Failed to write inh output: {e}")
+        }
     }
     Ok(FuzzFunctionVariable::Void)
 }
@@ -121,15 +121,15 @@ pub fn read_ioport_u32(
     let port = validate_ioport(port.expect_int("Port")? as u16);
     let value = value.expect_int("Value")? as usize;
     if let Some(port) = port {
-        // Do a sanity check first on whether if the memory address is valid
-        mem.try_write_mem(value, &[0; 4])?;
-
-        // Perform and write inb result
+        // Perform and write inl result
         let res = unsafe {
             // SAFETY: this is called within a fuzzer context. We assume all unsafe risks
             arch::io::inl(port)
         };
-        mem.write_mem(value, &res.to_le_bytes());
+
+        if let Err(e) = mem.try_write_mem(value, &res.to_le_bytes()) {
+            log::warn!("Failed to write inl output: {e}")
+        }
     }
     Ok(FuzzFunctionVariable::Void)
 }

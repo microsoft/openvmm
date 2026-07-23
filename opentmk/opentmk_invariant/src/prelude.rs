@@ -3,14 +3,7 @@
 #[cfg(target_os = "uefi")]
 extern crate alloc;
 #[cfg(target_os = "uefi")]
-pub use alloc::{
-    boxed::Box,
-    format,
-    string::{String, ToString},
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
+pub use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 
 #[cfg(not(target_os = "uefi"))]
 pub use std::sync::Arc;
