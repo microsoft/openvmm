@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+mod nested;
 mod runtime;
 mod start;
 
@@ -19,6 +20,9 @@ mod start;
 pub use hugetlb::HUGETLB_2MB_PAGE_SIZE;
 #[cfg(target_os = "linux")]
 pub use hugetlb::ensure_2mb_hugetlb_pages;
+pub use nested::NestedL2;
+pub use nested::NestedL2Builder;
+pub use nested::NestedL2Config;
 pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;

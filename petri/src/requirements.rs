@@ -7,11 +7,15 @@ use petri_artifacts_common::capabilities;
 use std::collections::BTreeSet;
 
 /// Execution environments where tests can run.
+///
+/// This describes whether the *test runner itself* is running inside a VM. It
+/// is distinct from the `nested_virt` capability, which describes whether the
+/// runner can *host* nested VMs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEnvironment {
-    /// Bare metal execution (not nested virtualization).
+    /// The test runner is running on bare metal (not nested virtualization).
     Baremetal,
-    /// Nested virtualization environment.
+    /// The test runner is itself running inside a virtual machine.
     Nested,
 }
 
@@ -93,6 +97,9 @@ pub struct HostContext {
     pub execution_environment: ExecutionEnvironment,
     /// Whether the host hypervisor supports software VPCI device emulation
     pub vpci_supported: bool,
+    /// Whether the host hypervisor can run a guest with nested virtualization
+    /// enabled (i.e. the guest itself can host a second-level VM).
+    pub nested_virt_capable: bool,
 }
 
 impl HostContext {
@@ -146,6 +153,8 @@ impl HostContext {
         // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
         let vpci_supported = cfg!(windows);
 
+        let nested_virt_capable = nested_virt_capable_probe();
+
         Self {
             vm_host_info,
             vendor,
@@ -155,7 +164,46 @@ impl HostContext {
                 ExecutionEnvironment::Baremetal
             },
             vpci_supported,
+            nested_virt_capable,
         }
+    }
+}
+
+/// Probe whether the host can run a guest with nested virtualization.
+fn nested_virt_capable_probe() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if !std::path::Path::new("/dev/kvm").exists() {
+            return false;
+        }
+        let nested_enabled = |path: &str| -> bool {
+            match std::fs::read_to_string(path) {
+                Ok(s) => {
+                    let v = s.trim();
+                    v.eq_ignore_ascii_case("Y") || v == "1"
+                }
+                Err(_) => false,
+            }
+        };
+        nested_enabled("/sys/module/kvm_intel/parameters/nested")
+            || nested_enabled("/sys/module/kvm_amd/parameters/nested")
+    }
+    // WHP reports nested-virt support through a processor-feature capability
+    // bit (x86-only).
+    // xtask-fmt allow-target-arch oneoff-petri-host-arch
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        match whp::capabilities::processor_features() {
+            Ok(features) => features
+                .bank1
+                .is_set(whp::abi::WHV_PROCESSOR_FEATURES1::NestedVirtSupport),
+            Err(_) => false,
+        }
+    }
+    // xtask-fmt allow-target-arch oneoff-petri-host-arch
+    #[cfg(not(any(target_os = "linux", all(windows, target_arch = "x86_64"))))]
+    {
+        false
     }
 }
 
@@ -178,6 +226,11 @@ pub enum TestRequirement {
     /// that is not available is skipped, so such tests automatically
     /// self-exclude on any host that cannot satisfy them.
     RequiresCapability(&'static str),
+    /// Requires a hypervisor backend that supports VPCI (virtual PCI)
+    /// device emulation. This is currently detected only on Windows (WHP);
+    /// on Linux `vpci_supported` is always false, so this requirement is not
+    /// yet satisfiable there.
+    VpciSupport,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -230,6 +283,7 @@ impl TestRequirement {
                 }
             }
             TestRequirement::RequiresCapability(name) => capabilities.contains(name),
+            TestRequirement::VpciSupport => context.vpci_supported,
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied_with_capabilities(context, capabilities)
                     && req2.is_satisfied_with_capabilities(context, capabilities)
@@ -259,6 +313,10 @@ fn available_capabilities(context: &HostContext) -> BTreeSet<&'static str> {
 
     if context.vpci_supported {
         capabilities.insert(capabilities::VPCI);
+    }
+
+    if context.nested_virt_capable {
+        capabilities.insert(capabilities::NESTED_VIRT);
     }
 
     match std::env::var("PETRI_CAPABILITIES") {

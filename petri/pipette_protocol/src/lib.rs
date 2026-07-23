@@ -58,6 +58,23 @@ pub enum PipetteRequest {
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
+    /// Binds a UNIX-domain listener inside the guest and relays each
+    /// accepted connection to the host as a pair of mesh pipes.
+    ///
+    /// This is the primitive used by nested-virt tests to reach an L2
+    /// pipette agent: the in-L1 openvmm hybrid-vsock device translates an
+    /// L2-initiated vsock connect into a UNIX-socket connect against this
+    /// listener, and pipette pumps the resulting byte stream back to the
+    /// host over the existing mesh transport.
+    RelayUnixSocket(FailableRpc<RelayUnixSocketRequest, ()>),
+    /// Connects to an existing UNIX-domain socket inside the guest and
+    /// relays bytes over a pair of mesh pipes.
+    ///
+    /// This is the complement of `RelayUnixSocket`: instead of binding a
+    /// new listener, pipette connects to a socket that some other process
+    /// in the guest has already created. Used by nested-virt tests to
+    /// reach an in-L1 openvmm's ttrpc control socket.
+    RelayConnectUnixSocket(FailableRpc<RelayConnectUnixSocketRequest, ()>),
 }
 
 /// A request to execute a command inside the guest.
@@ -199,6 +216,47 @@ pub struct MountRequest {
     pub flags: u64,
     /// Create the target directory if it doesn't exist.
     pub mkdir_target: bool,
+}
+
+/// A request to bind a UNIX-domain listener inside the guest and relay each
+/// accepted connection back to the host as a pair of mesh pipes.
+///
+/// The handler binds the listener synchronously (so a bind failure is
+/// reported to the caller via the RPC response) and then spawns a task that
+/// accepts connections in a loop. For every accepted peer, pipette allocates
+/// a fresh pipe pair and sends the host-facing halves over `connections`;
+/// receiving an item is itself the "a peer connected" signal. Each
+/// connection is pumped independently until either side closes. Once the host
+/// drops the receiver the loop stops servicing new peers (the next accepted
+/// connection is dropped and the loop exits, cleaning up the listener and its
+/// bind-path filesystem entry); a listener that is idle at that point is
+/// cleaned up when the pipette agent shuts down.
+#[derive(MeshPayload)]
+pub struct RelayUnixSocketRequest {
+    /// Path inside the guest at which pipette should bind a UNIX listener.
+    /// The path must not already exist; pipette is responsible for
+    /// `unlink`ing the path once the relay tears down.
+    pub bind_path: String,
+    /// Sender for accepted connections. For each peer that connects, pipette
+    /// sends the host-facing pipe halves `(read, write)`: bytes from the peer
+    /// arrive on `read`, and bytes written to `write` are forwarded to the
+    /// peer.
+    pub connections: mesh::Sender<(ReadPipe, WritePipe)>,
+}
+
+/// A request to connect to an existing UNIX-domain socket inside the guest
+/// and relay the connection over a pair of mesh pipes.
+///
+/// Unlike [`RelayUnixSocketRequest`], the handler connects to an existing
+/// socket rather than binding a new listener.
+#[derive(MeshPayload)]
+pub struct RelayConnectUnixSocketRequest {
+    /// Path of the UNIX socket to connect to inside the guest.
+    pub connect_path: String,
+    /// Bytes the host wants written to the connection.
+    pub to_socket: ReadPipe,
+    /// Bytes read from the connection, sent back to the host.
+    pub from_socket: WritePipe,
 }
 
 /// A file that the guest client wishes to be logged on the host for diagnostic purposes.

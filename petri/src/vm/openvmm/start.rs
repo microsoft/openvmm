@@ -181,7 +181,10 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test if it is supported
+        // Run basic save/restore test if it is supported. Tests that attach a
+        // device whose backend cannot round-trip through save/restore (e.g.
+        // virtio-fs, or virtio-vsock) turn `supports_save_restore` off via the
+        // conditions computed above rather than opting out here.
         if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
