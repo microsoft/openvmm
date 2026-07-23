@@ -2345,13 +2345,14 @@ pub struct MemoryConfig {
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub private_memory: Option<bool>,
-    /// Mark private guest RAM as eligible for Transparent Huge Pages (THP),
+    /// Mark guest RAM as eligible for Transparent Huge Pages (THP),
     /// improving performance for large allocations.
     ///
-    /// Defaults to `true`. Only takes effect when the guest RAM is backed by
-    /// private anonymous memory (see [`Self::private_memory`]) and only on
-    /// Linux; it is silently ignored otherwise (shared memory, hugetlb/file
-    /// backing, OpenHCL, PCAT/Gen1, or non-Linux hosts).
+    /// Defaults to `true`. Applies to both private anonymous and shared
+    /// (file/memfd) guest RAM, on Linux (via `madvise`) and on Windows (via
+    /// soft large pages). It is silently ignored where it does not apply, such
+    /// as explicit hugetlb/large-page (`with_hugepages`) backings, which are
+    /// already huge.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub transparent_hugepages: bool,

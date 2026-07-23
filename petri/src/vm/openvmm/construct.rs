@@ -488,11 +488,11 @@ impl PetriVmConfigOpenVmm {
                 None => !private_incompatible,
             };
 
-            // THP is only valid for private anonymous memory and only on
-            // Linux; disable it otherwise to avoid a memory build error.
-            let transparent_hugepages =
-                transparent_hugepages && private_memory && cfg!(target_os = "linux");
-
+            // THP applies to both private anonymous and shared (file/memfd)
+            // guest RAM, and on both Linux (madvise-based) and Windows
+            // (soft large pages). The membacking layer suppresses it where it
+            // does not apply (e.g. explicit hugetlb backings), so pass the
+            // requested value through unchanged.
             let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
                 mem_size: size,
                 prefetch_memory: false,
