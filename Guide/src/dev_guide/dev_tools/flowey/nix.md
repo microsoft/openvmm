@@ -70,8 +70,8 @@ To restore the dev kernel packages when the branches diverge:
 1. Set `enableDevKernel` to `true` in `shell.nix`.
 2. Update the dev version in `nix/openhcl_kernel.nix`.
 3. Clear and replace the dev hashes using the procedure above.
+
 This restores the `NIX_KERNEL_*_DEV` paths and
-`CARGO_BUILD_ARGS_*_DEVKERN` arguments in the Nix shell.
 `CARGO_BUILD_ARGS_*_DEVKERN` arguments in the Nix shell.
 
 ## Updating the Rust Version
