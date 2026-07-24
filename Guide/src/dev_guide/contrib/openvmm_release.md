@@ -176,6 +176,15 @@ cd openvmm
 git checkout openvmm-v0.2.0
 ```
 
+Build OpenVMM from the checkout with Cargo:
+
+```bash
+cargo build
+```
+
+See [Building OpenVMM](../getting_started/build_openvmm.md) for prerequisites
+and additional build options.
+
 Once the release automation lands, each release will also publish an official
 attested source archive. The archive will contain `.openvmm-release.json` at
 its root, recording the metadata schema, release version, release tag, and full
@@ -317,6 +326,16 @@ that requires it.
 
 For OpenVMM, the fix ships in the next normal release unless the currently
 supported release qualifies for an on-demand patch.
+
+## Reporting security issues
+
+Do not report security vulnerabilities through public GitHub issues, pull
+requests, or discussions. Report them privately through the Microsoft Security
+Response Center (MSRC) as described in the repository
+[`SECURITY.md`](https://github.com/microsoft/openvmm/blob/main/SECURITY.md).
+
+A confirmed security issue in the currently supported OpenVMM release ships as a
+patch following the patch release runbook above.
 
 ## Future policy
 
