@@ -552,6 +552,57 @@ async fn test_pause_resume(spawner: DefaultDriver) {
     assert!(matches!(poll!(channel.request_recv.next()), Poll::Pending));
 }
 
+#[async_test]
+async fn test_gpadl_on_revoked_channel(spawner: DefaultDriver) {
+    // Verify that the guest can create and tear down a GPADL for a channel that has been revoked
+    // by the host but not yet released by the guest.
+    let mut env = TestEnv::new(spawner);
+    let channel = env.offer(1, false).await;
+    env.vmbus.start();
+    env.connect(1, protocol::FeatureFlags::new(), false).await;
+
+    // Revoke the channel from the host side. This sends a RESCIND_CHANNEL_OFFER to the guest, but
+    // leaves the channel in the server's state until the guest releases it.
+    channel
+        .server_request_send
+        .call(ChannelServerRequest::Revoke, ())
+        .await
+        .unwrap();
+    env.expect_response(protocol::MessageType::RESCIND_CHANNEL_OFFER)
+        .await;
+
+    // Create a GPADL for the revoked channel. The server should accept it.
+    env.synic.send_message_core(
+        OutgoingMessage::with_data(
+            &protocol::GpadlHeader {
+                channel_id: ChannelId(1),
+                gpadl_id: GpadlId(10),
+                count: 1,
+                len: 16,
+            },
+            [1u64, 0u64].as_bytes(),
+        ),
+        false,
+    );
+    let created = env.get_response::<protocol::GpadlCreated>().await;
+    assert_eq!(created.channel_id, ChannelId(1));
+    assert_eq!(created.gpadl_id, GpadlId(10));
+    assert_eq!(created.status, protocol::STATUS_SUCCESS);
+
+    // Tear down the GPADL. The server should complete the teardown without notifying the device.
+    env.synic.send_message(protocol::GpadlTeardown {
+        channel_id: ChannelId(1),
+        gpadl_id: GpadlId(10),
+    });
+    env.expect_response(protocol::MessageType::GPADL_TORNDOWN)
+        .await;
+
+    // Release the channel so the server can clean up.
+    env.synic.send_message(protocol::RelIdReleased {
+        channel_id: ChannelId(1),
+    });
+}
+
 struct TestDeviceState {
     id: u32,
     started: bool,

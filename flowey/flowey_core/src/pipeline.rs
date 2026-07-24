@@ -42,6 +42,7 @@ pub mod user_facing {
     pub use super::AdoResourcesRepositoryType;
     pub use super::AdoScheduleTriggers;
     pub use super::GhCiTriggers;
+    pub use super::GhConcurrencyGroup;
     pub use super::GhPrTriggers;
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
@@ -300,6 +301,18 @@ pub struct GhCiTriggers {
     /// Specify any paths which should be filtered out from the list of
     /// `paths` (supports glob syntax)
     pub paths_ignore: Vec<String>,
+    /// If set, only one pipeline run in this concurrency group runs at a time.
+    pub concurrency_group: Option<GhConcurrencyGroup>,
+}
+
+/// Settings for a Github concurrency group.
+#[derive(Debug, Default, Clone)]
+pub struct GhConcurrencyGroup {
+    /// The name of the concurrency group.
+    pub name: String,
+    /// Cancel the active run when a new run joins the concurrency group.
+    /// Defaults to `false`.
+    pub cancel_in_progress: bool,
 }
 
 impl GhPrTriggers {
@@ -658,6 +671,7 @@ impl Pipeline {
             gh_override_if: None,
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
+            gh_concurrency_group: None,
             gh_permissions: BTreeMap::new(),
         });
 
@@ -1194,6 +1208,12 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// (GitHub Actions only) Set the concurrency group for this job.
+    pub fn gh_set_concurrency_group(self, group: GhConcurrencyGroup) -> Self {
+        self.pipeline.jobs[self.job_idx].gh_concurrency_group = Some(group);
+        self
+    }
+
     /// (GitHub Actions only) Manually override the `if:` condition for this
     /// particular job.
     ///
@@ -1547,6 +1567,7 @@ pub mod internal {
         pub ado_variables: BTreeMap<String, String>,
         pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
+        pub gh_concurrency_group: Option<GhConcurrencyGroup>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     }

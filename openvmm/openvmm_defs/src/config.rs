@@ -47,8 +47,6 @@ pub struct Config {
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     pub vmgs: Option<VmgsResource>,
-    pub secure_boot_enabled: bool,
-    pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
     pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
@@ -64,7 +62,6 @@ pub struct Config {
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
-    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -130,7 +127,6 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
-        custom_dsdt: Option<Vec<u8>>,
         boot_mode: LinuxDirectBootMode,
     },
     Uefi {
@@ -264,6 +260,8 @@ pub struct PciePortConfig {
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+    /// Enables PASID support for functions downstream of this port.
+    pub pasid: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -372,9 +370,25 @@ pub enum PcieIommuConfig {
     /// AMD IOMMU (AMD-Vi) for x86_64 guests.
     AmdVi,
     /// Arm SMMUv3 for aarch64 guests.
-    Smmu,
+    Smmu {
+        /// Enable HW-accelerated nested translation (iommufd). Requires VFIO
+        /// devices with `iommu=` behind this SMMU.
+        accel: bool,
+        /// Output address size (OAS) resolution policy.
+        oas: SmmuOas,
+    },
     /// Intel VT-d for x86_64 guests.
     IntelVtd,
+}
+
+/// Output address size (OAS) policy for an emulated SMMUv3.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum SmmuOas {
+    /// Advertise a fixed default OAS. See `DEFAULT_AUTO_OAS_BITS` for the
+    /// sizing policy and its limits.
+    Auto,
+    /// Use a fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+    Fixed(u8),
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -579,12 +593,16 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
+    Snp,
+    Cca,
 }
 
 impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
+            IsolationType::Snp => Self::Snp,
+            IsolationType::Cca => Self::Cca,
         }
     }
 }
@@ -603,15 +621,4 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
-}
-
-#[derive(Copy, Clone, Debug, MeshPayload, Default)]
-pub enum EfiDiagnosticsLogLevelType {
-    /// Default log level
-    #[default]
-    Default,
-    /// Include INFO logs
-    Info,
-    /// All logs
-    Full,
 }

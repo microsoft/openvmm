@@ -16,6 +16,7 @@ use membacking::DmaMapperClient;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend as _;
 use pal_async::task::Spawn as _;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::prelude::*;
@@ -467,6 +468,84 @@ impl VfioContainerManager {
 
 // --- iommufd / cdev support ---
 
+/// Intrinsic identity of a device BAR area used to key exported dmabufs.
+///
+/// `st_dev`/`st_ino` come from the VFIO cdev inode (disambiguating devices
+/// that share one IOAS); `file_offset` is the BAR-region file offset that the
+/// region manager stamps on the corresponding `Device` mapping. This is the
+/// same value on both the exporter (BAR setup) and importer (`map_dma`) sides,
+/// and — unlike a guest physical address — is stable across BAR moves and MMIO
+/// enable/disable.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DmaBufKey {
+    st_dev: u64,
+    st_ino: u64,
+    file_offset: u64,
+}
+
+/// Per-IOAS registry mapping a device BAR area's intrinsic identity to an
+/// exported VFIO dmabuf fd.
+///
+/// This lets `IommufdDmaTarget::map_dma` program peer-to-peer DMA to a device
+/// BAR via `IOMMU_IOAS_MAP_FILE` (which pins the BAR's physical MMIO via the
+/// PCI P2PDMA provider) instead of failing to pin MMIO pages by host VA. The
+/// exporter (BAR setup in `lib.rs`) and the importer (`map_dma`) live in the
+/// same crate and share one registry per IOAS via `Arc`; the legacy VFIO
+/// type1 path has no registry, so dmabuf P2P is iommufd-only.
+#[derive(Default)]
+pub(crate) struct DmaBufRegistry {
+    entries: Mutex<HashMap<DmaBufKey, OwnedFd>>,
+}
+
+impl DmaBufRegistry {
+    /// Register an exported dmabuf for a BAR area, keyed by the exporting
+    /// cdev's inode and the area's BAR-region file offset.
+    pub(crate) fn register(&self, st_dev: u64, st_ino: u64, file_offset: u64, dmabuf: OwnedFd) {
+        self.entries.lock().insert(
+            DmaBufKey {
+                st_dev,
+                st_ino,
+                file_offset,
+            },
+            dmabuf,
+        );
+    }
+
+    /// Look up the dmabuf fd registered for a mapping's intrinsic identity and,
+    /// while still holding the registry lock, invoke `f` with the raw fd.
+    ///
+    /// Holding the lock across `f` is what makes handing out a bare [`RawFd`]
+    /// sound: [`Self::deregister_device`] (which drops the owning [`OwnedFd`],
+    /// closing it) also takes this lock, so it cannot run — and the fd cannot
+    /// be closed — for the duration of `f`. Callers therefore pass the ioctl
+    /// that consumes the fd (e.g. `ioas_map_file`) as `f`.
+    ///
+    /// Returns `None` (without calling `f`) if no dmabuf is registered for the
+    /// key, in which case the caller falls back to the host-VA mapping path.
+    fn with_lookup<R>(
+        &self,
+        st_dev: u64,
+        st_ino: u64,
+        file_offset: u64,
+        f: impl FnOnce(RawFd) -> R,
+    ) -> Option<R> {
+        let entries = self.entries.lock();
+        let fd = entries.get(&DmaBufKey {
+            st_dev,
+            st_ino,
+            file_offset,
+        })?;
+        Some(f(fd.as_raw_fd()))
+    }
+
+    /// Remove (and close) all dmabufs registered for a device's cdev inode.
+    fn deregister_device(&self, st_dev: u64, st_ino: u64) {
+        self.entries
+            .lock()
+            .retain(|k, _| k.st_dev != st_dev || k.st_ino != st_ino);
+    }
+}
+
 /// Implements [`membacking::DmaTarget`] for iommufd IOAS-based DMA mapping.
 ///
 /// Like `VfioType1DmaTarget`, this uses host virtual addresses for mapping,
@@ -475,6 +554,9 @@ impl VfioContainerManager {
 struct IommufdDmaTarget {
     ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
     ioas_id: u32,
+    /// Registry of exported device-BAR dmabufs, shared with the devices on
+    /// this IOAS, used to program peer-to-peer DMA to BAR MMIO by file.
+    dmabuf_registry: Arc<DmaBufRegistry>,
 }
 
 impl membacking::DmaTarget for IommufdDmaTarget {
@@ -484,27 +566,54 @@ impl membacking::DmaTarget for IommufdDmaTarget {
         let iova = range.start();
         let user_va = vaddr as u64;
         let length = range.len();
-        // Prefer map-by-file for guest RAM: it is memfd-backed, so the kernel
-        // can pin the folios directly (no host VA pinning). Device BAR memory
-        // is backed by the VFIO cdev fd, which is neither a memfd nor (yet) a
-        // dmabuf, so map-by-file would misinterpret it — keep those on the VA
-        // path. Private/anonymous RAM has no backing fd and also uses the VA
-        // path.
-        let backing = match request.mapping_type {
-            membacking::MappingType::Ram => request
-                .mappable
-                .map(|mappable| (mappable.as_fd().as_raw_fd(), request.file_offset)),
-            membacking::MappingType::Device => None,
+        // Prefer map-by-file where possible. Guest RAM is memfd-backed, so the
+        // kernel can pin the folios directly from the fd (no host VA pinning).
+        // A device BAR is backed by the VFIO cdev fd — which is neither a
+        // memfd nor a dmabuf — so it can only be mapped by file if the device
+        // exported a dmabuf for this BAR area, looked up by the area's
+        // intrinsic identity (cdev inode + file offset). Everything else
+        // (private/anonymous RAM, or a BAR without an exported dmabuf) uses the
+        // host VA path.
+        //
+        // `by_file` is `None` when there is no fd to map by file, meaning the
+        // host-VA fallback below is used.
+        let by_file = match request.mapping_type {
+            membacking::MappingType::Ram => request.mappable.map(|mappable| {
+                self.ctx.ioas_map_file(
+                    self.ioas_id,
+                    iova,
+                    mappable.as_fd().as_raw_fd(),
+                    request.file_offset,
+                    length,
+                    request.writable,
+                )
+            }),
+            membacking::MappingType::Device => match request.mappable {
+                Some(mappable) => {
+                    let (st_dev, st_ino) = vfio_sys::fd_identity(mappable.as_fd())
+                        .context("failed to stat VFIO cdev for dmabuf lookup")?;
+                    // Perform the `ioas_map_file` while the registry lock is
+                    // held (inside `with_lookup`), so the dmabuf fd cannot be
+                    // deregistered/closed between lookup and use. The dmabuf
+                    // covers exactly this BAR area starting at its own byte 0,
+                    // so map from offset 0.
+                    self.dmabuf_registry
+                        .with_lookup(st_dev, st_ino, request.file_offset, |fd| {
+                            self.ctx.ioas_map_file(
+                                self.ioas_id,
+                                iova,
+                                fd,
+                                0,
+                                length,
+                                request.writable,
+                            )
+                        })
+                }
+                None => None,
+            },
         };
-        let result = match backing {
-            Some((fd, file_offset)) => self.ctx.ioas_map_file(
-                self.ioas_id,
-                iova,
-                fd,
-                file_offset,
-                length,
-                request.writable,
-            ),
+        let result = match by_file {
+            Some(r) => r,
             // SAFETY: The caller (DmaMapper in membacking) guarantees that the
             // host VA is backed and stable via eager mapping + VaMapper
             // lifetime, satisfying the safety contract of `ioas_map`.
@@ -573,6 +682,10 @@ struct IoasManager {
     /// Keeps the DMA mapper registered with the region manager.
     #[inspect(skip)]
     _dma_handle: membacking::DmaMapperHandle,
+    /// Registry of exported device-BAR dmabufs for this IOAS, shared with the
+    /// DMA target and each device for peer-to-peer DMA by file.
+    #[inspect(skip)]
+    dmabuf_registry: Arc<DmaBufRegistry>,
     /// Active devices on this IOAS.
     #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|d| (&d.pci_id, ())))")]
     devices: Vec<CdevDeviceEntry>,
@@ -605,9 +718,12 @@ impl IoasManager {
             .ioas_alloc()
             .context("failed to allocate iommufd IOAS")?;
 
+        let dmabuf_registry = Arc::new(DmaBufRegistry::default());
+
         let dma_target: Arc<dyn membacking::DmaTarget> = Arc::new(IommufdDmaTarget {
             ctx: ctx.clone(),
             ioas_id,
+            dmabuf_registry: dmabuf_registry.clone(),
         });
         // This target programs the IOMMU by host VA, so it does not require a
         // backing fd (needs_fd = false) and is compatible with private RAM.
@@ -623,6 +739,7 @@ impl IoasManager {
             ctx,
             ioas_id,
             _dma_handle: dma_handle,
+            dmabuf_registry,
             devices: Vec::new(),
             next_device_id: 0,
             recv,
@@ -690,6 +807,7 @@ impl IoasManager {
             ioas_id: self.ioas_id,
             device_id,
             manager_send: self.recv.sender(),
+            dmabuf_registry: self.dmabuf_registry.clone(),
         })
     }
 
@@ -733,6 +851,9 @@ pub(crate) struct CdevPrepareResponse {
     pub device_id: u64,
     /// Sender to the per-iommu manager for drop notification.
     pub manager_send: mesh::Sender<IoasManagerRpc>,
+    /// Registry of exported device-BAR dmabufs for this IOAS, shared so the
+    /// device can register its BAR dmabufs for peer-to-peer DMA.
+    pub dmabuf_registry: Arc<DmaBufRegistry>,
 }
 
 /// Dispatches cdev device requests to per-iommu [`IoasManager`] tasks.
@@ -897,6 +1018,9 @@ pub(crate) struct VfioCdevBinding {
     /// Sender to the per-iommu manager for drop notification.
     #[inspect(skip)]
     manager_send: mesh::Sender<IoasManagerRpc>,
+    /// Registry of exported device-BAR dmabufs for this device's IOAS.
+    #[inspect(skip)]
+    dmabuf_registry: Arc<DmaBufRegistry>,
 }
 
 impl VfioCdevBinding {
@@ -909,6 +1033,7 @@ impl VfioCdevBinding {
             ioas_id: resp.ioas_id,
             device_id: resp.device_id,
             manager_send: resp.manager_send,
+            dmabuf_registry: resp.dmabuf_registry,
         }
     }
 
@@ -924,6 +1049,7 @@ impl VfioCdevBinding {
             ioas_id,
             device_id,
             manager_send,
+            dmabuf_registry,
         } = self;
         (
             device,
@@ -933,6 +1059,8 @@ impl VfioCdevBinding {
                 ioas_id,
                 device_id,
                 manager_send,
+                dmabuf_registry,
+                dmabuf_inode: None,
             },
         )
     }
@@ -951,10 +1079,20 @@ pub(crate) struct VfioCdevBindingState {
     device_id: u64,
     #[inspect(skip)]
     manager_send: mesh::Sender<IoasManagerRpc>,
+    /// Registry of exported device-BAR dmabufs for this device's IOAS.
+    #[inspect(skip)]
+    dmabuf_registry: Arc<DmaBufRegistry>,
+    /// The `(st_dev, st_ino)` of this device's VFIO cdev, set once BAR
+    /// dmabufs are registered, so they can be deregistered on drop.
+    #[inspect(skip)]
+    dmabuf_inode: Option<(u64, u64)>,
 }
 
 impl Drop for VfioCdevBindingState {
     fn drop(&mut self) {
+        if let Some((st_dev, st_ino)) = self.dmabuf_inode {
+            self.dmabuf_registry.deregister_device(st_dev, st_ino);
+        }
         self.manager_send
             .send(IoasManagerRpc::RemoveDevice(self.device_id));
     }
@@ -969,4 +1107,24 @@ impl Drop for VfioCdevBindingState {
 pub(crate) enum VfioBinding {
     Group(VfioDeviceBinding),
     Cdev(VfioCdevBindingState),
+}
+
+impl VfioBinding {
+    /// Returns the per-IOAS dmabuf registry for a cdev/iommufd binding, or
+    /// `None` for the legacy group/type1 path (which has no registry — dmabuf
+    /// P2P is iommufd-only).
+    pub(crate) fn dmabuf_registry(&self) -> Option<&Arc<DmaBufRegistry>> {
+        match self {
+            VfioBinding::Cdev(state) => Some(&state.dmabuf_registry),
+            VfioBinding::Group(_) => None,
+        }
+    }
+
+    /// Records the VFIO cdev inode under which BAR dmabufs were registered, so
+    /// they are deregistered when the binding drops. No-op for the group path.
+    pub(crate) fn set_dmabuf_inode(&mut self, inode: (u64, u64)) {
+        if let VfioBinding::Cdev(state) = self {
+            state.dmabuf_inode = Some(inode);
+        }
+    }
 }

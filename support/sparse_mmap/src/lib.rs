@@ -412,6 +412,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn test_madvise_hugepage_shared() {
+        let page_size = SparseMapping::page_size();
+        let size = 2 * 1024 * 1024;
+        let shmem = alloc_shared_memory(size, "test-thp").unwrap();
+        let mapping = SparseMapping::new(size).unwrap();
+        mapping.map_file(0, size, &shmem, 0, true).unwrap();
+
+        mapping.madvise_hugepage(0, size).unwrap();
+
+        // Memory should still work after the madvise.
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
     #[cfg(any(target_os = "linux", windows))]
     fn test_alloc_numa_node0() {
         let page_size = SparseMapping::page_size();

@@ -39,13 +39,13 @@ use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
-use vmcore::vm_task::VmTaskDriverSource;
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
@@ -279,28 +279,14 @@ impl VfioAssignedPciDevice {
     pub async fn new(
         binding: manager::VfioDeviceBinding,
         pci_id: String,
-        driver_source: &VmTaskDriverSource,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_pt: [bool; 6],
     ) -> anyhow::Result<Self> {
-        let driver = driver_source.simple();
-        let retry = vfio_sys::VfioRetry::new(&driver, &pci_id);
-        let is_enodev = |e: &anyhow::Error| {
-            e.chain().any(|cause| {
-                cause
-                    .downcast_ref::<nix::errno::Errno>()
-                    .is_some_and(|e| *e == nix::errno::Errno::ENODEV)
-            })
-        };
-        let vfio_device = retry
-            .retry(
-                || binding.group().open_device(&pci_id),
-                &is_enodev,
-                "open_device",
-            )
-            .await
+        let vfio_device = binding
+            .group()
+            .open_device(&pci_id)
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
         Self::from_device(
@@ -339,7 +325,7 @@ impl VfioAssignedPciDevice {
 
     async fn from_device(
         vfio_device: vfio_sys::Device,
-        binding: manager::VfioBinding,
+        mut binding: manager::VfioBinding,
         pci_id: String,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
@@ -447,6 +433,33 @@ impl VfioAssignedPciDevice {
         // guest enables MMIO, allowing direct hardware access without VM
         // exits. Non-mmappable regions (e.g. MSI-X table/PBA) remain
         // trap-and-emulate.
+        //
+        // For the iommufd/cdev path, also export each mmappable BAR area as a
+        // dmabuf and register it under the area's intrinsic identity (cdev
+        // inode + BAR-region file offset). This lets other assigned devices
+        // perform peer-to-peer DMA to this BAR via `IOMMU_IOAS_MAP_FILE` — the
+        // kernel maps the BAR's physical MMIO through the PCI P2PDMA provider,
+        // avoiding the need to pin MMIO pages by host VA (which usually fails).
+        // The legacy group/type1 path has no registry, so dmabuf P2P is
+        // skipped there and BAR P2P falls back to best-effort VA mapping.
+        let dmabuf_registry = binding.dmabuf_registry().cloned();
+        let dmabuf_inode = if dmabuf_registry.is_some() && vfio_device.device.supports_dma_buf()? {
+            Some(
+                vfio_sys::fd_identity(vfio_device.device.as_fd())
+                    .context("failed to stat VFIO cdev for dmabuf registration")?,
+            )
+        } else {
+            None
+        };
+        // Record the cdev inode up front, before registering any BAR dmabufs
+        // in the loop below. If device setup fails partway through (e.g. a
+        // region mapping error returns early), the binding's `Drop` then
+        // deregisters and closes whatever dmabufs were already registered.
+        // Deferring this until after the loop would leak those fds into the
+        // shared per-IOAS registry on an early return.
+        if let Some(inode) = dmabuf_inode {
+            binding.set_dmabuf_inode(inode);
+        }
         let mut bar_direct_maps = Vec::new();
         for (i, areas) in bar_mmap_areas.iter().enumerate() {
             let Some(region) = &bar_regions[i] else {
@@ -479,6 +492,45 @@ impl VfioAssignedPciDevice {
                     bar_range: area,
                     mapping: None,
                 });
+
+                // Export a dmabuf for this BAR area and register it under the
+                // same key the DMA target computes at map time: the cdev inode
+                // plus the BAR-region file offset (`vfio_offset + area.start`).
+                // The dmabuf itself is created from the BAR-relative range.
+                if let (Some(registry), Some((st_dev, st_ino))) = (&dmabuf_registry, dmabuf_inode) {
+                    match vfio_device
+                        .device
+                        .export_dma_buf(i as u32, area.start(), area.len())
+                    {
+                        Ok(dmabuf) => {
+                            registry.register(
+                                st_dev,
+                                st_ino,
+                                region.vfio_offset + area.start(),
+                                dmabuf,
+                            );
+                        }
+                        // Exporting a BAR dmabuf is best-effort and never
+                        // fatal. The common failure is EINVAL when the BAR has
+                        // no P2PDMA provider on this platform/topology (the
+                        // kernel's `vfio_pci_core_get_dmabuf_phys` calls
+                        // `pcim_p2pdma_provider()` and reports EINVAL when it
+                        // returns NULL). That just means this area can't be a
+                        // peer-to-peer DMA *target* here, so fall back to
+                        // best-effort VA mapping; device assignment still works
+                        // for everything except P2P into this BAR.
+                        Err(e) => {
+                            tracing::warn!(
+                                error = e.as_ref() as &dyn std::error::Error,
+                                pci_id = pci_id.as_str(),
+                                bar = i,
+                                area = %area,
+                                "failed to export BAR dmabuf; P2P DMA to this \
+                                 area will fall back to best-effort VA mapping"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -1245,22 +1297,48 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     .with_mmio_enabled(true)
                     .into_bits()
                     .into();
-                if value.valid_mask() & mse_mask != 0 {
+
+                let mmio_change = if value.valid_mask() & mse_mask != 0 {
                     let command = cfg_space::Command::from_bits(value.extract_low());
                     let new_mmio_enabled = command.mmio_enabled();
+                    (new_mmio_enabled != self.mmio_enabled).then_some(new_mmio_enabled)
+                } else {
+                    None
+                };
 
-                    if new_mmio_enabled != self.mmio_enabled {
-                        self.mmio_enabled = new_mmio_enabled;
+                match mmio_change {
+                    // Enabling MMIO: propagate the Command write to the
+                    // physical device *before* mapping BARs into the IOMMU.
+                    // Enabling memory space on the real device un-revokes any
+                    // exported BAR dmabufs; the IOAS map-by-file P2P import
+                    // (IOMMU_IOAS_MAP_FILE) returns ENODEV while a dmabuf is
+                    // revoked, so the hardware enable must land first.
+                    Some(true) => {
+                        self.mmio_enabled = true;
+                        self.write_phys_config(offset, value);
                         self.update_bar_mappings();
-                        tracing::debug!(
-                            pci_id = self.pci_id.as_str(),
-                            enabled = new_mmio_enabled,
-                            "MMIO state changed by guest"
-                        );
+                    }
+                    // Disabling MMIO: tear down the IOMMU mappings while device
+                    // memory is still enabled, then propagate the disable to
+                    // the physical device.
+                    Some(false) => {
+                        self.mmio_enabled = false;
+                        self.update_bar_mappings();
+                        self.write_phys_config(offset, value);
+                    }
+                    // No MMIO-enable change: just forward the write.
+                    None => {
+                        self.write_phys_config(offset, value);
                     }
                 }
 
-                self.write_phys_config(offset, value);
+                if let Some(enabled) = mmio_change {
+                    tracing::debug!(
+                        pci_id = self.pci_id.as_str(),
+                        enabled,
+                        "MMIO state changed by guest"
+                    );
+                }
             }
             // BAR registers: mask and cache locally. If MMIO is active,
             // re-evaluate mappings so the device responds at the new address

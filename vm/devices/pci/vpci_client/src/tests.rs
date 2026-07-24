@@ -67,21 +67,19 @@ impl super::MemoryAccess for BusWrapper {
         0x123456780000
     }
 
-    fn read(&mut self, addr: u64) -> u32 {
-        let mut data = [0; 4];
+    fn read(&mut self, addr: u64, value: &mut [u8]) {
         self.0
             .supports_mmio()
             .unwrap()
-            .mmio_read(addr, &mut data)
+            .mmio_read(addr, value)
             .unwrap();
-        u32::from_ne_bytes(data)
     }
 
-    fn write(&mut self, addr: u64, value: u32) {
+    fn write(&mut self, addr: u64, value: &[u8]) {
         self.0
             .supports_mmio()
             .unwrap()
-            .mmio_write(addr, &value.to_ne_bytes())
+            .mmio_write(addr, value)
             .unwrap();
     }
 }
@@ -136,7 +134,12 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    assert_eq!(device.read_cfg(256), 0);
+    let mut value = 0;
+    device.read_cfg(
+        256,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+    );
+    assert_eq!(value, 0);
 
     device.unregister_interrupt(address, data).await;
 }

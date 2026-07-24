@@ -102,7 +102,7 @@ pub fn load_static_elf<F, R: GuestArch>(
     load_offset: u64,
     assume_pic: bool,
     acceptance: crate::importer::BootPageAcceptance,
-    tag: &str,
+    tag: &'static str,
 ) -> Result<LoadInfo>
 where
     F: Read + Seek,

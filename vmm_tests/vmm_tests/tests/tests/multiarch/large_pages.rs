@@ -21,10 +21,7 @@ use vmm_test_macros::openvmm_test;
 /// Requires the "Lock pages in memory" privilege (`SeLockMemoryPrivilege`) so
 /// that the large-page section allocation succeeds; the test fails (rather than
 /// skips) if large-page backing is unavailable, per design.
-///
-/// TODO: clear unstable prefix once the CI runners have the
-/// SeLockMemoryPrivilege enabled for the test user.
-#[openvmm_test(unstable_linux_direct_x64, unstable_linux_direct_aarch64)]
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
 async fn whp_large_pages_slat(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     const HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
     const GIGAPAGE_SIZE: u64 = 1024 * 1024 * 1024;

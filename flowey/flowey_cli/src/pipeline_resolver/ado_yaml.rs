@@ -100,6 +100,7 @@ pub fn ado_yaml(
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,
+            gh_concurrency_group: _,
             gh_permissions: _,
             ref external_read_vars,
             ref parameters_used,

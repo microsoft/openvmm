@@ -97,10 +97,10 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// All queues returned via `get_queues` must have been dropped.
     async fn stop(&mut self);
 
-    /// Specifies whether packets are always completed in order.
-    fn is_ordered(&self) -> bool {
-        false
-    }
+    /// Whether the endpoint completes buffers in the order they were made
+    /// available (RX buffers returned from `rx_poll`, and TX packets completed,
+    /// in available-ring order).
+    fn is_ordered(&self) -> bool;
 
     /// Specifies the supported set of transmit offloads.
     fn tx_offload_support(&self) -> TxOffloadSupport {
@@ -284,6 +284,31 @@ pub trait BufferAccess {
     fn write_packet(&mut self, id: RxId, metadata: &RxMetadata, data: &[u8]) {
         self.write_data(id, data);
         self.write_header(id, metadata);
+    }
+
+    /// Writes the packet header and a payload composed of multiple
+    /// discontiguous segments, in order, as a single logical packet.
+    ///
+    /// This allows callers to hand off a frame whose bytes are not contiguous
+    /// in memory (for example, an Ethernet/IP/TCP header followed by payload
+    /// that wraps a ring buffer) without first linearizing it into a scratch
+    /// buffer.
+    ///
+    /// The default implementation copies the segments into a temporary
+    /// contiguous buffer and forwards to [`BufferAccess::write_packet`].
+    /// Backends that write directly into guest memory should override this to
+    /// write each segment at its running offset and avoid the copy.
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        if let [segment] = segments {
+            self.write_packet(id, metadata, segment);
+            return;
+        }
+        let total = segments.iter().map(|s| s.len()).sum();
+        let mut data = Vec::with_capacity(total);
+        for segment in segments {
+            data.extend_from_slice(segment);
+        }
+        self.write_packet(id, metadata, &data);
     }
 }
 
@@ -558,10 +583,20 @@ enum DisconnectableEndpointUpdate {
 
 pub struct DisconnectableEndpointControl {
     send_update: mesh::Sender<DisconnectableEndpointUpdate>,
+    is_ordered: Option<bool>,
 }
 
 impl DisconnectableEndpointControl {
     pub fn connect(&mut self, endpoint: Box<dyn Endpoint>) -> anyhow::Result<()> {
+        let new_is_ordered = endpoint.is_ordered();
+        if let Some(is_ordered) = self.is_ordered {
+            anyhow::ensure!(
+                !is_ordered || new_is_ordered,
+                "network endpoint cannot be reattached as unordered after being ordered"
+            );
+        } else {
+            self.is_ordered = Some(new_is_ordered);
+        }
         self.send_update
             .send(DisconnectableEndpointUpdate::EndpointConnected(endpoint));
         Ok(())
@@ -605,6 +640,7 @@ impl DisconnectableEndpoint {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
         let control = DisconnectableEndpointControl {
             send_update: endpoint_tx,
+            is_ordered: None,
         };
         (
             Self {
@@ -722,8 +758,18 @@ impl Endpoint for DisconnectableEndpoint {
                 let old_endpoint = self.endpoint.take();
                 assert!(old_endpoint.is_none());
                 self.endpoint = Some(endpoint);
+                let new_is_ordered = self.current().is_ordered();
+                let is_ordered = if let Some(prev) = &self.cached_state {
+                    assert!(
+                        !prev.is_ordered || new_is_ordered,
+                        "network endpoint reattached as unordered after being ordered"
+                    );
+                    prev.is_ordered
+                } else {
+                    new_is_ordered
+                };
                 self.cached_state = Some(DisconnectableEndpointCachedState {
-                    is_ordered: self.current().is_ordered(),
+                    is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
@@ -751,5 +797,64 @@ impl Endpoint for DisconnectableEndpoint {
             .as_ref()
             .expect("Endpoint needs connected at least once before use")
             .link_speed
+    }
+}
+
+#[cfg(test)]
+mod disconnectable_endpoint_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[derive(InspectMut)]
+    struct TestEndpoint {
+        is_ordered: bool,
+    }
+
+    #[async_trait]
+    impl Endpoint for TestEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        async fn get_queues(
+            &mut self,
+            _config: Vec<QueueConfig>,
+            _rss: Option<&RssConfig<'_>>,
+            _queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn stop(&mut self) {
+            unreachable!()
+        }
+
+        fn is_ordered(&self) -> bool {
+            self.is_ordered
+        }
+    }
+
+    #[test]
+    fn connect_pins_endpoint_ordering() {
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
+
+        let err = control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "network endpoint cannot be reattached as unordered after being ordered"
+        );
+
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
     }
 }

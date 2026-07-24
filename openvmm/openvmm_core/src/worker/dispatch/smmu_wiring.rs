@@ -15,6 +15,25 @@ use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
 
+/// Default advertised OAS (in bits) for an `oas=auto` SMMU.
+///
+/// This is a fixed sizing policy, not a computed maximum: rather than sizing
+/// the advertised OAS to the guest memory layout (or to the host's supported
+/// IPA width, which on aarch64/KVM can be up to 52 bits), an `auto` SMMU
+/// advertises a constant 48 bits. This matches the fixed-OAS approach taken by
+/// Hyper-V's emulated SMMU.
+///
+/// The memory-layout allocator packs high MMIO compactly bottom-up just above
+/// guest RAM, so for typical configurations every translatable address sits
+/// far below 48 bits (256 TiB). This is not a hard guarantee, though: a large
+/// enough RAM size, or an explicitly pinned high MMIO/ECAM base, can place
+/// addresses above 256 TiB (up to the host IPA width). Such a configuration
+/// must pass an explicit `oas=` (e.g. `oas=52`) rather than relying on `auto`.
+const DEFAULT_AUTO_OAS_BITS: u8 = 48;
+
+/// Valid SMMUv3 output address sizes (IDR5.OAS encodings), in bits.
+const VALID_OAS_BITS: [u8; 7] = [32, 36, 40, 42, 44, 48, 52];
+
 /// Resolved resources for a single SMMUv3 instance, combining MMIO and SPI
 /// allocations.
 pub(super) struct ResolvedSmmuResources {
@@ -74,15 +93,44 @@ pub(super) fn setup_smmu(
     let smmu_rcs = root_complexes
         .iter()
         .enumerate()
-        .filter(|(_, rc)| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::Smmu)));
+        .filter_map(|(rc_pos, rc)| match &rc.iommu {
+            Some(openvmm_defs::config::PcieIommuConfig::Smmu { accel, oas }) => {
+                Some((rc_pos, rc, *accel, *oas))
+            }
+            _ => None,
+        });
 
-    for ((rc_pos, rc), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
+    for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
+        // Accelerated (iommufd-nested) SMMUs are not yet wired up. Reject the
+        // request explicitly rather than silently falling back to emulated
+        // translation.
+        anyhow::ensure!(
+            !accel,
+            "SMMU on root complex {}: accelerated translation is not yet supported",
+            rc.name
+        );
+
+        // Resolve the requested OAS into a concrete advertised value.
+        let oas_bits = match oas {
+            openvmm_defs::config::SmmuOas::Auto => DEFAULT_AUTO_OAS_BITS,
+            openvmm_defs::config::SmmuOas::Fixed(bits) => {
+                anyhow::ensure!(
+                    VALID_OAS_BITS.contains(&bits),
+                    "SMMU on root complex {}: OAS {bits} is not a valid SMMUv3 output \
+                     address size (expected one of {:?})",
+                    rc.name,
+                    VALID_OAS_BITS
+                );
+                bits
+            }
+        };
+
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);
         let smmu_config = smmu::SmmuConfig {
             sidsize: 16,
-            oas: 44,
+            oas: oas_bits,
         };
         let smmu_device =
             chipset_builder

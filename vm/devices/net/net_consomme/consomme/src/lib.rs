@@ -517,12 +517,32 @@ pub trait Client {
     /// packet contains an IPv4 header, TCP header, and/or UDP header with a
     /// valid checksum.
     ///
-    /// TODO:
-    ///
-    /// 1. support >MTU sized packets (RSC/LRO/GRO)
-    /// 2. allow discontiguous data to eliminate the extra copy from the TCP
-    ///    window.
+    /// TODO: support >MTU sized packets (RSC/LRO/GRO).
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState);
+
+    /// Transmits a packet whose bytes are provided as multiple discontiguous
+    /// segments, delivered in order as a single logical packet.
+    ///
+    /// This lets callers avoid linearizing a frame into a scratch buffer when
+    /// its payload is not contiguous (for example, a header segment followed by
+    /// TCP window bytes that wrap a ring buffer). The `checksum` argument has
+    /// the same meaning as for [`Client::recv`].
+    ///
+    /// The default implementation copies the segments into a contiguous buffer
+    /// and forwards to [`Client::recv`]. Clients that can write discontiguous
+    /// data directly to the guest should override this to eliminate the copy.
+    fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
+        if let [segment] = segments {
+            self.recv(segment, checksum);
+            return;
+        }
+        let total = segments.iter().map(|s| s.len()).sum();
+        let mut data = Vec::with_capacity(total);
+        for segment in segments {
+            data.extend_from_slice(segment);
+        }
+        self.recv(&data, checksum);
+    }
 
     /// Specifies the maximum size for the next call to `recv`.
     ///

@@ -117,15 +117,24 @@ fn seg_reg(reg: SegmentRegister) -> kvm::kvm_segment {
 }
 
 fn seg_reg_from_kvm(reg: kvm::kvm_segment) -> SegmentRegister {
+    // KVM forces the "accessed" bit (bit 0 of the segment type) on every
+    // non-LDTR segment when unrestricted guest mode is active. For unusable
+    // segments (`present == 0`) this bit is architecturally meaningless, but it
+    // makes a save/restore round trip non-idempotent: a null segment saved as
+    // `0xc000` is read back as `0xc001`. Mask the accessed bit back off for
+    // non-present segments so that the value read here is canonical and stable
+    // across a round trip.
+    let present = reg.present == 1;
+    let segment_type = if present { reg.type_ } else { reg.type_ & !1 };
     SegmentRegister {
         base: reg.base,
         limit: reg.limit,
         selector: reg.selector,
         attributes: SegmentAttributes::new()
-            .with_segment_type(reg.type_)
+            .with_segment_type(segment_type)
             .with_non_system_segment(reg.s == 1)
             .with_descriptor_privilege_level(reg.dpl)
-            .with_present(reg.present == 1)
+            .with_present(present)
             .with_available(reg.avl == 1)
             .with_long(reg.l == 1)
             .with_default(reg.db == 1)

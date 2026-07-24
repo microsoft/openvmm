@@ -1319,188 +1319,190 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     Ok(())
 }
 
-/// Verifies the per-device NVMe keepalive gate.
-///
-/// Two NVMe controllers are attached to a single VM:
-/// * A keepalive-compatible controller. Keepalive must be honored for
-///   this device — its controller is not reset across servicing, so
-///   `CREATE_IO_COMPLETION_QUEUE` must NOT be issued after servicing.
-///   The fault panics if the opcode is observed.
-/// * A keepalive-incompatible controller with VendorID = 0x1414 and DeviceID =
-///   0xb111. The test forces this path via the hardware-config fault override
-///   used by the compatibility check. Keepalive must be downgraded to
-///   reset-on-servicing for this device, so `CREATE_IO_COMPLETION_QUEUE` must
-///   be issued around servicing.
-///
-/// Keepalive is enabled VM-wide; the gate is expected to apply per
-/// device based on its Vendor/Device IDs.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_per_device_gate(
+/// Boots a frontpage OpenHCL VM with two VTL2 NVMe -> VTL0 SCSI relays: one
+/// controller forced into fused keepalive mode (VendorID=0x1414/DeviceID=0xb111)
+/// and one normal controller. Verifies the fused device eagerly pre-creates its
+/// IO queues at init while the normal device creates them lazily.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn nvme_fused_keepalive_enablement(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    let mut flags = config.default_servicing_flags();
-    flags.enable_nvme_keepalive = true;
+    const VP_COUNT: u32 = 4;
+    const MSIX_COUNT: u16 = 10;
+    const MAX_IO_QUEUES: u16 = 10;
 
-    const WITH_KEEPALIVE_NVME_INSTANCE: Guid = guid::guid!("00000000-c05b-0000-0000-000000000001");
-    const NO_KEEPALIVE_NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const FUSED_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NORMAL_INSTANCE: Guid = guid::guid!("00000000-c05b-0000-0000-000000000001");
+    const FUSED_NSID: u32 = KEEPALIVE_VTL2_NSID;
+    const NORMAL_NSID: u32 = KEEPALIVE_VTL2_NSID + 1;
+    const FUSED_LUN: u32 = VTL0_NVME_LUN;
+    const NORMAL_LUN: u32 = VTL0_NVME_LUN + 1;
 
-    const WITH_KEEPALIVE_NSID: u32 = KEEPALIVE_VTL2_NSID;
-    const NO_KEEPALIVE_NSID: u32 = KEEPALIVE_VTL2_NSID + 1;
-    const WITH_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN;
-    const NO_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN + 1;
+    let eager_count = (VP_COUNT as usize).min(MAX_IO_QUEUES as usize);
 
-    // Two independent fault start cells — one per device.
-    let mut with_keepalive_fault_updater = CellUpdater::new(false);
-    let mut no_keepalive_fault_updater = CellUpdater::new(false);
-
-    let (no_keepalive_create_seen_send, no_keepalive_create_seen_recv) = mesh::oneshot::<()>();
-
-    // c05b device: keepalive must be honored — fail loudly if any
-    // CREATE_IO_COMPLETION_QUEUE is observed after the fault is armed.
-    let with_keepalive_fault_config = FaultConfiguration::new(with_keepalive_fault_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .build(),
-                AdminQueueFaultBehavior::Panic(
-                    "c05b device received CREATE_IO_COMPLETION_QUEUE after servicing — \
-                     keepalive should have been honored for this device but the controller \
-                     was reset."
-                        .to_string(),
-                ),
-            ),
-        );
-
-    // Non c05b device: keepalive must be downgraded —
-    // verify CREATE_IO_COMPLETION_QUEUE IS issued after servicing.
-    let no_keepalive_fault_config = FaultConfiguration::new(no_keepalive_fault_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .build(),
-                AdminQueueFaultBehavior::Verify(Some(no_keepalive_create_seen_send)),
-            ),
-        )
-        .with_hardware_config_fault(
+    let run_vm = async || -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
+        let mut fused_updater = CellUpdater::new(false);
+        // Spoof the vendor and device ID for a device that requires fused keepalive
+        let fused_fault = FaultConfiguration::new(fused_updater.cell()).with_hardware_config_fault(
             HardwareConfigFaultConfig::new()
                 .with_vendor_id(0x1414)
                 .with_device_id(0xb111),
         );
 
-    let scsi_instance = Guid::new_random();
+        let mut normal_updater = CellUpdater::new(false);
+        let normal_fault = FaultConfiguration::new(normal_updater.cell());
 
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
-        )
-        .modify_backend(move |b| {
-            b.with_custom_config(move |c| {
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: NO_KEEPALIVE_NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: NO_KEEPALIVE_NSID,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(DEFAULT_DISK_SIZE),
-                                sector_size: None,
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: no_keepalive_fault_config,
-                        enable_tdisp_tests: false,
-                    }
+        let nvme_device = |instance_id, nsid, fault_config| VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id,
+            resource: NvmeFaultControllerHandle {
+                subsystem_id: Guid::new_random(),
+                msix_count: MSIX_COUNT,
+                max_io_queues: MAX_IO_QUEUES,
+                namespaces: vec![NamespaceDefinition {
+                    nsid,
+                    read_only: false,
+                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                        len: Some(DEFAULT_DISK_SIZE),
+                        sector_size: None,
+                    })
                     .into_resource(),
-                    vnode: None,
-                });
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: WITH_KEEPALIVE_NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: WITH_KEEPALIVE_NSID,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(DEFAULT_DISK_SIZE),
-                                sector_size: None,
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: with_keepalive_fault_config,
-                        enable_tdisp_tests: false,
-                    }
-                    .into_resource(),
-                    vnode: None,
-                });
+                }],
+                fault_config,
+                enable_tdisp_tests: false,
+            }
+            .into_resource(),
+            vnode: None,
+        };
+
+        let scsi_instance = Guid::new_random();
+
+        config
+            .with_vmbus_redirect(true)
+            .with_openhcl_command_line(
+                "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            )
+            .with_processor_topology(ProcessorTopology {
+                vp_count: VP_COUNT,
+                ..Default::default()
             })
-        })
-        .add_vtl2_storage_controller(
-            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                .with_instance_id(scsi_instance)
-                .add_lun(
-                    Vtl2LunBuilder::disk()
-                        .with_location(NO_KEEPALIVE_LUN)
-                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                            ControllerType::Nvme,
-                            NO_KEEPALIVE_NVME_INSTANCE,
-                            NO_KEEPALIVE_NSID,
-                        )),
-                )
-                .add_lun(
-                    Vtl2LunBuilder::disk()
-                        .with_location(WITH_KEEPALIVE_LUN)
-                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                            ControllerType::Nvme,
-                            WITH_KEEPALIVE_NVME_INSTANCE,
-                            WITH_KEEPALIVE_NSID,
-                        )),
-                )
-                .build(),
-        )
-        .run()
-        .await?;
+            .modify_backend(move |b| {
+                b.with_custom_config(move |c| {
+                    c.vpci_devices
+                        .push(nvme_device(FUSED_INSTANCE, FUSED_NSID, fused_fault));
+                    c.vpci_devices
+                        .push(nvme_device(NORMAL_INSTANCE, NORMAL_NSID, normal_fault));
+                })
+            })
+            .add_vtl2_storage_controller(
+                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                    .with_instance_id(scsi_instance)
+                    .add_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_location(FUSED_LUN)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                FUSED_INSTANCE,
+                                FUSED_NSID,
+                            )),
+                    )
+                    .add_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_location(NORMAL_LUN)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                NORMAL_INSTANCE,
+                                NORMAL_NSID,
+                            )),
+                    )
+                    .build(),
+            )
+            .run_without_agent()
+            .await
+    };
 
-    agent.ping().await?;
+    // Returns, per VTL2 NVMe device, its fused flag and the `unmapped` state of
+    // each IO queue ordered by queue index.
+    let inspect_devices =
+        async |vm: &PetriVm<OpenVmmPetriBackend>| -> Result<Vec<(bool, Vec<bool>)>, anyhow::Error> {
+            let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+            let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+            let devices = devices
+                .as_object()
+                .expect("inspect path 'vm/nvme/devices' did not yield a JSON object");
 
-    // Arm both faults BEFORE servicing so that the post-servicing
-    // CREATE_IO_COMPLETION_QUEUE is what each fault matches.
-    with_keepalive_fault_updater.set(true).await;
-    no_keepalive_fault_updater.set(true).await;
+            devices
+                .values()
+                .map(|device| {
+                    let driver = &device["driver"]["driver"];
+                    let fused = driver["fused_keepalive_device"]
+                        .as_bool()
+                        .expect("'driver.driver.fused_keepalive_device' is not a JSON bool");
+                    let io = driver["io"]
+                        .as_object()
+                        .expect("'driver.driver.io' is not a JSON object");
+                    let mut entries = io
+                        .iter()
+                        .map(|(key, value)| {
+                            let index = key.parse::<u32>()?;
+                            let unmapped = value["unmapped"].as_bool().ok_or_else(|| {
+                                anyhow::anyhow!("io queue '{key}' missing bool 'unmapped' field")
+                            })?;
+                            anyhow::Ok((index, unmapped))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    entries.sort_by_key(|(index, _)| *index);
+                    Ok((
+                        fused,
+                        entries.into_iter().map(|(_, unmapped)| unmapped).collect(),
+                    ))
+                })
+                .collect()
+        };
 
-    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+    let vm = run_vm().await?;
+    let devices = inspect_devices(&vm).await?;
 
-    agent.ping().await?;
+    assert_eq!(devices.len(), 2, "expected two VTL2 NVMe devices");
 
-    // The non-c05b device must issue CREATE_IO_COMPLETION_QUEUE after
-    // servicing because its keepalive was downgraded to reset.
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(no_keepalive_create_seen_recv)
-        .await
-        .expect(
-            "non-c05b NVMe device did not issue CREATE_IO_COMPLETION_QUEUE within 60s after \
-             servicing — the per-device keepalive gate did not downgrade keepalive for this \
-             device.",
-        )
-        .expect("CREATE_IO_COMPLETION_QUEUE verification on non-c05b device failed");
+    let (_, fused_io) = devices
+        .iter()
+        .find(|(fused, _)| *fused)
+        .expect("expected one device in fused keepalive mode");
+    let (_, normal_io) = devices
+        .iter()
+        .find(|(fused, _)| !*fused)
+        .expect("expected one device in normal (non-fused) mode");
 
-    // If the c05b device had received CREATE_IO_COMPLETION_QUEUE, the
-    // panic fault would have crashed the VM and failed this test. We
-    // disarm the faults defensively before tearing down.
-    with_keepalive_fault_updater.set(false).await;
-    no_keepalive_fault_updater.set(false).await;
+    assert_eq!(
+        fused_io.len(),
+        eager_count,
+        "fused keepalive device should eagerly pre-create min(max_io_queues, vp_count) = \
+         {eager_count} IO queues at init, but found {}",
+        fused_io.len()
+    );
+    assert!(
+        fused_io.iter().filter(|&&unmapped| unmapped).count() >= 1,
+        "fused keepalive device should have eagerly pre-created unmapped IO queues, \
+         but all {} queues were mapped",
+        fused_io.len()
+    );
 
+    assert!(
+        !normal_io.is_empty(),
+        "the normal NVMe driver should have come up with at least one IO queue"
+    );
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "a normal (non-fused) device must never eagerly pre-create unmapped IO queues"
+    );
+    assert!(
+        normal_io.len() < eager_count,
+        "a normal device creates IO queues lazily, so it should have fewer than the \
+         fused eager count ({eager_count}), but found {}",
+        normal_io.len()
+    );
     Ok(())
 }
 
