@@ -19,9 +19,15 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
+#[cfg(windows)]
+use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 #[cfg(windows)]
 use petri::PetriVmmBackend;
+#[cfg(windows)]
+use petri::ResolvedArtifact;
+#[cfg(windows)]
+use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -30,6 +36,10 @@ use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri::vtl2_settings::build_vtl2_storage_backing_physical_devices;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
@@ -285,6 +295,490 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         ],
     )
     .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_both_endian_u16(bytes: &mut [u8], value: u16) {
+    bytes[..2].copy_from_slice(&value.to_le_bytes());
+    bytes[2..].copy_from_slice(&value.to_be_bytes());
+}
+
+#[cfg(windows)]
+fn write_both_endian_u32(bytes: &mut [u8], value: u32) {
+    bytes[..4].copy_from_slice(&value.to_le_bytes());
+    bytes[4..].copy_from_slice(&value.to_be_bytes());
+}
+
+#[cfg(windows)]
+fn write_iso_directory_record(record: &mut [u8], extent: u32, data_length: u32, identifier: u8) {
+    record[0] = 34;
+    write_both_endian_u32(&mut record[2..10], extent);
+    write_both_endian_u32(&mut record[10..18], data_length);
+    record[18..25].copy_from_slice(&[126, 1, 1, 0, 0, 0, 0]);
+    record[25] = 2;
+    write_both_endian_u16(&mut record[28..32], 1);
+    record[32] = 1;
+    record[33] = identifier;
+}
+
+#[cfg(windows)]
+fn write_test_iso(file: &mut File, size: u64) -> anyhow::Result<()> {
+    const BLOCK_SIZE: usize = 2048;
+    const PRIMARY_VOLUME_DESCRIPTOR_BLOCK: usize = 16;
+    const TERMINATOR_BLOCK: usize = 17;
+    const LITTLE_ENDIAN_PATH_TABLE_BLOCK: usize = 18;
+    const BIG_ENDIAN_PATH_TABLE_BLOCK: usize = 19;
+    const ROOT_DIRECTORY_BLOCK: usize = 20;
+
+    anyhow::ensure!(
+        size >= (ROOT_DIRECTORY_BLOCK + 1) as u64 * BLOCK_SIZE as u64,
+        "test ISO is too small"
+    );
+    anyhow::ensure!(
+        size.is_multiple_of(BLOCK_SIZE as u64),
+        "test ISO size is not block aligned"
+    );
+
+    let block_count: u32 = (size / BLOCK_SIZE as u64).try_into()?;
+    let mut image = vec![0_u8; size.try_into()?];
+
+    let primary = &mut image[PRIMARY_VOLUME_DESCRIPTOR_BLOCK * BLOCK_SIZE
+        ..(PRIMARY_VOLUME_DESCRIPTOR_BLOCK + 1) * BLOCK_SIZE];
+    primary[0] = 1;
+    primary[1..6].copy_from_slice(b"CD001");
+    primary[6] = 1;
+    primary[8..40].fill(b' ');
+    primary[40..72].fill(b' ');
+    primary[40..48].copy_from_slice(b"ADE_TEST");
+    write_both_endian_u32(&mut primary[80..88], block_count);
+    write_both_endian_u16(&mut primary[120..124], 1);
+    write_both_endian_u16(&mut primary[124..128], 1);
+    write_both_endian_u16(&mut primary[128..132], BLOCK_SIZE as u16);
+    write_both_endian_u32(&mut primary[132..140], 10);
+    primary[140..144].copy_from_slice(&(LITTLE_ENDIAN_PATH_TABLE_BLOCK as u32).to_le_bytes());
+    primary[148..152].copy_from_slice(&(BIG_ENDIAN_PATH_TABLE_BLOCK as u32).to_be_bytes());
+    write_iso_directory_record(
+        &mut primary[156..190],
+        ROOT_DIRECTORY_BLOCK as u32,
+        BLOCK_SIZE as u32,
+        0,
+    );
+    primary[190..813].fill(b' ');
+    primary[813..830].copy_from_slice(b"2026072400000000\0");
+    primary[830..847].copy_from_slice(b"2026072400000000\0");
+    primary[847..864].copy_from_slice(b"0000000000000000\0");
+    primary[864..881].copy_from_slice(b"0000000000000000\0");
+    primary[881] = 1;
+
+    let terminator = &mut image[TERMINATOR_BLOCK * BLOCK_SIZE..(TERMINATOR_BLOCK + 1) * BLOCK_SIZE];
+    terminator[0] = 255;
+    terminator[1..6].copy_from_slice(b"CD001");
+    terminator[6] = 1;
+
+    let little_endian_path_table = &mut image[LITTLE_ENDIAN_PATH_TABLE_BLOCK * BLOCK_SIZE..];
+    little_endian_path_table[0] = 1;
+    little_endian_path_table[2..6].copy_from_slice(&(ROOT_DIRECTORY_BLOCK as u32).to_le_bytes());
+    little_endian_path_table[6..8].copy_from_slice(&1_u16.to_le_bytes());
+
+    let big_endian_path_table = &mut image[BIG_ENDIAN_PATH_TABLE_BLOCK * BLOCK_SIZE..];
+    big_endian_path_table[0] = 1;
+    big_endian_path_table[2..6].copy_from_slice(&(ROOT_DIRECTORY_BLOCK as u32).to_be_bytes());
+    big_endian_path_table[6..8].copy_from_slice(&1_u16.to_be_bytes());
+
+    let root_directory = &mut image[ROOT_DIRECTORY_BLOCK * BLOCK_SIZE..];
+    write_iso_directory_record(
+        &mut root_directory[..34],
+        ROOT_DIRECTORY_BLOCK as u32,
+        BLOCK_SIZE as u32,
+        0,
+    );
+    write_iso_directory_record(
+        &mut root_directory[34..68],
+        ROOT_DIRECTORY_BLOCK as u32,
+        BLOCK_SIZE as u32,
+        1,
+    );
+
+    file.write_all(&image).context("write test ISO")
+}
+
+/// Test the Azure Disk Encryption (ADE) scenario:
+/// Boot a Generation 1 Windows VM, the VTL storage should look like this:
+///  - IDE:
+///    0:0 - OS disk
+///    0:1 - <empty>
+///    1:0 - CD ROM ISO (with a disc initially)
+///    1:1 - BEK Volume (empty initially)
+///
+/// Sequence of events:
+///  1. Boot the VM, verify that the IDE devices are present and have the expected sizes.
+///  2. Eject the CD ROM from the guest (mirrors azure agent behavior)
+///  2. Power off the VM, and add a BEK volume
+///  3. Power on the VM
+///  4. Set up bitlocker in the guest, and verify that the BEK volume is populated with the expected data.
+///  5. Soft reboot the VM, ensure that it boots again successfully
+///
+/// Ideally the OS disk is backed by NVMe from the host to VTL2. The BEK volume should be backed by vSCSI on the host to VTL2, as would the CD-ROM. These can be on the same vSCSI controller.
+#[cfg(windows)]
+#[vmm_test(hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)))]
+async fn storvsp_hyperv_ade(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    storvsp_hyperv_ade_core(config).await
+}
+
+/// Reproduce the ADE sequence using the latest release OpenHCL from the first
+/// boot through CD-ROM ejection, the power cycle, BitLocker setup, and the final
+/// guest reboot.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64))[LATEST_RELEASE_STANDARD_X64]
+)]
+async fn storvsp_hyperv_ade_latest_release(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+    (release_openhcl,): (ResolvedArtifact<LATEST_RELEASE_STANDARD_X64>,),
+) -> Result<(), anyhow::Error> {
+    storvsp_hyperv_ade_core(
+        config
+            .with_custom_openhcl(release_openhcl)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+    )
+    .await
+}
+
+/// Reproduce the ADE sequence using OpenHCL release 2505 from the first boot
+/// through CD-ROM ejection, the power cycle, BitLocker setup, and the final
+/// guest reboot.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64))[RELEASE_25_05_STANDARD_X64]
+)]
+async fn storvsp_hyperv_ade_release_2505(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+    (release_openhcl,): (ResolvedArtifact<RELEASE_25_05_STANDARD_X64>,),
+) -> Result<(), anyhow::Error> {
+    storvsp_hyperv_ade_core(
+        config
+            .with_custom_openhcl(release_openhcl)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+    )
+    .await
+}
+
+#[cfg(windows)]
+async fn storvsp_hyperv_ade_core(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    use petri::Disk;
+    use petri::Drive;
+    use petri::VmbusStorageType;
+    use petri::Vtl;
+
+    const VTL2_CD_LUN: u32 = 0;
+    const VTL2_BEK_LUN: u32 = 1;
+    const IDE_SECONDARY_CHANNEL: u32 = 1;
+    const IDE_CD_LOCATION: u32 = 0;
+    const IDE_BEK_LOCATION: u32 = 1;
+    const OS_DISK_SIZE_BYTES: u64 = 32_210_196_480;
+    const CD_MEDIA_SIZE_BYTES: u64 = 4 * 1024 * 1024;
+    const BEK_DISK_SIZE_BYTES: u64 = 128 * 1024 * 1024;
+
+    let vtl2_storage_instance = Guid::new_random();
+
+    let mut cd_media = tempfile::NamedTempFile::with_suffix("provisioning.iso")
+        .context("create temporary fake provisioning CD media")?;
+    write_test_iso(cd_media.as_file_mut(), CD_MEDIA_SIZE_BYTES)?;
+    let cd_media_path = cd_media.into_temp_path();
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .add_vmbus_storage_controller(&vtl2_storage_instance, Vtl::Vtl2, VmbusStorageType::Scsi)
+        .add_vmbus_drive(
+            Drive::new(Some(Disk::Persistent(cd_media_path.to_path_buf())), true),
+            &vtl2_storage_instance,
+            Some(VTL2_CD_LUN),
+        )
+        .add_vtl2_ide_lun(
+            Vtl2LunBuilder::dvd()
+                .with_channel(IDE_SECONDARY_CHANNEL)
+                .with_location(IDE_CD_LOCATION)
+                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                    ControllerType::Scsi,
+                    vtl2_storage_instance,
+                    VTL2_CD_LUN,
+                )),
+        )
+        .run()
+        .await?;
+
+    let shell = agent.windows_shell();
+    let initial_storage_check = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$ideDisks = @(Get-CimInstance Win32_DiskDrive | Where-Object {{ $_.InterfaceType -eq 'IDE' }})
+if ($ideDisks.Count -ne 1) {{
+    throw "Expected one IDE disk before adding the BEK volume, found $($ideDisks.Count)"
+}}
+if ([uint64]$ideDisks[0].Size -ne {OS_DISK_SIZE_BYTES}) {{
+    throw "Expected a {OS_DISK_SIZE_BYTES}-byte OS disk, found $($ideDisks[0].Size) bytes"
+}}
+
+$cdroms = @(Get-CimInstance Win32_CDROMDrive)
+if ($cdroms.Count -ne 1) {{
+    throw "Expected one IDE CD-ROM, found $($cdroms.Count)"
+}}
+if (-not $cdroms[0].MediaLoaded) {{
+    throw 'Expected the IDE CD-ROM to contain media'
+}}
+if ([uint64]$cdroms[0].Size -ne {CD_MEDIA_SIZE_BYTES}) {{
+    throw "Expected {CD_MEDIA_SIZE_BYTES} bytes of CD media, found $($cdroms[0].Size) bytes"
+}}
+"#
+    );
+    cmd!(shell, "powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &initial_storage_check,
+        ])
+        .run()
+        .await
+        .context("verify initial ADE storage layout")?;
+
+    let eject_cdrom = r#"
+$ErrorActionPreference = 'Stop'
+$source = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class CdromEjector
+{
+    private const uint FsctlLockVolume = 0x00090018;
+    private const uint FsctlUnlockVolume = 0x0009001c;
+    private const uint IoctlStorageEjectMedia = 0x002d4808;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(
+        SafeFileHandle device,
+        uint controlCode,
+        IntPtr inputBuffer,
+        uint inputBufferSize,
+        IntPtr outputBuffer,
+        uint outputBufferSize,
+        out uint bytesReturned,
+        IntPtr overlapped);
+
+    public static void Eject(string path)
+    {
+        using (SafeFileHandle device = CreateFile(
+            path,
+            0x80000000,
+            3,
+            IntPtr.Zero,
+            3,
+            0,
+            IntPtr.Zero))
+        {
+            if (device.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            uint bytesReturned;
+            if (!DeviceIoControl(device, FsctlLockVolume, IntPtr.Zero, 0, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            try
+            {
+                if (!DeviceIoControl(device, IoctlStorageEjectMedia, IntPtr.Zero, 0, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+            }
+            finally
+            {
+                DeviceIoControl(device, FsctlUnlockVolume, IntPtr.Zero, 0, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero);
+            }
+        }
+    }
+}
+'@
+
+Add-Type -TypeDefinition $source
+[CdromEjector]::Eject('\\.\CdRom0')
+
+$deadline = (Get-Date).AddSeconds(30)
+do {
+    $cdrom = Get-CimInstance Win32_CDROMDrive
+    if (-not $cdrom.MediaLoaded) {
+        exit 0
+    }
+    Start-Sleep -Seconds 1
+} while ((Get-Date) -lt $deadline)
+
+throw 'The IDE CD-ROM still reports loaded media after eject'
+"#;
+    cmd!(shell, "powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", eject_cdrom])
+        .run()
+        .await
+        .context("eject ADE CD media")?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_shutdown().await?;
+
+    let mut bek_vhd =
+        tempfile::NamedTempFile::with_suffix("ade-bek.vhd").context("create temporary BEK VHD")?;
+    bek_vhd
+        .as_file()
+        .set_len(BEK_DISK_SIZE_BYTES)
+        .context("set BEK VHD length")?;
+    disk_vhd1::Vhd1Disk::make_fixed(bek_vhd.as_file_mut()).context("make fixed BEK VHD")?;
+    let bek_vhd_path = bek_vhd.into_temp_path();
+
+    vm.set_vmbus_drive(
+        Drive::new(Some(Disk::Persistent(bek_vhd_path.to_path_buf())), false),
+        &vtl2_storage_instance,
+        Some(VTL2_BEK_LUN),
+    )
+    .await?;
+    vm.add_vtl2_ide_lun(
+        Vtl2LunBuilder::disk()
+            .with_channel(IDE_SECONDARY_CHANNEL)
+            .with_location(IDE_BEK_LOCATION)
+            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                ControllerType::Scsi,
+                vtl2_storage_instance,
+                VTL2_BEK_LUN,
+            )),
+    )
+    .await?;
+
+    let agent = vm.start().await?;
+    let shell = agent.windows_shell();
+    let prepare_bek_volume = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$ideDisks = @(Get-CimInstance Win32_DiskDrive | Where-Object {{ $_.InterfaceType -eq 'IDE' }})
+if ($ideDisks.Count -ne 2) {{
+    throw "Expected two IDE disks after adding the BEK volume, found $($ideDisks.Count)"
+}}
+
+$osDisk = @($ideDisks | Where-Object {{ [uint64]$_.Size -eq {OS_DISK_SIZE_BYTES} }})
+if ($osDisk.Count -ne 1) {{
+    throw "Expected one {OS_DISK_SIZE_BYTES}-byte OS disk, found $($osDisk.Count)"
+}}
+
+$bekDisk = @(Get-Disk | Where-Object {{ [uint64]$_.Size -eq {BEK_DISK_SIZE_BYTES} }})
+if ($bekDisk.Count -ne 1) {{
+    throw "Expected one {BEK_DISK_SIZE_BYTES}-byte BEK disk, found $($bekDisk.Count)"
+}}
+if ($bekDisk[0].PartitionStyle -ne 'RAW') {{
+    throw "Expected a raw BEK disk, found partition style $($bekDisk[0].PartitionStyle)"
+}}
+if (Get-Volume -DriveLetter B -ErrorAction SilentlyContinue) {{
+    throw 'Drive letter B is already in use'
+}}
+
+Initialize-Disk -Number $bekDisk[0].Number -PartitionStyle MBR
+$partition = New-Partition -DiskNumber $bekDisk[0].Number -UseMaximumSize -DriveLetter B
+$partition | Format-Volume -FileSystem FAT32 -NewFileSystemLabel BEK -Confirm:$false
+"#
+    );
+    cmd!(shell, "powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &prepare_bek_volume,
+        ])
+        .run()
+        .await
+        .context("prepare BEK volume")?;
+
+    let enable_bitlocker = r#"
+$ErrorActionPreference = 'Stop'
+$policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+New-Item -Path $policyPath -Force | Out-Null
+New-ItemProperty -Path $policyPath -Name EnableBDEWithNoTPM -PropertyType DWord -Value 1 -Force | Out-Null
+New-ItemProperty -Path $policyPath -Name UseAdvancedStartup -PropertyType DWord -Value 1 -Force | Out-Null
+
+& manage-bde.exe -on C: -usedspaceonly -startupkey B:\ -skiphardwaretest
+if ($LASTEXITCODE -ne 0) {
+    throw "manage-bde -on failed with exit code $LASTEXITCODE"
+}
+
+$deadline = (Get-Date).AddMinutes(20)
+do {
+    $status = (& manage-bde.exe -status C: | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        throw "manage-bde -status failed with exit code $LASTEXITCODE"
+    }
+    if ($status -match 'Percentage Encrypted:\s+100(?:\.0+)?%') {
+        break
+    }
+    if ((Get-Date) -ge $deadline) {
+        throw "BitLocker encryption did not complete within 20 minutes:`n$status"
+    }
+    Start-Sleep -Seconds 5
+} while ($true)
+
+$protectors = (& manage-bde.exe -protectors -get C: -type ExternalKey | Out-String)
+if ($LASTEXITCODE -ne 0 -or $protectors -notmatch 'External Key') {
+    throw "Expected an external key protector:`n$protectors"
+}
+
+$bekFiles = @(Get-ChildItem -Path B:\ -Filter '*.BEK' -File -Force)
+if ($bekFiles.Count -ne 1) {
+    throw "Expected one BEK file, found $($bekFiles.Count)"
+}
+if ($bekFiles[0].Length -eq 0) {
+    throw 'The BEK file is empty'
+}
+"#;
+    cmd!(shell, "powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            enable_bitlocker,
+        ])
+        .run()
+        .await
+        .context("enable BitLocker with a BEK startup key")?;
+
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+    let shell = agent.windows_shell();
+    let bitlocker_status = cmd!(shell, "manage-bde.exe")
+        .args(["-status", "C:"])
+        .read()
+        .await
+        .context("read BitLocker status after reboot")?;
+    anyhow::ensure!(
+        bitlocker_status.contains("Lock Status:") && bitlocker_status.contains("Unlocked"),
+        "OS volume did not unlock after reboot: {bitlocker_status}"
+    );
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

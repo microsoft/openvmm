@@ -861,20 +861,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                         &PETRI_SCSI_VTL2_CONTROLLER,
                         Some(PETRI_SCSI_BOOT_LUN),
                     )
-                    .add_vtl2_storage_controller(
-                        Vtl2StorageControllerBuilder::new(ControllerType::Ide)
-                            .with_instance_id(PETRI_IDE_BOOT_CONTROLLER)
-                            .add_lun(
-                                Vtl2LunBuilder::disk()
-                                    .with_channel(PETRI_IDE_BOOT_CONTROLLER_NUMBER)
-                                    .with_location(PETRI_IDE_BOOT_LUN as u32)
-                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                        ControllerType::Scsi,
-                                        PETRI_SCSI_VTL2_CONTROLLER,
-                                        PETRI_SCSI_BOOT_LUN,
-                                    )),
-                            )
-                            .build(),
+                    .add_vtl2_ide_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_channel(PETRI_IDE_BOOT_CONTROLLER_NUMBER)
+                            .with_location(PETRI_IDE_BOOT_LUN as u32)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Scsi,
+                                PETRI_SCSI_VTL2_CONTROLLER,
+                                PETRI_SCSI_BOOT_LUN,
+                            )),
                     ),
                 BootDeviceType::IdeViaNvme => todo!(),
                 BootDeviceType::Scsi => self.add_vmbus_drive(
@@ -1611,6 +1606,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         })
     }
 
+    /// Add a LUN to the IDE controller used by OpenHCL PCAT guests.
+    pub fn add_vtl2_ide_lun(self, lun: Vtl2LunBuilder) -> Self {
+        self.with_custom_vtl2_settings(move |settings| push_vtl2_ide_lun(settings, lun))
+    }
+
     /// Add an additional SCSI controller to the VM.
     pub fn add_vmbus_storage_controller(
         mut self,
@@ -2095,6 +2095,16 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await
     }
 
+    /// Add a LUN to the IDE controller used by OpenHCL PCAT guests.
+    pub async fn add_vtl2_ide_lun(&mut self, lun: Vtl2LunBuilder) -> anyhow::Result<()> {
+        let settings = self
+            .config
+            .vtl2_settings
+            .get_or_insert_with(default_vtl2_settings);
+        push_vtl2_ide_lun(settings, lun);
+        self.runtime.set_vtl2_settings(settings).await
+    }
+
     /// Get the list of storage controllers added to this VM
     pub fn get_vmbus_storage_controllers(&self) -> &HashMap<Guid, VmbusStorageController> {
         &self.config.vmbus_storage_controllers
@@ -2121,6 +2131,16 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl PetriVm<hyperv::HyperVPetriBackend> {
+    /// Start a powered-off Hyper-V VM and reconnect to the guest agent.
+    pub async fn start(&mut self) -> anyhow::Result<PipetteClient> {
+        self.runtime.start().await?;
+        self.wait_for_expected_boot_event().await?;
+        self.wait_for_agent().await
     }
 }
 
@@ -3445,6 +3465,25 @@ fn default_vtl2_settings() -> Vtl2Settings {
         fixed: None,
         dynamic: Some(Default::default()),
         namespace_settings: Default::default(),
+    }
+}
+
+fn push_vtl2_ide_lun(settings: &mut Vtl2Settings, lun: Vtl2LunBuilder) {
+    let storage_controllers = &mut settings.dynamic.as_mut().unwrap().storage_controllers;
+    let instance_id = PETRI_IDE_BOOT_CONTROLLER.to_string();
+
+    if let Some(controller) = storage_controllers
+        .iter_mut()
+        .find(|controller| controller.instance_id == instance_id)
+    {
+        controller.luns.push(lun.build());
+    } else {
+        storage_controllers.push(
+            Vtl2StorageControllerBuilder::new(ControllerType::Ide)
+                .with_instance_id(PETRI_IDE_BOOT_CONTROLLER)
+                .add_lun(lun)
+                .build(),
+        );
     }
 }
 
