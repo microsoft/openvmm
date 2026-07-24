@@ -106,54 +106,87 @@ impl core::fmt::Display for PortForwardKey {
     }
 }
 
-/// A consomme instance.
+/// A Consomme endpoint and its packet-processing state.
+///
+/// Endpoint-wide state lives in `primary`: configuration, learned network
+/// state, and low-volume protocol services such as DNS and ICMP. Within the
+/// primary, `ConsommePrimaryConfig` keeps the immutable guest network identity
+/// alongside runtime-mutable parameters and derived capabilities, while
+/// `ConsommePrimaryRuntime` holds learned addresses and address translations.
+///
+/// Data-plane state lives in `shard`: packet scratch space and the TCP and UDP
+/// flow tables polled by a worker. This boundary allows transport flow state to
+/// be partitioned independently while all shards use the same endpoint-wide
+/// primary state.
 #[derive(InspectMut)]
 pub struct Consomme {
-    state: ConsommeState,
+    #[inspect(mut)]
+    primary: ConsommePrimary,
+    #[inspect(flatten, mut)]
+    shard: ConsommeShard,
+}
+
+#[derive(InspectMut)]
+struct ConsommePrimary {
+    config: ConsommePrimaryConfig,
+    runtime: ConsommePrimaryRuntime,
+    dns: Option<dns_resolver::DnsResolver>,
+    icmp: icmp::Icmp,
+}
+
+#[derive(InspectMut)]
+struct ConsommeShard {
+    #[inspect(skip)]
+    buffer: Box<[u8]>,
     #[inspect(mut)]
     tcp: tcp::Tcp,
     #[inspect(mut)]
     udp: udp::Udp,
-    icmp: icmp::Icmp,
-    dns: Option<dns_resolver::DnsResolver>,
-    host_has_ipv6: bool,
 }
 
 #[derive(Inspect)]
-struct ConsommeState {
+struct ConsommePrimaryConfig {
+    immutable: ConsommeConfig,
     params: ConsommeParams,
-    #[inspect(skip)]
-    buffer: Box<[u8]>,
-    local_addr_map: local_addr_map::LocalAddrMap,
+    ipv6_enabled: bool,
 }
 
-/// Dynamic networking properties of a consomme endpoint.
+#[derive(Inspect)]
+struct ConsommePrimaryRuntime {
+    local_addr_map: local_addr_map::LocalAddrMap,
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
+    client_ip_ipv6: Option<Ipv6Address>,
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
+    client_ip_ipv6_routable: Option<Ipv6Address>,
+}
+
+/// Immutable configuration of a consomme endpoint.
+///
+/// These values define the network identity presented to the guest and cannot
+/// be changed after the endpoint is created.
 #[derive(Inspect, Clone)]
-pub struct ConsommeParams {
-    /// Current IPv4 network mask.
+pub struct ConsommeConfig {
+    /// IPv4 network mask.
     #[inspect(display)]
     pub net_mask: Ipv4Address,
-    /// Current Ipv4 gateway address.
+    /// IPv4 gateway address.
     #[inspect(display)]
     pub gateway_ip: Ipv4Address,
-    /// Current Ipv4 gateway MAC address.
+    /// IPv4 gateway MAC address.
     #[inspect(display)]
     pub gateway_mac: EthernetAddress,
-    /// Current Ipv4 address assigned to endpoint.
+    /// IPv4 address assigned to the endpoint.
     #[inspect(display)]
     pub client_ip: Ipv4Address,
-    /// Current client MAC address.
+    /// Client MAC address.
     #[inspect(display)]
     pub client_mac: EthernetAddress,
-    /// Current list of DNS resolvers.
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
-    pub nameservers: Vec<IpAddress>,
-    /// Current IPv6 network mask (if any).
+    /// IPv6 network prefix length.
     pub prefix_len_ipv6: u8,
     /// If true, advertise an autonomous IPv6 prefix so guests create a
     /// routable IPv6 address with SLAAC.
     pub advertise_routable_ipv6: bool,
-    /// Current IPv6 gateway MAC address (if any).
+    /// IPv6 gateway MAC address.
     #[inspect(display)]
     pub gateway_mac_ipv6: EthernetAddress,
     /// Gateway's link-local IPv6 address (derived from gateway_mac_ipv6).
@@ -162,23 +195,23 @@ pub struct ConsommeParams {
     /// and as the target for Neighbor Solicitations.
     #[inspect(display)]
     pub gateway_link_local_ipv6: Ipv6Address,
-    /// Current IPv6 address learned from guest via SLAAC (if any).
-    ///
-    /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
-    /// its own IPv6 address using the advertised prefix and its interface identifier.
-    /// This field is learned from incoming IPv6 traffic from the guest.
-    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
-    pub client_ip_ipv6: Option<Ipv6Address>,
-    /// Current routable IPv6 address learned from guest via SLAAC (if any).
-    /// The guest will typically have two addresses: a local and a routable one.
-    /// This field is learned from incoming IPv6 traffic from the guest.
-    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
-    pub client_ip_ipv6_routable: Option<Ipv6Address>,
-    /// Idle timeout for UDP connections.
-    pub udp_timeout: Duration,
     /// If true, skip checks for host IPv6 support and assume the host has a
     /// routable IPv6 address.
     pub skip_ipv6_checks: bool,
+}
+
+/// Runtime-mutable parameters of a consomme endpoint.
+///
+/// TCP buffer bounds apply only to connections created after an update.
+/// Shortening `udp_timeout` may expire existing UDP mappings on their next
+/// poll.
+#[derive(Inspect, Clone)]
+pub struct ConsommeParams {
+    /// Current list of DNS resolvers.
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
+    pub nameservers: Vec<IpAddress>,
+    /// Idle timeout for UDP connections.
+    pub udp_timeout: Duration,
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     pub allow_host_local_access: bool,
@@ -220,36 +253,65 @@ impl TcpBufferBounds {
 pub struct InvalidCidr;
 
 impl ConsommeParams {
-    /// Create default dynamic network state. The default state is
+    /// Creates default runtime-mutable parameters.
+    pub fn new() -> Result<Self, Error> {
+        Ok(Self {
+            nameservers: dns::nameservers()?,
+            // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
+            udp_timeout: Duration::from_secs(300),
+            allow_host_local_access: false,
+            tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+            tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+        })
+    }
+
+    /// Returns the list of IPv6 nameservers suitable for advertisement to
+    /// guests via NDP RDNSS or DHCPv6.
+    ///
+    /// Filters out addresses that are not useful as DNS servers in a
+    /// guest-facing context: unspecified, loopback, multicast, unique-local
+    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
+    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
+        self.nameservers
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddress::Ipv6(addr) => Some(*addr),
+                _ => None,
+            })
+            .filter(|addr| {
+                let octets = addr.octets();
+                !(addr.is_unspecified()
+                    || addr.is_loopback()
+                    || addr.is_multicast()
+                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
+                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
+            })
+            .collect()
+    }
+}
+
+impl ConsommeConfig {
+    /// Creates the default endpoint network configuration. The default is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
     ///     IPv6 address: is not assigned by us, we expect the guest to assign it via SLAAC
     ///     gateway IPv6 link-local address: fe80::5055:aff:fe00:102 (EUI-64 derived from
     ///     gateway MAC address 52-55-0A-00-01-02)
-    pub fn new() -> Result<Self, Error> {
-        let nameservers = dns::nameservers()?;
+    pub fn new() -> Self {
         let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
 
-        Ok(Self {
+        Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
             client_ip: Ipv4Address::new(10, 0, 0, 2),
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
-            nameservers,
             prefix_len_ipv6: 64,
             advertise_routable_ipv6: true,
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
-            client_ip_ipv6: None,
-            client_ip_ipv6_routable: None,
-            // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
-            udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
-            allow_host_local_access: false,
-            tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
-            tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
-        })
+        }
     }
 
     /// Sets the cidr for the network.
@@ -301,25 +363,32 @@ impl ConsommeParams {
         Ipv6Address::from_octets(addr)
     }
 
+    /// Returns the default internal nameserver list for use when the DNS
+    /// resolver is active. Includes the IPv6 gateway only when the host
+    /// has a routable IPv6 address.
+    fn internal_nameservers(&self, ipv6_enabled: bool) -> Vec<IpAddress> {
+        let mut ns = vec![self.gateway_ip.into()];
+        if ipv6_enabled {
+            ns.push(self.gateway_link_local_ipv6.into());
+        }
+        ns
+    }
+
+}
+
+impl ConsommePrimaryRuntime {
     /// Infer the guest's link-local IPv6 address from a learned routable SLAAC address.
-    ///
-    /// If the routable address uses an EUI-64 address derived from the guest MAC, we can infer a
-    /// matching link-local address.
-    ///
-    /// If the routable address uses a different interface identifier (for example,
-    /// privacy or stable-secret addressing), this leaves the link-local address
-    /// unknown and waits to learn it from traffic or NDP instead.
-    pub(crate) fn infer_client_link_local_from_routable(
+    fn infer_client_link_local_from_routable(
         &mut self,
+        config: &ConsommeConfig,
         routable: Ipv6Address,
         source: &'static str,
     ) {
-        // Link local address is already known.
         if self.client_ip_ipv6.is_some() {
             return;
         }
 
-        let link_local = Self::compute_link_local_address(self.client_mac);
+        let link_local = ConsommeConfig::compute_link_local_address(config.client_mac);
         if routable.octets()[8..] != link_local.octets()[8..] {
             return;
         }
@@ -333,44 +402,9 @@ impl ConsommeParams {
         self.client_ip_ipv6 = Some(link_local);
     }
 
-    /// Returns the list of IPv6 nameservers suitable for advertisement to
-    /// guests via NDP RDNSS or DHCPv6.
-    ///
-    /// Filters out addresses that are not useful as DNS servers in a
-    /// guest-facing context: unspecified, loopback, multicast, unique-local
-    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
-    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
-        self.nameservers
-            .iter()
-            .filter_map(|ip| match ip {
-                IpAddress::Ipv6(addr) => Some(*addr),
-                _ => None,
-            })
-            .filter(|addr| {
-                let octets = addr.octets();
-                !(addr.is_unspecified()
-                    || addr.is_loopback()
-                    || addr.is_multicast()
-                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
-                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
-            })
-            .collect()
-    }
-
-    /// Returns the default internal nameserver list for use when the DNS
-    /// resolver is active. Includes the IPv6 gateway only when the host
-    /// has a routable IPv6 address.
-    fn internal_nameservers(&self, host_has_ipv6: bool) -> Vec<IpAddress> {
-        let mut ns = vec![self.gateway_ip.into()];
-        if host_has_ipv6 {
-            ns.push(self.gateway_link_local_ipv6.into());
-        }
-        ns
-    }
-
-    fn is_local_address(&self, addr: &SocketAddr) -> bool {
+    fn is_local_address(&self, config: &ConsommeConfig, addr: &SocketAddr) -> bool {
         match addr {
-            SocketAddr::V4(v4) => v4.ip().is_loopback() || v4.ip() == &self.client_ip,
+            SocketAddr::V4(v4) => v4.ip().is_loopback() || v4.ip() == &config.client_ip,
             SocketAddr::V6(v6) => {
                 v6.ip().is_loopback()
                     || self.client_ip_ipv6.is_some_and(|ip| v6.ip() == &ip)
@@ -380,39 +414,33 @@ impl ConsommeParams {
             }
         }
     }
-}
 
-impl ConsommeState {
     fn try_ft_from_remote_address(
         &mut self,
+        config: &ConsommeConfig,
         remote_addr: &SocketAddr,
         dst_port: u16,
     ) -> Option<FourTuple> {
-        Self::translate_remote_address(
-            &self.params,
-            &mut self.local_addr_map,
-            remote_addr,
-            dst_port,
-        )
+        self.translate_remote_address(config, remote_addr, dst_port)
     }
 
     fn translate_remote_address(
-        params: &ConsommeParams,
-        local_addr_map: &mut local_addr_map::LocalAddrMap,
+        &mut self,
+        config: &ConsommeConfig,
         remote_addr: &SocketAddr,
         dst_port: u16,
     ) -> Option<FourTuple> {
         // Pick the best destination (guest) address based on the origination of the remote packet.
         let dst = match remote_addr {
-            SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(params.client_ip, dst_port)),
+            SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(config.client_ip, dst_port)),
             SocketAddr::V6(v6) => {
                 let client_ipv6 = if !v6.ip().is_unicast_link_local()
-                    && let Some(routable) = params.client_ip_ipv6_routable
+                    && let Some(routable) = self.client_ip_ipv6_routable
                 {
                     routable
-                } else if let Some(ipv6) = params.client_ip_ipv6 {
+                } else if let Some(ipv6) = self.client_ip_ipv6 {
                     ipv6
-                } else if let Some(routable) = params.client_ip_ipv6_routable {
+                } else if let Some(routable) = self.client_ip_ipv6_routable {
                     routable
                 } else {
                     tracelimit::warn_ratelimited!(addr = %remote_addr, "Client IPv6 address is not known, dropping packet");
@@ -434,39 +462,43 @@ impl ConsommeState {
         // replies back through this adapter based on the loopback source, so
         // rewriting the source out of the loopback range would break the return
         // path.
-        let is_loopback_adapter = params.client_ip.is_loopback();
+        let is_loopback_adapter = config.client_ip.is_loopback();
         let src = match remote_addr {
-            SocketAddr::V4(v4) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
+            SocketAddr::V4(v4)
+                if self.is_local_address(config, remote_addr) && !is_loopback_adapter =>
+            {
                 let subnet_base =
-                    Ipv4Addr::from(u32::from(params.gateway_ip) & u32::from(params.net_mask));
-                let virtual_ip = local_addr_map.get_or_allocate_v4(
+                    Ipv4Addr::from(u32::from(config.gateway_ip) & u32::from(config.net_mask));
+                let virtual_ip = self.local_addr_map.get_or_allocate_v4(
                     *v4.ip(),
                     subnet_base,
-                    params.net_mask,
-                    params.gateway_ip,
-                    params.client_ip,
+                    config.net_mask,
+                    config.gateway_ip,
+                    config.client_ip,
                 );
                 match virtual_ip {
                     Some(ip) => SocketAddr::V4(SocketAddrV4::new(ip, v4.port())),
                     None => {
                         // Pool exhausted, fall back to gateway IP.
-                        SocketAddr::V4(SocketAddrV4::new(params.gateway_ip, v4.port()))
+                        SocketAddr::V4(SocketAddrV4::new(config.gateway_ip, v4.port()))
                     }
                 }
             }
-            SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
-                let virtual_ip = local_addr_map.get_or_allocate_v6(
+            SocketAddr::V6(v6)
+                if self.is_local_address(config, remote_addr) && !is_loopback_adapter =>
+            {
+                let virtual_ip = self.local_addr_map.get_or_allocate_v6(
                     *v6.ip(),
-                    params.gateway_link_local_ipv6,
-                    params.client_ip_ipv6,
-                    params.client_ip_ipv6_routable,
+                    config.gateway_link_local_ipv6,
+                    self.client_ip_ipv6,
+                    self.client_ip_ipv6_routable,
                 );
                 match virtual_ip {
                     Some(ip) => SocketAddr::V6(SocketAddrV6::new(ip, v6.port(), 0, 0)),
                     None => {
                         // Pool exhausted, fall back to gateway link-local.
                         SocketAddr::V6(SocketAddrV6::new(
-                            params.gateway_link_local_ipv6,
+                            config.gateway_link_local_ipv6,
                             v6.port(),
                             0,
                             0,
@@ -768,8 +800,50 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 
 impl Consomme {
     /// Creates a new consomme instance with specified state.
-    pub fn new(mut params: ConsommeParams) -> Self {
-        let host_has_ipv6 = if params.skip_ipv6_checks {
+    pub fn new(config: ConsommeConfig, mut params: ConsommeParams) -> Self {
+        let ipv6_enabled = Self::detect_ipv6_support(config.skip_ipv6_checks);
+        let dns =
+            match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
+                Ok(dns) => {
+                    // When the DNS resolver is available, use the default internal nameserver.
+                    params.nameservers = config.internal_nameservers(ipv6_enabled);
+                    Some(dns)
+                }
+                Err(_) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to initialize DNS resolver, falling back to using host DNS settings"
+                    );
+                    None
+                }
+            };
+        let timeout = params.udp_timeout;
+        let tcp_rx_buffer = params.tcp_rx_buffer;
+        let tcp_tx_buffer = params.tcp_tx_buffer;
+        Self {
+            primary: ConsommePrimary {
+                config: ConsommePrimaryConfig {
+                    immutable: config,
+                    params,
+                    ipv6_enabled,
+                },
+                runtime: ConsommePrimaryRuntime {
+                    local_addr_map: local_addr_map::LocalAddrMap::new(),
+                    client_ip_ipv6: None,
+                    client_ip_ipv6_routable: None,
+                },
+                dns,
+                icmp: icmp::Icmp::new(),
+            },
+            shard: ConsommeShard {
+                buffer: Box::new([0; 65536]),
+                tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
+                udp: udp::Udp::new(timeout),
+            },
+        }
+    }
+
+    fn detect_ipv6_support(skip_ipv6_checks: bool) -> bool {
+        if skip_ipv6_checks {
             true
         } else {
             #[cfg(windows)]
@@ -786,54 +860,64 @@ impl Consomme {
                     false
                 }
             }
-        };
-        let dns =
-            match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
-                Ok(dns) => {
-                    // When the DNS resolver is available, use the default internal nameserver.
-                    params.nameservers = params.internal_nameservers(host_has_ipv6);
-                    Some(dns)
-                }
-                Err(_) => {
-                    tracelimit::warn_ratelimited!(
-                        "failed to initialize DNS resolver, falling back to using host DNS settings"
-                    );
-                    None
-                }
-            };
-        let timeout = params.udp_timeout;
-        let tcp_rx_buffer = params.tcp_rx_buffer;
-        let tcp_tx_buffer = params.tcp_tx_buffer;
-        Self {
-            state: ConsommeState {
-                params,
-                buffer: Box::new([0; 65536]),
-                local_addr_map: local_addr_map::LocalAddrMap::new(),
-            },
-            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
-            udp: udp::Udp::new(timeout),
-            icmp: icmp::Icmp::new(),
-            dns,
-            host_has_ipv6,
         }
     }
 
-    /// Get access to the parameters to be updated.
-    ///
-    /// FUTURE: add support for updating only the parameters that can be safely
-    /// changed at runtime.
-    pub fn params_mut(&mut self) -> &mut ConsommeParams {
-        &mut self.state.params
+    /// Gets the immutable endpoint configuration.
+    pub fn config(&self) -> &ConsommeConfig {
+        &self.primary.config.immutable
     }
 
-    /// Clears the local address mapping table. Call this after changing the
-    /// network configuration (e.g., via [`ConsommeParams::set_cidr`]) to avoid
-    /// stale or conflicting virtual address mappings.
+    /// Gets direct mutable access to the parameters.
+    ///
+    /// Runtime callers should use [`Consomme::update_params`] so dependent
+    /// state is reconciled after the update.
+    pub fn params_mut(&mut self) -> &mut ConsommeParams {
+        &mut self.primary.config.params
+    }
+
+    /// Updates parameters and reconciles dependent runtime state.
+    ///
+    /// Existing connections keep the settings with which they were created.
+    /// Updated UDP timeouts and TCP buffer bounds apply to subsequent polling
+    /// and newly created TCP connections, respectively.
+    pub fn update_params(&mut self, update: impl FnOnce(&mut ConsommeParams)) {
+        update(&mut self.primary.config.params);
+
+        let (udp_timeout, tcp_rx_buffer, tcp_tx_buffer) = {
+            let params = &self.primary.config.params;
+            (
+                params.udp_timeout,
+                params.tcp_rx_buffer,
+                params.tcp_tx_buffer,
+            )
+        };
+
+        self.shard.udp.update_timeout(udp_timeout);
+        self.shard
+            .tcp
+            .update_buffer_bounds(tcp_rx_buffer, tcp_tx_buffer);
+        self.refresh_dns_nameservers();
+    }
+
+    /// Clears cached translations between host-local and guest-visible virtual
+    /// addresses without changing the endpoint configuration. Subsequent
+    /// packets allocate translations again as needed.
     ///
     /// Some in-flight packets may be lost during the transition; this is
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
-        self.state.local_addr_map.clear();
+        self.primary.runtime.local_addr_map.clear();
+    }
+
+    fn refresh_dns_nameservers(&mut self) {
+        if self.primary.dns.is_some() {
+            self.primary.config.params.nameservers = self
+                .primary
+                .config
+                .immutable
+                .internal_nameservers(self.primary.config.ipv6_enabled);
+        }
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -906,7 +990,7 @@ impl<T: Client> Access<'_, T> {
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
             EthernetProtocol::Ipv6 => {
-                if self.inner.host_has_ipv6 {
+                if self.inner.primary.config.ipv6_enabled {
                     self.handle_ipv6(&frame, frame_packet.payload(), checksum)?
                 }
             }
@@ -957,7 +1041,7 @@ impl<T: Client> Access<'_, T> {
         }
 
         // Reject guest traffic to host-local-only destinations.
-        if !self.inner.state.params.allow_host_local_access
+        if !self.inner.primary.config.params.allow_host_local_access
             && is_blocked_host_local_ipv4(ipv4.dst_addr())
         {
             return Err(DropReason::DestinationNotAllowed);
@@ -1006,7 +1090,7 @@ impl<T: Client> Access<'_, T> {
         }
 
         // Reject guest traffic to host-local-only destinations.
-        if !self.inner.state.params.allow_host_local_access
+        if !self.inner.primary.config.params.allow_host_local_access
             && is_blocked_host_local_ipv6(ipv6.dst_addr())
         {
             return Err(DropReason::DestinationNotAllowed);
@@ -1023,13 +1107,13 @@ impl<T: Client> Access<'_, T> {
         // Learn the client's link-local IPv6 address from outgoing traffic.
         // This covers clients that do not perform DAD before using the address.
         if src_addr.is_unicast_link_local()
-            && self.inner.state.params.client_ip_ipv6 != Some(src_addr)
+            && self.inner.primary.runtime.client_ip_ipv6 != Some(src_addr)
         {
             tracing::debug!(
                 client_ipv6 = %src_addr,
                 "learned client link-local IPv6 address from outgoing traffic"
             );
-            self.inner.state.params.client_ip_ipv6 = Some(src_addr);
+            self.inner.primary.runtime.client_ip_ipv6 = Some(src_addr);
         }
 
         // Learn the client's routable IPv6 address from outgoing traffic.
@@ -1038,17 +1122,21 @@ impl<T: Client> Access<'_, T> {
         if !src_addr.is_unspecified()
             && !src_addr.is_multicast()
             && !src_addr.is_unicast_link_local()
-            && self.inner.state.params.client_ip_ipv6_routable != Some(src_addr)
+            && self.inner.primary.runtime.client_ip_ipv6_routable != Some(src_addr)
         {
             tracing::debug!(
                 client_ipv6_routable = %src_addr,
                 "learned client routable IPv6 address from outgoing traffic"
             );
-            self.inner.state.params.client_ip_ipv6_routable = Some(src_addr);
+            self.inner.primary.runtime.client_ip_ipv6_routable = Some(src_addr);
             self.inner
-                .state
-                .params
-                .infer_client_link_local_from_routable(src_addr, "outgoing traffic");
+                .primary
+                .runtime
+                .infer_client_link_local_from_routable(
+                    &self.inner.primary.config.immutable,
+                    src_addr,
+                    "outgoing traffic",
+                );
         }
 
         match next_header {
@@ -1081,13 +1169,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
-        if self.inner.dns.is_some() {
-            self.inner.state.params.nameservers = self
-                .inner
-                .state
-                .params
-                .internal_nameservers(self.inner.host_has_ipv6);
-        }
+        self.inner.refresh_dns_nameservers();
     }
 }
 

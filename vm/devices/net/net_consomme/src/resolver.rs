@@ -5,6 +5,7 @@ use crate::ConsommeEndpoint;
 use crate::IpProtocol;
 use crate::PortForwardConfig;
 use crate::create_bound_socket;
+use consomme::ConsommeConfig;
 use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
@@ -46,10 +47,11 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
         resource: ConsommeHandle,
         input: ResolveEndpointParams,
     ) -> Result<Self::Output, Self::Error> {
-        let mut state = ConsommeParams::new().map_err(ResolveConsommeError::Consomme)?;
-        state.client_mac.0 = input.mac_address.to_bytes();
+        let mut config = ConsommeConfig::new();
+        let params = ConsommeParams::new().map_err(ResolveConsommeError::Consomme)?;
+        config.client_mac.0 = input.mac_address.to_bytes();
         if let Some(cidr) = &resource.cidr {
-            state
+            config
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
@@ -97,9 +99,9 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
             })
             .collect::<Result<Vec<_>, ResolveConsommeError>>()?;
         let endpoint = if let Some(port_recv) = resource.recv {
-            ConsommeEndpoint::new_with_port_channel(state, port_forwards, port_recv)
+            ConsommeEndpoint::new_with_port_channel(config, params, port_forwards, port_recv)
         } else {
-            ConsommeEndpoint::new_with_ports(state, port_forwards)
+            ConsommeEndpoint::new_with_ports(config, params, port_forwards)
         };
         Ok(endpoint.into())
     }

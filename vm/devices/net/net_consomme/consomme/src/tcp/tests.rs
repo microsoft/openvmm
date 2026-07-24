@@ -154,16 +154,16 @@ impl TcpTestHarness {
         let dst_port = std_listener.local_addr().unwrap().port();
         let mut listener = PolledSocket::new(&driver, std_listener).unwrap();
 
-        let mut consomme = Consomme::new({
+        let mut consomme = Consomme::new(ConsommeConfig::new(), {
             let mut params = params;
             params.allow_host_local_access = true;
             params
         });
         let mut client = TestClient::new(driver);
 
-        let guest_mac = consomme.params_mut().client_mac;
-        let gateway_mac = consomme.params_mut().gateway_mac;
-        let guest_ip = consomme.params_mut().client_ip;
+        let guest_mac = consomme.config().client_mac;
+        let gateway_mac = consomme.config().gateway_mac;
+        let guest_ip = consomme.config().client_ip;
         let dst_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
         let guest_port = 44444u16;
         let guest_isn = TcpSeqNumber(1000);
@@ -449,6 +449,7 @@ impl TcpTestHarness {
         std::future::poll_fn(move |cx| {
             consomme.access(client).poll(cx);
             let inner = &consomme
+                .shard
                 .tcp
                 .connections
                 .get(&ft)
@@ -496,6 +497,7 @@ impl TcpTestHarness {
         let ft = self.four_tuple();
         &self
             .consomme
+            .shard
             .tcp
             .connections
             .get(&ft)
@@ -513,6 +515,7 @@ impl TcpTestHarness {
         std::future::poll_fn(|cx| {
             consomme.access(client).poll(cx);
             let inner = &consomme
+                .shard
                 .tcp
                 .connections
                 .get(&ft)
@@ -554,6 +557,7 @@ impl TcpTestHarness {
         std::future::poll_fn(move |cx| {
             consomme.access(client).poll(cx);
             let avail = consomme
+                .shard
                 .tcp
                 .connections
                 .get(&ft)
@@ -824,7 +828,7 @@ async fn test_tcp_overlapping_retransmit(driver: DefaultDriver) {
 /// TCP connection is forwarded to the guest as a SYN packet.
 #[pal_async::async_test]
 async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver.clone());
 
     let guest_port = 7777;
@@ -846,6 +850,7 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
         assert!(
             access
                 .inner
+                .shard
                 .tcp
                 .listeners
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
@@ -902,12 +907,12 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
 /// adapter.
 #[pal_async::async_test]
 async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver.clone());
 
     let guest_port = 9999;
     let received = client.received_packets.clone();
-    let client_ip = consomme.params_mut().client_ip;
+    let client_ip = consomme.config().client_ip;
 
     // Create and bind a TCP socket on loopback.
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
@@ -987,15 +992,15 @@ async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
 /// back through the adapter.
 #[pal_async::async_test]
 async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: DefaultDriver) {
-    let mut params = ConsommeParams::new().unwrap();
+    let mut config = ConsommeConfig::new();
     // Configure this endpoint as a loopback adapter.
-    params.client_ip = Ipv4Address::new(127, 0, 0, 1);
-    let mut consomme = Consomme::new(params);
+    config.client_ip = Ipv4Address::new(127, 0, 0, 1);
+    let mut consomme = Consomme::new(config, ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver.clone());
 
     let guest_port = 9999;
     let received = client.received_packets.clone();
-    let client_ip = consomme.params_mut().client_ip;
+    let client_ip = consomme.config().client_ip;
 
     // Create and bind a TCP socket on loopback.
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
@@ -1065,7 +1070,7 @@ async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: Defaul
 /// Test that binding the same guest port twice returns `PortAlreadyBound`.
 #[pal_async::async_test]
 async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
 
     let guest_port = 8888;
@@ -1097,7 +1102,7 @@ async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
 /// Test that the same guest TCP port can be bound separately for IPv4 and IPv6.
 #[pal_async::async_test]
 async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
 
     let guest_port = 8889;
@@ -1136,6 +1141,7 @@ async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
     assert!(
         access
             .inner
+            .shard
             .tcp
             .listeners
             .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
@@ -1275,16 +1281,16 @@ async fn test_tcp_deferred_ack_batching(driver: DefaultDriver) {
 /// fields represent unscaled values.
 #[pal_async::async_test]
 async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
-    let mut consomme = Consomme::new({
+    let mut consomme = Consomme::new(ConsommeConfig::new(), {
         let mut params = ConsommeParams::new().unwrap();
         params.allow_host_local_access = true;
         params
     });
     let mut client = TestClient::new(driver.clone());
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
     let dst_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
     let guest_port = 55555u16;
     let guest_isn = TcpSeqNumber(2000);
@@ -1410,6 +1416,7 @@ async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
         dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, dst_port)),
     };
     let conn = consomme
+        .shard
         .tcp
         .connections
         .get(&ft)
@@ -1442,12 +1449,12 @@ async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
 async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
     use std::io::Write;
 
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver.clone());
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
     let guest_port = 7777u16;
     let received = client.received_packets.clone();
     let mut buf = vec![0u8; 1514];
@@ -1557,6 +1564,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
         dst: SocketAddr::V4(SocketAddrV4::new(syn_src_ip, syn_tcp.src_port)),
     };
     let conn = consomme
+        .shard
         .tcp
         .connections
         .get(&ft)
@@ -1634,16 +1642,16 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
 /// source port, not the proxy ephemeral port).
 #[pal_async::async_test]
 async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
-    let mut consomme = Consomme::new({
+    let mut consomme = Consomme::new(ConsommeConfig::new(), {
         let mut params = ConsommeParams::new().unwrap();
         params.allow_host_local_access = true;
         params
     });
     let mut client = TestClient::new(driver.clone());
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
     let listener_guest_port = 8080u16;
     let guest_src_port = 55555u16;
     let dst_ip: Ipv4Address = Ipv4Addr::LOCALHOST;

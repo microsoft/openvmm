@@ -223,13 +223,13 @@ impl<T: Client> Access<'_, T> {
 
                 // Add Server Identifier option
                 // Use DUID-LL (type 3: Link-layer address)
-                let gateway_mac = self.inner.state.params.gateway_mac_ipv6.0;
+                let gateway_mac = self.inner.primary.config.immutable.gateway_mac_ipv6.0;
                 let mut duid_bytes = vec![0x00, 0x03, 0x00, 0x01]; // Type 3 (LL), Hardware type 1 (Ethernet)
                 duid_bytes.extend_from_slice(&gateway_mac);
                 reply.server_id = Some(duid_bytes);
 
                 // Add DNS Name Server option if we have nameservers
-                let dns_servers = self.inner.state.params.filtered_ipv6_nameservers();
+                let dns_servers = self.inner.primary.config.params.filtered_ipv6_nameservers();
 
                 if !dns_servers.is_empty() {
                     reply.dns_servers = Some(dns_servers);
@@ -244,15 +244,15 @@ impl<T: Client> Access<'_, T> {
 
                 let client_link_local = client_ip.unwrap_or(DHCPV6_ALL_AGENTS_MULTICAST);
                 let resp_ipv6 = Ipv6Repr {
-                    src_addr: self.inner.state.params.gateway_link_local_ipv6,
+                    src_addr: self.inner.primary.config.immutable.gateway_link_local_ipv6,
                     dst_addr: client_link_local,
                     next_header: IpProtocol::Udp,
                     payload_len: resp_udp.header_len() + dhcpv6_buffer.len(),
                     hop_limit: 64,
                 };
                 let resp_eth = EthernetRepr {
-                    src_addr: self.inner.state.params.gateway_mac_ipv6,
-                    dst_addr: self.inner.state.params.client_mac,
+                    src_addr: self.inner.primary.config.immutable.gateway_mac_ipv6,
+                    dst_addr: self.inner.primary.config.immutable.client_mac,
                     ethertype: EthernetProtocol::Ipv6,
                 };
 

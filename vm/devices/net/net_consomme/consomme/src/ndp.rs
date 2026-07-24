@@ -138,7 +138,7 @@ impl<T: Client> Access<'_, T> {
         if let Some(lladdr) = lladdr {
             if let Ok(hw_addr) = lladdr.parse(Medium::Ethernet) {
                 let HardwareAddress::Ethernet(eth_addr) = hw_addr;
-                if eth_addr != self.inner.state.params.client_mac {
+                if eth_addr != self.inner.primary.config.immutable.client_mac {
                     tracelimit::warn_ratelimited!(
                         "Router Solicitation from unexpected MAC, ignoring"
                     );
@@ -180,23 +180,29 @@ impl<T: Client> Access<'_, T> {
         dst_addr: Ipv6Address,
         eth_dst_addr: EthernetAddress,
     ) -> Result<(), DropReason> {
-        let prefix_info = self.inner.state.params.advertise_routable_ipv6.then(|| {
-            // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information.
-            // We set the ADDRCONF flag to enable SLAAC. We intentionally omit ON_LINK
-            // so the guest treats global addresses as off-link and routes all traffic
-            // through the gateway rather than attempting on-link NDP resolution.
-            let prefix = self.compute_network_prefix(
-                NETWORK_PREFIX_BASE,
-                self.inner.state.params.prefix_len_ipv6,
-            );
-            NdiscPrefixInformation {
-                prefix_len: self.inner.state.params.prefix_len_ipv6,
-                prefix,
-                valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
-                preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
-                flags: NdiscPrefixInfoFlags::ADDRCONF,
-            }
-        });
+        let prefix_info = self
+            .inner
+            .primary
+            .config
+            .immutable
+            .advertise_routable_ipv6
+            .then(|| {
+                // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information.
+                // We set the ADDRCONF flag to enable SLAAC. We intentionally omit ON_LINK
+                // so the guest treats global addresses as off-link and routes all traffic
+                // through the gateway rather than attempting on-link NDP resolution.
+                let prefix = self.compute_network_prefix(
+                    NETWORK_PREFIX_BASE,
+                    self.inner.primary.config.immutable.prefix_len_ipv6,
+                );
+                NdiscPrefixInformation {
+                    prefix_len: self.inner.primary.config.immutable.prefix_len_ipv6,
+                    prefix,
+                    valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
+                    preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
+                    flags: NdiscPrefixInfoFlags::ADDRCONF,
+                }
+            });
 
         let ndp_repr = NdiscRepr::RouterAdvert {
             hop_limit: 255,
@@ -205,20 +211,20 @@ impl<T: Client> Access<'_, T> {
             reachable_time: smoltcp::time::Duration::from_millis(30000), // https://www.rfc-editor.org/rfc/rfc4861#section-6
             retrans_time: smoltcp::time::Duration::from_millis(1000), // https://www.rfc-editor.org/rfc/rfc4861#section-6
             lladdr: Some(RawHardwareAddress::from(
-                self.inner.state.params.gateway_mac_ipv6,
+                self.inner.primary.config.immutable.gateway_mac_ipv6,
             )),
             mtu: None,
             prefix_info,
         };
 
-        let dns_servers = self.inner.state.params.filtered_ipv6_nameservers();
+        let dns_servers = self.inner.primary.config.params.filtered_ipv6_nameservers();
 
         let rdnss_size = rdnss_option_size(dns_servers.len());
         let icmpv6_len = ndp_repr.buffer_len() + rdnss_size;
 
         // Build IPv6 header
         let ipv6_repr = Ipv6Repr {
-            src_addr: self.inner.state.params.gateway_link_local_ipv6,
+            src_addr: self.inner.primary.config.immutable.gateway_link_local_ipv6,
             dst_addr,
             next_header: IpProtocol::Icmpv6,
             payload_len: icmpv6_len,
@@ -226,7 +232,7 @@ impl<T: Client> Access<'_, T> {
         };
 
         let eth_repr = EthernetRepr {
-            src_addr: self.inner.state.params.gateway_mac_ipv6,
+            src_addr: self.inner.primary.config.immutable.gateway_mac_ipv6,
             dst_addr: eth_dst_addr,
             ethertype: EthernetProtocol::Ipv6,
         };
@@ -296,17 +302,18 @@ impl<T: Client> Access<'_, T> {
                     client_ipv6 = %target_addr,
                     "learned client link-local IPv6 address from DAD Neighbor Solicitation"
                 );
-                self.inner.state.params.client_ip_ipv6 = Some(target_addr);
+                self.inner.primary.runtime.client_ip_ipv6 = Some(target_addr);
             } else {
                 tracing::trace!(
                     client_ipv6_routable = %target_addr,
                     "learned client routable IPv6 address from DAD Neighbor Solicitation"
                 );
-                self.inner.state.params.client_ip_ipv6_routable = Some(target_addr);
+                self.inner.primary.runtime.client_ip_ipv6_routable = Some(target_addr);
                 self.inner
-                    .state
-                    .params
+                    .primary
+                    .runtime
                     .infer_client_link_local_from_routable(
+                        &self.inner.primary.config.immutable,
                         target_addr,
                         "DAD Neighbor Solicitation",
                     );
@@ -319,7 +326,7 @@ impl<T: Client> Access<'_, T> {
             .and_then(|addr| addr.parse(Medium::Ethernet).ok())
             .map(|hw_addr| match hw_addr {
                 HardwareAddress::Ethernet(eth_addr) => {
-                    eth_addr == self.inner.state.params.client_mac
+                    eth_addr == self.inner.primary.config.immutable.client_mac
                 }
             })
             .unwrap_or(false);
@@ -333,14 +340,14 @@ impl<T: Client> Access<'_, T> {
         // This is the standard mechanism to indicate all traffic flows through the gateway, even
         // local subnet traffic.
         if !is_same_ipv6_subnet(
-            self.inner.state.params.gateway_link_local_ipv6,
+            self.inner.primary.config.immutable.gateway_link_local_ipv6,
             target_addr,
-            self.inner.state.params.prefix_len_ipv6,
+            self.inner.primary.config.immutable.prefix_len_ipv6,
         ) {
             tracing::debug!(
                 target_addr = %target_addr,
-                gateway = %self.inner.state.params.gateway_link_local_ipv6,
-                prefix_len = %self.inner.state.params.prefix_len_ipv6,
+                gateway = %self.inner.primary.config.immutable.gateway_link_local_ipv6,
+                prefix_len = %self.inner.primary.config.immutable.prefix_len_ipv6,
                 "NS target is not local, ignoring"
             );
             return Ok(());
@@ -349,21 +356,22 @@ impl<T: Client> Access<'_, T> {
         // Don't claim the address if it belongs to the guest. If the guest does not yet have an
         // address, only respond for the gateway so as not to interfere with the client's address
         // configuration.
-        let params = &self.inner.state.params;
-        let target_is_client = params
+        let runtime = &self.inner.primary.runtime;
+        let config = &self.inner.primary.config.immutable;
+        let target_is_client = runtime
             .client_ip_ipv6
             .is_some_and(|client_ip| client_ip == target_addr)
-            || params
+            || runtime
                 .client_ip_ipv6_routable
                 .is_some_and(|client_ip| client_ip == target_addr);
         let client_ip_known =
-            params.client_ip_ipv6.is_some() || params.client_ip_ipv6_routable.is_some();
-        if target_is_client || (!client_ip_known && params.gateway_link_local_ipv6 != target_addr) {
+            runtime.client_ip_ipv6.is_some() || runtime.client_ip_ipv6_routable.is_some();
+        if target_is_client || (!client_ip_known && config.gateway_link_local_ipv6 != target_addr) {
             tracing::debug!(
                 target_addr = %target_addr,
-                client_ip = ?params.client_ip_ipv6,
-                client_ip_routable = ?params.client_ip_ipv6_routable,
-                gateway = %params.gateway_link_local_ipv6,
+                client_ip = ?runtime.client_ip_ipv6,
+                client_ip_routable = ?runtime.client_ip_ipv6_routable,
+                gateway = %config.gateway_link_local_ipv6,
                 "Ignoring NS target"
             );
             return Ok(());
@@ -398,7 +406,7 @@ impl<T: Client> Access<'_, T> {
             flags,
             target_addr,
             lladdr: Some(RawHardwareAddress::from(
-                self.inner.state.params.gateway_mac_ipv6,
+                self.inner.primary.config.immutable.gateway_mac_ipv6,
             )),
         };
 
@@ -413,7 +421,7 @@ impl<T: Client> Access<'_, T> {
 
         // Build Ethernet header
         let eth_repr = EthernetRepr {
-            src_addr: self.inner.state.params.gateway_mac_ipv6,
+            src_addr: self.inner.primary.config.immutable.gateway_mac_ipv6,
             dst_addr: eth_dst_addr,
             ethertype: EthernetProtocol::Ipv6,
         };
