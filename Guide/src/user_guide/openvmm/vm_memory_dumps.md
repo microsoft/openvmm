@@ -38,6 +38,20 @@ The file is written atomically — a temporary file is created first
 and renamed into place on success, so readers never see a
 partially-written dump.
 
+## Dumping automatically on a guest crash
+
+To capture a dump automatically whenever the guest triple-faults, pass
+`--crash-dump-path` on the command line:
+
+```text
+openvmm --crash-dump-path path/to/crash.vmrs ...
+```
+
+When the guest crashes, OpenVMM writes the `.vmrs` dump to that path
+*before* applying the configured `--guest-crash-action` (halt, reset,
+or exit). If the dump fails, the error is logged and the crash action
+still runs. Each crash overwrites the file at the given path.
+
 ## Opening in WinDbg
 
 1. Install the [Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)

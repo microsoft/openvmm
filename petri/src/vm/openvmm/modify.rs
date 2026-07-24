@@ -441,6 +441,7 @@ impl PetriVmConfigOpenVmm {
                         hotplug: true,
                         acs_capabilities_supported: Some(0),
                         cxl: false,
+                        pasid: false,
                     })
                     .collect();
 
@@ -486,6 +487,7 @@ impl PetriVmConfigOpenVmm {
                     hotplug,
                     acs_capabilities_supported: Some(0),
                     cxl: false,
+                    pasid: false,
                 })
                 .collect(),
         });

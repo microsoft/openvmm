@@ -332,8 +332,13 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 }
 
 /// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
-/// guest sees it, then hot-remove it and verify it's gone.
-#[openvmm_test(linux_direct_x64, uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
+/// guest sees it across a reboot, then hot-remove it and verify it's gone.
+#[vmm_test_with(openvmm, configs(linux_direct_x64))]
+#[vmm_test_with(
+    openvmm,
+    requires(windows_partition_reset),
+    configs(uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+)]
 async fn pcie_hotplug(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
@@ -378,6 +383,14 @@ async fn pcie_hotplug(
         timer.sleep(Duration::from_millis(500)).await;
     }
     assert!(found, "expected NVMe endpoint to appear after hot-add");
+
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    let endpoints = devices.iter().filter(|d| d.class_code != 0x060400).count();
+    tracing::info!(?devices, "PCI devices after reboot");
+    assert_eq!(endpoints, 1, "expected hot-added endpoint after reboot");
 
     // Wait for the guest to fully process the add event before removing.
     timer.sleep(Duration::from_secs(5)).await;

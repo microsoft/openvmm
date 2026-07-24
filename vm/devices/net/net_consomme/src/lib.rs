@@ -799,6 +799,10 @@ impl consomme::Client for Client<'_> {
     }
 
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
+        self.recv_segments(&[data], checksum);
+    }
+
+    fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
         let Some(rx_id) = self.state.rx_avail.pop_front() else {
             // This should be rare, only affecting unbuffered protocols. TCP and
             // UDP are buffered and they won't indicate packets unless rx_mtu()
@@ -807,12 +811,13 @@ impl consomme::Client for Client<'_> {
             return;
         };
         let max = self.pool.capacity(rx_id) as usize;
-        if data.len() <= max {
-            self.pool.write_packet(
+        let len: usize = segments.iter().map(|s| s.len()).sum();
+        if len <= max {
+            self.pool.write_packet_segments(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
-                    len: data.len(),
+                    len,
                     ip_checksum: if checksum.ipv4 {
                         RxChecksumState::Good
                     } else {
@@ -832,11 +837,11 @@ impl consomme::Client for Client<'_> {
                     },
                     vlan: None,
                 },
-                data,
+                segments,
             );
             self.state.rx_ready.push_back(rx_id);
         } else {
-            tracing::warn!(len = data.len(), max, "dropping rx packet: too large");
+            tracing::warn!(len, max, "dropping rx packet: too large");
             self.state.rx_avail.push_front(rx_id);
         }
     }

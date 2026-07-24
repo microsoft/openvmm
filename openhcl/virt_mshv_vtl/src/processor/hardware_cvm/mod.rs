@@ -1951,7 +1951,20 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         // LockedPages, but that requires some refactoring. For now, we just use
         // guest memory to lock the pages. When this is cleaned up, don't forget
         // to also cleanup how underhill_mem handles locking overlay pages.
-        Ok(self.guest_memory.lock_gpns(false, &[gpn]).unwrap())
+        //
+        // Lock for read, not write, even though the paravisor writes these
+        // overlay pages. The paravisor writes them through a mapping that
+        // bypasses guest VTL protections, so the lock must not apply the guest's
+        // write permission. `register_overlay_page` above has already validated
+        // and set the required permissions; locking for write would instead
+        // re-check the guest write bitmap, which is deliberately cleared to
+        // read-only for pages made guest-read-only (e.g. the hypercall and
+        // reference TSC pages), and would spuriously fail with a VTL protection
+        // violation.
+        Ok(self
+            .guest_memory
+            .lock_gpns(guestmem::AccessType::Read, false, &[gpn])
+            .unwrap())
     }
 
     fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), HvError> {

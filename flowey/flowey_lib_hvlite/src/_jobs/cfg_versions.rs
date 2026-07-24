@@ -27,10 +27,8 @@ pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const MU_MSVM: &str = "26.0.19";
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
-// N.B. Kernel version numbers for dev and stable branches are not directly
-//      comparable. They originate from separate branches, and the fourth digit
-//      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.37.3";
+// None disables hcl-dev builds and tests; Some(version) enables them.
+pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.2";
 pub const OPENVMM_DEPS: &str = "0.3.0-110";
 pub const PROTOC: &str = "27.1";
@@ -184,13 +182,22 @@ impl FlowNode for Node {
         // Only set kernel versions if we don't have local paths
         // (versions are only needed for downloading)
         if !has_local_kernel {
+            let mut versions = BTreeMap::from([
+                (
+                    OpenhclKernelPackageKind::Main,
+                    OPENHCL_KERNEL_STABLE_VERSION.into(),
+                ),
+                (
+                    OpenhclKernelPackageKind::Cvm,
+                    OPENHCL_KERNEL_STABLE_VERSION.into(),
+                ),
+            ]);
+            if let Some(version) = OPENHCL_KERNEL_DEV_VERSION {
+                versions.insert(OpenhclKernelPackageKind::Dev, version.into());
+                versions.insert(OpenhclKernelPackageKind::CvmDev, version.into());
+            }
             ctx.config(crate::resolve_openhcl_kernel_package::Config {
-                versions: [
-                    (OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()),
-                    (OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()),
-                    (OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()),
-                    (OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()),
-                ].into(),
+                versions,
                 ..Default::default()
             });
         }

@@ -564,32 +564,6 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
-        let (secure_boot_enabled, custom_uefi_vars) = firmware.uefi_config().map_or_else(
-            || (false, Default::default()),
-            |c| {
-                (
-                    c.secure_boot_enabled,
-                    match (arch, c.secure_boot_template) {
-                        (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::X86_64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                        (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::Aarch64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                        (_, None) => Default::default(),
-                    },
-                )
-            },
-        );
-
         let vmgs = if firmware.is_openhcl() {
             None
         } else {
@@ -690,8 +664,6 @@ impl PetriVmConfigOpenVmm {
             framebuffer,
             vga_firmware,
 
-            secure_boot_enabled,
-            custom_uefi_vars,
             vmgs,
 
             // Don't automatically reset the guest by default
@@ -707,21 +679,6 @@ impl PetriVmConfigOpenVmm {
             vpci_resources: vec![],
             debugger_rpc: None,
             rtc_delta_milliseconds: 0,
-            efi_diagnostics_log_level: match firmware
-                .uefi_config()
-                .map(|c| c.efi_diagnostics_log_level)
-                .unwrap_or_default()
-            {
-                EfiDiagnosticsLogLevel::Default => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Default
-                }
-                EfiDiagnosticsLogLevel::Info => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Info
-                }
-                EfiDiagnosticsLogLevel::Full => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Full
-                }
-            },
         };
 
         // Make the pipette connection listener.
@@ -955,8 +912,8 @@ impl PetriVmConfigSetupCore<'_> {
                             default_boot_always_attempt,
                             enable_vpci_boot,
                             force_dma_bounce,
-                            efi_diagnostics_log_level: _, // applied to top-level Config below
-                            efi_diagnostics_rate_limit: _, // applied to top-level Config below
+                            efi_diagnostics_log_level: _, // applied device-side via UefiManifest::new
+                            efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
                         },
                 },
             ) => {

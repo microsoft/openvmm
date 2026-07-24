@@ -827,8 +827,6 @@ impl VmService {
             #[cfg(windows)]
             vpci_resources: vec![],
             vmgs: None,
-            secure_boot_enabled: false,
-            custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
@@ -838,7 +836,6 @@ impl VmService {
             layout: layout_config,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
-            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;
@@ -989,6 +986,7 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            crash_dump_path: None,
             // The ttrpc/grpc server never exits on a guest power event; it uses
             // the historical defaults (none of which is Exit), so the
             // ExitRequested event handled below is unreachable here.
@@ -1531,6 +1529,7 @@ async fn build_pcie_topology(
                 hotplug,
                 acs_capabilities_supported: None,
                 cxl: false,
+                pasid: false,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1600,6 +1599,7 @@ fn walk_pcie_attachment(
                     hotplug,
                     acs_capabilities_supported: None,
                     cxl: false,
+                    pasid: false,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));

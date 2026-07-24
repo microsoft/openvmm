@@ -232,6 +232,13 @@ status code as `exit:<code>` (0-255); a bare `exit` uses 0:
 A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
 a supervisor can tell the exit reasons apart.
 
+* `--crash-dump-path <PATH>`: when the guest triple-faults, write a
+  WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
+  `PATH` before the `--guest-crash-action` is applied (see
+  [VM Memory Dumps](../../../user_guide/openvmm/vm_memory_dumps.md)). This is a
+  host-side, whole-VM dump, distinct from `--openhcl-dump-path` (OpenHCL's
+  in-guest crash dump device driven by the guest OS).
+
 `--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
 firmware frontpage (the menu shown when there is no bootable device). Combined
 with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
@@ -303,6 +310,8 @@ name:
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
 - `cxl`: marks the root port as CXL-capable.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 `--pcie-switch` accepts optional comma-separated options as well:
 
@@ -315,6 +324,8 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 ### Generic initiators
 

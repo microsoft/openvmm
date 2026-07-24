@@ -35,7 +35,6 @@ use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
-use firmware_uefi_resources::LogLevel;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -67,7 +66,6 @@ use openvmm_defs::config::Aarch64TopologyConfig;
 use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -211,8 +209,6 @@ impl Manifest {
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: config.vpci_resources,
             vmgs: config.vmgs,
-            secure_boot_enabled: config.secure_boot_enabled,
-            custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
@@ -223,11 +219,6 @@ impl Manifest {
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
-            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
-                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
-                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
-                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
-            },
         }
     }
 }
@@ -262,8 +253,6 @@ pub struct Manifest {
     #[cfg(all(windows, feature = "virt_whp"))]
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     vmgs: Option<VmgsResource>,
-    secure_boot_enabled: bool,
-    custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
@@ -274,7 +263,6 @@ pub struct Manifest {
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
-    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -2099,7 +2087,7 @@ impl InitializedVm {
                             let root_port_definitions = rc
                                 .ports
                                 .iter()
-                                .map(pcie_topology::build_root_port_definition)
+                                .map(pcie_topology::build_port_definition)
                                 .collect();
                             GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
@@ -2227,7 +2215,7 @@ impl InitializedVm {
                     let downstream_ports = switch
                         .ports
                         .iter()
-                        .map(pcie_topology::build_root_port_definition)
+                        .map(pcie_topology::build_port_definition)
                         .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
@@ -3942,8 +3930,6 @@ impl LoadedVm {
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO
             vmgs: None,             // TODO
-            secure_boot_enabled: false, // TODO
-            custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
             debugger_rpc: None,          // TODO
             vmbus_devices: vec![],       // TODO
@@ -3958,7 +3944,6 @@ impl LoadedVm {
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
-            efi_diagnostics_log_level: Default::default(),
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {

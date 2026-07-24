@@ -59,6 +59,21 @@ error: hash mismatch in fixed-output derivation '/nix/store/...-source.drv':
 
 Use the `got:` value in the `.nix` file.
 
+### OpenHCL dev kernel packages
+
+The Nix shell does not evaluate or export OpenHCL dev kernel packages by
+default. The main and dev kernels often contain the same promoted changes, so
+building both variants adds unnecessary download and build work.
+
+To restore the dev kernel packages when the branches diverge:
+
+1. Set `enableDevKernel` to `true` in `shell.nix`.
+2. Update the dev version in `nix/openhcl_kernel.nix`.
+3. Clear and replace the dev hashes using the procedure above.
+
+This restores the `NIX_KERNEL_*_DEV` paths and
+`CARGO_BUILD_ARGS_*_DEVKERN` arguments in the Nix shell.
+
 ## Updating the Rust Version
 
 The Nix shell derives its Rust toolchain version from `rust-version` in the root `Cargo.toml` and resolves it against a pinned [rust-overlay](https://github.com/oxalica/rust-overlay) commit in `shell.nix`. When `rust-version` is bumped in `Cargo.toml`, the pinned rust-overlay may not yet include the new version, causing an error like:

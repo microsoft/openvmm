@@ -614,7 +614,15 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
         }
         let paged_range =
             PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
-        Some(mem.lock_range(paged_range, locked_range)?)
+        Some(mem.lock_range(
+            if writable {
+                guestmem::AccessType::Write
+            } else {
+                guestmem::AccessType::Read
+            },
+            paged_range,
+            locked_range,
+        )?)
     } else {
         tracing::trace!("payload data is not representable in a single PagedRange");
         None

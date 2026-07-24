@@ -18,6 +18,7 @@ use nvme_resources::fault::FaultConfiguration;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use petri::ApicMode;
+use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -45,6 +46,58 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
         .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot the guest-test UEFI image, which purposefully triple-faults itself via
+/// an expiring watchdog. Once the crash is observed, explicitly drive a state
+/// dump via the `DumpState` RPC and verify that a well-formed `.vmrs` file is
+/// written.
+#[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
+async fn crash_dump_on_triple_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
+    let dump_path = dump_dir.path().join("crash.vmrs");
+
+    let mut vm = config
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 256 * 1024 * 1024,
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
+
+    // Wait for the guest to triple-fault. The worker stays alive after
+    // signaling the crash, so it can still service the dump request.
+    let halt_reason = vm.wait_for_halt().await?;
+    if halt_reason.reason != PetriHaltReason::TripleFault {
+        anyhow::bail!("expected TripleFault, got {halt_reason:?}");
+    }
+
+    // The controlling process (this test) creates the dump file and drives the
+    // dump via the `DumpState` RPC directly.
+    vm.backend()
+        .dump_state(&dump_path)
+        .await
+        .context("failed to dump VM state on crash")?;
+
+    vm.teardown().await?;
+
+    // Validate the dump is a well-formed Hyper-V saved-state file by reading a
+    // required key back out of it.
+    let file = std::fs::File::open(&dump_path)
+        .with_context(|| format!("crash dump not found at {}", dump_path.display()))?;
+    let reader =
+        hvs_file::reader::HvsFileReader::open(file).context("failed to parse .vmrs crash dump")?;
+    anyhow::ensure!(
+        reader
+            .read_int("/savedstate/VmVersion")
+            .context("missing VmVersion")?
+            != 0,
+        "crash dump has an invalid VmVersion"
+    );
+
     Ok(())
 }
 
