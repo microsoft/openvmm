@@ -2034,6 +2034,8 @@ mod tests {
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
     struct TestRequestAkCertHelper;
 
+    const TEST_ATTESTATION_REPORT: &[u8] = b"test attestation report";
+
     #[async_trait::async_trait]
     impl RequestAkCert for TestRequestAkCertHelper {
         fn create_ak_cert_request(
@@ -2043,9 +2045,13 @@ mod tests {
             _ek_pub_modulus: &[u8],
             _ek_pub_exponent: &[u8],
             _guest_input: &[u8],
-            _is_attestation_report: bool,
+            is_attestation_report: bool,
         ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Vec::new())
+            if is_attestation_report {
+                Ok(TEST_ATTESTATION_REPORT.to_vec())
+            } else {
+                Ok(Vec::new())
+            }
         }
 
         async fn request_ak_cert(
@@ -2099,5 +2105,68 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    async fn new_test_tpm(ak_cert_type: TpmAkCertType) -> Tpm {
+        let tpm_state_blob = include_bytes!("../../test_data/vTpmState.blob");
+        let mut store = EphemeralNonVolatileStore::new_boxed();
+        store.persist(tpm_state_blob.to_vec()).await.unwrap();
+
+        let ppi_store = EphemeralNonVolatileStore::new_boxed();
+        let gm = GuestMemory::allocate(0x10000);
+        let monotonic_timer = Box::new(|| std::time::Duration::new(0, 0));
+
+        Tpm::new(
+            TpmRegisterLayout::IoPort,
+            gm,
+            ppi_store,
+            store,
+            None,
+            monotonic_timer,
+            false,
+            false,
+            ak_cert_type,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[async_test]
+    async fn sw_attested_creates_attestation_report_nv_index() {
+        let mut tpm =
+            new_test_tpm(TpmAkCertType::SwAttested(Arc::new(TestRequestAkCertHelper))).await;
+
+        let result = tpm
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT)
+            .expect("find_nv_index should succeed");
+        assert!(result.is_some());
+
+        let mut report = [0; TEST_ATTESTATION_REPORT.len()];
+        let result = tpm
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT, &mut report)
+            .expect("read_from_nv_index should succeed");
+        assert!(matches!(result, tpm_lib::NvIndexState::Available));
+        assert_eq!(report.as_slice(), TEST_ATTESTATION_REPORT);
+    }
+
+    #[async_test]
+    async fn trusted_does_not_create_attestation_report_nv_index() {
+        let mut tpm = new_test_tpm(TpmAkCertType::Trusted(
+            Arc::new(TestRequestAkCertHelper),
+            Some(true),
+        ))
+        .await;
+
+        let result = tpm
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT)
+            .expect("find_nv_index should succeed");
+        assert!(result.is_none());
     }
 }

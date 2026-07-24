@@ -318,12 +318,74 @@ mod test {
     }
 
     #[test]
+    fn management_vtl_features_absent_defaults_tvm_host_certification_off() {
+        // Neither sample JSON payload includes a `ManagementVtlFeatures`
+        // field, so parsing them exercises the backward-compatible default
+        // for hosts that predate the field.
+        let sample = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+            "dps_test_json.json"
+        ))
+        .unwrap();
+        assert!(
+            !sample
+                .v2
+                .r#static
+                .management_vtl_features
+                .tvm_host_certification()
+        );
+
+        let sample_with_vtl2settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(
+            include_bytes!("dps_test_json_with_vtl2settings.json"),
+        )
+        .unwrap();
+        assert!(
+            !sample_with_vtl2settings
+                .v2
+                .r#static
+                .management_vtl_features
+                .tvm_host_certification()
+        );
+    }
+
+    #[test]
+    fn management_vtl_features_roundtrip_with_tvm_host_certification_on() {
+        let features = ManagementVtlFeatures::new()
+            .with_strict_encryption_policy(true)
+            .with_control_ak_cert_provisioning(true)
+            .with_attempt_ak_cert_callback(false)
+            .with_tx_only_serial_port(true)
+            .with_tvm_host_certification(true);
+
+        let json = serde_json::to_string(&features).unwrap();
+        let roundtripped: ManagementVtlFeatures = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.into_bits(), features.into_bits());
+        assert!(roundtripped.strict_encryption_policy());
+        assert!(roundtripped.control_ak_cert_provisioning());
+        assert!(!roundtripped.attempt_ak_cert_callback());
+        assert!(roundtripped.tx_only_serial_port());
+        assert!(roundtripped.tvm_host_certification());
+    }
+
+    #[test]
     fn tvm_host_certification_is_default_off_at_bit_five() {
         let features = ManagementVtlFeatures::new();
         assert!(!features.tvm_host_certification());
         assert_eq!(
             features.with_tvm_host_certification(true).into_bits(),
             1 << 5
+        );
+
+        // Setting the bit must not disturb its neighbors, and clearing it
+        // must not leave any stray bits behind.
+        let neighbors = ManagementVtlFeatures::new()
+            .with_tx_only_serial_port(true)
+            .with_strict_encryption_policy(true);
+        let combined = neighbors.with_tvm_host_certification(true);
+        assert_eq!(combined.into_bits(), neighbors.into_bits() | (1 << 5));
+        assert_eq!(
+            combined.with_tvm_host_certification(false).into_bits(),
+            neighbors.into_bits()
         );
     }
 }

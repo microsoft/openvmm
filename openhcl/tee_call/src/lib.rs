@@ -274,3 +274,20 @@ impl TeeCall for HostCall {
         TeeType::Host
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::HostCall;
+    use super::TeeCall;
+    use super::TeeType;
+
+    #[test]
+    fn host_call_tee_type_is_host() {
+        assert!(matches!(HostCall.tee_type(), TeeType::Host));
+    }
+
+    #[test]
+    fn host_call_does_not_support_derived_key() {
+        assert!(HostCall.supports_get_derived_key().is_none());
+    }
+}

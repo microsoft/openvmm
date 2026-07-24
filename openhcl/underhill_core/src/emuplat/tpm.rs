@@ -292,3 +292,125 @@ pub mod resources {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TpmRequestAkCertHelper;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::Arc;
+    use tpm_device::ak_cert::RequestAkCert;
+    use underhill_attestation::AttestationType;
+    use zerocopy::FromBytes;
+
+    struct TestHostCall;
+
+    impl tee_call::TeeCall for TestHostCall {
+        fn get_attestation_report(
+            &self,
+            _report_data: &[u8; tee_call::REPORT_DATA_SIZE],
+        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
+            Ok(tee_call::GetAttestationReportResult {
+                report: vec![0x42; tee_call::TVM_REPORT_SIZE],
+                tcb_version: None,
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
+            None
+        }
+
+        fn tee_type(&self) -> tee_call::TeeType {
+            tee_call::TeeType::Host
+        }
+    }
+
+    fn test_attestation_vm_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: false,
+            tpm_persisted: false,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+            filtered_vpci_devices_allowed: true,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        }
+    }
+
+    #[async_test]
+    async fn host_certification_enabled_request_includes_396_byte_report(driver: DefaultDriver) {
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let helper = TpmRequestAkCertHelper::new(
+            get_pair.client,
+            Some(Arc::new(TestHostCall)),
+            AttestationType::Host,
+            test_attestation_vm_config(),
+            None,
+            true,
+        );
+
+        let request = helper
+            .create_ak_cert_request(&[], &[], &[], &[], &[], false)
+            .expect("host-certified request generation");
+
+        let (parsed, _) =
+            IgvmAttestRequestBase::read_from_prefix(&request).expect("parse IgvmAttestRequest");
+        assert_eq!(
+            parsed.request_data.report_type,
+            IgvmAttestReportType::TVM_REPORT
+        );
+        assert_eq!(
+            &parsed.attestation_report[..tee_call::TVM_REPORT_SIZE],
+            [0x42; tee_call::TVM_REPORT_SIZE].as_slice()
+        );
+    }
+
+    #[async_test]
+    async fn host_certification_disabled_retains_zero_report_legacy_request(driver: DefaultDriver) {
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let helper = TpmRequestAkCertHelper::new(
+            get_pair.client,
+            None,
+            AttestationType::Host,
+            test_attestation_vm_config(),
+            None,
+            false,
+        );
+
+        let request = helper
+            .create_ak_cert_request(&[], &[], &[], &[], &[], false)
+            .expect("legacy request generation");
+
+        let (parsed, _) =
+            IgvmAttestRequestBase::read_from_prefix(&request).expect("parse IgvmAttestRequest");
+        assert_eq!(
+            parsed.request_data.report_type,
+            IgvmAttestReportType::TVM_REPORT
+        );
+        assert!(parsed.attestation_report.iter().all(|&b| b == 0));
+    }
+}
