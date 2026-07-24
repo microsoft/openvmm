@@ -387,6 +387,18 @@ impl TestIgvmAgent {
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
 
+        // Extract the request capability bitmap, appended right after the
+        // request base. This tells the agent whether the guest requested the
+        // SHA-384 variant of the RSA+AES key-wrap scheme.
+        let request_data_ext = IgvmAttestRequestDataExt::read_from_prefix(
+            &request_bytes[size_of::<IgvmAttestRequestBase>()..],
+        )
+        .map_err(|_| Error::InvalidIgvmAttestRequest)?
+        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        let use_rsa_aes_key_wrap_384 = request_data_ext
+            .capability_bitmap
+            .use_rsa_aes_key_wrap_384();
+
         let (response, length) = if let Some(action) =
             self.take_next_action(request.header.request_type)
         {
@@ -423,7 +435,10 @@ impl TestIgvmAgent {
                                 self.initialize_keys()?;
                             }
                             let jwt = self
-                                .generate_mock_key_release_response(runtime_claims_bytes)
+                                .generate_mock_key_release_response(
+                                    runtime_claims_bytes,
+                                    use_rsa_aes_key_wrap_384,
+                                )
                                 .map_err(Error::KeyReleaseError)?;
                             let data = jwt.as_bytes().to_vec();
                             let header = IgvmAttestKeyReleaseResponseHeader {
@@ -431,7 +446,11 @@ impl TestIgvmAgent {
                                     + size_of::<IgvmAttestKeyReleaseResponseHeader>())
                                     as u32,
                                 version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo::default(),
+                                error_info: IgvmErrorInfo {
+                                    igvm_signal: IgvmSignal::default()
+                                        .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
+                                    ..Default::default()
+                                },
                             };
                             let payload = [header.as_bytes(), &data].concat();
                             let payload_len = payload.len() as u32;
@@ -530,7 +549,10 @@ impl TestIgvmAgent {
 
                     // Generate a mock JWT response for testing - convert request to proper type
                     let jwt_response = self
-                        .generate_mock_key_release_response(runtime_claims_bytes)
+                        .generate_mock_key_release_response(
+                            runtime_claims_bytes,
+                            use_rsa_aes_key_wrap_384,
+                        )
                         .map_err(Error::KeyReleaseError)?;
                     let data = jwt_response.as_bytes().to_vec();
 
@@ -538,7 +560,11 @@ impl TestIgvmAgent {
                         data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
                             as u32,
                         version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo::default(),
+                        error_info: IgvmErrorInfo {
+                            igvm_signal: IgvmSignal::default()
+                                .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
+                            ..Default::default()
+                        },
                     };
                     let payload = [header.as_bytes(), &data].concat();
                     let payload_len = payload.len() as u32;
@@ -637,6 +663,7 @@ impl TestIgvmAgent {
     fn generate_mock_key_release_response(
         &self,
         runtime_claims_bytes: &[u8],
+        use_rsa_aes_key_wrap_384: bool,
     ) -> Result<String, KeyReleaseError> {
         use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
 
@@ -671,7 +698,7 @@ impl TestIgvmAgent {
             .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
 
         // Generate the JWT response using the extracted RSA key
-        self.generate_jwt_with_rsa_key(rsa_public_key)
+        self.generate_jwt_with_rsa_key(rsa_public_key, use_rsa_aes_key_wrap_384)
     }
 
     /// Generate a mock JWT response for testing KEY_RELEASE_REQUEST
@@ -679,6 +706,7 @@ impl TestIgvmAgent {
     fn generate_jwt_with_rsa_key(
         &self,
         public_key: RsaPublicKey,
+        use_rsa_aes_key_wrap_384: bool,
     ) -> Result<String, KeyReleaseError> {
         use openhcl_attestation_protocol::igvm_attest::akv;
 
@@ -697,9 +725,16 @@ impl TestIgvmAgent {
             .and_then(|kw| kw.wrapper()?.wrap(priv_key_der.as_bytes()))
             .map_err(KeyReleaseError::AesKeyWrap)?;
 
-        // Encrypt the KEK using RSA-OAEP
+        // Encrypt the KEK using RSA-OAEP. Use the SHA-384 variant when the
+        // guest requested it (RSA_AES_KEY_WRAP_384), otherwise the default
+        // scheme with inner RSA-OAEP using SHA-1.
+        let oaep_hash_algorithm = if use_rsa_aes_key_wrap_384 {
+            crypto::HashAlgorithm::Sha384
+        } else {
+            crypto::HashAlgorithm::Sha1
+        };
         let encrypted_kek = public_key
-            .oaep_encrypt(&kek_bytes, crypto::HashAlgorithm::Sha1)
+            .oaep_encrypt(&kek_bytes, oaep_hash_algorithm)
             .map_err(KeyReleaseError::RsaEncryptionError)?;
 
         // Create the PKCS#11 RSA-AES-KEY-WRAP payload: RSA-encrypted KEK + AES-wrapped key
