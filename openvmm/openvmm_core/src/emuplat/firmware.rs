@@ -43,7 +43,7 @@ impl UefiLogger for MeshLogger {
         self.send(event);
     }
 
-    async fn log_initialization_failure(&mut self, _failure: UefiInitializationFailure) {
+    async fn log_initialization_failure(&self, _failure: UefiInitializationFailure) {
         self.send(FirmwareEvent::BootFailed);
     }
 }

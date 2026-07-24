@@ -155,7 +155,7 @@ impl UefiDevice {
         let UefiRuntimeDeps {
             gm,
             nvram_storage,
-            mut logger,
+            logger,
             vmtime,
             watchdog_platform,
             watchdog_recv,

@@ -39,7 +39,7 @@ impl UefiLogger for UnderhillLogger {
         self.get.event_log(log_event_id);
     }
 
-    async fn log_initialization_failure(&mut self, failure: UefiInitializationFailure) {
+    async fn log_initialization_failure(&self, failure: UefiInitializationFailure) {
         let event_id = match failure {
             UefiInitializationFailure::CustomVars => EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED,
         };

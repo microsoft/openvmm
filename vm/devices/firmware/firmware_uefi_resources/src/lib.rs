@@ -65,10 +65,10 @@ pub mod platform {
 
     /// Interface to log UEFI events.
     #[async_trait]
-    pub trait UefiLogger: Send {
+    pub trait UefiLogger: Send + Sync {
         fn log_event(&self, event: UefiEvent);
 
-        async fn log_initialization_failure(&mut self, _failure: UefiInitializationFailure) {}
+        async fn log_initialization_failure(&self, failure: UefiInitializationFailure);
     }
 
     /// Callbacks that enable nvram services to revoke VSM on
