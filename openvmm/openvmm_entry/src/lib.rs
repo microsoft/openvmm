@@ -35,6 +35,7 @@ use cli_args::GuestPowerAction;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
+use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
@@ -118,6 +119,7 @@ use std::time::Duration;
 use storvsp_resources::ScsiControllerRequest;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
@@ -1310,7 +1312,7 @@ async fn vm_config_from_command_line(
             enable_debugging: opt.uefi_debug,
             enable_memory_protections: opt.uefi_enable_memory_protections,
             disable_frontpage: opt.disable_frontpage,
-            enable_tpm: opt.tpm,
+            enable_tpm: opt.tpm.is_some(),
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
@@ -1464,7 +1466,7 @@ async fn vm_config_from_command_line(
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
                     guest_request_recv,
-                    enable_tpm: opt.tpm,
+                    enable_tpm: opt.tpm.is_some(),
                     firmware_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
@@ -1496,7 +1498,9 @@ async fn vm_config_from_command_line(
         ]);
     }
 
-    if opt.tpm && !opt.vtl2 {
+    if let Some(tpm_version) = opt.tpm
+        && !opt.vtl2
+    {
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
         } else {
@@ -1519,6 +1523,10 @@ async fn vm_config_from_command_line(
             name: "tpm".to_string(),
             resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    version: match tpm_version {
+                        TpmVersionCli::V138 => TpmVersion::V138,
+                        TpmVersionCli::V185 => TpmVersion::V185,
+                    },
                     ppi_store,
                     nvram_store,
                     nvram_size: None,

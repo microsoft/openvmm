@@ -131,6 +131,7 @@ use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
@@ -3076,6 +3077,8 @@ async fn new_underhill_vm(
             name: "tpm".to_owned(),
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    // TODO
+                    version: TpmVersion::V138,
                     ppi_store,
                     nvram_store,
                     refresh_tpm_seeds: platform_attestation_data
