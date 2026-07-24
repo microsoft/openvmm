@@ -1512,7 +1512,7 @@ impl<'p> Processor for KvmProcessor<'p> {
                             self.kvm.get_msrs(&msrs, &mut values).map_err(|err| {
                                 dev.fatal_error(KvmRunVpError::RearmSyntheticTimers(err).into())
                             })?;
-                            let mut rearm = Vec::with_capacity(4);
+                            let mut rearm = Vec::with_capacity(hvdef::NUM_TIMERS);
                             for (index, timer) in values.chunks_exact(2).enumerate() {
                                 let config = hvdef::HvSynicStimerConfig::from(timer[0]);
                                 let count = timer[1];
