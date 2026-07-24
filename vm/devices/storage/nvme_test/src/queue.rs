@@ -41,12 +41,20 @@ impl DoorbellMemory {
     }
 
     pub fn reset(&mut self) {
-        self.private_mem
-            .fill_at(0, 0, self.wakers.len() << DOORBELL_STRIDE_BITS)
+        let Self {
+            mem,
+            private_mem,
+            offset,
+            event_idx_offset,
+            wakers,
+        } = self;
+        private_mem
+            .fill_at(0, 0, wakers.len() << DOORBELL_STRIDE_BITS)
             .expect("private doorbell memory must be writable");
-        self.mem = self.private_mem.clone();
-        self.offset = 0;
-        self.event_idx_offset = None;
+        *mem = private_mem.clone();
+        *offset = 0;
+        *event_idx_offset = None;
+        wakers.fill(None);
     }
 
     /// Update the memory used to store the doorbell values. This is used to

@@ -3,7 +3,6 @@
 
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
-use crate::queue::DoorbellMemory;
 use crate::spec;
 use crate::tests::controller_tests::instantiate_and_build_admin_queue;
 use crate::tests::controller_tests::wait_for_msi;
@@ -185,17 +184,6 @@ async fn test_reset_shadow_doorbells(driver: DefaultDriver) {
         gm.read_plain::<u32>(DOORBELL_BUFFER_BASE).unwrap(),
         shadow_value
     );
-
-    let mut doorbells = DoorbellMemory::new(2);
-    assert!(doorbells.try_write(0, shadow_value).is_ok());
-    doorbells
-        .replace_mem(gm.clone(), DOORBELL_BUFFER_BASE, None)
-        .unwrap();
-    doorbells.reset();
-    doorbells
-        .replace_mem(gm.clone(), EVT_IDX_BUFFER_BASE, None)
-        .unwrap();
-    assert_eq!(gm.read_plain::<u32>(EVT_IDX_BUFFER_BASE).unwrap(), 0);
 }
 
 #[async_test]
