@@ -1489,6 +1489,7 @@ impl<'p> Processor for KvmProcessor<'p> {
                         siefp,
                         simp,
                     } => {
+                        let new_simp = HvSynicSimpSiefp::from(simp);
                         // Bring the overlay pages into agreement with the new
                         // SIMP/SIEFP values the guest just programmed. The
                         // overlays are owned by this processor; the save/restore
@@ -1499,9 +1500,43 @@ impl<'p> Processor for KvmProcessor<'p> {
                             siefp.into(),
                             &self.partition.gm,
                         );
+
+                        // KVM leaves a periodic message-mode STimer permanently
+                        // pending if it expires before SIMP is usable. Rewriting
+                        // the count clears that state now that delivery can work.
+                        if !self.simp.enabled() && new_simp.enabled() {
+                            let msrs: [u32; 8] = std::array::from_fn(|index| {
+                                hvdef::HV_X64_MSR_STIMER0_CONFIG + index as u32
+                            });
+                            let mut values = [0; 8];
+                            self.kvm.get_msrs(&msrs, &mut values).map_err(|err| {
+                                dev.fatal_error(KvmRunVpError::RearmSyntheticTimers(err).into())
+                            })?;
+                            let mut rearm = Vec::with_capacity(4);
+                            for (index, timer) in values.chunks_exact(2).enumerate() {
+                                let config = hvdef::HvSynicStimerConfig::from(timer[0]);
+                                let count = timer[1];
+                                if config.enabled()
+                                    && config.periodic()
+                                    && !config.direct_mode()
+                                    && count != 0
+                                {
+                                    rearm.push((
+                                        hvdef::HV_X64_MSR_STIMER0_COUNT + index as u32 * 2,
+                                        count,
+                                    ));
+                                }
+                            }
+                            if !rearm.is_empty() {
+                                self.kvm.set_msrs(&rearm).map_err(|err| {
+                                    dev.fatal_error(KvmRunVpError::RearmSyntheticTimers(err).into())
+                                })?;
+                            }
+                        }
+
                         self.scontrol = control.into();
                         self.siefp = siefp.into();
-                        self.simp = simp.into();
+                        self.simp = new_simp;
                         *self.inner.siefp.write() = if self.scontrol.enabled() {
                             siefp.into()
                         } else {

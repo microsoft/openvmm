@@ -153,6 +153,9 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to rearm Hyper-V synthetic timers")]
+    RearmSyntheticTimers(#[source] kvm::Error),
 }
 
 pub struct KvmProcessorBinder {
