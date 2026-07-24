@@ -1505,10 +1505,10 @@ impl<'p> Processor for KvmProcessor<'p> {
                         // pending if it expires before SIMP is usable. Rewriting
                         // the count clears that state now that delivery can work.
                         if !self.simp.enabled() && new_simp.enabled() {
-                            let msrs: [u32; 8] = std::array::from_fn(|index| {
+                            let msrs: [u32; hvdef::NUM_TIMERS * 2] = std::array::from_fn(|index| {
                                 hvdef::HV_X64_MSR_STIMER0_CONFIG + index as u32
                             });
-                            let mut values = [0; 8];
+                            let mut values = [0; hvdef::NUM_TIMERS * 2];
                             self.kvm.get_msrs(&msrs, &mut values).map_err(|err| {
                                 dev.fatal_error(KvmRunVpError::RearmSyntheticTimers(err).into())
                             })?;
