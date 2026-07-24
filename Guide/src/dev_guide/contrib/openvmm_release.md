@@ -34,16 +34,26 @@ Normal releases advance the minor version:
 0.3.0
 ```
 
+Only the newest OpenVMM release is supported. Before `1.0`, fixes — including
+security fixes and release-blocking regressions — ship by rolling forward: the
+fix lands on `main` and rides the next release, cut early when it is urgent.
+Once a newer release ships, the previous line leaves support.
+
+```admonish note title="Patch releases and servicing branches are post-1.0"
+The patch-version scheme just below and the
+[Patch release runbook](#patch-release-runbook) describe servicing an older
+in-support line in isolation. That model arrives with post-`1.0` stable release
+branches. Pre-`1.0`, OpenVMM rolls forward from `main` rather than maintaining
+release branches, so patch releases (`X.Y.Z` with `Z` greater than `0`) are not
+produced yet.
+```
+
 Patch releases advance the patch version:
 
 ```text
 0.2.1
 0.2.2
 ```
-
-Only the newest OpenVMM release is supported initially. A supported release
-receives a patch only for a security issue or release-blocking regression.
-Once a newer normal release ships, the previous line leaves normal support.
 
 Before `1.0`, normal minor releases may make breaking changes to APIs,
 command-line behavior, device models, snapshot formats, and other interfaces.
@@ -288,6 +298,14 @@ confirm that the executable starts and reports the expected version.
 
 ## Patch release runbook
 
+```admonish note title="Post-1.0: requires stable release branches"
+This runbook applies once OpenVMM adopts post-`1.0` stable release branches for
+servicing an older in-support line. Pre-`1.0`, fixes instead roll forward in the
+next release from `main` and no patch branches are created — see
+[Pre-1.0 cadence and support](#pre-10-cadence-and-support). This process mirrors
+the OpenHCL [release branch model](./release.md).
+```
+
 OpenVMM does not create a release branch for every normal release. Create a
 patch branch only when the currently supported release requires a security or
 release-blocking fix.
@@ -324,8 +342,9 @@ Shared fixes always land in `main` first.
 For OpenHCL, maintainers cherry-pick a fix to each live OpenHCL release branch
 that requires it.
 
-For OpenVMM, the fix ships in the next normal release unless the currently
-supported release qualifies for an on-demand patch.
+For OpenVMM before `1.0`, the fix ships in the next release rolled forward from
+`main`, cut early when it is urgent. On-demand patch releases to an older
+in-support line arrive post-`1.0` with stable release branches.
 
 ## Reporting security issues
 
