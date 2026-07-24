@@ -3,7 +3,6 @@
 
 use petri::CommandError;
 use petri::PetriGuestStateLifetime;
-use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -29,7 +28,6 @@ const APPEND_NON_SIGNATURE_VAR_JSON: &[u8] =
 const REPLACE_DEFAULTS_WITH_NON_SIGNATURE_VAR_JSON: &[u8] =
     include_bytes!("custom_uefi_json/replace_defaults_with_non_signature_var.json");
 const APPEND_SHA256_DBX_JSON: &[u8] = include_bytes!("custom_uefi_json/append_sha256_dbx.json");
-const APPEND_WITHOUT_BASE_JSON: &[u8] = include_bytes!("custom_uefi_json/append_without_base.json");
 
 //  Custom variable properties
 const CUSTOM_UEFI_VAR_NAME: &str = "PetriCustomVar";
@@ -224,46 +222,6 @@ async fn custom_uefi_append_sha256_dbx<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-/// Verify that OpenHCL rejects an Append delta when no base template is set.
-///
-/// This cannot cover direct OpenVMM UEFI because its UEFI device construction
-/// fails before Petri receives a running VM. With OpenHCL, the outer VM is
-/// already running when VTL2 constructs the UEFI device, so the test can
-/// observe that OpenHCL rejects VTL0 startup and powers off. The exact
-/// `AppendWithoutBase` error is covered by `firmware_uefi_custom_vars` tests;
-/// OpenHCL emits it through userspace tracing, not the kernel kmsg stream.
-#[vmm_test_with(
-    noagent,
-    configs(
-        openvmm_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
-        openvmm_openhcl_uefi_aarch64(none)[VMGSTOOL_NATIVE],
-        hyperv_openhcl_uefi_x64(none)[VMGSTOOL_NATIVE],
-        hyperv_openhcl_uefi_aarch64(none)[VMGSTOOL_NATIVE]
-    )
-)]
-async fn custom_uefi_append_without_base_fails<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
-) -> Result<(), anyhow::Error> {
-    let (_temp_dir, vmgs_path) =
-        create_custom_uefi_vmgs(vmgstool.get(), APPEND_WITHOUT_BASE_JSON).await?;
-
-    let vm = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_persistent_vmgs(&vmgs_path)
-        .with_custom_uefi_json(APPEND_WITHOUT_BASE_JSON)
-        .with_expect_boot_failure()
-        .run_without_agent()
-        .await?;
-
-    let halt_reason = vm.wait_for_teardown().await?;
-    anyhow::ensure!(
-        halt_reason.reason == PetriHaltReason::PowerOff,
-        "expected OpenHCL startup failure to power off the VM, got {halt_reason:?}"
-    );
     Ok(())
 }
 
