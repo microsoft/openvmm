@@ -133,11 +133,10 @@ corresponding packages are typically `glibc`, `openssl-libs`, and `zlib`.
 
 ## Worked example: Azure Linux RPM
 
-This mirrors the pattern used by the
-[`cloud-hypervisor`](https://github.com/microsoft/azurelinux/tree/3.0/SPECS/cloud-hypervisor)
-package: a source tarball, a `cargo vendor` tarball, and an offline build. The
-distribution package version is independent from the OpenVMM product version
-(see [Independent version spaces](./openvmm_release.md#independent-version-spaces)).
+This uses a common Rust-packaging pattern: a source tarball, a `cargo vendor`
+tarball, and an offline build. The distribution package version is independent
+from the OpenVMM product version (see
+[Independent version spaces](./openvmm_release.md#independent-version-spaces)).
 
 Use `openvmm-<VERSION>-source.tar.gz` from the release as `Source0` so the build
 retains its release identity through `.openvmm-release.json`. Do not use
