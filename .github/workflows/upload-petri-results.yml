@@ -99,8 +99,41 @@ jobs:
               "ghbranch=$SOURCE_BRANCH" \
               "ghpr=$SOURCE_PR" \
             --auth-mode login
+
+          # Attempt-keyed duplicate (new scheme).
+          #
+          # Re-running a workflow reuses the same run_id, so the legacy uploads
+          # above overwrite a previous attempt's logs (a flaky test that failed
+          # then passed loses its failure logs). To preserve every attempt we
+          # additionally upload the same data + metadata keyed on
+          # "<run_id>_<run_attempt>" (the first attempt is "_1").
+          #
+          # The data tree lives at the top level alongside the legacy tree
+          # (results/<run_id>_<attempt>/...); the metadata marker goes in a
+          # separate `attempts/` folder rather than `runs/` so the current
+          # site's `runs/` listing is unaffected during the transition. Once a
+          # full 30-day retention window has elapsed, the site can be switched
+          # to read from `attempts/` and the legacy uploads above removed.
+          run_key="${run_id}_${run_attempt}"
+
+          az storage blob upload-batch \
+            --destination "$BASE_URL/results" \
+            --destination-path "$run_key" \
+            --source results \
+            --auth-mode login
+
+          az storage blob upload \
+            --blob-url "$BASE_URL/results/attempts/$run_key" \
+            --file /dev/null \
+            --metadata \
+              "petrifailed=$FAIL_COUNT" \
+              "petripassed=$PASS_COUNT" \
+              "ghbranch=$SOURCE_BRANCH" \
+              "ghpr=$SOURCE_PR" \
+            --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
 
       - name: Upload to memory validation results to Azure Blob Storage
         run: |
