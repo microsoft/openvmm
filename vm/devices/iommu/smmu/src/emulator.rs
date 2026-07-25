@@ -4,6 +4,7 @@
 //! SMMUv3 device emulator — register file and MMIO dispatch.
 
 use crate::shared::SmmuSharedState;
+use crate::shared::TranslationPolicy;
 use crate::spec::commands::CmdCfgiCd;
 use crate::spec::commands::CmdCfgiSte;
 use crate::spec::commands::CmdEntry;
@@ -209,6 +210,19 @@ pub struct SmmuDevice {
 }
 
 impl SmmuDevice {
+    fn sanitize_cr0(value: u32) -> registers::Cr0 {
+        let requested = registers::Cr0::from(value);
+        registers::Cr0::new()
+            .with_smmuen(requested.smmuen())
+            .with_eventqen(requested.eventqen())
+            .with_cmdqen(requested.cmdqen())
+    }
+
+    fn sanitize_gbpa(value: u32) -> registers::Gbpa {
+        let requested = registers::Gbpa::from(value);
+        registers::Gbpa::new().with_abort(requested.abort())
+    }
+
     /// Creates a new SMMUv3 device.
     ///
     /// `mmio_base` is the physical address for the 128KB MMIO region.
@@ -437,18 +451,25 @@ impl SmmuDevice {
             | registers::IRQ_CTRLACK => {}
 
             registers::CR0 => {
-                self.cr0 = registers::Cr0::from(value);
-                // Immediate acknowledge — no async enable sequence.
-                self.cr0ack = self.cr0;
-                self.shared_state.set_evtq_enabled(self.cr0.eventqen());
-                // A SMMUEN change flips the disabled-state policy
-                // (bypass/abort) to/from the per-stream STE policy.
-                self.shared_state.set_enabled(self.cr0.smmuen());
-                if let Err(e) = self.shared_state.apply_all_stream_configs() {
-                    tracelimit::warn_ratelimited!(
-                        error = &*e as &dyn std::error::Error,
-                        "smmu: failed to apply SMMU enable policy"
-                    );
+                let requested = Self::sanitize_cr0(value);
+                let previous_ack = self.cr0ack;
+                self.cr0 = requested;
+
+                if requested.smmuen() != previous_ack.smmuen() {
+                    let mut policy = self.shared_state.translation_policy();
+                    policy.enabled = requested.smmuen();
+                    self.shared_state
+                        .transition_translation_policy(policy, "SMMUEN transition")
+                        .unwrap_or_else(|error| {
+                            panic!("smmu: failed to apply SMMUEN transition: {error:#}")
+                        });
+                }
+
+                self.shared_state.set_evtq_enabled(requested.eventqen());
+                self.cr0ack = requested;
+
+                if !previous_ack.cmdqen() && requested.cmdqen() {
+                    self.process_cmdq();
                 }
             }
             registers::CR1 => {
@@ -458,22 +479,26 @@ impl SmmuDevice {
                 self.cr2 = registers::Cr2::from(value);
             }
             registers::GBPA => {
-                // Clear the UPDATE bit on write (the SMMU "completes" the
-                // update immediately).
-                let mut gbpa = registers::Gbpa::from(value);
-                gbpa.set_update(false);
-                self.gbpa = gbpa;
-                // GBPA.ABORT selects bypass vs abort while the SMMU is
-                // disabled. Mirror it into shared state (consulted by the
-                // non-accel translate path and the accel policy computation),
-                // then re-drive the accelerated backends.
-                self.shared_state.set_gbpa_abort(self.gbpa.abort());
-                if let Err(e) = self.shared_state.apply_all_stream_configs() {
-                    tracelimit::warn_ratelimited!(
-                        error = &*e as &dyn std::error::Error,
-                        "smmu: failed to apply GBPA policy"
-                    );
+                let requested = registers::Gbpa::from(value);
+                if !requested.update() {
+                    return;
                 }
+                let gbpa = Self::sanitize_gbpa(value);
+
+                if self.cr0ack.smmuen() {
+                    // While enabled, GBPA only records the policy for a future
+                    // disabled state and does not affect current STE policy.
+                    self.shared_state.set_gbpa_abort(gbpa.abort());
+                } else {
+                    let mut policy = self.shared_state.translation_policy();
+                    policy.gbpa_abort = gbpa.abort();
+                    self.shared_state
+                        .transition_translation_policy(policy, "GBPA transition")
+                        .unwrap_or_else(|error| {
+                            panic!("smmu: failed to apply GBPA transition: {error:#}")
+                        });
+                }
+                self.gbpa = gbpa;
             }
             registers::IRQ_CTRL => {
                 self.irq_ctrl = registers::IrqCtrl::from(value);
@@ -1016,19 +1041,35 @@ impl ChangeDeviceState for SmmuDevice {
             cmdq_msi,
         } = self;
 
-        *cr0 = registers::Cr0::new();
-        *cr0ack = registers::Cr0::new();
+        let reset_cr0 = registers::Cr0::new();
+        let reset_gbpa = registers::Gbpa::new().with_abort(false);
+        let reset_strtab_base = 0;
+        let reset_strtab_base_cfg = registers::StrtabBaseCfg::new();
+        let TranslationPolicy { oas_mask, .. } = shared_state.translation_policy();
+        let reset_policy = TranslationPolicy {
+            enabled: reset_cr0.smmuen(),
+            gbpa_abort: reset_gbpa.abort(),
+            strtab_base: registers::StrtabBase::from(reset_strtab_base).addr(),
+            strtab_log2size: reset_strtab_base_cfg.log2size(),
+            oas_mask,
+        };
+        shared_state
+            .transition_translation_policy(reset_policy, "SMMU reset")
+            .unwrap_or_else(|error| panic!("smmu: failed to apply reset policy: {error:#}"));
+
+        *cr0 = reset_cr0;
+        *cr0ack = reset_cr0;
         *cr1 = registers::Cr1::new();
         *cr2 = registers::Cr2::new();
         // GBPA resets to ABORT=0 (disabled-state DMA bypasses), matching the
         // power-on default and preserving boot-time passthrough.
-        *gbpa = registers::Gbpa::new().with_abort(false);
+        *gbpa = reset_gbpa;
 
         *irq_ctrl = registers::IrqCtrl::new();
         *irq_ctrlack = registers::IrqCtrl::new();
 
-        *strtab_base = 0;
-        *strtab_base_cfg = registers::StrtabBaseCfg::new();
+        *strtab_base = reset_strtab_base;
+        *strtab_base_cfg = reset_strtab_base_cfg;
 
         *cmdq_base = 0;
         *cmdq_prod = 0;
@@ -1043,21 +1084,9 @@ impl ChangeDeviceState for SmmuDevice {
         *evtq_msi = MsiConfig::default();
         *cmdq_msi = MsiConfig::default();
 
-        // Atomically reset the policy-relevant translation state (disabled,
-        // GBPA.ABORT=0 so DMA bypasses, stream table cleared).
-        shared_state.sync_translation_state(false, false, 0, 0);
         // Reset EVTQ state (prod, cons, config, enabled).
         // Reset GERROR state and deassert interrupt.
         shared_state.reset_queue_state();
-
-        // Re-drive the accelerated backends to the post-reset policy (bypass),
-        // now that the shared translation state reflects the reset.
-        if let Err(e) = shared_state.apply_all_stream_configs() {
-            tracelimit::warn_ratelimited!(
-                error = &*e as &dyn std::error::Error,
-                "smmu: failed to apply reset policy"
-            );
-        }
     }
 }
 
@@ -1162,40 +1191,39 @@ impl SaveRestore for SmmuDevice {
             gerrorn,
         } = saved;
 
-        self.cr0 = registers::Cr0::from(cr0);
-        self.cr0ack = self.cr0; // immediate ack
-        self.cr1 = registers::Cr1::from(cr1);
-        self.cr2 = registers::Cr2::from(cr2);
-        self.gbpa = registers::Gbpa::from(gbpa);
+        let restored_cr0 = Self::sanitize_cr0(cr0);
+        let restored_cr1 = registers::Cr1::from(cr1);
+        let restored_cr2 = registers::Cr2::from(cr2);
+        let restored_gbpa = Self::sanitize_gbpa(gbpa);
+        let restored_irq_ctrl = registers::IrqCtrl::from(irq_ctrl);
+        let restored_strtab_base_cfg = registers::StrtabBaseCfg::from(strtab_base_cfg);
 
-        self.irq_ctrl = registers::IrqCtrl::from(irq_ctrl);
-        self.irq_ctrlack = self.irq_ctrl; // immediate ack
+        let mut restored_policy = self.shared_state.translation_policy();
+        restored_policy.enabled = restored_cr0.smmuen();
+        restored_policy.gbpa_abort = restored_gbpa.abort();
+        restored_policy.strtab_base = registers::StrtabBase::from(strtab_base).addr();
+        restored_policy.strtab_log2size = restored_strtab_base_cfg.log2size();
+        self.shared_state
+            .transition_translation_policy(restored_policy, "SMMU restore")
+            .map_err(RestoreError::Other)?;
 
+        self.cr0 = restored_cr0;
+        self.cr0ack = restored_cr0;
+        self.cr1 = restored_cr1;
+        self.cr2 = restored_cr2;
+        self.gbpa = restored_gbpa;
+        self.irq_ctrl = restored_irq_ctrl;
+        self.irq_ctrlack = restored_irq_ctrl;
         self.strtab_base = strtab_base;
-        self.strtab_base_cfg = registers::StrtabBaseCfg::from(strtab_base_cfg);
-
+        self.strtab_base_cfg = restored_strtab_base_cfg;
         self.cmdq_base = cmdq_base;
         self.cmdq_prod = cmdq_prod;
         self.cmdq_cons = registers::CmdqCons::from(cmdq_cons);
-
         self.evtq_base = evtq_base;
-
         self.gerror_msi = gerror_msi.restore();
         self.evtq_msi = evtq_msi.restore();
         self.cmdq_msi = cmdq_msi.restore();
 
-        // Re-sync derived state in SmmuSharedState. Apply the policy-relevant
-        // translation state (enable, GBPA.ABORT, stream table) as one atomic
-        // transition; the accelerated backends are re-driven to the restored
-        // policy below.
-        let strtab_base = registers::StrtabBase::from(self.strtab_base).addr();
-        let strtab_log2size = self.strtab_base_cfg.log2size();
-        self.shared_state.sync_translation_state(
-            self.cr0.smmuen(),
-            self.gbpa.abort(),
-            strtab_base,
-            strtab_log2size,
-        );
         self.sync_evtq_to_shared();
         self.shared_state.set_evtq_enabled(self.cr0.eventqen());
         self.shared_state
@@ -1207,14 +1235,6 @@ impl SaveRestore for SmmuDevice {
                 gerror,
                 gerrorn,
             });
-
-        // Re-drive the accelerated backends to the restored policy.
-        if let Err(e) = self.shared_state.apply_all_stream_configs() {
-            tracelimit::warn_ratelimited!(
-                error = &*e as &dyn std::error::Error,
-                "smmu: failed to apply restored policy"
-            );
-        }
 
         Ok(())
     }
@@ -1509,6 +1529,19 @@ mod tests {
     }
 
     #[test]
+    fn test_cr0_sanitizes_unsupported_fields() {
+        let mut dev = make_test_device();
+        write32(&mut dev, CR0, u32::MAX);
+
+        let expected = Cr0::new()
+            .with_smmuen(true)
+            .with_cmdqen(true)
+            .with_eventqen(true);
+        assert_eq!(read32(&mut dev, CR0), u32::from(expected));
+        assert_eq!(read32(&mut dev, CR0ACK), u32::from(expected));
+    }
+
+    #[test]
     fn test_cr0_enable_sequence() {
         let mut dev = make_test_device();
 
@@ -1585,6 +1618,24 @@ mod tests {
         let readback = Gbpa::from(read32(&mut dev, GBPA));
         assert!(!readback.update());
         assert!(!readback.abort());
+    }
+
+    #[test]
+    fn test_gbpa_sanitizes_reserved_and_unsupported_fields() {
+        let mut dev = make_test_device();
+        write32(&mut dev, GBPA, u32::MAX);
+
+        assert_eq!(
+            read32(&mut dev, GBPA),
+            u32::from(Gbpa::new().with_abort(true))
+        );
+    }
+
+    #[test]
+    fn test_gbpa_without_update_is_ignored() {
+        let mut dev = make_test_device();
+        write32(&mut dev, GBPA, Gbpa::new().with_abort(true).into());
+        assert_eq!(read32(&mut dev, GBPA), u32::from(Gbpa::new()));
     }
 
     #[test]
@@ -1757,6 +1808,14 @@ mod tests {
     const TEST_CMDQ_GPA: u64 = 0x1_0000;
     /// GPA where CMD_SYNC MSI writes go.
     const TEST_MSI_GPA: u64 = 0x2_0000;
+
+    fn transition_to_enabled(state: &SmmuSharedState) {
+        let mut policy = state.translation_policy();
+        policy.enabled = true;
+        state
+            .transition_translation_policy(policy, "test enable transition")
+            .expect("enable test SMMU");
+    }
 
     /// Create a device with real guest memory and a configured CMDQ.
     fn make_cmdq_test_device() -> SmmuDevice {
@@ -2074,6 +2133,11 @@ mod tests {
         // CONS should stay at 0 — CMDQ is disabled.
         let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
         assert_eq!(cons.rd(), 0);
+
+        // Enabling CMDQ consumes commands that were published while disabled.
+        write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 1);
     }
 
     // =========================================================================
@@ -2170,7 +2234,7 @@ mod tests {
         let sid = (secondary_bus as u32) << 8;
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
         let ste = Ste {
             qw0: SteDw0::new()
                 .with_v(true)
@@ -2314,7 +2378,7 @@ mod tests {
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
 
         let sid = 0x100u32; // bus 1, dev 0, fn 0
         write_test_ste(&dev, sid, SteConfig::BYPASS);
@@ -2338,7 +2402,7 @@ mod tests {
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
 
         let backend = RecordingBackend::new();
         let id = dev
@@ -2369,7 +2433,7 @@ mod tests {
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
         write_test_ste(&dev, 0x100, SteConfig::BYPASS);
         write_test_ste(&dev, 0x200, SteConfig::ABORT);
 
@@ -2406,7 +2470,7 @@ mod tests {
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
         write_test_ste(&dev, 0x100, SteConfig::BYPASS);
 
         let backend = RecordingBackend::new();
@@ -2473,7 +2537,7 @@ mod tests {
             .expect("register backend");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
 
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
         dev.shared_state
             .apply_all_stream_configs()
             .expect("apply enabled policy");
@@ -2505,7 +2569,7 @@ mod tests {
         // Enable and program an abort STE, then re-drive.
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::ABORT);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
         dev.shared_state
             .apply_all_stream_configs()
             .expect("apply all stream configs");
@@ -2513,6 +2577,148 @@ mod tests {
             backend.take().last().copied(),
             Some(crate::shared::StreamConfig::Abort)
         );
+    }
+
+    #[test]
+    fn test_unrelated_cr0_writes_do_not_redrive_streams() {
+        let mut dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        backend.take();
+
+        write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
+        write32(
+            &mut dev,
+            CR0,
+            Cr0::new().with_cmdqen(true).with_eventqen(true).into(),
+        );
+        write32(
+            &mut dev,
+            CR0,
+            Cr0::new().with_cmdqen(true).with_eventqen(true).into(),
+        );
+        assert!(backend.take().is_empty());
+    }
+
+    #[test]
+    fn test_smmuen_transition_skips_no_rid_registration() {
+        let mut dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        let _id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        backend.take();
+
+        write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
+        assert!(backend.take().is_empty());
+    }
+
+    #[test]
+    fn test_smmuen_failure_stops_without_ack_or_secondary_policy() {
+        let mut dev = make_accel_device();
+        let backends = [
+            RecordingBackend::new(),
+            RecordingBackend::new(),
+            RecordingBackend::new(),
+        ];
+        let mut registrations = Vec::new();
+        for (index, backend) in backends.iter().enumerate() {
+            let id = dev
+                .shared_state
+                .register_accel_device(0, backend.clone())
+                .expect("register backend");
+            let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+            registration
+                .set_requester_id(((index + 1) as u16) << 8)
+                .expect("bind RID");
+            backend.take();
+            registrations.push(registration);
+        }
+
+        backends[1].fail_next();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
+        }));
+        assert!(result.is_err());
+        assert!(Cr0::from(read32(&mut dev, CR0)).smmuen());
+        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
+        assert_eq!(backends[0].take(), vec![crate::shared::StreamConfig::Abort]);
+        assert_eq!(backends[1].take(), vec![crate::shared::StreamConfig::Abort]);
+        assert!(backends[2].take().is_empty());
+    }
+
+    #[test]
+    fn test_gbpa_while_enabled_is_future_policy_only() {
+        use crate::spec::ste::SteConfig;
+
+        let mut dev = make_accel_device();
+        write64(
+            &mut dev,
+            STRTAB_BASE,
+            StrtabBase::new()
+                .with_addr_bits(TEST_STRTAB_GPA >> 6)
+                .into(),
+        );
+        write32(
+            &mut dev,
+            STRTAB_BASE_CFG,
+            StrtabBaseCfg::new()
+                .with_log2size(TEST_STRTAB_LOG2SIZE)
+                .into(),
+        );
+        write_test_ste(&dev, 0x100, SteConfig::BYPASS);
+
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        backend.take();
+
+        write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+
+        write32(
+            &mut dev,
+            GBPA,
+            Gbpa::new().with_update(true).with_abort(true).into(),
+        );
+        assert!(backend.take().is_empty());
+
+        write32(&mut dev, CR0, Cr0::new().into());
+        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+    }
+
+    #[pal_async::async_test]
+    async fn test_restore_policy_failure_does_not_publish_state() {
+        let mut dev = make_accel_device();
+        let backend = RecordingBackend::new();
+        let id = dev
+            .shared_state
+            .register_accel_device(0, backend.clone())
+            .expect("register backend");
+        let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+        registration.set_requester_id(0x100).expect("bind RID");
+        backend.take();
+
+        write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
+        let saved = dev.save().expect("save enabled state");
+        dev.reset().await;
+        backend.take();
+
+        backend.fail_next();
+        assert!(matches!(dev.restore(saved), Err(RestoreError::Other(_))));
+        assert!(!Cr0::from(read32(&mut dev, CR0)).smmuen());
+        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
+        assert!(!dev.shared_state.translation_policy().enabled);
     }
 
     /// A failed host policy replacement leaves the old attachment active, so
@@ -2525,7 +2731,7 @@ mod tests {
         let mut dev = make_cmdq_test_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
 
         let sid = 0x100;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
@@ -2598,7 +2804,7 @@ mod tests {
         let dev = make_accel_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
 
         let sid = 0x100u32;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
@@ -2690,7 +2896,7 @@ mod tests {
         let mut dev = make_cmdq_test_device();
         dev.shared_state
             .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
-        dev.shared_state.set_enabled(true);
+        transition_to_enabled(&dev.shared_state);
 
         let sid = 0x100;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
