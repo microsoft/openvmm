@@ -15,7 +15,7 @@ separate products with different release and support policies.
 | OpenHCL | Paravisor built on OpenVMM. Releases and in-market servicing use selected long-lived release branches. |
 
 ```admonish note title="See also"
-[OpenHCL Release Management](./release.md) describes the OpenHCL release
+[OpenHCL Release Management](./openhcl_release.md) describes the OpenHCL release
 branch and backport process.
 ```
 
@@ -59,7 +59,8 @@ Before `1.0`, normal minor releases may make breaking changes to APIs,
 command-line behavior, device models, snapshot formats, and other interfaces.
 Breaking changes should be intentional and documented in the release notes,
 with migration guidance when practical. Patch releases correct the currently
-supported minor line and should not intentionally introduce breaking changes.
+supported minor line and avoid breaking changes unless a fix genuinely requires
+one, such as an urgent security fix that cannot be made compatibly.
 
 ## Release tags
 
@@ -171,8 +172,9 @@ executable permissions.
 public GitHub build provenance attestation before the release is published.
 
 ```admonish warning title="Windows signing is not implemented"
-The public release workflow does not Authenticode-sign Windows artifacts. Do
-not describe downloaded Windows executables as signed.
+The public release workflow does not Authenticode-sign Windows artifacts.
+Downloaded Windows executables are therefore unsigned, and release notes and
+documentation should not present them as signed.
 ```
 
 ## Building a release from source
@@ -303,7 +305,7 @@ This runbook applies once OpenVMM adopts post-`1.0` stable release branches for
 servicing an older in-support line. Pre-`1.0`, fixes instead roll forward in the
 next release from `main` and no patch branches are created — see
 [Pre-1.0 cadence and support](#pre-10-cadence-and-support). This process mirrors
-the OpenHCL [release branch model](./release.md).
+the OpenHCL [release branch model](./openhcl_release.md).
 ```
 
 OpenVMM does not create a release branch for every normal release. Create a
@@ -337,12 +339,9 @@ ships.
 
 ## How fixes flow
 
-Shared fixes always land in `main` first.
+Fixes always land in `main` first.
 
-For OpenHCL, maintainers cherry-pick a fix to each live OpenHCL release branch
-that requires it.
-
-For OpenVMM before `1.0`, the fix ships in the next release rolled forward from
+Before `1.0`, an OpenVMM fix ships in the next release rolled forward from
 `main`, cut early when it is urgent. On-demand patch releases to an older
 in-support line arrive post-`1.0` with stable release branches.
 

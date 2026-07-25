@@ -139,8 +139,8 @@ from the OpenVMM product version (see
 [Independent version spaces](./openvmm_release.md#independent-version-spaces)).
 
 Use `openvmm-<VERSION>-source.tar.gz` from the release as `Source0` so the build
-retains its release identity through `.openvmm-release.json`. Do not use
-GitHub's automatic archive links, which drop that metadata.
+retains its release identity through `.openvmm-release.json`. GitHub's automatic
+archive links drop that metadata, so they do not work as `Source0`.
 
 Declare the build and runtime dependencies:
 

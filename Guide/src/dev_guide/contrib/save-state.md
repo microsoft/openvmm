@@ -89,4 +89,4 @@ pub mod save_restore {
 ```
 
 [^1]: Saved state is in use when it reaches a release branch that is in tell
-    mode. See [release management](./release.md) for details.
+    mode. See [release management](./openhcl_release.md) for details.

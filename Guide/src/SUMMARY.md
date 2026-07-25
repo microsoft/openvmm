@@ -63,7 +63,7 @@
   - [Snapshot Format](./dev_guide/snapshot_format.md)
   - [OpenVMM Release Model and Support](./dev_guide/contrib/openvmm_release.md)
   - [Packaging OpenVMM for a Linux Distribution](./dev_guide/contrib/openvmm_packaging.md)
-  - [OpenHCL Release Management](./dev_guide/contrib/release.md)
+  - [OpenHCL Release Management](./dev_guide/contrib/openhcl_release.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
