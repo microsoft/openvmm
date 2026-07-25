@@ -774,6 +774,7 @@ impl Tpm {
             // Initialize `TPM_NV_INDEX_ATTESTATION_REPORT` if `ak_cert_type` supports attestation
             // report.
             if self.ak_cert_type.attested() {
+                tracing::info!(CVM_ALLOWED, "initializing TPM attestation report NV index");
                 self.renew_attestation_report()?;
             }
         }
@@ -1075,6 +1076,11 @@ impl Tpm {
                 &attestation_report,
             )
             .map_err(TpmErrorKind::WriteToNvIndex)?;
+        tracing::info!(
+            CVM_ALLOWED,
+            report_size = attestation_report.len(),
+            "TPM attestation report NV index renewed"
+        );
 
         self.attestation_report_renew_time = Some(std::time::SystemTime::now());
 
@@ -1292,7 +1298,7 @@ impl Tpm {
                     );
                 }
             } else {
-                tracing::warn!("Hardware attestation report generation was rate limited");
+                tracing::warn!("Attestation report generation was rate limited");
             }
         } else {
             // Renew AkCert if exceeds 24 hours since renewal, or not populated,

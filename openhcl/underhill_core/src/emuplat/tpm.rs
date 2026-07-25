@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
@@ -63,6 +64,13 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         guest_input: &[u8],
         is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            tvm_host_certification = self.tvm_host_certification,
+            is_attestation_report,
+            "creating TPM AK certificate request"
+        );
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
@@ -91,6 +99,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         } else {
             vec![]
         };
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            report_size = attestation_report.len(),
+            "attestation report generated for TPM request"
+        );
 
         let version = if is_attestation_report {
             // If this is an attestation report, use the version 1, the stable structure exposed
@@ -104,6 +118,14 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let request = ak_cert_request_helper
             .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            is_attestation_report,
+            report_size = attestation_report.len(),
+            request_size = request.len(),
+            "TPM request created"
+        );
 
         Ok(request)
     }
@@ -112,6 +134,11 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         &self,
         request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        tracing::info!(
+            CVM_ALLOWED,
+            request_size = request.len(),
+            "sending TPM AK certificate request to IGVM"
+        );
         let agent_data = self.attestation_agent_data.clone().unwrap_or_default();
         let result = self
             .get_client
@@ -123,6 +150,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             // Let the caller to handle the empty response.
             vec![]
         };
+        tracing::info!(
+            CVM_ALLOWED,
+            response_size = result.response.len(),
+            payload_size = payload.len(),
+            "TPM AK certificate response received from IGVM"
+        );
 
         Ok(payload)
     }
