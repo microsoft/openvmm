@@ -515,6 +515,7 @@ impl<'a> WhpVpRef<'a> {
         if request_notification {
             self.vplc(vtl).check_queues.store(true, Ordering::SeqCst);
             self.ensure_vtl_runnable(vtl);
+            self.whp(vtl).cancel_run().expect("can't fail");
             self.wake();
         }
     }
