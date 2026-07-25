@@ -160,6 +160,19 @@ pub enum StreamConfig {
     },
 }
 
+/// Policy inputs used to compute one stream's effective host attachment.
+///
+/// Keeping this separate from [`SharedStateInner`] lets register updates
+/// evaluate and install a proposed policy before publishing it to DMA paths.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TranslationPolicy {
+    pub(crate) enabled: bool,
+    pub(crate) gbpa_abort: bool,
+    pub(crate) strtab_base: u64,
+    pub(crate) strtab_log2size: u8,
+    pub(crate) oas_mask: u64,
+}
+
 /// Reduce a guest stage-1 STE to the double-words that are architecturally
 /// meaningful under this vSMMU's advertised capabilities, zeroing every field
 /// that is RES0 or IGNORED.
@@ -666,47 +679,34 @@ impl SmmuSharedState {
         Ok(())
     }
 
-    /// Updates the SMMU enable state (called by SmmuDevice on CR0 writes).
+    /// Updates the stored `GBPA.ABORT` disabled-state policy.
     ///
-    /// Only mutates the shared translation config. The CR0 handler follows this
-    /// with [`apply_all_stream_configs`](Self::apply_all_stream_configs). Both
-    /// registration and re-drive serialize on `accel_devices`, so a concurrent
-    /// registration either observes the new policy or is included in the
-    /// following re-drive.
-    pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.write().enabled = enabled;
-    }
-
-    /// Updates the mirrored `GBPA.ABORT` state (called by SmmuDevice on GBPA
-    /// writes). Selects the disabled-state policy (abort vs bypass).
-    ///
-    /// Like [`set_enabled`](Self::set_enabled), this only mutates shared
-    /// config; the GBPA handler re-drives accelerated backends afterward on the
-    /// emulator thread.
+    /// While the SMMU is enabled this records future policy without changing
+    /// current stream attachments. Effective disabled-policy transitions use
+    /// [`transition_translation_policy`](Self::transition_translation_policy)
+    /// so host attachments change before this value is published.
     pub(crate) fn set_gbpa_abort(&self, abort: bool) {
         self.inner.write().gbpa_abort = abort;
     }
 
-    /// Atomically replaces all policy-relevant translation state (enable,
-    /// `GBPA.ABORT`, stream table base/size).
-    ///
-    /// Used on device reset and state restore, where several policy inputs
-    /// change together: applying them as one atomic write (rather than a
-    /// sequence of single-field updates) avoids transient intermediate
-    /// policies. The caller (reset/restore, on the emulator thread) re-drives
-    /// accelerated backends afterward.
-    pub(crate) fn sync_translation_state(
-        &self,
-        enabled: bool,
-        gbpa_abort: bool,
-        strtab_base: u64,
-        strtab_log2size: u8,
-    ) {
+    /// Snapshots the currently effective translation policy.
+    pub(crate) fn translation_policy(&self) -> TranslationPolicy {
+        let inner = self.inner.read();
+        TranslationPolicy {
+            enabled: inner.enabled,
+            gbpa_abort: inner.gbpa_abort,
+            strtab_base: inner.strtab_base,
+            strtab_log2size: inner.strtab_log2size,
+            oas_mask: inner.oas_mask,
+        }
+    }
+
+    fn publish_translation_policy(&self, policy: TranslationPolicy) {
         let mut inner = self.inner.write();
-        inner.enabled = enabled;
-        inner.gbpa_abort = gbpa_abort;
-        inner.strtab_base = strtab_base;
-        inner.strtab_log2size = strtab_log2size;
+        inner.enabled = policy.enabled;
+        inner.gbpa_abort = policy.gbpa_abort;
+        inner.strtab_base = policy.strtab_base;
+        inner.strtab_log2size = policy.strtab_log2size;
     }
 
     /// Updates the stream table configuration (called by SmmuDevice on
@@ -994,19 +994,17 @@ impl SmmuSharedState {
     /// backend (a blocking ioctl) without nesting the translation lock around
     /// it.
     pub(crate) fn current_stream_config(&self, sid: u32) -> StreamConfig {
-        let (enabled, gbpa_abort, strtab_base, strtab_log2size, oas_mask) = {
-            let inner = self.inner.read();
-            (
-                inner.enabled,
-                inner.gbpa_abort,
-                inner.strtab_base,
-                inner.strtab_log2size,
-                inner.oas_mask,
-            )
-        };
+        self.stream_config_for_policy(self.translation_policy(), sid)
+    }
 
-        if !enabled {
-            return if gbpa_abort {
+    /// Computes one stream's host attachment from an explicit policy snapshot.
+    pub(crate) fn stream_config_for_policy(
+        &self,
+        policy: TranslationPolicy,
+        sid: u32,
+    ) -> StreamConfig {
+        if !policy.enabled {
+            return if policy.gbpa_abort {
                 StreamConfig::Abort
             } else {
                 StreamConfig::Bypass
@@ -1021,10 +1019,10 @@ impl SmmuSharedState {
         // data plane (see the method doc), not here.
         let Ok(ste) = translate::lookup_ste(
             &self.guest_memory,
-            strtab_base,
-            strtab_log2size,
+            policy.strtab_base,
+            policy.strtab_log2size,
             sid,
-            oas_mask,
+            policy.oas_mask,
         ) else {
             // Invalid STE (V=0), out-of-range SID, or STE fetch failure.
             return StreamConfig::Abort;
@@ -1094,6 +1092,33 @@ impl SmmuSharedState {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// Applies a proposed global policy and publishes it only after every
+    /// SID-bearing accelerated registration accepts the transition.
+    ///
+    /// The first failure stops the transition. Registrations without a SID
+    /// remain on Abort and are deliberately not called.
+    pub(crate) fn transition_translation_policy(
+        &self,
+        policy: TranslationPolicy,
+        transition: &'static str,
+    ) -> anyhow::Result<()> {
+        let mut devices = self.accel_devices.lock();
+        for reg in devices.iter_mut() {
+            let Some(sid) = reg.sid else {
+                continue;
+            };
+            let config = self.stream_config_for_policy(policy, sid);
+            Self::apply_config(reg, config).with_context(|| {
+                format!(
+                    "{transition} failed for accelerated registration {}, SID {sid:#x}, policy {policy:?}, stream config {config:?}",
+                    reg.id
+                )
+            })?;
+        }
+        self.publish_translation_policy(policy);
+        Ok(())
     }
 
     /// Pins the backend currently translating `sid` for the lifetime of an
@@ -1558,6 +1583,14 @@ mod tests {
     /// The RID for the test device: (bus << 8) | devfn.
     const TEST_RID: u32 = (TEST_BUS as u32) << 8;
 
+    fn transition_to_enabled(state: &SmmuSharedState) {
+        let mut policy = state.translation_policy();
+        policy.enabled = true;
+        state
+            .transition_translation_policy(policy, "test enable transition")
+            .expect("enable test SMMU");
+    }
+
     #[test]
     fn test_canonical_s1_ste_dwords_preserves_allowed_fields() {
         // Set every field the canonical set retains, with distinct values.
@@ -1765,7 +1798,7 @@ mod tests {
             None,
         );
         state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
-        state.set_enabled(true);
+        transition_to_enabled(&state);
         // Enable EVTQ so fault events are written to guest memory.
         state.set_evtq_config(EVTQ_BASE, EVTQ_LOG2SIZE);
         state.set_evtq_enabled(true);

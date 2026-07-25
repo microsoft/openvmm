@@ -38,6 +38,8 @@ use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps;
+use pci_core::spec::caps::advanced_features;
+use pci_core::spec::caps::pci_express;
 use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
 use std::collections::BTreeMap;
@@ -171,6 +173,16 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(hex)]
     pm_csr_offset: Option<u16>,
 
+    /// PCIe Device Control DWORD offset when the physical function advertises
+    /// Function Level Reset support.
+    #[inspect(hex)]
+    pcie_flr_control_offset: Option<u16>,
+
+    /// Conventional PCI Advanced Features Control DWORD offset when the
+    /// physical function advertises Function Level Reset support.
+    #[inspect(hex)]
+    af_flr_control_offset: Option<u16>,
+
     /// Whether the device is currently in D0 power state. BARs are only
     /// mapped into guest address space when the device is in D0.
     in_d0: bool,
@@ -243,6 +255,29 @@ struct VfioPciDevice {
     /// Size of the config space region.
     #[inspect(hex)]
     config_size: u64,
+}
+
+enum FunctionResetResult {
+    ClearFailed(anyhow::Error),
+    RebindFailed(anyhow::Error),
+    Complete(anyhow::Result<()>),
+}
+
+fn perform_function_reset(
+    clear_rid: impl FnOnce() -> anyhow::Result<()>,
+    reset_write: impl FnOnce() -> anyhow::Result<()>,
+    rebind_rid: impl FnOnce() -> anyhow::Result<()>,
+) -> FunctionResetResult {
+    if let Err(error) = clear_rid() {
+        return FunctionResetResult::ClearFailed(error);
+    }
+
+    let write_result = reset_write();
+    if let Err(error) = rebind_rid() {
+        return FunctionResetResult::RebindFailed(error);
+    }
+
+    FunctionResetResult::Complete(write_result)
 }
 
 impl ConfigSpaceRead for VfioPciDevice {
@@ -437,6 +472,8 @@ impl VfioAssignedPciDevice {
         let caps = discover_capabilities(&vfio_device, msi_target);
         let msix = caps.msix;
         let pm_csr_offset = caps.pm_csr_offset;
+        let pcie_flr_control_offset = caps.pcie_flr_control_offset;
+        let af_flr_control_offset = caps.af_flr_control_offset;
         let config_patches = caps.config_patches;
 
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
@@ -582,6 +619,8 @@ impl VfioAssignedPciDevice {
             bar_reset_defaults,
             mmio_enabled: false,
             pm_csr_offset,
+            pcie_flr_control_offset,
+            af_flr_control_offset,
             in_d0: true,
             active_bars: BarMappings::default(),
             bar_mmio_controls,
@@ -615,6 +654,84 @@ impl VfioAssignedPciDevice {
                 "VFIO config space write failed"
             );
         }
+    }
+
+    fn write_function_reset(
+        &mut self,
+        offset: u16,
+        value: ByteEnabledDwordWrite,
+        routed_rid: u16,
+    ) -> IoResult {
+        let registration = self
+            .accel_registration
+            .as_ref()
+            .expect("accelerated function reset requires a registration");
+
+        let result = perform_function_reset(
+            || registration.clear_requester_id(),
+            || {
+                self.requester_id = None;
+                self.vfio_device.write_config(offset, value)
+            },
+            || registration.set_requester_id(routed_rid),
+        );
+
+        let write_result = match result {
+            FunctionResetResult::ClearFailed(error) => {
+                tracelimit::warn_ratelimited!(
+                    pci_id = self.pci_id.as_str(),
+                    routed_rid,
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to clear SMMU requester ID; suppressing function reset"
+                );
+                return IoResult::Ok;
+            }
+            FunctionResetResult::RebindFailed(error) => {
+                panic!(
+                    "failed to rebind VFIO device {} to routed RID {routed_rid:#06x} after function reset; DMA remains blocked: {error:#}",
+                    self.pci_id
+                )
+            }
+            FunctionResetResult::Complete(write_result) => write_result,
+        };
+        self.requester_id = Some(routed_rid);
+
+        if let Err(error) = write_result {
+            tracelimit::warn_ratelimited!(
+                offset,
+                error = error.as_ref() as &dyn std::error::Error,
+                "VFIO function-reset config write failed"
+            );
+        }
+
+        IoResult::Ok
+    }
+
+    fn is_function_reset_write(
+        pcie_flr_control_offset: Option<u16>,
+        af_flr_control_offset: Option<u16>,
+        offset: u16,
+        value: ByteEnabledDwordWrite,
+    ) -> bool {
+        let pcie_initiate_flr = u32::from(
+            pci_express::DeviceControl::new()
+                .with_initiate_function_level_reset(true)
+                .into_bits(),
+        );
+        let af_initiate_flr = u32::from(
+            advanced_features::Control::new()
+                .with_initiate_function_level_reset(true)
+                .into_bits(),
+        );
+
+        (Some(offset) == pcie_flr_control_offset
+            && value.valid_mask() & pcie_initiate_flr != 0
+            && pci_express::DeviceControl::from_bits(value.extract_low())
+                .initiate_function_level_reset())
+            || (Some(offset) == af_flr_control_offset
+                && value.valid_mask() & af_initiate_flr != 0
+                && advanced_features::Control::from_bits(value.extract() as u8)
+                    .initiate_function_level_reset())
     }
 
     /// Map a BAR + offset to an MsixEmulator offset, if the access falls
@@ -941,6 +1058,12 @@ struct DiscoveredCapabilities {
     /// Offset of the PMCSR register (PM cap offset + 4), if the device has
     /// a Power Management capability.
     pm_csr_offset: Option<u16>,
+    /// PCIe Device Control DWORD offset (`cap + 8`) when Device Capabilities
+    /// advertises FLR.
+    pcie_flr_control_offset: Option<u16>,
+    /// Advanced Features Control DWORD offset (`cap + 4`) when AF Capabilities
+    /// advertises FLR.
+    af_flr_control_offset: Option<u16>,
     /// Config space patch table for filtering capabilities from the guest.
     config_patches: BTreeMap<u16, ConfigPatch>,
 }
@@ -961,6 +1084,8 @@ fn discover_capabilities(
     let mut result = DiscoveredCapabilities {
         msix: None,
         pm_csr_offset: None,
+        pcie_flr_control_offset: None,
+        af_flr_control_offset: None,
         config_patches: BTreeMap::new(),
     };
 
@@ -1081,6 +1206,35 @@ fn discover_capabilities(
                 "discovered PCI Power Management capability"
             );
             result.pm_csr_offset = Some(pmcsr_offset);
+        } else if cap_id == caps::CapabilityId::PCI_EXPRESS.0
+            && result.pcie_flr_control_offset.is_none()
+        {
+            let mut device_capabilities = 0;
+            if config
+                .read_config(
+                    cap_ptr + pci_express::PciExpressCapabilityHeader::DEVICE_CAPS.0,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut device_capabilities),
+                )
+                .is_err()
+            {
+                break;
+            }
+            if pci_express::DeviceCapabilities::from_bits(device_capabilities)
+                .function_level_reset()
+            {
+                result.pcie_flr_control_offset =
+                    Some(cap_ptr + pci_express::PciExpressCapabilityHeader::DEVICE_CTL_STS.0);
+            }
+        } else if cap_id == caps::CapabilityId::ADVANCED_FEATURES.0
+            && result.af_flr_control_offset.is_none()
+        {
+            let header = advanced_features::Header::from_bits(header);
+            if advanced_features::Capabilities::from_bits(header.capabilities())
+                .function_level_reset()
+            {
+                result.af_flr_control_offset =
+                    Some(cap_ptr + advanced_features::CapabilityRegister::CONTROL_STATUS.0);
+            }
         }
 
         cap_ptr = next_ptr;
@@ -1243,8 +1397,10 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             ref mut bars,
             bar_flags: _,
             bar_reset_defaults,
-            mmio_enabled: _,  // handled above
-            pm_csr_offset: _, // not used during reset
+            mmio_enabled: _,            // handled above
+            pm_csr_offset: _,           // not used during reset
+            pcie_flr_control_offset: _, // immutable capability geometry
+            af_flr_control_offset: _,   // immutable capability geometry
             ref mut in_d0,
             active_bars: _,       // handled by update_bar_mappings()
             bar_mmio_controls: _, // handled by update_bar_mappings()
@@ -1258,16 +1414,15 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             ref mut requester_id,
         } = *self;
 
-        *requester_id = None;
         if let Some(registration) = accel_registration {
-            if let Err(error) = registration.clear_requester_id() {
-                tracing::warn!(
-                    pci_id = pci_id.as_str(),
-                    error = error.as_ref() as &dyn std::error::Error,
-                    "failed to clear SMMU requester ID during reset"
-                );
-            }
+            registration.clear_requester_id().unwrap_or_else(|error| {
+                panic!(
+                    "failed to clear SMMU requester ID for {} before VFIO reset: {error:#}",
+                    pci_id
+                )
+            });
         }
+        *requester_id = None;
 
         // Reset emulated MSI-X table and capability to power-on defaults
         // (all vectors masked, address/data zeroed). The capability and
@@ -1283,17 +1438,10 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         *bars = bar_reset_defaults;
 
         // Reset the physical device via VFIO so it starts in a clean state.
-        //
-        // TODO: handle the case where the physical device does not support reset,
-        // or when the reset operation fails.
         if supports_reset {
-            if let Err(err) = vfio_device.device.reset() {
-                tracing::warn!(
-                    pci_id = pci_id.as_str(),
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to reset VFIO device"
-                );
-            }
+            vfio_device.device.reset().unwrap_or_else(|error| {
+                panic!("failed to reset VFIO device {}: {error:#}", pci_id)
+            });
             *in_d0 = true;
         }
     }
@@ -1320,8 +1468,21 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             return IoResult::Ok;
         }
 
+        let offset = address.byte_offset();
+        let rid = (u16::from(address.bus) << 8) | u16::from(address.devfn);
+
+        if self.accel_registration.is_some()
+            && Self::is_function_reset_write(
+                self.pcie_flr_control_offset,
+                self.af_flr_control_offset,
+                offset,
+                value,
+            )
+        {
+            return self.write_function_reset(offset, value, rid);
+        }
+
         if let Some(registration) = &self.accel_registration {
-            let rid = (u16::from(address.bus) << 8) | u16::from(address.devfn);
             if self.requester_id != Some(rid) {
                 match registration.set_requester_id(rid) {
                     Ok(()) => self.requester_id = Some(rid),
@@ -1337,7 +1498,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             }
         }
 
-        self.pci_cfg_write(address.byte_offset(), value)
+        self.pci_cfg_write(offset, value)
     }
 
     fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
@@ -1911,6 +2072,214 @@ mod tests {
         let msix = caps.msix.as_ref().expect("MSI-X should be discovered");
         assert_eq!(msix.vector_count, 1);
         assert_eq!(msix.table_bar, 0);
+    }
+
+    #[test]
+    fn discover_pcie_flr_control() {
+        let mut cfg = MockConfigSpace::new(256);
+        cfg.write_u32(0x34, 0x40);
+        cfg.write_u32(
+            0x40,
+            MockConfigSpace::cap_header(caps::CapabilityId::PCI_EXPRESS.0, 0),
+        );
+        cfg.write_u32(
+            0x40 + pci_express::PciExpressCapabilityHeader::DEVICE_CAPS.0,
+            pci_express::DeviceCapabilities::new()
+                .with_function_level_reset(true)
+                .into_bits(),
+        );
+
+        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        assert_eq!(discovered.pcie_flr_control_offset, Some(0x48));
+    }
+
+    #[test]
+    fn pcie_without_flr_is_not_intercepted() {
+        let mut cfg = MockConfigSpace::new(256);
+        cfg.write_u32(0x34, 0x40);
+        cfg.write_u32(
+            0x40,
+            MockConfigSpace::cap_header(caps::CapabilityId::PCI_EXPRESS.0, 0),
+        );
+
+        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        assert_eq!(discovered.pcie_flr_control_offset, None);
+    }
+
+    #[test]
+    fn discover_advanced_features_flr_control() {
+        let mut cfg = MockConfigSpace::new(256);
+        cfg.write_u32(0x34, 0x40);
+        let capabilities = advanced_features::Capabilities::new()
+            .with_transactions_pending(true)
+            .with_function_level_reset(true);
+        let header = advanced_features::Header::new()
+            .with_capability_id(caps::CapabilityId::ADVANCED_FEATURES.0)
+            .with_length(6)
+            .with_capabilities(capabilities.into_bits());
+        cfg.write_u32(0x40, header.into_bits());
+
+        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        assert_eq!(discovered.af_flr_control_offset, Some(0x44));
+    }
+
+    #[test]
+    fn advanced_features_without_flr_is_not_intercepted() {
+        let mut cfg = MockConfigSpace::new(256);
+        cfg.write_u32(0x34, 0x40);
+        let header = advanced_features::Header::new()
+            .with_capability_id(caps::CapabilityId::ADVANCED_FEATURES.0)
+            .with_length(6);
+        cfg.write_u32(0x40, header.into_bits());
+
+        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        assert_eq!(discovered.af_flr_control_offset, None);
+    }
+
+    #[test]
+    fn function_reset_write_honors_offsets_and_byte_enables() {
+        let pcie_offset = Some(0x48);
+        let af_offset = Some(0x64);
+
+        assert!(VfioAssignedPciDevice::is_function_reset_write(
+            pcie_offset,
+            af_offset,
+            0x48,
+            ByteEnabledDwordWrite::new(
+                u32::from(
+                    pci_express::DeviceControl::new()
+                        .with_initiate_function_level_reset(true)
+                        .into_bits(),
+                ),
+                PciConfigByteEnable::BYTE1,
+            ),
+        ));
+        assert!(VfioAssignedPciDevice::is_function_reset_write(
+            pcie_offset,
+            af_offset,
+            0x64,
+            ByteEnabledDwordWrite::new(
+                u32::from(
+                    advanced_features::Control::new()
+                        .with_initiate_function_level_reset(true)
+                        .into_bits(),
+                ),
+                PciConfigByteEnable::BYTE0,
+            ),
+        ));
+        assert!(!VfioAssignedPciDevice::is_function_reset_write(
+            pcie_offset,
+            af_offset,
+            0x48,
+            ByteEnabledDwordWrite::new(
+                u32::from(
+                    pci_express::DeviceControl::new()
+                        .with_initiate_function_level_reset(true)
+                        .into_bits(),
+                ),
+                PciConfigByteEnable::BYTE0,
+            ),
+        ));
+        assert!(!VfioAssignedPciDevice::is_function_reset_write(
+            pcie_offset,
+            af_offset,
+            0x64,
+            ByteEnabledDwordWrite::new(0, PciConfigByteEnable::BYTE0),
+        ));
+        assert!(!VfioAssignedPciDevice::is_function_reset_write(
+            pcie_offset,
+            af_offset,
+            0x68,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(u32::MAX),
+        ));
+    }
+
+    #[test]
+    fn function_reset_sequence_is_clear_write_rebind() {
+        let events = parking_lot::Mutex::new(Vec::new());
+        let result = perform_function_reset(
+            || {
+                events.lock().push("clear");
+                Ok(())
+            },
+            || {
+                events.lock().push("write");
+                Ok(())
+            },
+            || {
+                events.lock().push("rebind");
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, FunctionResetResult::Complete(Ok(()))));
+        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
+    }
+
+    #[test]
+    fn function_reset_clear_failure_suppresses_write_and_rebind() {
+        let events = parking_lot::Mutex::new(Vec::new());
+        let result = perform_function_reset(
+            || {
+                events.lock().push("clear");
+                anyhow::bail!("clear failed")
+            },
+            || {
+                events.lock().push("write");
+                Ok(())
+            },
+            || {
+                events.lock().push("rebind");
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, FunctionResetResult::ClearFailed(_)));
+        assert_eq!(*events.lock(), ["clear"]);
+    }
+
+    #[test]
+    fn function_reset_write_failure_still_rebinds() {
+        let events = parking_lot::Mutex::new(Vec::new());
+        let result = perform_function_reset(
+            || {
+                events.lock().push("clear");
+                Ok(())
+            },
+            || {
+                events.lock().push("write");
+                anyhow::bail!("write failed")
+            },
+            || {
+                events.lock().push("rebind");
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, FunctionResetResult::Complete(Err(_))));
+        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
+    }
+
+    #[test]
+    fn function_reset_rebind_failure_is_distinct() {
+        let events = parking_lot::Mutex::new(Vec::new());
+        let result = perform_function_reset(
+            || {
+                events.lock().push("clear");
+                Ok(())
+            },
+            || {
+                events.lock().push("write");
+                Ok(())
+            },
+            || {
+                events.lock().push("rebind");
+                anyhow::bail!("rebind failed")
+            },
+        );
+
+        assert!(matches!(result, FunctionResetResult::RebindFailed(_)));
+        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
     }
 
     // --- Extended capability patch tests ---

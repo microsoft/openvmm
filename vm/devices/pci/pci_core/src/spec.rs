@@ -443,6 +443,7 @@ pub mod caps {
             VENDOR_SPECIFIC  = 0x09,
             PCI_EXPRESS      = 0x10,
             MSIX             = 0x11,
+            ADVANCED_FEATURES = 0x13,
         }
     }
 
@@ -471,6 +472,46 @@ pub mod caps {
     pub const EXT_CAP_END: u16 = 0x1000;
     /// Ending offset (exclusive) of the common config header region.
     pub const COMMON_HEADER_END: u16 = 0x40;
+
+    /// Conventional PCI Advanced Features capability.
+    #[expect(missing_docs)]
+    pub mod advanced_features {
+        use bitfield_struct::bitfield;
+
+        open_enum::open_enum! {
+            pub enum CapabilityRegister: u16 {
+                HEADER = 0x00,
+                CONTROL_STATUS = 0x04,
+            }
+        }
+
+        #[bitfield(u32)]
+        pub struct Header {
+            #[bits(8)]
+            pub capability_id: u8,
+            #[bits(8)]
+            pub next_pointer: u8,
+            #[bits(8)]
+            pub length: u8,
+            #[bits(8)]
+            pub capabilities: u8,
+        }
+
+        #[bitfield(u8)]
+        pub struct Capabilities {
+            pub transactions_pending: bool,
+            pub function_level_reset: bool,
+            #[bits(6)]
+            _reserved: u8,
+        }
+
+        #[bitfield(u8)]
+        pub struct Control {
+            pub initiate_function_level_reset: bool,
+            #[bits(7)]
+            _reserved: u8,
+        }
+    }
 
     /// MSI
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
