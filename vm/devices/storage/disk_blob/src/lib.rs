@@ -151,7 +151,21 @@ impl DiskIo for BlobDisk {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
+        // The blob is not necessarily the same size as the disk it presents --
+        // a fixed VHD1 blob has a trailing footer -- so a read past the end of
+        // the disk can land inside the blob and succeed, returning data that is
+        // not part of the disk. Delegating the range check to the blob is
+        // therefore not sufficient.
+        if sector + (buffers.len() as u64 >> self.sector_shift) > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         let mut buf = vec![0; buffers.len()];
+        // Given the check above, and because the disk is a fixed size derived
+        // from the blob's length at open time, a read cannot run off the end of
+        // the blob. If one somehow does, the blob shrank after it was opened,
+        // which is an IO error and not an illegal block -- `sector_count` still
+        // reports the original size, so the sector is one the disk claims to
+        // have.
         self.blob
             .read(&mut buf, sector << self.sector_shift)
             .await

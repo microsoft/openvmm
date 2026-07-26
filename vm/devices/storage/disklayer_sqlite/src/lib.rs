@@ -241,6 +241,12 @@ impl SqliteDiskLayer {
         let count = buffers.len() / self.meta.sector_size as usize;
         tracing::trace!(sector, count, "write");
 
+        // Nothing downstream enforces this: SQLite will happily insert rows for
+        // sectors past the end of the disk.
+        if sector + count as u64 > self.meta.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
+
         let buf = buffers.reader().read_all()?;
         unblock({
             let conn = self.conn.clone().lock_owned().await;

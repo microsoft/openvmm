@@ -38,5 +38,11 @@ tracing.workspace = true
 [dev-dependencies]
 rusqlite = { workspace = true, features = ["bundled"] }
 
+[features]
+# Build SQLite from source instead of linking the system library. Test crates
+# enable this so that they do not require a system libsqlite3 development
+# package to link; it is not intended for production builds.
+bundled = ["rusqlite/bundled"]
+
 [lints]
 workspace = true
