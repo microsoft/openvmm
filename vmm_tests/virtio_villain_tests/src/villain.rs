@@ -39,15 +39,37 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
             .next()
             .filter(|s| !s.is_empty())
             .with_context(|| format!("{}:{}: missing test name", path.display(), lineno + 1))?;
-        let desc = cols.next().unwrap_or_default();
-        // Columns: version, spec_section, device_id, flags, required_features, min_queues.
+        // Columns: name, desc, version, spec_section, device_id, flags,
+        // required_features, min_queues. Parse strictly so a corrupt or
+        // format-changed tests.tsv fails loudly rather than silently producing
+        // bogus values.
+        let desc = cols.next().with_context(|| {
+            format!(
+                "{}:{}: missing description column",
+                path.display(),
+                lineno + 1
+            )
+        })?;
         let _version = cols.next();
         let _spec_section = cols.next();
-        let device_id = cols.next().unwrap_or("0x0000");
+        let device_id = cols.next().with_context(|| {
+            format!(
+                "{}:{}: missing device_id column",
+                path.display(),
+                lineno + 1
+            )
+        })?;
         let device_id = device_id
             .strip_prefix("0x")
             .and_then(|h| u16::from_str_radix(h, 16).ok())
-            .unwrap_or(0);
+            .with_context(|| {
+                format!(
+                    "{}:{}: invalid device_id {:?} (expected 0x-prefixed u16 hex)",
+                    path.display(),
+                    lineno + 1,
+                    device_id,
+                )
+            })?;
 
         tests.push(VillainTest {
             name: name.to_string(),
@@ -208,5 +230,31 @@ mod tests {
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].name, "blk.split.bad_desc");
         assert_eq!(tests[0].device_id, 0x0002);
+    }
+
+    #[test]
+    fn parse_tsv_rejects_bad_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // device_id column present but not valid 0x-prefixed hex.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\tnope\t0\t0\t1\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid device_id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_tsv_rejects_truncated_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // Only name + desc; device_id column missing entirely.
+        std::fs::write(&p, "t\tdesc\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("missing device_id"),
+            "unexpected error: {err:#}"
+        );
     }
 }

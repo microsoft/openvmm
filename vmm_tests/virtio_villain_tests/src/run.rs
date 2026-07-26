@@ -71,6 +71,17 @@ pub fn run_one(
     let vsock_dir = tempfile::tempdir().context("failed to create vsock dir")?;
     #[cfg(unix)]
     let vsock_socket = vsock_dir.path().join("vsock");
+    // Bind the vsock listener up front so a failure is a hard error rather
+    // than a silently-omitted device (which would make vsock tests falsely
+    // self-SKIP). The socket lives in a fresh unique tempdir, so binding is
+    // expected to succeed on any functioning host.
+    #[cfg(unix)]
+    let vsock_listener = unix_socket::UnixListener::bind(&vsock_socket).with_context(|| {
+        format!(
+            "failed to bind vsock listener at {}",
+            vsock_socket.display()
+        )
+    })?;
 
     let arch = params.arch;
     let console = match arch {
@@ -119,6 +130,8 @@ pub fn run_one(
                     fs_path,
                     #[cfg(unix)]
                     vsock_socket,
+                    #[cfg(unix)]
+                    vsock_listener,
                 )
             });
 
@@ -142,6 +155,16 @@ pub fn run_one(
             .context("villain VM did not halt")?;
         tracing::info!(?halt, "villain VM halted");
         vm.teardown().await.context("failed to tear down VM")?;
+        // This runner uses minimal() and attaches no device that registers a
+        // post-test hook, so none should have accumulated. If that ever
+        // changes, fail loudly rather than silently dropping the hook (e.g.
+        // guest crash-dump extraction) — wire up hook execution here.
+        assert!(
+            post_test_hooks.is_empty(),
+            "villain runner would silently drop {} post-test hook(s); \
+             wire up hook execution before attaching hook-registering devices",
+            post_test_hooks.len(),
+        );
         Ok(())
     })?;
 
@@ -165,6 +188,7 @@ fn attach_kitchen_sink(
     pmem_path: String,
     fs_path: String,
     #[cfg(unix)] vsock_socket: PathBuf,
+    #[cfg(unix)] vsock_listener: unix_socket::UnixListener,
 ) -> petri::openvmm::PetriVmConfigOpenVmm {
     use openvmm_defs::config::LoadMode;
     use openvmm_defs::config::PcieDeviceConfig;
@@ -218,18 +242,17 @@ fn attach_kitchen_sink(
         virtio_resources::pmem::VirtioPmemHandle { path: pmem_path }.into_resource(),
     ];
 
-    // vsock (unix only: needs a bound listener)
+    // vsock (unix only: the listener was bound by the caller so a bind
+    // failure is a hard error, not a silently-dropped device).
     #[cfg(unix)]
-    if let Ok(listener) = unix_socket::UnixListener::bind(&vsock_socket) {
-        inner.push(
-            virtio_resources::vsock::VirtioVsockHandle {
-                guest_cid: 3,
-                base_path: vsock_socket.to_string_lossy().into_owned(),
-                listener,
-            }
-            .into_resource(),
-        );
-    }
+    inner.push(
+        virtio_resources::vsock::VirtioVsockHandle {
+            guest_cid: 3,
+            base_path: vsock_socket.to_string_lossy().into_owned(),
+            listener: vsock_listener,
+        }
+        .into_resource(),
+    );
 
     // One PCIe root port per device (segment 0, root complex 0).
     b.with_pcie_root_topology(1, 1, inner.len() as u64)

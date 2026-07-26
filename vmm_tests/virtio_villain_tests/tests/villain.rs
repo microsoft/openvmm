@@ -171,7 +171,10 @@ fn main() -> anyhow::Result<()> {
     let params = run::VmParams {
         initramfs,
         arch: MachineArch::host(),
-        mem_bytes: cli.mem_mb * 1024 * 1024,
+        mem_bytes: cli
+            .mem_mb
+            .checked_mul(1024 * 1024)
+            .with_context(|| format!("--mem-mb value {} is too large", cli.mem_mb))?,
     };
 
     let base_log_dir = log_dir.clone();
