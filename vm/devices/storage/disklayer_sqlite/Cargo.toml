@@ -26,11 +26,17 @@ futures.workspace = true
 #
 # That said - top-level binaries which use this crate may wish to enable the
 # "bundled" feature in order to ensure consistent behaviors across platforms.
+#
+# Tests enable "bundled" (see [dev-dependencies] below) so that they do not
+# require a system libsqlite3 development package to link.
 rusqlite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }
 
 [lints]
 workspace = true

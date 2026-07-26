@@ -7854,7 +7854,9 @@ version = "0.0.0"
 dependencies = [
  "chipset_device",
  "disk_backend",
+ "disk_file",
  "disk_nvme",
+ "disk_striped",
  "disklayer_ram",
  "guestmem",
  "guid",
@@ -7871,6 +7873,7 @@ dependencies = [
  "storvsp",
  "storvsp_protocol",
  "storvsp_resources",
+ "tempfile",
  "test_with_tracing",
  "tracing",
  "user_driver_emulated_mock",

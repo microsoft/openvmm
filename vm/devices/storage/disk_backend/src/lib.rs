@@ -135,6 +135,29 @@ pub enum MediumErrorDetails {
 }
 
 /// Disk metadata and IO operations.
+///
+/// # Sector range validation
+///
+/// Sector numbers reaching a backend originate with the guest, so
+/// implementations **must not panic** for any sector value, and must return
+/// [`DiskError::IllegalBlock`] for requests that fall outside the disk.
+/// Callers are *not* required to validate the range beforehand — they cannot
+/// do so meaningfully, since [`DiskIo::sector_count`] may change at runtime,
+/// so a range checked by a caller can be invalidated before the request is
+/// issued. Only the backend can validate against its own state.
+///
+/// An implementation may delegate this to whatever it is layered on top of,
+/// but only if the backing object's bounds coincide exactly with the disk's,
+/// out-of-range operations fail rather than silently succeeding, and the
+/// resulting error is mapped to [`DiskError::IllegalBlock`].
+///
+/// In exchange, implementations may rely on one guarantee from [`Disk`]: the
+/// end byte offset of any request — that is, `(sector + count) * sector_size`
+/// — is representable and no greater than [`i64::MAX`]. Sector arithmetic
+/// therefore cannot overflow, and a backend that transforms the offset (adding
+/// a header size, a chunk base, and so on) has 2^63 bytes of headroom in which
+/// to do so. Note that this says nothing about how large the disk is, so it is
+/// not a substitute for the range check above.
 pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns the disk type name as a string.
     ///
@@ -173,6 +196,9 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     fn is_read_only(&self) -> bool;
 
     /// Unmap sectors from the layer.
+    ///
+    /// See the [trait documentation](DiskIo#sector-range-validation) for the
+    /// requirements on out-of-range requests.
     fn unmap(
         &self,
         sector: u64,
@@ -282,6 +308,10 @@ impl Debug for Disk {
 struct DiskInner<T: ?Sized = dyn DynDisk> {
     sector_size: u32,
     sector_shift: u32,
+    /// The largest sector number that may appear as the end of a request, so
+    /// that the end byte offset remains representable. See
+    /// [`Disk::check_representable`].
+    max_sector: u64,
     physical_sector_size: u32,
     disk_id: Option<[u8; 16]>,
     is_fua_respected: bool,
@@ -320,6 +350,7 @@ impl Disk {
         Ok(Self(Arc::new(DiskInner {
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
+            max_sector: (i64::MAX as u64) >> sector_size.trailing_zeros(),
             physical_sector_size,
             disk_id: disk.disk_id(),
             is_fua_respected: disk.is_fua_respected(),
@@ -373,14 +404,62 @@ impl Disk {
         self.0.is_read_only
     }
 
+    /// Checks that a request's end byte offset is representable.
+    ///
+    /// This is deliberately *not* a range check: it never consults
+    /// [`sector_count`](Self::sector_count), so it cannot mask a bug in a
+    /// backend that fails to validate the range itself, and it cannot be
+    /// invalidated by the disk being resized. Range validation belongs to the
+    /// backend, which is the only component that can perform it atomically
+    /// with the I/O.
+    ///
+    /// What it does guarantee is that `(sector + count) * sector_size` does not
+    /// overflow and is at most [`i64::MAX`], which is the real limit imposed by
+    /// `pread64`/`pwrite64` and the Windows file APIs. Backends may rely on
+    /// this to do sector and offset arithmetic without worrying about
+    /// wraparound.
+    fn check_representable(&self, sector: u64, count: u64) -> Result<(), DiskError> {
+        match sector.checked_add(count) {
+            Some(end) if end <= self.0.max_sector => Ok(()),
+            // No disk can be 2^63 bytes, so such a sector is out of range for
+            // any disk.
+            _ => Err(DiskError::IllegalBlock),
+        }
+    }
+
+    /// Returns the number of sectors spanned by `buffers`.
+    fn buffer_sectors(&self, buffers: &RequestBuffers<'_>) -> u64 {
+        (buffers.len() as u64).div_ceil(self.0.sector_size as u64)
+    }
+
     /// Unmap sectors from the disk.
-    pub fn unmap(
+    ///
+    /// If the disk reports [`UnmapBehavior::Ignored`], the request is not
+    /// passed to the backing object at all, since by definition it would do
+    /// nothing. The range is still validated first — a no-op is still not a
+    /// legal response to a request naming sectors the disk does not have.
+    pub async fn unmap(
         &self,
         sector: u64,
         count: u64,
         block_level_only: bool,
-    ) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.unmap(sector, count, block_level_only)
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, count)?;
+        if self.0.unmap_behavior == UnmapBehavior::Ignored {
+            // This is the one place where `Disk` range checks a request, and it
+            // is sound precisely because it is the one place where `Disk` does
+            // not delegate: there is no backend check for it to be redundant
+            // with, and none for it to mask. The check being momentarily stale
+            // if the disk is resized is harmless here, because the operation
+            // does nothing either way — only the status code is observable.
+            //
+            // The addition cannot overflow because of `check_representable`.
+            if sector + count > self.sector_count() {
+                return Err(DiskError::IllegalBlock);
+            }
+            return Ok(());
+        }
+        self.0.disk.unmap(sector, count, block_level_only).await
     }
 
     /// Returns the behavior of the unmap operation.
@@ -415,7 +494,10 @@ impl Disk {
         buffers: &'a RequestBuffers<'_>,
         sector: u64,
     ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.read_vectored(buffers, sector)
+        async move {
+            self.check_representable(sector, self.buffer_sectors(buffers))?;
+            self.0.disk.read_vectored(buffers, sector).await
+        }
     }
 
     /// Issues an asynchronous write-gather operation to the disk.
@@ -435,7 +517,10 @@ impl Disk {
         sector: u64,
         fua: bool,
     ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.write_vectored(buffers, sector, fua)
+        async move {
+            self.check_representable(sector, self.buffer_sectors(buffers))?;
+            self.0.disk.write_vectored(buffers, sector, fua).await
+        }
     }
 
     /// Issues an asynchronous flush operation to the disk.
