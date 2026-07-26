@@ -236,6 +236,9 @@ pub fn evaluate(scan: VerdictScan, expected_skip: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Use the tracing-aware `#[test]` so `tracing` output appears in test logs
+    // (repo convention; see .github/copilot-instructions.md).
+    use test_with_tracing::test;
 
     #[test]
     fn evaluate_skip_is_failure_by_default() {

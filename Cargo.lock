@@ -9913,6 +9913,7 @@ dependencies = [
  "petri_artifacts_common",
  "serial_core",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "unix_socket",
  "virtio_resources",
