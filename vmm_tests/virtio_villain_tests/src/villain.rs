@@ -1,0 +1,212 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Enumeration of virtio-villain tests and parsing of their serial verdicts.
+
+use anyhow::Context as _;
+use std::path::Path;
+
+/// A single villain test, as described by one row of `tests.tsv`.
+///
+/// `tests.tsv` is emitted by `init --list-tsv` (see villain `bin/init.c`) with
+/// one tab-separated row per test and no header:
+///
+/// ```text
+/// name  desc  version  spec_section  device_id  flags  required_features  min_queues
+/// ```
+#[derive(Debug, Clone)]
+pub struct VillainTest {
+    /// Test identifier, passed to the guest via `vv.test=<name>` and matched
+    /// against the serial verdict marker.
+    pub name: String,
+    /// Human-readable description.
+    pub desc: String,
+    /// virtio device id the test targets (e.g. `0x0002` for block).
+    pub device_id: u16,
+}
+
+/// Parse `tests.tsv` into the list of villain tests.
+pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
+    let text = fs_err::read_to_string(path)?;
+    let mut tests = Vec::new();
+    for (lineno, line) in text.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let mut cols = line.split('\t');
+        let name = cols
+            .next()
+            .filter(|s| !s.is_empty())
+            .with_context(|| format!("{}:{}: missing test name", path.display(), lineno + 1))?;
+        let desc = cols.next().unwrap_or_default();
+        // Columns: version, spec_section, device_id, flags, required_features, min_queues.
+        let _version = cols.next();
+        let _spec_section = cols.next();
+        let device_id = cols.next().unwrap_or("0x0000");
+        let device_id = device_id
+            .strip_prefix("0x")
+            .and_then(|h| u16::from_str_radix(h, 16).ok())
+            .unwrap_or(0);
+
+        tests.push(VillainTest {
+            name: name.to_string(),
+            desc: desc.to_string(),
+            device_id,
+        });
+    }
+    anyhow::ensure!(!tests.is_empty(), "no tests found in {}", path.display());
+    Ok(tests)
+}
+
+/// The verdict the guest emits on the serial console for a test.
+///
+/// The guest prints `[<TAG>] <name>` (villain `bin/init.c`), where `<TAG>` is
+/// one of these values. The device-health re-probe that distinguishes REJECT
+/// from WEDGED is computed by the guest itself; the host only reads the marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Device accepted the (valid) input and behaved correctly.
+    Pass,
+    /// Device correctly rejected the malformed input and stayed alive.
+    Reject,
+    /// Device absent or precondition unmet; the test did not run.
+    Skip,
+    /// Device accepted malformed input / misbehaved.
+    Fail,
+    /// Device stopped responding after the malformed input.
+    Wedged,
+    /// Known-failing test that failed as expected (guest-side xfail).
+    Xfail,
+    /// Known-failing test that unexpectedly passed (guest-side xfail).
+    Xpass,
+}
+
+impl Verdict {
+    fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "PASS" => Verdict::Pass,
+            "REJECT" => Verdict::Reject,
+            "SKIP" => Verdict::Skip,
+            "FAIL" => Verdict::Fail,
+            "WEDGED" => Verdict::Wedged,
+            "XFAIL" => Verdict::Xfail,
+            "XPASS" => Verdict::Xpass,
+            _ => return None,
+        })
+    }
+
+    /// Whether this verdict is a "good" outcome (the device model behaved
+    /// correctly, the test did not apply, or it is a guest-side xfail/xpass —
+    /// none of which indicate an OpenVMM device-model bug).
+    pub fn is_good(self) -> bool {
+        matches!(
+            self,
+            Verdict::Pass | Verdict::Reject | Verdict::Skip | Verdict::Xfail | Verdict::Xpass
+        )
+    }
+}
+
+/// The result of scanning a serial log for a single test's verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerdictScan {
+    /// The test's own `[TAG] <name>` marker was found.
+    Found(Verdict),
+    /// No villain markers appeared at all (guest never got far enough).
+    NoMarkers,
+    /// Other villain markers were present, but not this test's line
+    /// (device wedged mid-test and never printed a verdict).
+    MarkerMissing,
+}
+
+/// Scan a captured serial console log for `name`'s verdict marker.
+///
+/// Villain prints one `[<TAG>] <name>` line per test. A test may share the log
+/// with unrelated boot output; we match the exact test name.
+pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
+    let mut saw_any_marker = false;
+    for line in log.lines() {
+        let line = line.trim();
+        // Markers look like "[PASS] blk.split.bad_desc". Find the closing
+        // bracket and split into tag + remainder.
+        let Some(rest) = line.strip_prefix('[') else {
+            continue;
+        };
+        let Some((tag, remainder)) = rest.split_once(']') else {
+            continue;
+        };
+        let Some(verdict) = Verdict::from_tag(tag) else {
+            continue;
+        };
+        saw_any_marker = true;
+        // The name is the first whitespace-delimited token after the tag.
+        // Some markers carry a trailing reason, e.g.
+        // "[SKIP] D0001 (no device 0x1063)", so match only the first token
+        // rather than the whole remainder. Villain test names never contain
+        // whitespace (see `tests.tsv`).
+        if remainder.split_whitespace().next() == Some(name) {
+            return VerdictScan::Found(verdict);
+        }
+    }
+    if saw_any_marker {
+        VerdictScan::MarkerMissing
+    } else {
+        VerdictScan::NoMarkers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_finds_exact_marker() {
+        let log = "\
+[vv] virtio-villain
+[SKIP] blk.other
+[PASS] blk.split.bad_desc
+";
+        assert_eq!(
+            scan_verdict(log, "blk.split.bad_desc"),
+            VerdictScan::Found(Verdict::Pass)
+        );
+        assert_eq!(
+            scan_verdict(log, "blk.other"),
+            VerdictScan::Found(Verdict::Skip)
+        );
+    }
+
+    #[test]
+    fn scan_marker_with_trailing_reason() {
+        // Villain appends a reason to some SKIP markers; the name is still the
+        // first token (bin/init.c: "[SKIP] %s (no device 0x%04x)").
+        let log = "[vv] virtio-villain\n[SKIP] D0001 (no device 0x1063)\n";
+        assert_eq!(
+            scan_verdict(log, "D0001"),
+            VerdictScan::Found(Verdict::Skip)
+        );
+        // A name that is a prefix of the marked test must not match.
+        assert_eq!(scan_verdict(log, "D000"), VerdictScan::MarkerMissing);
+    }
+
+    #[test]
+    fn scan_missing_vs_no_markers() {
+        assert_eq!(scan_verdict("[FAIL] a\n", "b"), VerdictScan::MarkerMissing);
+        assert_eq!(scan_verdict("booting...\n", "b"), VerdictScan::NoMarkers);
+    }
+
+    #[test]
+    fn parse_tsv_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        std::fs::write(
+            &p,
+            "blk.split.bad_desc\tvalidates descriptor\t1.2\t2.6.5\t0x0002\t0\t0x0000000000000000\t1\n",
+        )
+        .unwrap();
+        let tests = parse_tsv(&p).unwrap();
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "blk.split.bad_desc");
+        assert_eq!(tests[0].device_id, 0x0002);
+    }
+}

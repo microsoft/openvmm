@@ -64,6 +64,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
+        ctx.import::<crate::resolve_virtio_villain::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
@@ -220,6 +221,12 @@ impl FlowNode for Node {
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_virtio_win::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        // Inert until openvmm-deps cuts a release that includes the
+        // virtio-villain artifact; the resolve node only downloads on demand.
+        ctx.config(crate::resolve_virtio_villain::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });

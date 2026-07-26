@@ -298,14 +298,35 @@ macro_rules! log {
     };
 }
 
-/// Initialize Petri tracing with the given output path for log files.
+/// Creates a [`PetriLogSource`] rooted at `root_path` **without** installing a
+/// global tracing subscriber.
 ///
-/// Events go to three places:
-/// - `petri.jsonl`, in newline-separated JSON format.
-/// - standard output, in human readable format.
-/// - a log file, in human readable format. This file is `petri.log`, except
-///   for events whose target ends in `.log`, which go to separate files named by
-///   the target.
+/// Use this to obtain an additional, independently-rooted log source (for
+/// example, a per-test directory so each VM's serial console lands in its own
+/// `linux.log`) after the global subscriber has already been installed once via
+/// [`try_init_tracing`]. This is required by standalone multi-test binaries
+/// (e.g. the villain runner) that generate many trials in a single process:
+/// [`try_init_tracing`] can only install the global subscriber once, so
+/// per-test log isolation relies on constructing per-test log sources here.
+pub fn new_log_source(root_path: &Path) -> anyhow::Result<PetriLogSource> {
+    // Canonicalize so that printed attachment paths are most likely to work.
+    let root_path = root_path.fs_err_canonicalize()?;
+    let jsonl = File::create(root_path.join("petri.jsonl"))?;
+    let logger = PetriLogSource(Arc::new(LogSourceInner {
+        json_log: JsonLog(Arc::new(jsonl)),
+        root_path,
+        log_files: Default::default(),
+        attachments: Default::default(),
+    }));
+    Ok(logger)
+}
+
+/// Initializes the global tracing subscriber and returns a [`PetriLogSource`]
+/// rooted at `root_path`.
+///
+/// This installs the process-wide tracing subscriber and may only be called
+/// once per process; use [`new_log_source`] to obtain additional log sources
+/// rooted at other directories afterwards.
 pub fn try_init_tracing(
     root_path: &Path,
     default_level: LevelFilter,
@@ -317,15 +338,7 @@ pub fn try_init_tracing(
             Targets::new().with_default(default_level)
         };
 
-    // Canonicalize so that printed attachment paths are most likely to work.
-    let root_path = root_path.fs_err_canonicalize()?;
-    let jsonl = File::create(root_path.join("petri.jsonl"))?;
-    let logger = PetriLogSource(Arc::new(LogSourceInner {
-        json_log: JsonLog(Arc::new(jsonl)),
-        root_path,
-        log_files: Default::default(),
-        attachments: Default::default(),
-    }));
+    let logger = new_log_source(root_path)?;
 
     let petri_log = logger.log_file("petri")?;
 

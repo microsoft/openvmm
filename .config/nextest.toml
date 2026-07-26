@@ -23,6 +23,24 @@
 # https://nexte.st/docs/configuration/per-test-overrides/#override-precedence
 # https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
+# virtio-villain tests each boot a dedicated VM that runs one fault-injection
+# test and powers off. A test that never halts indicates a genuinely wedged
+# guest or device model (e.g. a malformed-descriptor host hang that OpenVMM
+# cannot recover from or even tear down) -- a real product bug. Terminate such
+# a test so it is reported as a failure rather than hanging the run. Require
+# two threads per test to bound concurrency and avoid vCPU starvation that
+# would otherwise cause spurious slow boots. (The package name does not contain
+# "vmm_tests", so the package(~vmm_tests) overrides below do not apply here.)
+[[profile.default.overrides]]
+filter = 'package(virtio_villain_tests)'
+slow-timeout = { period = "20s", terminate-after = 3 }
+threads-required = 2
+
+[[profile.ci.overrides]]
+filter = 'package(virtio_villain_tests)'
+slow-timeout = { period = "20s", terminate-after = 3 }
+threads-required = 2
+
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile

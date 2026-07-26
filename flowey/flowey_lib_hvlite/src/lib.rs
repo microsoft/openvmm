@@ -60,6 +60,7 @@ pub mod resolve_openvmm_qemu;
 pub mod resolve_openvmm_test_initrd;
 pub mod resolve_openvmm_test_linux_kernel;
 pub mod resolve_openvmm_test_virtio_win;
+pub mod resolve_virtio_villain;
 pub mod run_cargo_build;
 pub mod run_cargo_nextest_run;
 pub mod run_igvmfilegen;

@@ -179,15 +179,13 @@ impl PetriVmConfigOpenVmm {
 
         let mut load_mode = setup.load_firmware()?;
 
-        // If using pipette-as-init, replace the initrd with the pre-built
-        // one that has pipette injected. run_core() guarantees that
-        // prebuilt_initrd is set when uses_pipette_as_init is true.
-        if properties.uses_pipette_as_init {
+        // If a prebuilt initrd was provided, use it in place of the initrd
+        // produced by `load_firmware()`. This covers both the pipette-as-init
+        // path (run_core() injects pipette into a prebuilt initrd) and callers
+        // that supply their own fully-formed initrd (e.g. the virtio-villain
+        // runner, whose initramfs is its own PID-1 `init`).
+        if let Some(prebuilt) = properties.prebuilt_initrd.as_ref() {
             if let LoadMode::Linux { initrd, .. } = &mut load_mode {
-                let prebuilt = properties
-                    .prebuilt_initrd
-                    .as_ref()
-                    .expect("uses_pipette_as_init requires prebuilt_initrd");
                 let file = std::fs::File::open(prebuilt).with_context(|| {
                     format!("failed to open prebuilt initrd at {}", prebuilt.display())
                 })?;
