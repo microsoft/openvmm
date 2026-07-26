@@ -24,6 +24,11 @@ pub struct VirtioVillainRunCli {
     #[clap(long)]
     pub run_ignored: bool,
 
+    /// Optional nextest filter expression to run only a subset of tests (e.g.
+    /// `test(B0001)` or `test(/^B00/)`). Omit to run the whole suite.
+    #[clap(long)]
+    pub filter: Option<String>,
+
     /// Verbose pipeline output.
     #[clap(long)]
     pub verbose: bool,
@@ -33,6 +38,7 @@ impl IntoPipeline for VirtioVillainRunCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         let Self {
             run_ignored,
+            filter,
             verbose,
         } = self;
 
@@ -79,6 +85,7 @@ impl IntoPipeline for VirtioVillainRunCli {
                 |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
                     arch,
                     run_ignored,
+                    nextest_filter_expr: filter,
                     done: ctx.new_done_handle(),
                 },
             )
