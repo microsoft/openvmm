@@ -67,15 +67,13 @@ pub fn run_one(
     let fs_dir = tempfile::tempdir().context("failed to create virtio-fs root")?;
     let fs_path = fs_dir.path().to_string_lossy().into_owned();
 
-    #[cfg(unix)]
     let vsock_dir = tempfile::tempdir().context("failed to create vsock dir")?;
-    #[cfg(unix)]
     let vsock_socket = vsock_dir.path().join("vsock");
     // Bind the vsock listener up front so a failure is a hard error rather
     // than a silently-omitted device (which would make vsock tests falsely
     // self-SKIP). The socket lives in a fresh unique tempdir, so binding is
-    // expected to succeed on any functioning host.
-    #[cfg(unix)]
+    // expected to succeed on any functioning host. `unix_socket` provides
+    // `UnixListener` on all platforms, so this needs no target gating.
     let vsock_listener = unix_socket::UnixListener::bind(&vsock_socket).with_context(|| {
         format!(
             "failed to bind vsock listener at {}",
@@ -123,16 +121,7 @@ pub fn run_one(
             })
             .with_prebuilt_initrd(initramfs)
             .modify_backend(move |b| {
-                attach_kitchen_sink(
-                    b,
-                    cmdline,
-                    pmem_path,
-                    fs_path,
-                    #[cfg(unix)]
-                    vsock_socket,
-                    #[cfg(unix)]
-                    vsock_listener,
-                )
+                attach_kitchen_sink(b, cmdline, pmem_path, fs_path, vsock_socket, vsock_listener)
             });
 
         let mut vm = builder
@@ -174,7 +163,6 @@ pub fn run_one(
     // Keep backing resources alive until here.
     drop(pmem_file);
     drop(fs_dir);
-    #[cfg(unix)]
     drop(vsock_dir);
 
     Ok(scan_verdict(&log, test_name))
@@ -187,8 +175,8 @@ fn attach_kitchen_sink(
     cmdline: String,
     pmem_path: String,
     fs_path: String,
-    #[cfg(unix)] vsock_socket: PathBuf,
-    #[cfg(unix)] vsock_listener: unix_socket::UnixListener,
+    vsock_socket: PathBuf,
+    vsock_listener: unix_socket::UnixListener,
 ) -> petri::openvmm::PetriVmConfigOpenVmm {
     use openvmm_defs::config::LoadMode;
     use openvmm_defs::config::PcieDeviceConfig;
@@ -242,9 +230,8 @@ fn attach_kitchen_sink(
         virtio_resources::pmem::VirtioPmemHandle { path: pmem_path }.into_resource(),
     ];
 
-    // vsock (unix only: the listener was bound by the caller so a bind
-    // failure is a hard error, not a silently-dropped device).
-    #[cfg(unix)]
+    // vsock (the listener was bound by the caller so a bind failure is a hard
+    // error, not a silently-dropped device).
     inner.push(
         virtio_resources::vsock::VirtioVsockHandle {
             guest_cid: 3,
