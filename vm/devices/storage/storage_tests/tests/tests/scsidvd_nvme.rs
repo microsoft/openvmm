@@ -5,20 +5,11 @@
 
 #![cfg(any(windows, target_os = "linux"))]
 
-use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
 use disk_nvme::NvmeDisk;
 use guestmem::GuestMemory;
-use guid::Guid;
-use nvme::NvmeController;
-use nvme::NvmeControllerCaps;
-use nvme_driver::NvmeDriver;
-use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::bus_range::AssignedBusRange;
-use pci_core::dma::DmaTarget;
-use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
@@ -27,15 +18,12 @@ use scsi_defs::ISO_SECTOR_SIZE;
 use scsi_defs::ScsiOp;
 use scsidisk::scsidvd::SimpleScsiDvd;
 use test_with_tracing::test;
-use user_driver_emulated_mock::DeviceTestMemory;
-use user_driver_emulated_mock::EmulatedDevice;
-use vmcore::vm_task::SingleDriverBackend;
-use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
 
 struct ScsiDvdNvmeTest {
     scsi_dvd: SimpleScsiDvd,
-    _nvme_driver: NvmeDriver<EmulatedDevice<NvmeController, PagePoolAllocator>>, // We need to store this to keep it from going out of scope
+    // The driver behind the namespace must outlive the disk built from it.
+    _nvme: crate::common::EmulatedNvme,
 }
 
 impl ScsiDvdNvmeTest {
@@ -45,47 +33,20 @@ impl ScsiDvdNvmeTest {
         sector_count: u64,
         read_only: bool,
     ) -> Self {
-        const MSIX_COUNT: u16 = 2;
-        const IO_QUEUE_COUNT: u16 = 64;
-        const CPU_COUNT: u32 = 64;
-
-        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        // First 4MB for the device and second 4MB for the payload
-        let pages = 1024; // 4MB
-        let mem = DeviceTestMemory::new(pages * 2, false, "storage_tests_scsidvd_nvme");
-        let guest_mem = mem.guest_memory();
-        let dma_client = mem.dma_client();
-        let payload_mem = mem.payload_mem();
-
-        let msi_conn = MsiConnection::new();
-        let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
-        let nvme = NvmeController::new(
-            &driver_source,
-            &dma_target,
-            &mut ExternallyManagedMmioIntercepts,
-            NvmeControllerCaps {
-                msix_count: MSIX_COUNT,
-                max_io_queues: IO_QUEUE_COUNT,
-                subsystem_id: Guid::new_random(),
-            },
-        );
+        let mut nvme = crate::common::EmulatedNvme::new(
+            driver,
+            sector_size,
+            sector_count,
+            read_only,
+            "storage_tests_scsidvd_nvme",
+        )
+        .await;
+        let payload_mem = nvme.payload_mem().clone();
 
         let buf = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
         payload_mem.write_at(0, &buf).unwrap();
 
-        nvme.client()
-            .add_namespace(
-                1,
-                disklayer_ram::ram_disk(sector_size as u64 * sector_count, read_only).unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let device = EmulatedDevice::new(nvme, msi_conn, dma_client.clone());
-        let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false)
-            .await
-            .unwrap();
-        let namespace = nvme_driver.namespace(1).await.unwrap();
+        let namespace = nvme.namespace().await;
         let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
         for i in 0..(sector_count / 8) {
             namespace
@@ -105,7 +66,7 @@ impl ScsiDvdNvmeTest {
         let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
         Self {
             scsi_dvd,
-            _nvme_driver: nvme_driver,
+            _nvme: nvme,
         }
     }
 }

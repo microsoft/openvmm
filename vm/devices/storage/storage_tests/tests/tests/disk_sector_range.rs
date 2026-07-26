@@ -156,6 +156,22 @@ fn ram_layer_config(write_through: bool, read_cache: bool) -> LayerConfiguration
     }
 }
 
+/// A namespace on an emulated NVMe controller. The controller is returned
+/// alongside the disk because the driver behind the namespace must outlive it.
+#[cfg(any(windows, target_os = "linux"))]
+async fn nvme_disk(driver: DefaultDriver) -> (Disk, crate::common::EmulatedNvme) {
+    let mut nvme = crate::common::EmulatedNvme::new(
+        driver,
+        SECTOR_SIZE as u32,
+        DISK_SIZE / SECTOR_SIZE,
+        false,
+        "disk_sector_range_nvme",
+    )
+    .await;
+    let disk = nvme.disk().await;
+    (disk, nvme)
+}
+
 /// Two RAM layers, so that the code paths that consult the layer below a given
 /// layer are exercised.
 async fn layered_multi_disk() -> Disk {
@@ -197,23 +213,25 @@ async fn layered_read_cache_disk() -> Disk {
 /// A disk under test, together with anything that must outlive it.
 struct Fixture {
     disk: Disk,
-    _tempdir: Option<tempfile::TempDir>,
+    _keepalive: Option<Box<dyn Send>>,
 }
 
 impl From<Disk> for Fixture {
     fn from(disk: Disk) -> Self {
         Self {
             disk,
-            _tempdir: None,
+            _keepalive: None,
         }
     }
 }
 
-impl From<(Disk, tempfile::TempDir)> for Fixture {
-    fn from((disk, tempdir): (Disk, tempfile::TempDir)) -> Self {
+/// For disks that depend on something outliving them — a temporary directory,
+/// or the NVMe driver behind a namespace.
+impl<T: Send + 'static> From<(Disk, T)> for Fixture {
+    fn from((disk, keepalive): (Disk, T)) -> Self {
         Self {
             disk,
-            _tempdir: Some(tempdir),
+            _keepalive: Some(Box::new(keepalive)),
         }
     }
 }
@@ -222,9 +240,8 @@ impl From<(Disk, tempfile::TempDir)> for Fixture {
 ///
 /// Each entry is a test name and an expression producing the disk to test. The
 /// expression may `.await`, and may use the driver named by the leading
-/// `|driver|` binding. It evaluates to either a [`Disk`], or a
-/// `(Disk, TempDir)` pair when the disk needs a temporary directory kept alive
-/// for the duration of the test.
+/// `|driver|` binding. It evaluates to either a [`Disk`], or a `(Disk, T)` pair
+/// when something must be kept alive for the duration of the test.
 macro_rules! conformance_tests {
     (|$driver:ident| $(
         $(#[$meta:meta])*
@@ -271,6 +288,12 @@ mod conformance {
         layered_read_cache => layered_read_cache_disk().await;
         /// Striped across two RAM disks.
         striped => striped_disk();
+        /// A namespace on an emulated NVMe controller. This is the case where
+        /// the range check is legitimately delegated to the device that owns
+        /// the storage, so it also checks that the controller's
+        /// `LBA_OUT_OF_RANGE` survives the trip back as `IllegalBlock`.
+        #[cfg(any(windows, target_os = "linux"))]
+        nvme => nvme_disk(driver).await;
         /// Encryption wrapper over a RAM disk.
         crypt => crypt_disk();
         /// Persistent-reservation wrapper over a RAM disk.
