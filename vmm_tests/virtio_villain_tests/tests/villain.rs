@@ -11,11 +11,12 @@
 //! This binary uses **petri as a library** (like `burette`) plus
 //! **libtest-mimic** to expose one test case per villain test. Each case boots
 //! a single "kitchen-sink" OpenVMM VM (every supported virtio device attached;
-//! absent devices self-SKIP in the guest) with `vv.test=<id>` on the kernel
-//! command line, waits for the VM to halt, and reads the `[TAG] <id>` verdict
-//! from petri's teed serial log. Villain tests that OpenVMM is known to fail
-//! ([`known_failures`]) are marked *ignored*, so CI skips them but they can
-//! still be run locally with `--run-ignored`.
+//! a device that is absent makes the guest emit `[SKIP]`, which the harness
+//! treats as a failure unless allowlisted — see [`known_skips`]) with
+//! `vv.test=<id>` on the kernel command line, waits for the VM to halt, and
+//! reads the `[TAG] <id>` verdict from petri's teed serial log. Villain tests
+//! that OpenVMM is known to fail ([`known_failures`]) are marked *ignored*, so
+//! CI skips them but they can still be run locally with `--run-ignored`.
 //!
 //! Phase 1: PCI transport, x86_64/KVM. The villain `initramfs.cpio.gz` and
 //! `tests.tsv` are supplied locally via `--villain-initramfs`/`--villain-tsv`
@@ -36,8 +37,8 @@ use libtest_mimic::Trial;
 use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 use virtio_villain_tests::known_failures;
+use virtio_villain_tests::known_skips;
 use virtio_villain_tests::villain;
-use virtio_villain_tests::villain::VerdictScan;
 
 #[derive(Parser)]
 #[command(
@@ -107,23 +108,6 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
-/// Turn a scan result into a test outcome. Known-failing tests are marked
-/// ignored at trial-construction time (see [`known_failures`]) rather than
-/// inverted here, so this is a straight good→Ok / bad→Err mapping.
-fn evaluate(scan: VerdictScan) -> anyhow::Result<()> {
-    let (good, detail) = match scan {
-        VerdictScan::Found(v) => (v.is_good(), format!("{v:?}")),
-        VerdictScan::MarkerMissing => (false, "WEDGED (no verdict marker for this test)".into()),
-        VerdictScan::NoMarkers => (false, "FAIL (guest emitted no villain markers)".into()),
-    };
-
-    if good {
-        Ok(())
-    } else {
-        anyhow::bail!("{detail}")
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
 
@@ -188,6 +172,7 @@ fn main() -> anyhow::Result<()> {
             let desc = test.desc.clone();
             let device_id = test.device_id;
             let ignored = known_failures::lookup(&name).is_some();
+            let expected_skip = known_skips::lookup(&name).is_some();
             Trial::test(test.name.clone(), move || -> Result<(), Failed> {
                 let artifacts = artifacts
                     .as_ref()
@@ -199,8 +184,8 @@ fn main() -> anyhow::Result<()> {
                 let log_source = petri::new_log_source(&test_dir)
                     .context("failed to create per-test log source")
                     .map_err(|e| Failed::from(format!("{e:#}")))?;
-                let result =
-                    run::run_one(&params, artifacts, &log_source, &name).and_then(evaluate);
+                let result = run::run_one(&params, artifacts, &log_source, &name)
+                    .and_then(|scan| villain::evaluate(scan, expected_skip));
                 // Write the petri.passed/petri.failed marker (and log the
                 // outcome to petri.jsonl) so the logview uploader counts this
                 // test. villain tests are never "unstable" — known failures are

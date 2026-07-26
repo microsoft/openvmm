@@ -119,12 +119,17 @@ impl Verdict {
     }
 
     /// Whether this verdict is a "good" outcome (the device model behaved
-    /// correctly, the test did not apply, or it is a guest-side xfail/xpass —
-    /// none of which indicate an OpenVMM device-model bug).
+    /// correctly or it is a guest-side xfail/xpass — none of which indicate an
+    /// OpenVMM device-model bug).
+    ///
+    /// Note `Verdict::Skip` is deliberately **not** good: on the kitchen-sink VM
+    /// a skip means the device was absent or a precondition was unmet, so the
+    /// test exercised nothing. That is treated as a failure unless the test is
+    /// on the [`crate::known_skips`] allowlist — see [`evaluate`].
     pub fn is_good(self) -> bool {
         matches!(
             self,
-            Verdict::Pass | Verdict::Reject | Verdict::Skip | Verdict::Xfail | Verdict::Xpass
+            Verdict::Pass | Verdict::Reject | Verdict::Xfail | Verdict::Xpass
         )
     }
 }
@@ -177,9 +182,88 @@ pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
     }
 }
 
+/// Turn a scan result into a pass/fail outcome for one villain test.
+///
+/// `expected_skip` is true when the test is on the [`crate::known_skips`]
+/// allowlist — a device/precondition we knowingly do not exercise in this
+/// configuration.
+///
+/// Fast-fail rules:
+/// - A `SKIP` means the device was absent or a precondition was unmet, so the
+///   test exercised nothing. That is a **failure** (an unexercised test must not
+///   masquerade as a pass) unless it is an expected skip.
+/// - An expected skip that produces any *other* verdict means the situation
+///   changed and the allowlist entry is stale — also a failure, so it gets
+///   pruned (or moved to [`crate::known_failures`]).
+/// - Otherwise, [`Verdict::is_good`] decides, and a missing/absent marker is a
+///   failure.
+pub fn evaluate(scan: VerdictScan, expected_skip: bool) -> anyhow::Result<()> {
+    match scan {
+        VerdictScan::Found(Verdict::Skip) => {
+            if expected_skip {
+                Ok(())
+            } else {
+                anyhow::bail!(
+                    "SKIP: the device was absent or a precondition was unmet, so this \
+                     test exercised nothing. On the kitchen-sink VM a skip is almost \
+                     always a harness/config bug (a device we meant to attach but did \
+                     not); if the skip is genuinely expected for this configuration, \
+                     add it to KNOWN_SKIPS"
+                )
+            }
+        }
+        VerdictScan::Found(v) if expected_skip => anyhow::bail!(
+            "expected SKIP (test is on the KNOWN_SKIPS allowlist) but got {v:?}; the \
+             precondition changed, so remove it from KNOWN_SKIPS (and, if {v:?} is a \
+             failure, move it to KNOWN_FAILURES)"
+        ),
+        VerdictScan::Found(v) => {
+            if v.is_good() {
+                Ok(())
+            } else {
+                anyhow::bail!("{v:?}")
+            }
+        }
+        VerdictScan::MarkerMissing => {
+            anyhow::bail!("WEDGED (no verdict marker for this test)")
+        }
+        VerdictScan::NoMarkers => {
+            anyhow::bail!("FAIL (guest emitted no villain markers)")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluate_skip_is_failure_by_default() {
+        assert!(evaluate(VerdictScan::Found(Verdict::Skip), false).is_err());
+    }
+
+    #[test]
+    fn evaluate_expected_skip_passes() {
+        assert!(evaluate(VerdictScan::Found(Verdict::Skip), true).is_ok());
+    }
+
+    #[test]
+    fn evaluate_stale_expected_skip_fails() {
+        // A known-skip entry that no longer skips (device now present) must fail
+        // so the stale allowlist entry gets pruned.
+        assert!(evaluate(VerdictScan::Found(Verdict::Pass), true).is_err());
+        assert!(evaluate(VerdictScan::Found(Verdict::Fail), true).is_err());
+    }
+
+    #[test]
+    fn evaluate_good_and_bad_verdicts() {
+        assert!(evaluate(VerdictScan::Found(Verdict::Pass), false).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Reject), false).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Fail), false).is_err());
+        assert!(evaluate(VerdictScan::Found(Verdict::Wedged), false).is_err());
+        assert!(evaluate(VerdictScan::MarkerMissing, false).is_err());
+        assert!(evaluate(VerdictScan::NoMarkers, false).is_err());
+    }
 
     #[test]
     fn scan_finds_exact_marker() {
