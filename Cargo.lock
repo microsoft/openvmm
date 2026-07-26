@@ -9911,8 +9911,6 @@ dependencies = [
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
- "petri_artifacts_core",
- "petri_artifacts_vmm_test",
  "serial_core",
  "tempfile",
  "tracing",
