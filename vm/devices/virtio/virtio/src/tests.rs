@@ -5578,18 +5578,46 @@ fn new_bound_test_queue_result(
     Ok((mem, queue))
 }
 
-fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
-    let error = error
+fn queue_error(error: &io::Error) -> Option<&QueueError> {
+    error
         .get_ref()
-        .and_then(|error| error.downcast_ref::<QueueError>());
+        .and_then(|error| error.downcast_ref::<QueueError>())
+}
+
+fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
     assert!(matches!(
-        error,
+        queue_error(&error),
         Some(QueueError::TooManyInFlightDescriptors {
             in_flight: actual_in_flight,
             requested: actual_requested,
             queue_size: BOUND_TEST_QUEUE_SIZE,
         }) if *actual_in_flight == in_flight && *actual_requested == requested
     ));
+}
+
+/// Points descriptor 0 at itself and makes it available. The chain never
+/// terminates, so the queue rejects it with [`QueueError::TooLong`].
+fn make_split_cyclic_chain(mem: &GuestMemory) {
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    write_descriptor(
+        mem,
+        BOUND_TEST_DESC_ADDR,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0x100,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        0,
+    );
+    let mut avail_idx = 0;
+    make_available(
+        mem,
+        BOUND_TEST_AVAIL_ADDR,
+        BOUND_TEST_QUEUE_SIZE,
+        0,
+        &mut avail_idx,
+    );
 }
 
 fn next_error(queue: &mut VirtioQueue) -> io::Error {
@@ -5704,8 +5732,12 @@ async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) 
     assert_in_flight_error(next_error(&mut queue), 2, 3);
 }
 
+/// Oversubscribing the ring retires the queue like any other protocol
+/// violation. Completing outstanding work frees ring capacity but does not
+/// revive it: the rejected chain was never consumed, so the queue would hand
+/// out a descriptor the guest had already oversubscribed.
 #[async_test]
-async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
+async fn split_queue_stays_retired_after_capacity_error(driver: DefaultDriver) {
     let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
     make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
 
@@ -5714,8 +5746,14 @@ async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
         works.push(queue.try_next().unwrap().expect("within queue size"));
     }
     assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+
+    // Completions still publish to the used ring, so a device can drain its
+    // in-flight work after the failure.
     queue.complete(works.remove(0), 1);
-    let _ = queue.try_next().unwrap().unwrap();
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "freeing capacity must not revive a retired queue"
+    );
 }
 
 #[async_test]
@@ -5787,4 +5825,51 @@ async fn queue_new_rejects_corrupt_saved_state(driver: DefaultDriver) {
             }) if actual_avail == avail_index && actual_used == used_index
         ));
     }
+}
+
+/// A rejected descriptor chain is never consumed, so the available index does
+/// not move and the same chain would be re-read on the next call. Report the
+/// failure once and then report the queue as empty, so that a device worker
+/// which logs the error and keeps polling makes no further progress instead of
+/// spinning on the same bad chain forever.
+#[async_test]
+async fn queue_reports_failure_only_once(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Err(error) = queue.try_next() else {
+        panic!("a cyclic descriptor chain must be rejected");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+    assert!(
+        matches!(queue.try_peek(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+}
+
+/// Driven as a stream, a failed queue must park rather than yield the same
+/// error on every poll. It must not end the stream either: `None` would be
+/// ready synchronously on every poll, so a caller looping over the stream
+/// would spin on it exactly as it would on the repeated error.
+#[async_test]
+async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Some(Err(error)) = queue.next().await else {
+        panic!("the stream must yield the failure");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        poll_fn(|cx| std::task::Poll::Ready(queue.poll_next_unpin(cx)))
+            .await
+            .is_pending(),
+        "failed queue must park rather than repeat the error or end the stream"
+    );
 }
