@@ -76,9 +76,12 @@ impl IntoPipeline for VirtioVillainRunCli {
                 no_incremental: false,
             })
             .dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::local_run_virtio_villain::Params {
+                |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
                     arch,
                     run_ignored,
+                    nextest_profile:
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default,
+                    publish: None,
                     done: ctx.new_done_handle(),
                 },
             )

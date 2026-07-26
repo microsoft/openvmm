@@ -1760,6 +1760,56 @@ impl IntoPipeline for CheckinGatesCli {
             }
         }
 
+        // virtio-villain conformance suite: a separate, parallel per-PR job that
+        // drives OpenVMM under KVM against the guest-side villain test matrix.
+        //
+        // It runs alongside the vmm_tests jobs (own pool, own artifact) for
+        // parallelism. The `-vmm-tests` suffix on the label makes the published
+        // logs artifact (`x64-linux-kvm-virtio-villain-vmm-tests-logs`) match the
+        // `upload-petri-results` workflow glob, so villain results land on the
+        // logview website alongside the regular VMM test results.
+        //
+        // NOTE: inert until openvmm-deps ships the virtio-villain artifact and
+        // `OPENVMM_DEPS` is bumped; until then this job fails at artifact
+        // resolution. It is wired into PR CI now (per @jstarks) so its results
+        // can seed the known-failure list once the release lands.
+        {
+            let label = "x64-linux-kvm-virtio-villain";
+            let test_label = format!("{label}-vmm-tests");
+
+            let pub_villain_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                Some(pipeline.new_artifact(&test_label).0)
+            } else {
+                None
+            };
+
+            let villain_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("run vmm-tests [{label}]"),
+                )
+                .gh_set_pool(gh_pools::linux_amd_v7_1es())
+                .ado_set_pool(ado_pools::linux_amd_v6_1es())
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
+                        arch: CommonArch::X86_64,
+                        run_ignored: false,
+                        nextest_profile:
+                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                        publish: Some(
+                            flowey_lib_hvlite::_jobs::run_virtio_villain_tests::VillainPublish {
+                                junit_test_label: test_label,
+                                artifact_dir: pub_villain_results.map(|x| ctx.publish_artifact(x)),
+                            },
+                        ),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+            all_jobs.push(villain_job);
+        }
+
         // test the flowey local backend by running cargo xflowey build-igvm on x64
         {
             if matches!(backend_hint, PipelineBackendHint::Github) {
