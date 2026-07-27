@@ -149,11 +149,15 @@ impl PackedQueueGetWork {
 
     /// Advances `next_avail_index` by `count` descriptors.
     pub fn advance(&mut self, count: u16) {
-        let next_avail_index = (self.next_avail_index + count) % self.queue_size;
-        if next_avail_index < self.next_avail_index {
+        // A chain is never longer than the ring, so the cursor wraps at most
+        // once; compare-and-subtract avoids a modulo.
+        let raw = self.next_avail_index + count;
+        self.next_avail_index = if raw >= self.queue_size {
             self.wrapped_bit = !self.wrapped_bit;
-        }
-        self.next_avail_index = next_avail_index;
+            raw - self.queue_size
+        } else {
+            raw
+        };
         self.next_is_available = false;
     }
 }
@@ -244,11 +248,14 @@ impl PackedQueueCompleteWork {
             }
             _ => true,
         };
-        let next_index = (self.next_index + context.descriptor_count) % self.queue_size;
-        if next_index < self.next_index {
+        // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
+        let raw = self.next_index + context.descriptor_count;
+        self.next_index = if raw >= self.queue_size {
             self.wrapped_bit = !self.wrapped_bit;
-        }
-        self.next_index = next_index;
+            raw - self.queue_size
+        } else {
+            raw
+        };
         Ok(send_signal)
     }
 }

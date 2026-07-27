@@ -370,6 +370,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             }
         },
         None,
+        None,
     )
     .map_err(Error::LinuxLoader)?;
 

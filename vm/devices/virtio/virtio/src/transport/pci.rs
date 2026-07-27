@@ -258,7 +258,16 @@ impl VirtioPciDevice {
                     BAR0_ISR_SIZE as u32,
                 ),
             )),
-            Box::new(ReadOnlyCapability::new(
+        ];
+
+        // Only advertise a device-specific config capability when the device
+        // actually has device-specific config registers. Per the virtio spec
+        // (v1.2 section 4.1.4.6), a VIRTIO_PCI_CAP_DEVICE_CFG capability is
+        // required only for device types that have a device-specific
+        // configuration; devices without one (e.g. the entropy device) must
+        // not advertise a zero-length capability.
+        if traits.device_register_length > 0 {
+            caps.push(Box::new(ReadOnlyCapability::new(
                 "virtio-pci-device",
                 VirtioCapability::new(
                     VirtioPciCapType::DEVICE_CFG.0,
@@ -267,8 +276,8 @@ impl VirtioPciDevice {
                     BAR0_DEVICE_CFG_OFFSET as u32,
                     traits.device_register_length,
                 ),
-            )),
-        ];
+            )));
+        }
 
         let mut bars = DeviceBars::new().bar0(
             BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
@@ -802,6 +811,8 @@ mod saved_state {
         use crate::transport::saved_state::state::CommonQueueState;
         use crate::transport::saved_state::state::CommonSavedState;
         use mesh::payload::Protobuf;
+        use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
+        use vmcore::save_restore::SaveRestore;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf)]
@@ -824,6 +835,11 @@ mod saved_state {
             pub queues: Vec<SavedQueueState>,
             #[mesh(4)]
             pub interrupt_status: u32,
+            /// PCI configuration space, including the BAR base addresses. This
+            /// must be preserved so that BARs pre-assigned by the host (before
+            /// the guest firmware runs) survive a save/restore cycle.
+            #[mesh(5)]
+            pub cfg_space: <ConfigSpaceType0Emulator as SaveRestore>::SavedState,
         }
 
         #[derive(Protobuf, SavedStateRoot)]
@@ -859,6 +875,7 @@ mod saved_state {
                     })
                     .collect(),
                 interrupt_status: *self.pci.interrupt_status.lock(),
+                cfg_space: self.pci.config_space.save()?,
             })
         }
 
@@ -880,6 +897,10 @@ mod saved_state {
                 line.set_level(state.interrupt_status != 0);
             }
             self.pci.msix_config_vector = state.msix_config_vector;
+
+            // Restore the PCI config space (BARs, command register, etc.) so
+            // that host pre-assigned BARs are preserved across the cycle.
+            self.pci.config_space.restore(state.cfg_space)?;
 
             Ok(())
         }

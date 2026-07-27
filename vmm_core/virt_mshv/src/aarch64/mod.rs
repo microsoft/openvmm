@@ -106,6 +106,35 @@ impl virt::Hypervisor for LinuxMshv {
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
+        // When a GICv2m MSI frame is configured, disable LPI support
+        // (GICD_TYPER.LPIS=0) so Linux routes PCIe MSIs through the v2m frame
+        // (SPI-based) instead of looking for an ITS. Mirrors the WHP backend.
+        let v2m_doorbell_base = match config.processor_topology.gic_msi() {
+            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => Some(v2m.doorbell_base),
+            _ => None,
+        };
+        let gic_lpi_int_id_bits = if v2m_doorbell_base.is_some() {
+            0u64
+        } else {
+            1u64
+        };
+        vmfd.set_partition_property(
+            HvPartitionPropertyCode::GicLpiIntIdBits.0,
+            gic_lpi_int_id_bits,
+        )
+        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
+        // Register the v2m MSI doorbell base with the hypervisor as the
+        // GITS translater base, so an assigned device's DMA MSI-X write is
+        // trapped and injected as a guest SPI.
+        if let Some(doorbell_base) = v2m_doorbell_base {
+            vmfd.set_partition_property(
+                HvPartitionPropertyCode::GitsTranslaterBaseAddress.0,
+                doorbell_base,
+            )
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+        }
+
         // Set the PMU PPI if the topology provides one.
         if let Some(pmu_gsiv) = config.processor_topology.pmu_gsiv() {
             vmfd.set_partition_property(
@@ -153,6 +182,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             caps,
             synic_ports: Default::default(),
             time_frozen: false.into(),
+            gic_msi: self.config.processor_topology.gic_msi(),
+            gsi_states: parking_lot::Mutex::new(Box::new(
+                [crate::irqfd::GsiState::Unallocated; crate::irqfd::NUM_GSIS],
+            )),
         });
 
         let partition = MshvPartition {
@@ -197,6 +230,21 @@ impl virt::Partition for MshvPartition {
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
         self.inner.signal_msi(None, request.address, request.data);
+    }
+
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        let v2m = match &self.inner.gic_msi {
+            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
+            _ => return None,
+        };
+        let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(Arc::new(crate::irqfd::MshvIrqFd::new(self.inner.clone())))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {

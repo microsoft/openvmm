@@ -200,6 +200,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
+product_policy = { path = "openhcl/product_policy" }
 openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 sidecar_client = { path = "openhcl/sidecar_client" }
@@ -401,7 +402,6 @@ igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
 page_pool_alloc = { path = "vm/page_pool_alloc" }
-vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
 vmgs_format = { path = "vm/vmgs/vmgs_format" }
@@ -436,6 +436,8 @@ virt_support_x86emu = { path = "vmm_core/virt_support_x86emu" }
 virt_whp = { path = "vmm_core/virt_whp" }
 vm_loader = { path = "vmm_core/vm_loader" }
 vm_manifest_builder = { path = "vmm_core/vm_manifest_builder" }
+vmm_cli = { path = "vmm_core/vmm_cli" }
+vmm_cli_derive = { path = "vmm_core/vmm_cli_derive" }
 vmm_core = { path = "vmm_core" }
 vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
@@ -500,6 +502,7 @@ target-lexicon = "0.13.2"
 base64 = "0.22.1"
 base64-serde = "0.8"
 cargo_toml = "0.22"
+corim = "0.1.3"
 heck = "0.5"
 hex = "0.4"
 pbjson = "0.5"
@@ -613,8 +616,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-igvm = { git = "https://github.com/microsoft/igvm", rev = "3d1a950116d624746bf3342e09ea0a3416d89dd3" }
-igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "3d1a950116d624746bf3342e09ea0a3416d89dd3", default-features = false }
+igvm = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73" }
+igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73", default-features = false }
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"

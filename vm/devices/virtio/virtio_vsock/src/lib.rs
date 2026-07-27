@@ -600,6 +600,12 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     writable: bool,
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
+    if !mem.supports_locking() {
+        // Memory behind an emulated IOMMU has no stable host mapping to lock,
+        // so fall back to a bounce buffer via read_at/write_at.
+        return Ok(None);
+    }
+
     let regions = data_regions(payload, writable, VSOCK_HEADER_SIZE as u64, data_len);
     let gpn_list = try_build_gpn_list(regions);
     let locked = if let Some((gpns, offset, len)) = &gpn_list {
@@ -608,7 +614,15 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
         }
         let paged_range =
             PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
-        Some(mem.lock_range(paged_range, locked_range)?)
+        Some(mem.lock_range(
+            if writable {
+                guestmem::AccessType::Write
+            } else {
+                guestmem::AccessType::Read
+            },
+            paged_range,
+            locked_range,
+        )?)
     } else {
         tracing::trace!("payload data is not representable in a single PagedRange");
         None

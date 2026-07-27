@@ -35,7 +35,7 @@ floppy_resources.workspace = true
 hvdef.workspace = true
 hyperv_dump.workspace = true
 ide_resources.workspace = true
-igvm.workspace = true
+igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
 loader.workspace = true
 virt.workspace = true
@@ -59,7 +59,6 @@ chipset_resources.workspace = true
 closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true

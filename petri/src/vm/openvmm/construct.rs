@@ -13,6 +13,7 @@ use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
 use crate::PcieNvmeDrive;
+use crate::PcieVirtioBlkDrive;
 use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -121,6 +122,7 @@ impl PetriVmConfigOpenVmm {
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
+            pcie_virtio_blk_drives,
             physical_nvme_devices,
         } = petri_vm_config;
 
@@ -247,6 +249,28 @@ impl PetriVmConfigOpenVmm {
                     }],
                     requests: None,
                 }
+                .into_resource(),
+            });
+        }
+
+        for PcieVirtioBlkDrive {
+            port_name,
+            drive: Drive { disk, .. },
+        } in pcie_virtio_blk_drives
+        {
+            let disk = disk.ok_or_else(|| {
+                anyhow::anyhow!("missing disk for PCIe virtio-blk drive on port '{port_name}'")
+            })?;
+            let disk = petri_disk_to_openvmm(&disk).await?;
+            pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk,
+                        read_only: false,
+                    }
+                    .into_resource(),
+                )
                 .into_resource(),
             });
         }
@@ -423,22 +447,57 @@ impl PetriVmConfigOpenVmm {
             .build()
             .context("failed to build chipset configuration")?;
 
+        // Preserve the caller's explicit private-memory request so that backend
+        // methods which force shared memory can fail on an explicit conflict.
+        let requested_private_memory = memory.private_memory;
+
         let numa = {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
                 numa_mem_sizes,
+                private_memory,
+                transparent_hugepages,
             } = memory;
 
             if dynamic_memory_range.is_some() {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
+            // Private (anonymous) guest memory is incompatible with two
+            // OpenVMM features that petri enables based on the firmware:
+            // - OpenHCL uses a remote VA mapper to share VTL0 RAM with VTL2,
+            //   which requires a shareable memory section.
+            // - PCAT (Gen1) relies on x86 legacy support (the VGA hole and
+            //   PAM registers), which toggles low RAM visibility in a way
+            //   that requires shared, file-backed memory.
+            let private_incompatible = firmware.is_openhcl() || firmware.is_pcat();
+            let private_memory = match private_memory {
+                // An explicit request for private memory that the firmware
+                // cannot honor is an error, rather than a silent downgrade.
+                Some(true) if private_incompatible => {
+                    anyhow::bail!(
+                        "private guest memory was explicitly requested but is \
+                         not supported with this firmware (OpenHCL and \
+                         PCAT/Gen1 require shared memory)"
+                    );
+                }
+                Some(explicit) => explicit,
+                // Default: prefer private memory for performance, falling back
+                // to shared when the firmware requires it.
+                None => !private_incompatible,
+            };
+
+            // THP is only valid for private anonymous memory and only on
+            // Linux; disable it otherwise to avoid a memory build error.
+            let transparent_hugepages =
+                transparent_hugepages && private_memory && cfg!(target_os = "linux");
+
             let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
                 mem_size: size,
                 prefetch_memory: false,
-                private_memory: false,
-                transparent_hugepages: false,
+                private_memory,
+                transparent_hugepages,
                 hugepages: false,
                 hugepage_size: None,
                 host_numa_node: None,
@@ -504,32 +563,6 @@ impl PetriVmConfigOpenVmm {
                 }),
             }
         };
-
-        let (secure_boot_enabled, custom_uefi_vars) = firmware.uefi_config().map_or_else(
-            || (false, Default::default()),
-            |c| {
-                (
-                    c.secure_boot_enabled,
-                    match (arch, c.secure_boot_template) {
-                        (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::X86_64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                        (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        (
-                            MachineArch::Aarch64,
-                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                        ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                        (_, None) => Default::default(),
-                    },
-                )
-            },
-        );
 
         let vmgs = if firmware.is_openhcl() {
             None
@@ -631,8 +664,6 @@ impl PetriVmConfigOpenVmm {
             framebuffer,
             vga_firmware,
 
-            secure_boot_enabled,
-            custom_uefi_vars,
             vmgs,
 
             // Don't automatically reset the guest by default
@@ -648,21 +679,6 @@ impl PetriVmConfigOpenVmm {
             vpci_resources: vec![],
             debugger_rpc: None,
             rtc_delta_milliseconds: 0,
-            efi_diagnostics_log_level: match firmware
-                .uefi_config()
-                .map(|c| c.efi_diagnostics_log_level)
-                .unwrap_or_default()
-            {
-                EfiDiagnosticsLogLevel::Default => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Default
-                }
-                EfiDiagnosticsLogLevel::Info => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Info
-                }
-                EfiDiagnosticsLogLevel::Full => {
-                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Full
-                }
-            },
         };
 
         // Make the pipette connection listener.
@@ -714,6 +730,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file: log_source.log_file("openvmm")?,
 
             memory_backing_file: None,
+            requested_private_memory,
 
             ged,
             framebuffer_view,
@@ -862,7 +879,6 @@ impl PetriVmConfigSetupCore<'_> {
                     kernel,
                     initrd: Some(initrd),
                     cmdline,
-                    custom_dsdt: None,
                     enable_serial: self.enable_serial,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                 }
@@ -896,8 +912,8 @@ impl PetriVmConfigSetupCore<'_> {
                             default_boot_always_attempt,
                             enable_vpci_boot,
                             force_dma_bounce,
-                            efi_diagnostics_log_level: _, // applied to top-level Config below
-                            efi_diagnostics_rate_limit: _, // applied to top-level Config below
+                            efi_diagnostics_log_level: _, // applied device-side via UefiManifest::new
+                            efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
                         },
                 },
             ) => {

@@ -905,7 +905,7 @@ impl KvmProcessor<'_> {
 
     /// Tries to deliver any pending synic messages for a VP.
     fn try_deliver_synic_messages(&mut self) -> Option<VmTime> {
-        if !self.scontrol.enabled() && self.simp.enabled() {
+        if !(self.scontrol.enabled() && self.simp.enabled()) {
             return None;
         }
         self.inner
@@ -989,8 +989,10 @@ impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
     ) -> Result<guestmem::LockedPages, HvError> {
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
         self.0
-            .lock_gpns(false, &[gpn])
+            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
             .map_err(|_| HvError::OperationDenied)
     }
 

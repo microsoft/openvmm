@@ -2988,4 +2988,127 @@ mod tests {
             "non-DMA command (READ_SECTORS) via enlightened path should return Ok, not Defer"
         );
     }
+
+    /// Regression test for the drive-head TOCTOU bug on the enlightened path.
+    ///
+    /// The enlightened path must select the target drive (via the Device/Head
+    /// register in the command packet) *before* checking whether the drive is
+    /// busy/errored. Before the fix, that busy/error check ran against the
+    /// *previously* selected drive.
+    ///
+    /// This mirrors the Azure ADE scenario: an optical drive sits on the
+    /// channel master and is the currently-selected drive in a pending (DRQ)
+    /// state, while a hard disk (the BEK disk) sits on the channel slave. An
+    /// enlightened read targeting the slave must not be dropped just because
+    /// the master is pending.
+    ///
+    /// Before the fix this drops the command (`io_write` returns `Ok` and logs
+    /// "command is already pending on this drive, ignoring enlightened
+    /// command"); after the fix the command is serviced (`Defer`) and the
+    /// slave disk's data is read.
+    #[async_test]
+    async fn enlightened_wrong_drive_head_toctou() {
+        const SECTOR_COUNT: u16 = 4;
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        // PRD table + enlightened command packet targeting the SLAVE (dev=1).
+        let table_gpa = 0x1000;
+        let data_gpa = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            // Target the slave drive (device bit set).
+            device_head: DeviceHeadReg::new().with_lba(true).with_dev(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count: 0,
+            data_buffer: table_gpa as u32,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        // Build the hard disk (slave) backing with known contents.
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut handle = temp_file.reopen().unwrap();
+        let file_contents = (0..0x100000_u32).collect::<Vec<_>>();
+        handle.write_all(file_contents.as_bytes()).unwrap();
+        let hard_disk = Disk::new(FileDisk::open(handle, false).unwrap()).unwrap();
+
+        // Master = empty optical drive (no media), Slave = the hard disk.
+        let optical = DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
+            SimpleScsiDvd::new(None),
+        ))));
+        let hard = DriveMedia::hard_disk(hard_disk);
+
+        let mut ide_device = IdeDevice::new(
+            test_guest_mem.clone(),
+            &mut ExternallyManagedPortIoIntercepts,
+            [Some(optical), Some(hard)],
+            [None, None],
+            LineInterrupt::detached(),
+            LineInterrupt::detached(),
+        )
+        .unwrap();
+
+        // Primary channel, master (the optical drive).
+        let dev_path = IdePath::default();
+
+        // Select the master (optical) and put it into a pending (DRQ) state by
+        // issuing a PACKET command, which waits for the CDB. This leaves the
+        // master selected (current_drive_idx = 0) with DRQ set.
+        device_select(&mut ide_device, &dev_path).await;
+        execute_command(&mut ide_device, &dev_path, IdeCommand::PACKET_COMMAND.0);
+
+        let status = get_status(&mut ide_device, &dev_path);
+        assert!(
+            status.drq(),
+            "expected optical master to be pending (DRQ) before the enlightened command"
+        );
+
+        // Issue the enlightened read targeting the SLAVE hard disk. With the
+        // bug, the busy/error guard reads the master's (DRQ) status and drops
+        // the command (returns Ok). With the fix, the drive-head is written
+        // first, so the guard reads the ready slave and the command proceeds
+        // (Defer).
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        let mut deferred = match r {
+            IoResult::Defer(deferred) => deferred,
+            other => panic!(
+                "enlightened command targeting the slave was dropped ({other:?}); \
+                 the drive-head TOCTOU guard checked the previously-selected master"
+            ),
+        };
+
+        poll_fn(|cx| {
+            ide_device.poll_device(cx);
+            deferred.poll_write(cx)
+        })
+        .await
+        .unwrap();
+
+        // Verify the slave disk's data was read into guest memory.
+        let mut buffer = vec![0u8; BYTE_COUNT as usize];
+        test_guest_mem
+            .read_at(data_gpa.into(), &mut buffer)
+            .unwrap();
+        assert_eq!(buffer, file_contents.as_bytes()[..buffer.len()]);
+    }
 }

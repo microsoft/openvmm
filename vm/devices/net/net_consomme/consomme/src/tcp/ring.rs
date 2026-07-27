@@ -165,16 +165,6 @@ impl<'a> View<'a> {
             (a, b)
         }
     }
-
-    /// Copies the view contents into `buf`.
-    ///
-    /// # Panics
-    /// Panics if `buf` is smaller than the view length.
-    pub fn copy_to_slice(&self, buf: &mut [u8]) {
-        let (a, b) = self.as_slices();
-        buf[..a.len()].copy_from_slice(a);
-        buf[a.len()..a.len() + b.len()].copy_from_slice(b);
-    }
 }
 
 #[cfg(test)]

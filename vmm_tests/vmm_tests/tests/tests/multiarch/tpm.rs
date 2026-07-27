@@ -3,6 +3,8 @@
 
 use anyhow::Context;
 use anyhow::ensure;
+#[cfg(windows)]
+use petri::IsolationType;
 use petri::PetriGuestStateLifetime;
 #[cfg(windows)]
 use petri::PetriHaltReason;
@@ -320,11 +322,10 @@ impl<'a> TpmGuestTests<'a> {
 
 /// Basic boot tests with TPM enabled.
 #[vmm_test(
-    // TODO: enable openvmm TPM tests once we can build OpenSSL on Windows in CI
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
+    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
+    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
     openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
@@ -334,7 +335,7 @@ impl<'a> TpmGuestTests<'a> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -632,7 +633,7 @@ async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
 /// VBS boot test with attestation enabled
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
+    ignore(reason = "OpenVMM VBS Ubuntu attestation boot is not yet reliable (microsoft/openvmm#2608)", openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)))
 )]
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -781,6 +782,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
+    let isolation = config.isolation();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
     // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
@@ -828,6 +830,26 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
     );
+
+    // On SEV-SNP, the OpenHCL IGVM is built with an ID block (signed by an
+    // ephemeral key in open-source builds), so the guest launches with
+    // `id_block_en = 1` and the PSP records the SHA-384 of the ID key in the
+    // report's `id_key_digest`. A zero digest means no ID block was accepted,
+    // which would indicate a regression in the IGVM ID block. The guest tool
+    // only emits this line for SNP reports.
+    if matches!(isolation, Some(IsolationType::Snp)) {
+        const MARKER: &str = "SNP ID key digest:";
+        let digest = report_output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(MARKER))
+            .map(str::trim)
+            .with_context(|| format!("SNP report missing '{MARKER}' line: {report_output}"))?;
+        ensure!(
+            !digest.is_empty() && digest.chars().any(|c| c != '0'),
+            "SNP id_key_digest is zero, so no ID block was accepted \
+             (id_block_en not set?): {report_output}"
+        );
+    }
 
     // Capture the AK public modulus on this (first) boot for the stability
     // check below.
@@ -961,7 +983,7 @@ async fn ak_pub_refresh<T, S, U: PetriVmmBackend>(
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
-#[vmm_test_with(unstable, configs(
+#[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
@@ -1044,7 +1066,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// test function (`use_hw_unseal`), they all map to
 /// `KeyReleaseFailure`.
 #[cfg(windows)]
-#[vmm_test_with(unstable, configs(
+#[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]

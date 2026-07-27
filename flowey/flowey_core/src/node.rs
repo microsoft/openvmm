@@ -1683,9 +1683,12 @@ impl<'ctx> NodeCtx<'ctx> {
         T: Serialize + DeserializeOwned,
     {
         // normalize call path to ensure determinism between windows and linux
-        let caller = std::panic::Location::caller()
-            .to_string()
-            .replace('\\', "/");
+        //
+        // Only the source file is kept, not line/column: `{modpath}:{ordinal}`
+        // already uniquely identifies the var, so including line/column would
+        // needlessly churn every generated pipeline whenever unrelated edits
+        // shift line numbers.
+        let caller = std::panic::Location::caller().file().replace('\\', "/");
 
         // until we have a proper way to "split" debug info related to vars, we
         // kinda just lump it in with the var name itself.

@@ -305,6 +305,17 @@ fn accept_pending_vtl2_memory(
 
                     let mapping = local_map.map_pages(map_range, false);
                     ram_buffer.copy_from_slice(mapping.data);
+
+                    // On SNP, evict the shared (C=0) cache lines for these
+                    // pages while the C=0 mapping is still live.
+                    if isolation_type == IsolationType::Snp {
+                        let mapping_va = mapping.data.as_ptr() as u64;
+                        for page_offset in
+                            (0..mapping.data.len() as u64).step_by(hvdef::HV_PAGE_SIZE as usize)
+                        {
+                            super::snp::cache_lines_flush_page(mapping_va + page_offset);
+                        }
+                    }
                 }
 
                 // Change visibility on the pages for this iteration.

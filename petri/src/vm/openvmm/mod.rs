@@ -74,7 +74,7 @@ use vm_resource::kind::DiskHandleKind;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 
-/// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
+/// The instance guid for the MANA nic automatically added when specifying [`PetriVmConfigOpenVmm::with_nic`]
 const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
 
 /// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
@@ -170,6 +170,13 @@ pub struct PetriVmConfigOpenVmm {
 
     // File-backed guest memory.
     memory_backing_file: Option<PathBuf>,
+
+    // The private-memory setting explicitly requested via
+    // `MemoryConfig::private_memory`, preserved so that backend methods which
+    // force shared memory (e.g. `with_hugepages`, `with_memory_backing_file`)
+    // can fail when the caller explicitly asked for private memory rather than
+    // silently downgrading it.
+    requested_private_memory: Option<bool>,
 
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
