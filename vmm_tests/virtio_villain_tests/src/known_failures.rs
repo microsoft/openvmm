@@ -1,12 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! OpenVMM-specific list of villain tests that are **known to fail** and are
-//! therefore marked *ignored* in the libtest-mimic harness.
+//! OpenVMM-specific list of villain tests that OpenVMM does not currently pass
+//! and are therefore marked *ignored* in the libtest-mimic harness.
 //!
 //! This list lives here (in the OpenVMM tree), not upstream in villain,
-//! because it describes OpenVMM-specific outcomes — device-model bugs *or*
-//! accepted behavioral differences — not villain bugs.
+//! because it describes OpenVMM-specific outcomes. Entries fall into three
+//! kinds, distinguished by their `reason`:
+//! - **OpenVMM bugs** — a device-model defect, linked to a filed
+//!   `microsoft/openvmm#NNNN` issue. Remove the entry when the bug is fixed so
+//!   the test runs (and gates) in CI again.
+//! - **Not an OpenVMM bug** — a villain test defect, a precondition the test
+//!   fails to establish, or an assertion that is not spec-grounded. OpenVMM
+//!   behaves correctly, but the test still reports failure, so it stays ignored.
+//!   The `reason` starts with "Not an OpenVMM bug:" and explains why.
+//! - **Accepted-by-design** — a behavioral difference OpenVMM will not change
+//!   (e.g. RNG0004); the `reason` captures the full rationale inline.
 //!
 //! Ignored tests behave like libtest `#[ignore]` tests:
 //! - They are **skipped by default**, so CI (which runs with the default
@@ -23,99 +32,109 @@
 //! only be ended by the external nextest timeout, so it can never reach an
 //! in-harness "expected failure" inversion. Skipping is both correct and much
 //! cheaper.
-//!
-//! When a bug is fixed, remove its entry here; the test then runs (and gates)
-//! in CI again. Bug entries should link to a filed OpenVMM issue. A few entries
-//! are instead **accepted-by-design** differences that OpenVMM will not change
-//! (e.g. RNG0004 — see its reason); those stay listed and their `reason` field
-//! captures the full rationale inline rather than being tracked as bugs.
 
-/// A villain test that OpenVMM is known to fail, and that we therefore skip by
-/// default (mark ignored).
+/// A villain test that OpenVMM does not currently pass, and that we therefore
+/// skip by default (mark ignored).
 pub struct KnownFailure {
     /// The villain test name (matches `tests.tsv` column 1 / `vv.test=<name>`).
     pub name: &'static str,
-    /// Human-readable reason, ideally referencing a tracking issue, e.g.
-    /// `"virtio-blk unbounded descriptor walk (microsoft/openvmm#NNNN)"`.
+    /// Human-readable reason. For OpenVMM bugs, reference the tracking issue,
+    /// e.g. `"… (microsoft/openvmm#4045)"`. For tests where OpenVMM behaves
+    /// correctly, start with `"Not an OpenVMM bug:"` and explain why the test
+    /// still fails.
     pub reason: &'static str,
 }
 
 /// The known-failure list. Keep sorted by name.
 ///
-/// Seeded from the first full-suite CI run (openvmm-deps 0.3.0-112, x86_64/KVM):
-/// the tests below either drove OpenVMM's virtio worker into a non-terminating
-/// loop (marked "host hang" — these time out, which is why the list is ignored
-/// rather than inverted) or the device model accepted malformed input / returned
-/// a wrong value. Issues still need to be filed; update each `reason` with the
-/// issue link once they are.
+/// The residual failures from the first full-suite CI run were root-caused
+/// against OpenVMM and villain source. The genuine device-model bugs were filed
+/// as `microsoft/openvmm#4045-4049` (grouped by root cause); the remainder are
+/// villain test defects / spec-permitted behavior that OpenVMM handles correctly
+/// but the test still flags. Keep the `reason` accurate to which kind each is.
 pub const KNOWN_FAILURES: &[KnownFailure] = &[
     KnownFailure {
         name: "B0002",
-        reason: "virtio-blk sector*512+data_len 64-bit wrap wedges the device \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk out-of-range read near sector UINT64_MAX: unchecked \
+                 LBA arithmetic wraps past the capacity check and returns \
+                 success with zeros (microsoft/openvmm#4046)",
     },
     KnownFailure {
         name: "B0081",
-        reason: "virtio-blk write at sector = UINT64_MAX mishandled \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk out-of-range write at sector UINT64_MAX: unchecked \
+                 LBA arithmetic wraps past the capacity check; the write is \
+                 accepted and stored (microsoft/openvmm#4046)",
     },
     KnownFailure {
         name: "B0082",
-        reason: "virtio-blk 32KB (64-sector) single request host hang \
-                 (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain test defect. The test advertises \
+                 32 KiB of physically-contiguous GPA from 8 anonymous mmap pages \
+                 but only translates the first page to a PFN; OpenVMM performs \
+                 finite, correct I/O over the GPAs as programmed.",
     },
     KnownFailure {
         name: "B0091",
-        reason: "virtio-blk read with sector = UINT64_MAX mishandled \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk out-of-range read at sector UINT64_MAX: unchecked \
+                 LBA arithmetic wraps past the capacity check and returns \
+                 success with zeros (microsoft/openvmm#4046)",
     },
     KnownFailure {
         name: "B0125",
-        reason: "virtio-blk descriptor chain loop in request host hang \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk request descriptor-chain loop: OpenVMM detects the \
+                 bad chain but re-parses the same head forever, wedging the \
+                 worker unrecoverably (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "B0139",
-        reason: "virtio-blk discard segment sector+num_sectors u64 overflow \
-                 mishandled (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: stale/currently-conformant. The discard \
+                 sector+num_sectors add is a latent overflow (same class as \
+                 microsoft/openvmm#4046), but for this test's operands the \
+                 request correctly returns S_IOERR.",
     },
     KnownFailure {
         name: "E0028",
-        reason: "virtio-pmem shared memory region size reported non-zero \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-pmem reports region size 0: the device maps a region but \
+                 neither offers VIRTIO_PMEM_F_SHMEM_REGION nor populates the \
+                 start/size config fields (microsoft/openvmm#4048)",
     },
     KnownFailure {
         name: "E0032",
-        reason: "virtio-pmem config start/capacity read incorrect \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-pmem reports start/capacity 0: the device maps a region \
+                 but neither offers VIRTIO_PMEM_F_SHMEM_REGION nor populates the \
+                 start/size config fields (microsoft/openvmm#4048)",
     },
     KnownFailure {
         name: "M0024",
-        reason: "virtio-mmio QueueReset register readback returns a value other \
-                 than 0 or 1 (spec 4.2.2.2 requires 1 while reset is in progress, \
-                 0 otherwise) (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain precondition defect. The test reads \
+                 QueueReset without negotiating VIRTIO_F_RING_RESET (which \
+                 OpenVMM does not offer); the register is only operative once \
+                 the feature is negotiated (spec 4.2.2.2).",
     },
     KnownFailure {
         name: "M0030",
-        reason: "virtio-mmio QueueDesc programmed at the top of the 64-bit \
-                 address space kills the guest before it reports a verdict \
-                 (address-edge descriptor handling, same class as the villain \
-                 huge-len/address-wrap family) (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: unsubstantiated/stale. OpenVMM validates \
+                 the wrapped QueueDesc range before any ring access and fails \
+                 the queue-enable cleanly (state reset); no guest-kill \
+                 reproduces on the current code.",
     },
     KnownFailure {
         name: "P0003",
-        reason: "virtio-blk packed descriptor list exceeding queue size wedges \
-                 the device (microsoft/openvmm#TODO)",
+        reason: "virtio-blk packed descriptor chain exceeding queue size: \
+                 detected but re-parsed forever, wedging the worker \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "PCI0102",
-        reason: "virtio PCI subsystem vendor is not 0x1AF4 \
-                 (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain assertion contradicts spec. The \
+                 test requires subsystem vendor 0x1AF4, but spec 4.1.2.1 permits \
+                 subsystem IDs to reflect the environment; OpenVMM reports the \
+                 Microsoft subsystem vendor 0x1414.",
     },
     KnownFailure {
         name: "PCI0114",
-        reason: "virtio PCI ISR does not read zero with no pending interrupt \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-pci raises a spurious config-change interrupt (ISR bit \
+                 1) at DRIVER_OK, so ISR reads 0x02 before any I/O \
+                 (microsoft/openvmm#4049)",
     },
     KnownFailure {
         name: "RNG0004",
@@ -135,63 +154,79 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
     },
     KnownFailure {
         name: "S0048",
-        reason: "virtio-blk queue_size does not read back the driver-written \
-                 value (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain test-ordering defect. It writes \
+                 queue_size after the harness has already enabled the queue and \
+                 set DRIVER_OK; OpenVMM correctly ignores post-enable writes \
+                 (spec 4.1.4.3.2 requires configuring before enabling).",
     },
     KnownFailure {
         name: "T0001",
-        reason: "virtio-blk self-looping descriptor chain hangs the virtio \
-                 worker unrecoverably (microsoft/openvmm#TODO)",
+        reason: "virtio-blk self-looping descriptor chain: detected but \
+                 re-parsed forever, wedging the worker unrecoverably \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "T0002",
-        reason: "virtio-blk descriptor chain exceeding queue size hangs the \
-                 virtio worker unrecoverably (microsoft/openvmm#TODO)",
+        reason: "virtio-blk descriptor chain exceeding queue size: detected but \
+                 re-parsed forever, wedging the worker unrecoverably \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "T0003",
-        reason: "virtio-blk out-of-bounds descriptor `next` index hangs the \
-                 virtio worker unrecoverably (microsoft/openvmm#TODO)",
+        reason: "virtio-blk out-of-bounds descriptor `next` index: detected but \
+                 re-parsed forever, wedging the worker unrecoverably \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "T0008",
-        reason: "virtio-blk descriptor addr+len 64-bit wrap mishandled \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk descriptor addr+len 64-bit wrap: unchecked GPA-range \
+                 arithmetic panics in checked builds (release returns S_IOERR) \
+                 (microsoft/openvmm#4047)",
     },
     KnownFailure {
         name: "T0022",
-        reason: "virtio-blk duplicate head index in available ring mishandled \
-                 (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: spec-permitted. Rejecting a driver-reoffered \
+                 in-flight head is a driver MUST-NOT (spec 2.7.6), not a device \
+                 requirement; OpenVMM re-parses each dequeue into fresh buffers \
+                 with no host memory-safety issue. Optional hardening only.",
     },
     KnownFailure {
         name: "T0025",
-        reason: "virtio-blk available ring entry index out of bounds host hang \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk out-of-bounds available-ring entry: triggers the \
+                 wedging worker busy-loop (microsoft/openvmm#4045). Note: this \
+                 villain test always reports PASS, so it cannot detect a \
+                 regression of that bug.",
     },
     KnownFailure {
         name: "T0054",
-        reason: "virtio-blk descriptor chain length == queue_size + 1 host hang \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-blk descriptor chain length == queue_size + 1: detected \
+                 but re-parsed forever, wedging the worker \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "T0073",
-        reason: "virtio-blk descriptor buffer spanning to exact end of RAM host \
-                 hang (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain test defect. It hardcodes a \
+                 top-of-RAM address and points a writable descriptor at an \
+                 unowned page instead of discovering the real RAM top; OpenVMM's \
+                 I/O is finite and in-range.",
     },
     KnownFailure {
         name: "T0082",
-        reason: "virtio-blk descriptor with addr/len/flags/next all UINT_MAX host \
-                 hang (microsoft/openvmm#TODO)",
+        reason: "virtio-blk descriptor with addr/len/flags/next all UINT_MAX: \
+                 the invalid indirect/OOB access is detected but re-parsed \
+                 forever, wedging the worker (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "T0084",
-        reason: "virtio-blk avail ring full of out-of-bounds descriptor indices \
-                 host hang (microsoft/openvmm#TODO)",
+        reason: "virtio-blk available ring full of out-of-bounds descriptor \
+                 indices: triggers the wedging worker busy-loop \
+                 (microsoft/openvmm#4045)",
     },
     KnownFailure {
         name: "Z0014",
-        reason: "virtio-blk opening more zones than max_open_zones allows \
-                 mishandled (microsoft/openvmm#TODO)",
+        reason: "Not an OpenVMM bug: villain test defect. OpenVMM advertises no \
+                 VIRTIO_BLK_F_ZONED and correctly returns S_UNSUPP; the test \
+                 never negotiates ZONED and waits for only 1 of 64 completions.",
     },
 ];
 
