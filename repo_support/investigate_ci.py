@@ -609,14 +609,26 @@ def main() -> None:
 
     for marker in failed_markers:
         test_dir = marker.parent
+        # petri records the test's real name in petri.test at the start of the
+        # run; the directory name is a lossy encoding of it.
+        start_marker = test_dir / "petri.test"
         try:
-            test_name = marker.read_text(encoding="utf-8", errors="replace").strip()
+            test_name = start_marker.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
+            test_name = ""
+        if not test_name:
             test_name = test_dir.name
 
         print("  ----------------------------------------")
         print(f"  TEST: {test_name}")
         print(f"  DIR:  {test_dir}")
+        # The failure marker holds the error petri recorded, if any.
+        try:
+            error = marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            error = ""
+        if error:
+            print(f"  ERROR: {error}")
         print("  ----------------------------------------")
 
         jsonl_file = test_dir / "petri.jsonl"

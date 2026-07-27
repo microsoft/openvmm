@@ -138,7 +138,10 @@ marker files (passing tests have `petri.passed` instead):
 find /tmp/test-logs -name "petri.failed"
 ```
 
-The `petri.failed` file contains the test name.
+The `petri.failed` file contains the error petri recorded for the test. The
+test's real name is in `petri.test`, which petri writes before the test body
+runs — so a directory with `petri.test` but *no* result marker is a test that
+was killed or crashed before it could report.
 
 ### 5. Extract errors from petri.jsonl
 
@@ -172,7 +175,8 @@ primary artifacts for diagnosing unit test / cargo-nextest failures.
 Each test directory contains:
 - `petri.jsonl` — Structured JSON Lines log **(primary file for investigation)**
 - `petri.log` — Plain text version of the test log
-- `petri.passed` or `petri.failed` — Pass/fail marker
+- `petri.test` — The test's name, written before the test body runs
+- `petri.passed` or `petri.failed` — Pass/fail marker; a failure marker holds the error
 - `openhcl.log` — OpenHCL serial console output, if the test exercised OpenHCL
 - `hyperv.log` — Hyper-V event log, if the test exercises the Hyper-V backend
 - `openvmm.log` — OpenVMM serial console output, if the test exercises the OpenVMM backend

@@ -456,6 +456,10 @@ impl SimpleFlowNode for Node {
 /// linkable report to sit alongside that output.
 mod failure_summary {
     use flowey::node::prelude::fs_err;
+    use std::collections::VecDeque;
+    use std::io::BufRead;
+    use std::io::BufReader;
+    use std::io::Read;
     use std::path::Path;
 
     /// Maximum number of log lines to show inline per failing test. The tail
@@ -463,23 +467,56 @@ mod failure_summary {
     /// always the relevant ones.
     const MAX_EXCERPT_LINES: usize = 20;
 
+    /// Maximum number of error annotations to emit per job.
+    ///
+    /// GitHub renders only a limited number of annotations, and a job that
+    /// failed wholesale should not drown out the other jobs' annotations on
+    /// the run summary page.
+    const MAX_ANNOTATIONS: usize = 10;
+
+    /// Maximum length of a failure reason shown in an annotation or table cell.
+    const MAX_REASON_CHARS: usize = 300;
+
     /// Base URL of the petri log viewer.
     const LOG_VIEWER_BASE_URL: &str = "https://openvmm.dev/test-results";
+
+    /// How a test finished, for tests that did not pass.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Outcome {
+        Failed,
+        FailedUnstable,
+        /// Started but never recorded a result: the test process was killed or
+        /// crashed before it could report.
+        Incomplete,
+    }
+
+    impl Outcome {
+        /// Short description used in annotations and the summary table.
+        fn describe(self) -> &'static str {
+            match self {
+                Outcome::Failed => "failed",
+                Outcome::FailedUnstable => "failed (unstable)",
+                Outcome::Incomplete => "did not complete",
+            }
+        }
+    }
 
     /// A failing test discovered by scanning the petri log directory.
     pub struct FailedTest {
         /// Full test name, e.g. `x86_64::openhcl_linux_direct_boot`.
-        pub name: String,
+        name: String,
         /// Name of the test's directory within the log directory.
-        pub dir_name: String,
-        /// Whether the test is marked unstable.
-        pub unstable: bool,
+        dir_name: String,
+        /// How the test finished.
+        outcome: Outcome,
+        /// The error petri recorded, if it got as far as recording one.
+        error: Option<String>,
         /// ERROR / WARN entries from the tail of `petri.jsonl`.
-        pub excerpt: Vec<String>,
+        excerpt: Vec<String>,
     }
 
-    /// Scans `log_dir` for the per-test marker files petri writes on
-    /// completion, returning the failures sorted by test name.
+    /// Scans `log_dir` for the per-test marker files petri writes, returning
+    /// everything that did not pass, sorted by test name.
     pub fn collect_failed_tests(log_dir: &Path) -> anyhow::Result<Vec<FailedTest>> {
         let mut failures = Vec::new();
         if !log_dir.exists() {
@@ -493,31 +530,43 @@ mod failure_summary {
             }
 
             let dir = entry.path();
-            let (marker, unstable) = if dir.join("petri.failed").exists() {
-                (dir.join("petri.failed"), false)
-            } else if dir.join("petri.failed_unstable").exists() {
-                (dir.join("petri.failed_unstable"), true)
+            let started = dir.join("petri.test");
+            if dir.join("petri.passed").exists() {
+                continue;
+            }
+
+            // The error is the marker's contents; an absent marker means petri
+            // never got to write one.
+            let (outcome, error) = if let Ok(err) = fs_err::read_to_string(dir.join("petri.failed"))
+            {
+                (Outcome::Failed, Some(err))
+            } else if let Ok(err) = fs_err::read_to_string(dir.join("petri.failed_unstable")) {
+                (Outcome::FailedUnstable, Some(err))
+            } else if started.exists() {
+                (Outcome::Incomplete, None)
             } else {
+                // Not a petri test directory.
                 continue;
             };
 
             let dir_name = entry.file_name().to_string_lossy().into_owned();
-            // The marker file contains the full test name. Fall back to
-            // undoing the directory-name mangling if it can't be read.
-            let name = fs_err::read_to_string(&marker)
+            // petri records the test's real name up front; fall back to
+            // undoing the directory-name mangling if it isn't there.
+            let name = fs_err::read_to_string(&started)
                 .ok()
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| dir_name.replace("__", "::"));
 
-            let excerpt = fs_err::read_to_string(dir.join("petri.jsonl"))
-                .map(|contents| excerpt_from_petri_jsonl(contents.as_str()))
+            let excerpt = fs_err::File::open(dir.join("petri.jsonl"))
+                .map(excerpt_from_petri_jsonl)
                 .unwrap_or_default();
 
             failures.push(FailedTest {
                 name,
                 dir_name,
-                unstable,
+                outcome,
+                error: error.map(|e| one_line(&e)).filter(|e| !e.is_empty()),
                 excerpt,
             });
         }
@@ -526,14 +575,37 @@ mod failure_summary {
         Ok(failures)
     }
 
-    /// Extracts the trailing ERROR / WARN entries from `petri.jsonl` contents.
+    /// Collapses whitespace and truncates, so that a multi-line error can be
+    /// used in a single-line annotation or a table cell.
+    fn one_line(s: &str) -> String {
+        let mut collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.chars().count() > MAX_REASON_CHARS {
+            collapsed = collapsed
+                .chars()
+                .take(MAX_REASON_CHARS)
+                .collect::<String>()
+                .trim_end()
+                .to_owned();
+            collapsed.push('…');
+        }
+        collapsed
+    }
+
+    /// Extracts the trailing ERROR / WARN entries from a `petri.jsonl` stream.
     ///
-    /// Malformed lines are skipped rather than treated as errors; this is
-    /// best-effort reporting layered on top of an already-failing test run.
-    fn excerpt_from_petri_jsonl(contents: &str) -> Vec<String> {
-        let mut lines = Vec::new();
-        for line in contents.lines() {
-            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+    /// The log is streamed rather than read into memory: a buggy test can
+    /// produce a log of essentially unbounded size, and only the last handful
+    /// of entries are ever shown. Malformed lines are skipped rather than
+    /// treated as errors; this is best-effort reporting layered on top of an
+    /// already-failing test run.
+    fn excerpt_from_petri_jsonl(reader: impl Read) -> Vec<String> {
+        let mut excerpt = VecDeque::with_capacity(MAX_EXCERPT_LINES);
+        for line in BufReader::new(reader).lines() {
+            // Stop on a read or encoding error rather than risk spinning on a
+            // reader that keeps failing.
+            let Ok(line) = line else { break };
+
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
             let severity = entry.get("severity").and_then(|v| v.as_str()).unwrap_or("");
@@ -542,13 +614,13 @@ mod failure_summary {
             }
             let source = entry.get("source").and_then(|v| v.as_str()).unwrap_or("");
             let message = entry.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            lines.push(format!("[{severity:>5}] [{source:>10}] {message}"));
-        }
 
-        if lines.len() > MAX_EXCERPT_LINES {
-            lines.drain(..lines.len() - MAX_EXCERPT_LINES);
+            if excerpt.len() == MAX_EXCERPT_LINES {
+                excerpt.pop_front();
+            }
+            excerpt.push_back(format!("[{severity:>5}] [{source:>10}] {message}"));
         }
-        lines
+        excerpt.into()
     }
 
     /// Builds a deep link into the petri log viewer for a failing test.
@@ -572,7 +644,7 @@ mod failure_summary {
     ///
     /// On GitHub the detail is wrapped in workflow-command groups so that it
     /// collapses by default and the list of failures stays scannable.
-    pub fn render_job_log(
+    fn render_job_log(
         failures: &[FailedTest],
         is_github: bool,
         run_id: Option<&str>,
@@ -582,15 +654,19 @@ mod failure_summary {
 
         let mut out = String::new();
         for test in failures {
-            let label = if test.unstable {
-                "FAIL (unstable)"
-            } else {
-                "FAIL"
+            let label = match test.outcome {
+                Outcome::Failed => "FAIL",
+                Outcome::FailedUnstable => "FAIL (unstable)",
+                Outcome::Incomplete => "INCOMPLETE",
             };
             if is_github {
                 let _ = writeln!(out, "::group::{label} {}", test.name);
             } else {
                 let _ = writeln!(out, "--- {label} {} ---", test.name);
+            }
+
+            if let Some(error) = &test.error {
+                let _ = writeln!(out, "  error: {error}");
             }
 
             if test.excerpt.is_empty() {
@@ -612,8 +688,54 @@ mod failure_summary {
         out
     }
 
+    /// Renders one GitHub error annotation per failing test.
+    ///
+    /// Annotations are surfaced at the top of the workflow run summary page,
+    /// aggregated across every job, so they are the only place a failing test
+    /// name shows up without first opening a job. They are plain workflow
+    /// commands on stdout, so unlike the Checks API they need no permissions
+    /// and work for pull requests from forks.
+    fn render_annotations(
+        failures: &[FailedTest],
+        run_id: Option<&str>,
+        log_artifact_name: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::new();
+        for test in failures.iter().take(MAX_ANNOTATIONS) {
+            let reason = match &test.error {
+                Some(error) => format!(": {error}"),
+                None => String::new(),
+            };
+            let logs = match log_viewer_url(run_id, log_artifact_name, test) {
+                Some(url) => format!(" -- logs: {url}"),
+                None => String::new(),
+            };
+            // Annotations are single-line; the message must not contain a
+            // newline or it would be read as the end of the command.
+            let _ = writeln!(
+                out,
+                "::error title={log_artifact_name}::{} {}{reason}{logs}",
+                test.name,
+                test.outcome.describe(),
+            );
+        }
+
+        // GitHub caps how many annotations it renders, so say so rather than
+        // silently dropping the rest.
+        if failures.len() > MAX_ANNOTATIONS {
+            let _ = writeln!(
+                out,
+                "::error title={log_artifact_name}::...and {} more failing tests; see the job summary",
+                failures.len() - MAX_ANNOTATIONS
+            );
+        }
+        out
+    }
+
     /// Renders the markdown table appended to the GitHub Actions job summary.
-    pub fn render_job_summary(
+    fn render_job_summary(
         failures: &[FailedTest],
         run_id: Option<&str>,
         log_artifact_name: &str,
@@ -623,19 +745,24 @@ mod failure_summary {
         let mut out = String::new();
         let _ = writeln!(out, "### Failed VMM tests: {log_artifact_name}");
         let _ = writeln!(out);
-        let _ = writeln!(out, "| Test | Result | Logs |");
-        let _ = writeln!(out, "| --- | --- | --- |");
+        let _ = writeln!(out, "| Test | Result | Reason | Logs |");
+        let _ = writeln!(out, "| --- | --- | --- | --- |");
         for test in failures {
-            let result = if test.unstable {
-                "failed (unstable)"
-            } else {
-                "failed"
-            };
             let logs = match log_viewer_url(run_id, log_artifact_name, test) {
                 Some(url) => format!("[view]({url})"),
                 None => format!("`{log_artifact_name}` artifact"),
             };
-            let _ = writeln!(out, "| `{}` | {result} | {logs} |", test.name);
+            // Escape pipes so a reason containing one can't break the table.
+            let reason = match &test.error {
+                Some(error) => error.replace('|', "\\|"),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {reason} | {logs} |",
+                test.name,
+                test.outcome.describe(),
+            );
         }
         let _ = writeln!(out);
         let _ = writeln!(
@@ -660,6 +787,13 @@ mod failure_summary {
             "{}",
             render_job_log(failures, is_github, run_id.as_deref(), log_artifact_name)
         );
+
+        if is_github {
+            print!(
+                "{}",
+                render_annotations(failures, run_id.as_deref(), log_artifact_name)
+            );
+        }
 
         let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") else {
             return;
@@ -698,20 +832,24 @@ mod failure_summary {
         use std::path::PathBuf;
 
         /// Builds a `FailedTest` with an excerpt, for the rendering tests.
-        fn failed_test(name: &str, unstable: bool, excerpt: &[&str]) -> FailedTest {
+        fn failed_test(name: &str, outcome: Outcome, excerpt: &[&str]) -> FailedTest {
             FailedTest {
                 name: name.to_owned(),
                 dir_name: name.replace("::", "__"),
-                unstable,
+                outcome,
+                error: None,
                 excerpt: excerpt.iter().map(|s| (*s).to_owned()).collect(),
             }
         }
 
         /// Writes a test output directory of the shape petri produces.
-        fn write_test_dir(root: &Path, dir_name: &str, marker: Option<(&str, &str)>, jsonl: &str) {
+        ///
+        /// `markers` are `(filename, contents)` pairs, mirroring the
+        /// `petri.test` start marker and the result marker petri writes.
+        fn write_test_dir(root: &Path, dir_name: &str, markers: &[(&str, &str)], jsonl: &str) {
             let dir = root.join(dir_name);
             fs_err::create_dir_all(&dir).unwrap();
-            if let Some((marker_name, contents)) = marker {
+            for (marker_name, contents) in markers {
                 fs_err::write(dir.join(marker_name), contents).unwrap();
             }
             if !jsonl.is_empty() {
@@ -735,7 +873,7 @@ mod failure_summary {
             ]
             .join("\n");
 
-            let excerpt = excerpt_from_petri_jsonl(&jsonl);
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
 
             assert_eq!(
                 excerpt,
@@ -753,7 +891,7 @@ mod failure_summary {
                 entry("ERROR", "petri", "kept")
             );
 
-            let excerpt = excerpt_from_petri_jsonl(&jsonl);
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
 
             assert_eq!(excerpt, vec!["[ERROR] [     petri] kept".to_owned()]);
         }
@@ -765,7 +903,7 @@ mod failure_summary {
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let excerpt = excerpt_from_petri_jsonl(&jsonl);
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
 
             assert_eq!(excerpt.len(), MAX_EXCERPT_LINES);
             // The oldest entries are dropped, not the newest.
@@ -779,8 +917,30 @@ mod failure_summary {
         }
 
         #[test]
+        fn excerpt_of_a_large_log_keeps_only_the_tail() {
+            // Far more entries than can be excerpted, to exercise the bounded
+            // ring buffer over a log that is never held in memory whole.
+            let mut jsonl = String::new();
+            for i in 0..50_000 {
+                jsonl.push_str(&entry("ERROR", "petri", &format!("boom {i}")));
+                jsonl.push('\n');
+            }
+
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
+
+            assert_eq!(excerpt.len(), MAX_EXCERPT_LINES);
+            assert!(
+                excerpt
+                    .first()
+                    .unwrap()
+                    .ends_with(&format!("boom {}", 50_000 - MAX_EXCERPT_LINES))
+            );
+            assert!(excerpt.last().unwrap().ends_with("boom 49999"));
+        }
+
+        #[test]
         fn excerpt_of_empty_input_is_empty() {
-            assert!(excerpt_from_petri_jsonl("").is_empty());
+            assert!(excerpt_from_petri_jsonl(b"".as_slice()).is_empty());
         }
 
         #[test]
@@ -790,19 +950,25 @@ mod failure_summary {
             write_test_dir(
                 root,
                 "x86_64__zzz_failed",
-                Some(("petri.failed", "x86_64::zzz_failed")),
+                &[
+                    ("petri.test", "x86_64::zzz_failed"),
+                    ("petri.failed", "guest did not boot"),
+                ],
                 &entry("ERROR", "petri", "boom"),
             );
             write_test_dir(
                 root,
                 "x86_64__aaa_unstable",
-                Some(("petri.failed_unstable", "x86_64::aaa_unstable")),
+                &[
+                    ("petri.test", "x86_64::aaa_unstable"),
+                    ("petri.failed_unstable", "flaked"),
+                ],
                 "",
             );
             write_test_dir(
                 root,
                 "x86_64__passed",
-                Some(("petri.passed", "x86_64::passed")),
+                &[("petri.test", "x86_64::passed"), ("petri.passed", "")],
                 "",
             );
 
@@ -811,22 +977,83 @@ mod failure_summary {
             // Sorted by test name, so the unstable one comes first.
             let names: Vec<_> = failures.iter().map(|f| f.name.as_str()).collect();
             assert_eq!(names, ["x86_64::aaa_unstable", "x86_64::zzz_failed"]);
-            assert!(failures[0].unstable);
+            assert!(failures[0].outcome == Outcome::FailedUnstable);
+            assert_eq!(failures[0].error.as_deref(), Some("flaked"));
             assert!(failures[0].excerpt.is_empty());
-            assert!(!failures[1].unstable);
+            assert!(failures[1].outcome == Outcome::Failed);
+            assert_eq!(failures[1].error.as_deref(), Some("guest did not boot"));
             assert_eq!(failures[1].excerpt, ["[ERROR] [     petri] boom"]);
             assert_eq!(failures[1].dir_name, "x86_64__zzz_failed");
         }
 
         #[test]
-        fn collect_falls_back_to_dir_name_when_marker_is_empty() {
+        fn collect_reports_a_started_test_with_no_result_as_incomplete() {
             let tmp = tempfile::tempdir().unwrap();
-            write_test_dir(tmp.path(), "x86_64__boot", Some(("petri.failed", "  ")), "");
+            // A test killed by a timeout, or one that crashed hard enough to
+            // skip unwinding, never writes a result marker.
+            write_test_dir(
+                tmp.path(),
+                "x86_64__hung",
+                &[("petri.test", "x86_64::hung")],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].name, "x86_64::hung");
+            assert!(failures[0].outcome == Outcome::Incomplete);
+            assert!(failures[0].error.is_none());
+        }
+
+        #[test]
+        fn collect_collapses_multiline_errors() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(
+                tmp.path(),
+                "x86_64__boot",
+                &[(
+                    "petri.failed",
+                    "test panicked: assertion failed\n  left: []\n right: [1]\n",
+                )],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            assert_eq!(
+                failures[0].error.as_deref(),
+                Some("test panicked: assertion failed left: [] right: [1]")
+            );
+        }
+
+        #[test]
+        fn collect_truncates_a_very_long_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(
+                tmp.path(),
+                "x86_64__boot",
+                &[("petri.failed", &"x".repeat(MAX_REASON_CHARS * 2))],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            let error = failures[0].error.as_deref().unwrap();
+            assert_eq!(error.chars().count(), MAX_REASON_CHARS + 1);
+            assert!(error.ends_with('…'));
+        }
+
+        #[test]
+        fn collect_falls_back_to_dir_name_without_a_start_marker() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(tmp.path(), "x86_64__boot", &[("petri.failed", "")], "");
 
             let failures = collect_failed_tests(tmp.path()).unwrap();
 
             assert_eq!(failures.len(), 1);
             assert_eq!(failures[0].name, "x86_64::boot");
+            assert!(failures[0].error.is_none());
         }
 
         #[test]
@@ -844,7 +1071,11 @@ mod failure_summary {
 
         #[test]
         fn job_log_folds_detail_on_github() {
-            let failures = [failed_test("x86_64::boot", false, &["[ERROR] boom"])];
+            let failures = [failed_test(
+                "x86_64::boot",
+                Outcome::Failed,
+                &["[ERROR] boom"],
+            )];
 
             let rendered = render_job_log(&failures, true, Some("123"), "x64-linux-vmm-tests-logs");
 
@@ -859,7 +1090,7 @@ mod failure_summary {
 
         #[test]
         fn job_log_omits_group_commands_off_github() {
-            let failures = [failed_test("x86_64::boot", true, &[])];
+            let failures = [failed_test("x86_64::boot", Outcome::FailedUnstable, &[])];
 
             let rendered = render_job_log(&failures, false, None, "x64-linux-vmm-tests-logs");
 
@@ -873,30 +1104,118 @@ mod failure_summary {
         }
 
         #[test]
+        fn annotations_name_each_failing_test() {
+            let failures = [
+                failed_test("x86_64::boot", Outcome::Failed, &[]),
+                failed_test("x86_64::flaky", Outcome::FailedUnstable, &[]),
+            ];
+
+            let rendered = render_annotations(&failures, Some("42"), "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed -- logs: https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__boot\n\
+                 ::error title=x64-linux-vmm-tests-logs::x86_64::flaky failed (unstable) -- logs: https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__flaky\n"
+            );
+            // Annotations are terminated by a newline, so a message must never
+            // contain one.
+            assert!(rendered.lines().all(|l| l.starts_with("::error ")));
+        }
+
+        #[test]
+        fn annotations_omit_link_without_run_id() {
+            let failures = [failed_test("x86_64::boot", Outcome::Failed, &[])];
+
+            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed\n"
+            );
+        }
+
+        #[test]
+        fn annotations_include_the_failure_reason() {
+            let mut test = failed_test("x86_64::boot", Outcome::Failed, &[]);
+            test.error = Some("guest did not boot within 300s".to_owned());
+
+            let rendered = render_annotations(&[test], None, "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed: guest did not boot within 300s\n"
+            );
+        }
+
+        #[test]
+        fn annotations_report_an_incomplete_test() {
+            let failures = [failed_test("x86_64::hung", Outcome::Incomplete, &[])];
+
+            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "::error title=x64-linux-vmm-tests-logs::x86_64::hung did not complete\n"
+            );
+        }
+
+        #[test]
+        fn annotations_are_capped_with_a_pointer_to_the_summary() {
+            let names: Vec<String> = (0..MAX_ANNOTATIONS + 3)
+                .map(|i| format!("x86_64::test_{i}"))
+                .collect();
+            let failures: Vec<FailedTest> = names
+                .iter()
+                .map(|name| failed_test(name, Outcome::Failed, &[]))
+                .collect();
+
+            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
+
+            assert_eq!(rendered.lines().count(), MAX_ANNOTATIONS + 1);
+            assert!(rendered.contains("x86_64::test_0 failed"));
+            assert!(!rendered.contains(&format!("x86_64::test_{MAX_ANNOTATIONS} failed")));
+            assert!(rendered.ends_with(
+                "::error title=x64-linux-vmm-tests-logs::...and 3 more failing tests; see the job summary\n"
+            ));
+        }
+
+        #[test]
         fn job_summary_links_each_failure() {
             let failures = [
-                failed_test("x86_64::boot", false, &[]),
-                failed_test("x86_64::flaky", true, &[]),
+                failed_test("x86_64::boot", Outcome::Failed, &[]),
+                failed_test("x86_64::flaky", Outcome::FailedUnstable, &[]),
             ];
 
             let rendered = render_job_summary(&failures, Some("42"), "x64-linux-vmm-tests-logs");
 
             assert!(rendered.contains("### Failed VMM tests: x64-linux-vmm-tests-logs"));
             assert!(rendered.contains(
-                "| `x86_64::boot` | failed | [view](https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__boot) |"
+                "| `x86_64::boot` | failed |  | [view](https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__boot) |"
             ));
             assert!(rendered.contains("| `x86_64::flaky` | failed (unstable) |"));
         }
 
         #[test]
+        fn job_summary_shows_the_failure_reason() {
+            let mut test = failed_test("x86_64::boot", Outcome::Failed, &[]);
+            // A reason containing a pipe must not break the table.
+            test.error = Some("guest panicked | oops".to_owned());
+
+            let rendered = render_job_summary(&[test], None, "x64-linux-vmm-tests-logs");
+
+            assert!(rendered.contains("| guest panicked \\| oops |"));
+        }
+
+        #[test]
         fn job_summary_falls_back_to_artifact_without_run_id() {
-            let failures = [failed_test("x86_64::boot", false, &[])];
+            let failures = [failed_test("x86_64::boot", Outcome::Failed, &[])];
 
             let rendered = render_job_summary(&failures, None, "x64-linux-vmm-tests-logs");
 
             assert!(
-                rendered
-                    .contains("| `x86_64::boot` | failed | `x64-linux-vmm-tests-logs` artifact |")
+                rendered.contains(
+                    "| `x86_64::boot` | failed |  | `x64-linux-vmm-tests-logs` artifact |"
+                )
             );
         }
 
