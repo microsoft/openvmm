@@ -552,6 +552,8 @@ open_enum! {
 
         PAR_EL1 = SystemRegEncoding::make(3, 0, 7, 4, 0),
         CNTFRQ_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 0),
+        CNTPCT_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 1),
+        CNTVCT_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 2),
         CNTP_CTL_EL0 = SystemRegEncoding::make(3, 3, 14, 2, 1),
         CNTP_CVAL_EL0 = SystemRegEncoding::make(3, 3, 14, 2, 2),
         CNTV_CTL_EL0 = SystemRegEncoding::make(3, 3, 14, 3, 1),

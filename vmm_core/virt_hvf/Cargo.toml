@@ -6,6 +6,9 @@ name = "virt_hvf"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+loom = ["dep:loom"]
+
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 aarch64defs.workspace = true
 hvdef.workspace = true
@@ -23,6 +26,7 @@ open_enum.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
+loom = { workspace = true, optional = true }
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
