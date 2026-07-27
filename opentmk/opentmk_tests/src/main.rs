@@ -4,7 +4,7 @@
 //! Runs a litany of hyper-v tests using opentmk framework
 
 // UNSAFETY: This crate contains unsafe code to perform low-level operations such as managing memory, handling interrupts, and invoking hypercalls.
-#![expect(unsafe_code)]
+#![cfg_attr(target_arch = "x86_64", expect(unsafe_code))]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
 
