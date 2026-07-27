@@ -27,8 +27,8 @@
 //! When a bug is fixed, remove its entry here; the test then runs (and gates)
 //! in CI again. Bug entries should link to a filed OpenVMM issue. A few entries
 //! are instead **accepted-by-design** differences that OpenVMM will not change
-//! (e.g. RNG0004 — see its reason); those stay listed and are documented in the
-//! ai-repo knowledge base rather than tracked as bugs.
+//! (e.g. RNG0004 — see its reason); those stay listed and their `reason` field
+//! captures the full rationale inline rather than being tracked as bugs.
 
 /// A villain test that OpenVMM is known to fail, and that we therefore skip by
 /// default (mark ignored).
@@ -145,8 +145,7 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
                  nothing. Not a host hang, not a spec violation (spec 2.7.5 puts \
                  buffer validity on the driver), and no host-memory-safety issue. \
                  OpenVMM is intentionally left as-is. Represents the villain \
-                 `*_huge_len_past_ram` (\"crosses end of RAM\") family. See ai \
-                 repo knowledge/context/virtio-huge-len-descriptor-validation.md",
+                 `*_huge_len_past_ram` (\"crosses end of RAM\") family",
     },
     KnownFailure {
         name: "S0048",

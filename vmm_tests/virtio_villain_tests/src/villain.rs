@@ -21,7 +21,8 @@ pub struct VillainTest {
     pub name: String,
     /// Human-readable description.
     pub desc: String,
-    /// virtio device id the test targets (e.g. `0x0002` for block).
+    /// virtio device id the test targets — the virtio-PCI device ID, i.e.
+    /// `0x1040` + device type (e.g. `0x1042` for virtio-blk, whose type is 2).
     pub device_id: u16,
     /// Test flags bitfield (`tests.tsv` column 6; see villain `tests/test.h`
     /// `TEST_FLAG_*`). Only [`TEST_FLAG_MMIO`] currently affects the harness.
@@ -169,10 +170,12 @@ impl Verdict {
 pub enum VerdictScan {
     /// The test's own `[TAG] <name>` marker was found.
     Found(Verdict),
-    /// No villain markers appeared at all (guest never got far enough).
+    /// No villain output appeared at all — not even the startup banner — so
+    /// the guest never reached villain (e.g. it failed to boot).
     NoMarkers,
-    /// Other villain markers were present, but not this test's line
-    /// (device wedged mid-test and never printed a verdict).
+    /// Villain ran (its startup banner or other tests' markers appeared) but
+    /// this test's verdict line never printed — the device wedged or killed
+    /// the guest mid-test before emitting a verdict.
     MarkerMissing,
 }
 
@@ -182,6 +185,7 @@ pub enum VerdictScan {
 /// with unrelated boot output; we match the exact test name.
 pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
     let mut saw_any_marker = false;
+    let mut villain_started = false;
     for line in log.lines() {
         let line = line.trim();
         // Markers look like "[PASS] blk.split.bad_desc". Find the closing
@@ -193,6 +197,13 @@ pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
             continue;
         };
         let Some(verdict) = Verdict::from_tag(tag) else {
+            // Not a verdict tag. Villain's `[vv] ...` startup banner proves it
+            // booted and began running, so even if it later wedges before this
+            // test's verdict we can report `MarkerMissing` (started, no verdict)
+            // rather than `NoMarkers` (never ran).
+            if tag == "vv" {
+                villain_started = true;
+            }
             continue;
         };
         saw_any_marker = true;
@@ -205,7 +216,7 @@ pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
             return VerdictScan::Found(verdict);
         }
     }
-    if saw_any_marker {
+    if saw_any_marker || villain_started {
         VerdictScan::MarkerMissing
     } else {
         VerdictScan::NoMarkers
@@ -305,6 +316,15 @@ mod tests {
     }
 
     #[test]
+    fn scan_banner_only_is_marker_missing() {
+        // Villain printed its startup banner but wedged before emitting any
+        // verdict: the guest *ran* villain, so this is MarkerMissing, not
+        // NoMarkers (which means villain never started).
+        let log = "booting...\n[vv] virtio-villain\nkernel panic\n";
+        assert_eq!(scan_verdict(log, "M0030"), VerdictScan::MarkerMissing);
+    }
+
+    #[test]
     fn scan_missing_vs_no_markers() {
         assert_eq!(scan_verdict("[FAIL] a\n", "b"), VerdictScan::MarkerMissing);
         assert_eq!(scan_verdict("booting...\n", "b"), VerdictScan::NoMarkers);
@@ -316,13 +336,13 @@ mod tests {
         let p = dir.path().join("tests.tsv");
         std::fs::write(
             &p,
-            "blk.split.bad_desc\tvalidates descriptor\t1.2\t2.6.5\t0x0002\t0\t0x0000000000000000\t1\n",
+            "blk.split.bad_desc\tvalidates descriptor\t1.2\t2.6.5\t0x1042\t0\t0x0000000000000000\t1\n",
         )
         .unwrap();
         let tests = parse_tsv(&p).unwrap();
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].name, "blk.split.bad_desc");
-        assert_eq!(tests[0].device_id, 0x0002);
+        assert_eq!(tests[0].device_id, 0x1042);
         assert_eq!(tests[0].flags, 0);
         assert!(!tests[0].is_mmio());
     }

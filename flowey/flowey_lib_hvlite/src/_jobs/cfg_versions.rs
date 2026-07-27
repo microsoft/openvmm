@@ -224,8 +224,9 @@ impl FlowNode for Node {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });
-        // Inert until openvmm-deps cuts a release that includes the
-        // virtio-villain artifact; the resolve node only downloads on demand.
+        // Resolves the virtio-villain artifact from the pinned openvmm-deps
+        // release (see `OPENVMM_DEPS` above); the resolve node only downloads on
+        // demand, so this costs nothing for jobs that don't consume it.
         ctx.config(crate::resolve_virtio_villain::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()

@@ -1798,10 +1798,11 @@ impl IntoPipeline for CheckinGatesCli {
         // `upload-petri-results` workflow glob, so villain results land on the
         // logview website alongside the regular VMM test results.
         //
-        // NOTE: inert until openvmm-deps ships the virtio-villain artifact and
-        // `OPENVMM_DEPS` is bumped; until then this job fails at artifact
-        // resolution. It is wired into PR CI now (per @jstarks) so its results
-        // can seed the known-failure list once the release lands.
+        // This job consumes the virtio-villain artifact shipped by openvmm-deps
+        // (bumped to a release that includes it via `OPENVMM_DEPS` in
+        // `cfg_versions.rs`), so it resolves and runs in PR CI now. Its results
+        // seed and maintain the known-failure list (see the
+        // `virtio_villain_tests` crate's `known_failures` module).
         {
             let label = "x64-linux-kvm-virtio-villain";
             let test_label = format!("{label}-vmm-tests");
