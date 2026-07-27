@@ -102,8 +102,17 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
     },
     KnownFailure {
         name: "RNG0004",
-        reason: "virtio-rng writable descriptor length crossing end of RAM host \
-                 hang (microsoft/openvmm#TODO)",
+        reason: "virtio-rng non-atomic writable-descriptor handling: OpenVMM \
+                 streams entropy into an over-long writable descriptor and \
+                 clobbers backed guest RAM (vring + init) before erroring on the \
+                 first unbacked page, killing the guest before it emits its \
+                 verdict. Not a host hang and not a spec violation (spec 2.7.5 \
+                 puts buffer validity on the driver); QEMU (map-first) and Cloud \
+                 Hypervisor (check_range) resolve the full range before writing \
+                 and pass. Robustness gap: validate a writable descriptor's full \
+                 (addr,len) range before writing. See ai repo \
+                 knowledge/context/virtio-huge-len-descriptor-validation.md \
+                 (microsoft/openvmm#TODO)",
     },
     KnownFailure {
         name: "S0048",
