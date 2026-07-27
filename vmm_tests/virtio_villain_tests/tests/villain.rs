@@ -175,7 +175,12 @@ fn main() -> anyhow::Result<()> {
             let base_log_dir = base_log_dir.clone();
             let name = test.name.clone();
             let desc = test.desc.clone();
+            let version = test.version.clone();
+            let spec_section = test.spec_section.clone();
             let device_id = test.device_id;
+            let flags = test.flags;
+            let required_features = test.required_features;
+            let min_queues = test.min_queues;
             let mmio = test.is_mmio();
             let expected_skip = supported_devices::skip_expected(device_id);
             // Ignore (don't even boot a VM for) tests whose target device we
@@ -188,7 +193,18 @@ fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .context("artifacts were not resolved (internal error)")
                     .map_err(|e| Failed::from(format!("{e:#}")))?;
-                tracing::info!(name, desc, device_id, "running villain test");
+                tracing::info!(
+                    name,
+                    desc,
+                    version,
+                    spec_section,
+                    device_id = format_args!("{device_id:#06x}"),
+                    flags,
+                    required_features = format_args!("{required_features:#018x}"),
+                    min_queues,
+                    mmio,
+                    "running villain test"
+                );
                 let test_dir = base_log_dir.join(sanitize(&name));
                 fs_err::create_dir_all(&test_dir).map_err(|e| Failed::from(format!("{e:#}")))?;
                 let log_source = petri::new_log_source(&test_dir)

@@ -21,12 +21,24 @@ pub struct VillainTest {
     pub name: String,
     /// Human-readable description.
     pub desc: String,
+    /// virtio spec version the test targets (`tests.tsv` column 3, free text,
+    /// e.g. `"1.2"`).
+    pub version: String,
+    /// virtio spec section the test references (`tests.tsv` column 4, e.g.
+    /// `"2.6.5"`).
+    pub spec_section: String,
     /// virtio device id the test targets — the virtio-PCI device ID, i.e.
     /// `0x1040` + device type (e.g. `0x1042` for virtio-blk, whose type is 2).
     pub device_id: u16,
     /// Test flags bitfield (`tests.tsv` column 6; see villain `tests/test.h`
     /// `TEST_FLAG_*`). Only [`TEST_FLAG_MMIO`] currently affects the harness.
     pub flags: u8,
+    /// virtio feature bits the test requires (`tests.tsv` column 7). Not yet
+    /// consumed by the harness beyond logging.
+    pub required_features: u64,
+    /// Minimum virtqueue count the test needs (`tests.tsv` column 8). Not yet
+    /// consumed by the harness beyond logging.
+    pub min_queues: u32,
 }
 
 /// villain `TEST_FLAG_MMIO` (`tests/test.h`): the test drives the virtio-MMIO
@@ -69,10 +81,10 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                 lineno + 1
             )
         })?;
-        let _version = cols.next().filter(|s| !s.is_empty()).with_context(|| {
+        let version = cols.next().filter(|s| !s.is_empty()).with_context(|| {
             format!("{}:{}: missing version column", path.display(), lineno + 1)
         })?;
-        let _spec_section = cols.next().filter(|s| !s.is_empty()).with_context(|| {
+        let spec_section = cols.next().filter(|s| !s.is_empty()).with_context(|| {
             format!(
                 "{}:{}: missing spec_section column",
                 path.display(),
@@ -109,9 +121,10 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
             )
         })?;
         // required_features (col 7) and min_queues (col 8) are not yet consumed
-        // by the harness, but validate their presence and format so a column
-        // added or removed after `flags` fails loudly rather than silently
-        // shifting the remaining fields.
+        // by the harness beyond being logged at the start of each test, but
+        // validate their presence and format so a column added or removed after
+        // `flags` fails loudly rather than silently shifting the remaining
+        // fields.
         let required_features = cols.next().with_context(|| {
             format!(
                 "{}:{}: missing required_features column",
@@ -119,7 +132,7 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                 lineno + 1
             )
         })?;
-        required_features
+        let required_features = required_features
             .strip_prefix("0x")
             .and_then(|h| u64::from_str_radix(h, 16).ok())
             .with_context(|| {
@@ -137,7 +150,7 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                 lineno + 1
             )
         })?;
-        min_queues.parse::<u32>().with_context(|| {
+        let min_queues = min_queues.parse::<u32>().with_context(|| {
             format!(
                 "{}:{}: invalid min_queues {:?} (expected decimal integer)",
                 path.display(),
@@ -149,8 +162,12 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
         tests.push(VillainTest {
             name: name.to_string(),
             desc: desc.to_string(),
+            version: version.to_string(),
+            spec_section: spec_section.to_string(),
             device_id,
             flags,
+            required_features,
+            min_queues,
         });
     }
     anyhow::ensure!(!tests.is_empty(), "no tests found in {}", path.display());
