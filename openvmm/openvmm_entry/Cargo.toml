@@ -120,6 +120,7 @@ features = [
 ]
 
 [build-dependencies]
+build_rs_git_info.workspace = true
 build_rs_guest_arch.workspace = true
 
 [dev-dependencies]
