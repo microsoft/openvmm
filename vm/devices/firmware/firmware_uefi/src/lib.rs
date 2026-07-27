@@ -75,8 +75,6 @@ use watchdog_core::platform::WatchdogPlatform;
 
 #[derive(Debug, Error)]
 pub enum UefiInitError {
-    #[error("failed to apply custom UEFI template variables")]
-    ApplyCustomTemplate(#[from] firmware_uefi_custom_vars::ApplyDeltaError),
     #[error("nvram setup error")]
     NvramSetup(#[from] service::nvram::NvramSetupError),
     #[error("nvram error")]
@@ -163,24 +161,6 @@ impl UefiDevice {
             vsm_config,
             time_source,
         } = runtime_deps;
-        let final_vars = if is_restoring {
-            // Template variables are first-boot inputs; restore uses the existing NVRAM state.
-            None
-        } else {
-            match firmware_uefi_custom_vars::FinalVars::resolve(
-                cfg.base_template,
-                cfg.custom_template_delta,
-            ) {
-                Ok(final_vars) => Some(final_vars),
-                Err(err) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to apply custom UEFI template delta"
-                    );
-                    return Err(err.into());
-                }
-            }
-        };
 
         // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
@@ -193,9 +173,11 @@ impl UefiDevice {
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
-                    final_vars,
+                    cfg.base_template,
+                    cfg.custom_template_delta,
                     cfg.secure_boot,
                     vsm_config,
+                    is_restoring,
                 )
                 .await?,
                 event_log: service::event_log::EventLogServices::new(logger),

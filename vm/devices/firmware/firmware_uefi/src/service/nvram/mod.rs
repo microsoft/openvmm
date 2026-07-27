@@ -17,7 +17,9 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
+use firmware_uefi_custom_vars::BaseTemplateVars;
 use firmware_uefi_custom_vars::FinalVars;
+use firmware_uefi_custom_vars::delta::UefiVarsDelta;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -38,6 +40,8 @@ mod spec_services;
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
     BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
+    #[error("failed to apply custom UEFI template variables")]
+    ApplyCustomTemplate(#[source] firmware_uefi_custom_vars::ApplyDeltaError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
     InjectPreBootVar(
         Cow<'static, ucs2::Ucs2LeSlice>,
@@ -73,17 +77,21 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        final_vars: Option<FinalVars>,
+        base_template: Option<BaseTemplateVars>,
+        custom_template_delta: Option<UefiVarsDelta>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
+        is_restoring: bool,
     ) -> Result<NvramServices, NvramSetupError> {
         let mut nvram = NvramServices {
             services: NvramSpecServices::new(nvram_storage),
             vsm_config,
         };
 
-        if let Some(final_vars) = final_vars {
-            nvram.inject_vars_on_first_boot(final_vars).await?;
+        if !is_restoring {
+            nvram
+                .inject_vars_on_first_boot(base_template, custom_template_delta)
+                .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
         }
@@ -102,7 +110,8 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        final_vars: FinalVars,
+        base_template: Option<BaseTemplateVars>,
+        custom_template_delta: Option<UefiVarsDelta>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -113,6 +122,15 @@ impl NvramServices {
         {
             return Ok(());
         }
+
+        let final_vars =
+            FinalVars::resolve(base_template, custom_template_delta).map_err(|err| {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to apply custom UEFI template delta"
+                );
+                NvramSetupError::ApplyCustomTemplate(err)
+            })?;
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
 
@@ -390,6 +408,72 @@ impl NvramServices {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firmware_uefi_custom_vars::ApplyDeltaError;
+    use firmware_uefi_custom_vars::delta::SignaturesAppend;
+    use firmware_uefi_custom_vars::delta::SignaturesDelta;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use ucs2::Ucs2LeSlice;
+    use uefi_nvram_storage::EFI_TIME;
+    use uefi_nvram_storage::NvramStorage;
+    use uefi_nvram_storage::in_memory::InMemoryNvram;
+    use wchar::wchz;
+
+    fn invalid_delta() -> UefiVarsDelta {
+        UefiVarsDelta {
+            signatures: SignaturesDelta::Append(SignaturesAppend {
+                kek: None,
+                db: None,
+                dbx: None,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: Vec::new(),
+        }
+    }
+
+    fn nvram_services(storage: InMemoryNvram) -> NvramServices {
+        let storage: Box<dyn VmmNvramStorage> = Box::new(storage);
+        NvramServices {
+            vsm_config: None,
+            services: NvramSpecServices::new(storage),
+        }
+    }
+
+    #[async_test]
+    async fn invalid_delta_is_ignored_after_first_boot() {
+        let mut storage = InMemoryNvram::new();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        storage
+            .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+
+        nvram
+            .inject_vars_on_first_boot(None, Some(invalid_delta()))
+            .await
+            .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_delta_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_vars_on_first_boot(None, Some(invalid_delta()))
+                .await,
+            Err(NvramSetupError::ApplyCustomTemplate(
+                ApplyDeltaError::AppendWithoutBase
+            ))
+        ));
     }
 }
 
