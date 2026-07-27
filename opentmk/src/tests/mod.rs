@@ -7,16 +7,15 @@ use opentmk_protocol::OpenTmkConfig;
 
 mod hyperv;
 
-/// Declares backend test modules and generates `run_named` to map names to `exec`.
-/// Per-entry attributes gate the module and dispatch arm together.
+/// Generates `run_named` to map test names to `exec`. Modules must be declared
+/// separately with explicit `mod` statements; per-entry attributes gate the
+/// matching dispatch arm.
 #[macro_export]
 macro_rules! opentmk_tests {
     (
         ctx: $ctx:ty,
         tests: { $( $(#[$meta:meta])* $module:ident ),* $(,)? } $(,)?
     ) => {
-        $( $(#[$meta])* pub mod $module; )*
-
         /// Runs the named test. Returns `false` if no such test exists.
         pub fn run_named(test: &str, ctx: &mut $ctx) -> bool {
             match test {
@@ -64,7 +63,6 @@ crate::opentmk_backends! {
 
 /// The embedded config region, patched in place by host tooling to select the
 /// test to run. Layout and parsing live in [`opentmk_protocol`].
-
 // SAFETY: `OPENTMK_CONFIG` is unique, so `no_mangle` cannot collide.
 // `link_section = ".tmkcfg"` gives it a dedicated section with the patcher layout.
 #[used]
