@@ -15,11 +15,15 @@
 //! treats as a failure unless the device is one the kitchen-sink VM
 //! deliberately does not attach — see [`supported_devices`]) with
 //! `vv.test=<id>` on the kernel command line, waits for the VM to halt, and
-//! reads the `[TAG] <id>` verdict from petri's teed serial log. Villain tests
+//! reads the `[TAG] <id>` verdict from petri's teed serial log. The virtio
+//! devices are attached over PCIe, except for villain's virtio-MMIO transport
+//! tests (`TEST_FLAG_MMIO` / `M####`), which are booted with the devices on the
+//! virtio-MMIO bus so the guest actually exposes an MMIO transport to probe
+//! (see [`villain::VillainTest::is_mmio`] and [`run::run_one`]). Villain tests
 //! that OpenVMM is known to fail ([`known_failures`]) are marked *ignored*, so
 //! CI skips them but they can still be run locally with `--run-ignored`.
 //!
-//! Phase 1: PCI transport, x86_64/KVM. The villain `initramfs.cpio.gz` and
+//! x86_64/KVM. The villain `initramfs.cpio.gz` and
 //! `tests.tsv` are supplied locally via `--villain-initramfs`/`--villain-tsv`
 //! (or the `VILLAIN_INITRAMFS`/`VILLAIN_TSV` env vars); the guest kernel is the
 //! existing OpenVMM linux-direct test `vmlinux`. A later phase resolves these
@@ -172,6 +176,7 @@ fn main() -> anyhow::Result<()> {
             let name = test.name.clone();
             let desc = test.desc.clone();
             let device_id = test.device_id;
+            let mmio = test.is_mmio();
             let expected_skip = supported_devices::skip_expected(device_id);
             // Ignore (don't even boot a VM for) tests whose target device we
             // don't attach — they would only self-SKIP, so booting ~one VM each
@@ -189,7 +194,7 @@ fn main() -> anyhow::Result<()> {
                 let log_source = petri::new_log_source(&test_dir)
                     .context("failed to create per-test log source")
                     .map_err(|e| Failed::from(format!("{e:#}")))?;
-                let result = run::run_one(&params, artifacts, &log_source, &name)
+                let result = run::run_one(&params, artifacts, &log_source, &name, mmio)
                     .and_then(villain::evaluate);
                 // Write the petri.passed/petri.failed marker (and log the
                 // outcome to petri.jsonl) so the logview uploader counts this

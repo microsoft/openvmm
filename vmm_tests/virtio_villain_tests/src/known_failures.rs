@@ -90,6 +90,33 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
                  (microsoft/openvmm#TODO)",
     },
     KnownFailure {
+        name: "M0024",
+        reason: "virtio-mmio QueueReset register readback returns a value other \
+                 than 0 or 1 (spec 4.2.2.2 requires 1 while reset is in progress, \
+                 0 otherwise) (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "M0030",
+        reason: "virtio-mmio QueueDesc programmed at the top of the 64-bit \
+                 address space kills the guest before it reports a verdict \
+                 (address-edge descriptor handling, same class as the villain \
+                 huge-len/address-wrap family) (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "M0031",
+        reason: "virtio-mmio QueueNotify-with-notification-data test self-SKIPs: \
+                 OpenVMM does not negotiate VIRTIO_F_NOTIFICATION_DATA. Not a \
+                 bug, just an unsupported feature; ignored so the SKIP does not \
+                 fail the suite",
+    },
+    KnownFailure {
+        name: "M0032",
+        reason: "virtio-mmio config-change interrupt test self-SKIPs: OpenVMM's \
+                 kitchen-sink devices do not raise the config-change interrupt \
+                 the test needs. Not a bug, just an unmet precondition; ignored \
+                 so the SKIP does not fail the suite",
+    },
+    KnownFailure {
         name: "P0003",
         reason: "virtio-blk packed descriptor list exceeding queue size wedges \
                  the device (microsoft/openvmm#TODO)",

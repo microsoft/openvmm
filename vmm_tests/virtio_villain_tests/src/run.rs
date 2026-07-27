@@ -46,6 +46,12 @@ pub struct VmParams {
 /// Boot one VM for `test_name`, wait for it to halt, and scan the serial
 /// console log for the verdict marker.
 ///
+/// `mmio` selects the virtio transport the kitchen-sink devices are attached
+/// over: `true` attaches them on the virtio-MMIO bus (required by villain's
+/// `TEST_FLAG_MMIO` / `M####` transport tests, which probe the MMIO register
+/// interface and would otherwise self-`[SKIP]`), `false` uses PCIe. See
+/// [`crate::villain::VillainTest::is_mmio`].
+///
 /// `log_source` must be rooted at this test's own directory so that its
 /// `linux.log` (the teed serial0 console) is isolated from other tests.
 pub fn run_one(
@@ -53,6 +59,7 @@ pub fn run_one(
     artifacts: &petri::TestArtifacts,
     log_source: &petri::PetriLogSource,
     test_name: &str,
+    mmio: bool,
 ) -> anyhow::Result<VerdictScan> {
     // Backing resources for the kitchen-sink devices. These must live until
     // after the VM tears down, so they are owned here and only their paths
@@ -121,7 +128,9 @@ pub fn run_one(
             })
             .with_prebuilt_initrd(initramfs)
             .modify_backend(move |b| {
-                attach_kitchen_sink(b, cmdline, pmem_path, fs_path, vsock_socket, vsock_listener)
+                attach_kitchen_sink(
+                    b, cmdline, pmem_path, fs_path, vsock_socket, vsock_listener, mmio,
+                )
             });
 
         let mut vm = builder
@@ -170,6 +179,11 @@ pub fn run_one(
 
 /// Attach every virtio device villain can probe, plus the required cmdline.
 /// Devices OpenVMM does not model are simply omitted; villain self-SKIPs them.
+///
+/// `mmio` selects the transport: `true` attaches the devices on the virtio-MMIO
+/// bus (OpenVMM advertises each as an `LNRO0005` ACPI device so villain's
+/// `virtio_mmio_find` discovers it), `false` attaches them as PCIe devices,
+/// each on its own root port.
 fn attach_kitchen_sink(
     b: petri::openvmm::PetriVmConfigOpenVmm,
     cmdline: String,
@@ -177,9 +191,11 @@ fn attach_kitchen_sink(
     fs_path: String,
     vsock_socket: PathBuf,
     vsock_listener: unix_socket::UnixListener,
+    mmio: bool,
 ) -> petri::openvmm::PetriVmConfigOpenVmm {
     use openvmm_defs::config::LoadMode;
     use openvmm_defs::config::PcieDeviceConfig;
+    use openvmm_defs::config::VirtioBus;
     use vm_resource::IntoResource;
     use vm_resource::Resource;
     use vm_resource::kind::VirtioDeviceHandle;
@@ -241,19 +257,37 @@ fn attach_kitchen_sink(
         .into_resource(),
     );
 
-    // One PCIe root port per device (segment 0, root complex 0).
-    b.with_pcie_root_topology(1, 1, inner.len() as u64)
-        .with_custom_config(move |c| {
+    // MMIO transport tests need the devices on the virtio-MMIO bus; every other
+    // test uses PCIe root ports.
+    if mmio {
+        b.with_custom_config(move |c| {
             // Replace the kernel command line wholesale.
             if let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode {
                 *cl = cmdline;
             }
 
-            for (i, handle) in inner.into_iter().enumerate() {
-                c.pcie_devices.push(PcieDeviceConfig {
-                    port_name: format!("s0rc0rp{i}"),
-                    resource: virtio_resources::VirtioPciDeviceHandle(handle).into_resource(),
-                });
+            // Each device becomes a separate virtio-MMIO slot; OpenVMM emits an
+            // `LNRO0005` ACPI device per slot so the guest (and thus villain's
+            // sysfs `virtio_mmio_find`) enumerates them.
+            for handle in inner {
+                c.virtio_devices.push((VirtioBus::Mmio, handle));
             }
         })
+    } else {
+        // One PCIe root port per device (segment 0, root complex 0).
+        b.with_pcie_root_topology(1, 1, inner.len() as u64)
+            .with_custom_config(move |c| {
+                // Replace the kernel command line wholesale.
+                if let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode {
+                    *cl = cmdline;
+                }
+
+                for (i, handle) in inner.into_iter().enumerate() {
+                    c.pcie_devices.push(PcieDeviceConfig {
+                        port_name: format!("s0rc0rp{i}"),
+                        resource: virtio_resources::VirtioPciDeviceHandle(handle).into_resource(),
+                    });
+                }
+            })
+    }
 }

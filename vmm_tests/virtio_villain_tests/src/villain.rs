@@ -23,6 +23,24 @@ pub struct VillainTest {
     pub desc: String,
     /// virtio device id the test targets (e.g. `0x0002` for block).
     pub device_id: u16,
+    /// Test flags bitfield (`tests.tsv` column 6; see villain `tests/test.h`
+    /// `TEST_FLAG_*`). Only [`TEST_FLAG_MMIO`] currently affects the harness.
+    pub flags: u8,
+}
+
+/// villain `TEST_FLAG_MMIO` (`tests/test.h`): the test drives the virtio-MMIO
+/// transport rather than PCI, so the VM must attach its devices on the MMIO bus
+/// (otherwise the guest finds no MMIO device and the test self-`[SKIP]`s).
+pub const TEST_FLAG_MMIO: u8 = 0x2;
+
+impl VillainTest {
+    /// Whether this test targets the virtio-MMIO transport (`TEST_FLAG_MMIO`).
+    ///
+    /// Such tests must be run in a VM whose virtio devices are attached over
+    /// the MMIO bus; see [`crate::run::run_one`].
+    pub fn is_mmio(&self) -> bool {
+        self.flags & TEST_FLAG_MMIO != 0
+    }
 }
 
 /// Parse `tests.tsv` into the list of villain tests.
@@ -70,11 +88,23 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                     device_id,
                 )
             })?;
+        let flags = cols.next().with_context(|| {
+            format!("{}:{}: missing flags column", path.display(), lineno + 1)
+        })?;
+        let flags = flags.parse::<u8>().with_context(|| {
+            format!(
+                "{}:{}: invalid flags {:?} (expected decimal u8)",
+                path.display(),
+                lineno + 1,
+                flags,
+            )
+        })?;
 
         tests.push(VillainTest {
             name: name.to_string(),
             desc: desc.to_string(),
             device_id,
+            flags,
         });
     }
     anyhow::ensure!(!tests.is_empty(), "no tests found in {}", path.display());
@@ -293,6 +323,37 @@ mod tests {
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].name, "blk.split.bad_desc");
         assert_eq!(tests[0].device_id, 0x0002);
+        assert_eq!(tests[0].flags, 0);
+        assert!(!tests[0].is_mmio());
+    }
+
+    #[test]
+    fn parse_tsv_mmio_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // An MMIO-transport test: device-agnostic (0x0000) with flags == 2
+        // (TEST_FLAG_MMIO), exactly as villain emits for the `M####` tests.
+        std::fs::write(
+            &p,
+            "M0001\tNon-32-bit access to MMIO control registers\t1.2\t4.2.2.2\t0x0000\t2\t0x0000000000000000\t0\n",
+        )
+        .unwrap();
+        let tests = parse_tsv(&p).unwrap();
+        assert_eq!(tests[0].flags, TEST_FLAG_MMIO);
+        assert!(tests[0].is_mmio());
+    }
+
+    #[test]
+    fn parse_tsv_rejects_bad_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // flags column present but not a decimal u8.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x0002\tnope\t0\t1\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid flags"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
