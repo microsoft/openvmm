@@ -12,7 +12,8 @@
 //! **libtest-mimic** to expose one test case per villain test. Each case boots
 //! a single "kitchen-sink" OpenVMM VM (every supported virtio device attached;
 //! a device that is absent makes the guest emit `[SKIP]`, which the harness
-//! treats as a failure unless allowlisted — see [`known_skips`]) with
+//! treats as a failure unless the device is one the kitchen-sink VM
+//! deliberately does not attach — see [`supported_devices`]) with
 //! `vv.test=<id>` on the kernel command line, waits for the VM to halt, and
 //! reads the `[TAG] <id>` verdict from petri's teed serial log. Villain tests
 //! that OpenVMM is known to fail ([`known_failures`]) are marked *ignored*, so
@@ -37,7 +38,7 @@ use libtest_mimic::Trial;
 use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 use virtio_villain_tests::known_failures;
-use virtio_villain_tests::known_skips;
+use virtio_villain_tests::supported_devices;
 use virtio_villain_tests::villain;
 
 #[derive(Parser)]
@@ -171,8 +172,12 @@ fn main() -> anyhow::Result<()> {
             let name = test.name.clone();
             let desc = test.desc.clone();
             let device_id = test.device_id;
-            let ignored = known_failures::lookup(&name).is_some();
-            let expected_skip = known_skips::lookup(&name).is_some();
+            let expected_skip = supported_devices::skip_expected(device_id);
+            // Ignore (don't even boot a VM for) tests whose target device we
+            // don't attach — they would only self-SKIP, so booting ~one VM each
+            // is wasted CI time. They report as ignored, not as false passes.
+            // Known product failures are ignored too (see `known_failures`).
+            let ignored = expected_skip || known_failures::lookup(&name).is_some();
             Trial::test(test.name.clone(), move || -> Result<(), Failed> {
                 let artifacts = artifacts
                     .as_ref()
@@ -185,7 +190,7 @@ fn main() -> anyhow::Result<()> {
                     .context("failed to create per-test log source")
                     .map_err(|e| Failed::from(format!("{e:#}")))?;
                 let result = run::run_one(&params, artifacts, &log_source, &name)
-                    .and_then(|scan| villain::evaluate(scan, expected_skip));
+                    .and_then(villain::evaluate);
                 // Write the petri.passed/petri.failed marker (and log the
                 // outcome to petri.jsonl) so the logview uploader counts this
                 // test. villain tests are never "unstable" — known failures are

@@ -124,8 +124,8 @@ impl Verdict {
     ///
     /// Note `Verdict::Skip` is deliberately **not** good: on the kitchen-sink VM
     /// a skip means the device was absent or a precondition was unmet, so the
-    /// test exercised nothing. That is treated as a failure unless the test is
-    /// on the [`crate::known_skips`] allowlist — see [`evaluate`].
+    /// test exercised nothing. That is always a failure; tests for devices we do
+    /// not attach are `#[ignore]`d up front (see [`crate::supported_devices`]).
     pub fn is_good(self) -> bool {
         matches!(
             self,
@@ -184,38 +184,23 @@ pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
 
 /// Turn a scan result into a pass/fail outcome for one villain test.
 ///
-/// `expected_skip` is true when the test is on the [`crate::known_skips`]
-/// allowlist — a device/precondition we knowingly do not exercise in this
-/// configuration.
+/// Fast-fail rule: a `SKIP` means the device was absent or a precondition was
+/// unmet, so the test exercised nothing — always a **failure** (an unexercised
+/// test must not masquerade as a pass). Tests for devices the kitchen-sink VM
+/// does not attach are `#[ignore]`d up front (see [`crate::supported_devices`])
+/// so they never reach here in a normal run; force-running them with
+/// `--run-ignored` correctly reports the absent-device skip as a failure.
 ///
-/// Fast-fail rules:
-/// - A `SKIP` means the device was absent or a precondition was unmet, so the
-///   test exercised nothing. That is a **failure** (an unexercised test must not
-///   masquerade as a pass) unless it is an expected skip.
-/// - An expected skip that produces any *other* verdict means the situation
-///   changed and the allowlist entry is stale — also a failure, so it gets
-///   pruned (or moved to [`crate::known_failures`]).
-/// - Otherwise, [`Verdict::is_good`] decides, and a missing/absent marker is a
-///   failure.
-pub fn evaluate(scan: VerdictScan, expected_skip: bool) -> anyhow::Result<()> {
+/// Otherwise [`Verdict::is_good`] decides, and a missing/absent marker (the
+/// guest wedged or never booted) is a failure.
+pub fn evaluate(scan: VerdictScan) -> anyhow::Result<()> {
     match scan {
-        VerdictScan::Found(Verdict::Skip) => {
-            if expected_skip {
-                Ok(())
-            } else {
-                anyhow::bail!(
-                    "SKIP: the device was absent or a precondition was unmet, so this \
-                     test exercised nothing. On the kitchen-sink VM a skip is almost \
-                     always a harness/config bug (a device we meant to attach but did \
-                     not); if the skip is genuinely expected for this configuration, \
-                     add it to KNOWN_SKIPS"
-                )
-            }
-        }
-        VerdictScan::Found(v) if expected_skip => anyhow::bail!(
-            "expected SKIP (test is on the KNOWN_SKIPS allowlist) but got {v:?}; the \
-             precondition changed, so remove it from KNOWN_SKIPS (and, if {v:?} is a \
-             failure, move it to KNOWN_FAILURES)"
+        VerdictScan::Found(Verdict::Skip) => anyhow::bail!(
+            "SKIP: the device was absent or a precondition was unmet, so this test \
+             exercised nothing. On the kitchen-sink VM a skip means a device we meant \
+             to attach silently wasn't (a harness/config bug); if the device is \
+             deliberately not attached, the test should be ignored via \
+             supported_devices::SUPPORTED_DEVICE_IDS"
         ),
         VerdictScan::Found(v) => {
             if v.is_good() {
@@ -241,31 +226,22 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
-    fn evaluate_skip_is_failure_by_default() {
-        assert!(evaluate(VerdictScan::Found(Verdict::Skip), false).is_err());
-    }
-
-    #[test]
-    fn evaluate_expected_skip_passes() {
-        assert!(evaluate(VerdictScan::Found(Verdict::Skip), true).is_ok());
-    }
-
-    #[test]
-    fn evaluate_stale_expected_skip_fails() {
-        // A known-skip entry that no longer skips (device now present) must fail
-        // so the stale allowlist entry gets pruned.
-        assert!(evaluate(VerdictScan::Found(Verdict::Pass), true).is_err());
-        assert!(evaluate(VerdictScan::Found(Verdict::Fail), true).is_err());
+    fn evaluate_skip_is_always_a_failure() {
+        // SKIP means nothing was exercised. Unsupported-device tests are ignored
+        // up front; anything that actually runs and skips is a failure.
+        assert!(evaluate(VerdictScan::Found(Verdict::Skip)).is_err());
     }
 
     #[test]
     fn evaluate_good_and_bad_verdicts() {
-        assert!(evaluate(VerdictScan::Found(Verdict::Pass), false).is_ok());
-        assert!(evaluate(VerdictScan::Found(Verdict::Reject), false).is_ok());
-        assert!(evaluate(VerdictScan::Found(Verdict::Fail), false).is_err());
-        assert!(evaluate(VerdictScan::Found(Verdict::Wedged), false).is_err());
-        assert!(evaluate(VerdictScan::MarkerMissing, false).is_err());
-        assert!(evaluate(VerdictScan::NoMarkers, false).is_err());
+        assert!(evaluate(VerdictScan::Found(Verdict::Pass)).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Reject)).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Xfail)).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Xpass)).is_ok());
+        assert!(evaluate(VerdictScan::Found(Verdict::Fail)).is_err());
+        assert!(evaluate(VerdictScan::Found(Verdict::Wedged)).is_err());
+        assert!(evaluate(VerdictScan::MarkerMissing).is_err());
+        assert!(evaluate(VerdictScan::NoMarkers).is_err());
     }
 
     #[test]

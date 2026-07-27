@@ -10,6 +10,6 @@
 //! `tests.tsv` into one libtest-mimic trial per test.
 
 pub mod known_failures;
-pub mod known_skips;
 pub mod run;
+pub mod supported_devices;
 pub mod villain;
