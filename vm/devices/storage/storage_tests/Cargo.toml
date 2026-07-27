@@ -14,8 +14,6 @@ scsi_buffers.workspace = true
 [dev-dependencies]
 chipset_device.workspace = true
 disk_blob.workspace = true
-disk_crypt.workspace = true
-disk_crypt_resources.workspace = true
 disk_delay.workspace = true
 disk_file.workspace = true
 disk_layered.workspace = true
@@ -24,7 +22,6 @@ disk_prwrap.workspace = true
 disk_striped.workspace = true
 disk_vhd1.workspace = true
 disklayer_ram.workspace = true
-disklayer_sqlite = { workspace = true, features = ["bundled"] }
 guid = { workspace = true, features = ["mesh", "inspect"] }
 mesh.workspace = true
 nvme.workspace = true
@@ -49,6 +46,15 @@ zerocopy.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhdmp.workspace = true
+
+# disk_crypt has no crypto backend for macOS, and the bundled SQLite build needs
+# a C toolchain for the target, which the macOS cross-compile lint job does not
+# have. Neither is needed to lint or run anything else here, and macOS runs no
+# tests, so exclude them there rather than excluding the whole crate.
+[target.'cfg(not(target_os = "macos"))'.dev-dependencies]
+disk_crypt.workspace = true
+disk_crypt_resources.workspace = true
+disklayer_sqlite = { workspace = true, features = ["bundled"] }
 
 [lints]
 workspace = true

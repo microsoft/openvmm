@@ -3,8 +3,6 @@
 
 //! Tests using NVMe as the block backend for SimpleScsiDvd.
 
-#![cfg(any(windows, target_os = "linux"))]
-
 use disk_backend::Disk;
 use disk_nvme::NvmeDisk;
 use guestmem::GuestMemory;

@@ -19,6 +19,7 @@ use disk_backend::DiskError;
 use disk_blob::BlobDisk;
 use disk_blob::blob::file::FileBlob;
 use disk_blob::blob::http::HttpBlob;
+#[cfg(not(target_os = "macos"))]
 use disk_crypt::CryptDisk;
 use disk_delay::DelayDisk;
 use disk_file::FileDisk;
@@ -31,7 +32,9 @@ use disk_vhd1::Vhd1Disk;
 #[cfg(windows)]
 use disk_vhdmp::VhdmpDisk;
 use disklayer_ram::RamDiskLayer;
+#[cfg(not(target_os = "macos"))]
 use disklayer_sqlite::FormatParams;
+#[cfg(not(target_os = "macos"))]
 use disklayer_sqlite::SqliteDiskLayer;
 use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
@@ -105,6 +108,7 @@ fn vhdmp_disk() -> (Disk, tempfile::TempPath) {
     (disk, path)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn crypt_disk() -> Disk {
     // XTS requires the two halves of the key to differ; a uniform key is
     // rejected by the crypto backend at cipher init, which would make every
@@ -177,6 +181,7 @@ async fn http_blob_vhd1_disk() -> Disk {
 
 /// A SQLite-backed layer in a temporary directory, which is returned alongside
 /// the disk so that it outlives it.
+#[cfg(not(target_os = "macos"))]
 async fn sqlite_disk() -> (Disk, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let layer = SqliteDiskLayer::new(
@@ -344,6 +349,7 @@ mod conformance {
         /// A single RAM layer.
         ram => ram_disk();
         /// A single SQLite layer.
+        #[cfg(not(target_os = "macos"))]
         sqlite => sqlite_disk().await;
         /// Two RAM layers, exercising the paths that consult the layer below.
         layered_multi => layered_multi_disk().await;
@@ -359,6 +365,7 @@ mod conformance {
         #[cfg(any(windows, target_os = "linux"))]
         nvme => nvme_disk(driver).await;
         /// Encryption wrapper over a RAM disk.
+        #[cfg(not(target_os = "macos"))]
         crypt => crypt_disk();
         /// Persistent-reservation wrapper over a RAM disk.
         prwrap => prwrap_disk();

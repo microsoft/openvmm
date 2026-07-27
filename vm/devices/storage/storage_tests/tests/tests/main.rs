@@ -13,8 +13,11 @@ mod disk_sector_range;
 mod http_server;
 mod storvsc;
 
-// The emulated NVMe harness and its only consumers are limited to the platforms
-// the user-mode driver supports.
+// `disk_nvme` is limited to Windows and Linux because it needs
+// `pal::get_cpu_number` to pick a per-CPU submission queue, and that is
+// implemented with `sched_getcpu` on Linux and `GetCurrentProcessorNumber` on
+// Windows. macOS exposes no equivalent. The emulated controller harness itself
+// is portable; it is only `NvmeDisk` that is not.
 #[cfg(any(windows, target_os = "linux"))]
 mod common;
 #[cfg(any(windows, target_os = "linux"))]
