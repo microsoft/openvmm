@@ -962,6 +962,19 @@ mod tests {
         };
     }
 
+    /// The shared sector-range conformance suite.
+    ///
+    /// This exercises the `DeviceType::File` path, where the kernel does not
+    /// enforce bounds and the backend's own checks are the only thing stopping
+    /// a write past the end from extending the file. The other path, a real
+    /// block device where the kernel does enforce, is not covered here because
+    /// creating a loop device needs root.
+    #[async_test]
+    async fn sector_range_conformance() {
+        let disk = disk_backend::Disk::new(get_block_device_or_skip!()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
     async fn run_async_disk_io(fua: bool) {
         let disk = get_block_device_or_skip!();
 

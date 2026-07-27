@@ -25,6 +25,9 @@
 
 use disk_backend::Disk;
 use disk_backend::DiskError;
+use disk_backend::UnmapBehavior;
+use disk_layered::LayerIo;
+use disk_layered::WriteNoOverwrite;
 use guestmem::GuestMemory;
 use scsi_buffers::OwnedRequestBuffers;
 
@@ -164,4 +167,86 @@ pub async fn test_disk_sector_range(disk: &Disk) {
 pub async fn test_disk_sector_range_conformance(disk: &Disk) {
     test_disk_representability(disk).await;
     test_disk_sector_range(disk).await;
+}
+
+/// Asserts that a [`LayerIo`] implementation rejects requests that fall outside
+/// the layer.
+///
+/// [`LayeredDisk`](disk_layered::LayeredDisk) does not reach every layer entry
+/// point, so testing a layer only through a [`Disk`] leaves gaps:
+/// `write_no_overwrite` is only reached by a read cache, and `unmap`'s
+/// `next_is_zero` argument depends on what is in the layer below.
+///
+/// This deliberately stays within the representability guarantee documented on
+/// [`LayerIo`]. A layer is entitled to assume the end byte offset of a request
+/// is at most [`i64::MAX`], because [`Disk`] rejects anything larger and
+/// `LayeredDisk` never increases a request's sector number. Calling a layer
+/// directly with, say, [`u64::MAX`] would be breaking that precondition rather
+/// than testing anything.
+pub async fn test_layer_sector_range(layer: &impl LayerIo) {
+    let sector_size = layer.sector_size() as usize;
+    let mem = GuestMemory::allocate(2 * sector_size);
+    let sector_count = layer.sector_count();
+    assert!(
+        sector_count > 1,
+        "test requires a layer of at least 2 sectors"
+    );
+    let max_sector = (i64::MAX as u64) >> layer.sector_size().trailing_zeros();
+
+    for (what, sector, count) in [
+        ("first sector past the end", sector_count, 1u64),
+        ("straddling the end", sector_count - 1, 2),
+        ("largest representable sector", max_sector - 1, 1),
+    ] {
+        let len = count as usize * sector_size;
+
+        expect_illegal_block(
+            &format!("write: {what}"),
+            layer
+                .write(
+                    &OwnedRequestBuffers::linear(0, len, false).buffer(&mem),
+                    sector,
+                    false,
+                )
+                .await,
+        );
+
+        if let Some(writer) = layer.write_no_overwrite() {
+            expect_illegal_block(
+                &format!("write_no_overwrite: {what}"),
+                writer
+                    .write_no_overwrite(
+                        &OwnedRequestBuffers::linear(0, len, false).buffer(&mem),
+                        sector,
+                    )
+                    .await,
+            );
+        }
+
+        // A layer reporting `Ignored` makes the whole disk report `Ignored`, and
+        // `LayeredDisk::unmap` then returns without calling any layer, so there
+        // is no reachable path to test.
+        if layer.unmap_behavior() != UnmapBehavior::Ignored {
+            // `next_is_zero` selects how the layer represents the unmapped
+            // range, so both values need checking: a range check guarding only
+            // one of the two paths would otherwise look correct.
+            for next_is_zero in [false, true] {
+                expect_illegal_block(
+                    &format!("unmap (next_is_zero={next_is_zero}): {what}"),
+                    layer.unmap(sector, count, false, next_is_zero).await,
+                );
+            }
+        }
+    }
+
+    // Sanity check that the cases above are not passing because the layer
+    // rejects everything.
+    layer
+        .write(
+            &OwnedRequestBuffers::linear(0, sector_size, false).buffer(&mem),
+            sector_count - 1,
+            false,
+        )
+        .await
+        .expect("write to the last sector should succeed");
 }

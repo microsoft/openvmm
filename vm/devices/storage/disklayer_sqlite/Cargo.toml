@@ -36,6 +36,13 @@ tempfile.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+pal_async.workspace = true
+storage_tests.workspace = true
+
+# Building SQLite from source needs a C toolchain for the target, which the
+# macOS cross-compile lint job does not have. That job only lints and never
+# links, so it does not need the library at all.
+[target.'cfg(not(target_os = "macos"))'.dev-dependencies]
 rusqlite = { workspace = true, features = ["bundled"] }
 
 [features]

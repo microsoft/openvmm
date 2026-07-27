@@ -579,3 +579,57 @@ CREATE TABLE meta (
         pub sector_size: u32,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::FormatParams;
+    use crate::SqliteDiskLayer;
+    use disk_backend::Disk;
+    use disk_layered::DiskLayer;
+    use disk_layered::LayerConfiguration;
+    use disk_layered::LayeredDisk;
+    use pal_async::async_test;
+
+    const SECTOR_SIZE: u32 = 512;
+    const DISK_SIZE: u64 = 1024 * 1024;
+
+    fn new_layer(dir: &tempfile::TempDir) -> SqliteDiskLayer {
+        SqliteDiskLayer::new(
+            &dir.path().join("test.dbhd"),
+            false,
+            Some(FormatParams {
+                logically_read_only: false,
+                len: DISK_SIZE,
+                sector_size: SECTOR_SIZE,
+            }),
+        )
+        .unwrap()
+    }
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = Disk::new(
+            LayeredDisk::new(
+                false,
+                vec![LayerConfiguration {
+                    layer: DiskLayer::new(new_layer(&dir)),
+                    write_through: false,
+                    read_cache: false,
+                }],
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    /// `LayeredDisk` does not reach `write_no_overwrite` or both values of
+    /// `unmap`'s `next_is_zero`, so the layer is also tested directly.
+    #[async_test]
+    async fn layer_sector_range_conformance() {
+        let dir = tempfile::tempdir().unwrap();
+        storage_tests::sector_range::test_layer_sector_range(&new_layer(&dir)).await;
+    }
+}

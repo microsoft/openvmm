@@ -9,7 +9,7 @@
 //! importantly, the interesting cases are all responses a well-behaved server
 //! would never produce. See [`Behavior`].
 //!
-//! [`HttpBlob`]: disk_blob::blob::http::HttpBlob
+//! [`HttpBlob`]: crate::blob::http::HttpBlob
 
 use std::io::Read;
 use std::io::Write;

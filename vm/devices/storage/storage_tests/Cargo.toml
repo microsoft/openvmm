@@ -8,22 +8,16 @@ rust-version.workspace = true
 
 [dependencies]
 disk_backend.workspace = true
+disk_layered.workspace = true
 guestmem.workspace = true
 scsi_buffers.workspace = true
 
 [dev-dependencies]
 chipset_device.workspace = true
-disk_blob.workspace = true
-disk_delay.workspace = true
-disk_file.workspace = true
 disk_layered.workspace = true
 disk_nvme.workspace = true
-disk_prwrap.workspace = true
-disk_striped.workspace = true
-disk_vhd1.workspace = true
 disklayer_ram.workspace = true
 guid = { workspace = true, features = ["mesh", "inspect"] }
-mesh.workspace = true
 nvme.workspace = true
 nvme_driver.workspace = true
 page_pool_alloc.workspace = true
@@ -36,25 +30,12 @@ storvsc_driver = { workspace = true, features = ["test"] }
 storvsp = { workspace = true, features = ["test"] }
 storvsp_protocol.workspace = true
 storvsp_resources.workspace = true
-tempfile.workspace = true
 test_with_tracing.workspace = true
 tracing.workspace = true
 user_driver_emulated_mock.workspace = true
 vmbus_channel.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
-
-[target.'cfg(windows)'.dev-dependencies]
-disk_vhdmp.workspace = true
-
-# disk_crypt has no crypto backend for macOS, and the bundled SQLite build needs
-# a C toolchain for the target, which the macOS cross-compile lint job does not
-# have. Neither is needed to lint or run anything else here, and macOS runs no
-# tests, so exclude them there rather than excluding the whole crate.
-[target.'cfg(not(target_os = "macos"))'.dev-dependencies]
-disk_crypt.workspace = true
-disk_crypt_resources.workspace = true
-disklayer_sqlite = { workspace = true, features = ["bundled"] }
 
 [lints]
 workspace = true

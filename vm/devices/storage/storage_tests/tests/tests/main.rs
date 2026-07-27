@@ -10,7 +10,6 @@
 //! them, and the shared helpers they use, once per binary.
 
 mod disk_sector_range;
-mod http_server;
 mod storvsc;
 
 // `disk_nvme` is limited to Windows and Linux because it needs

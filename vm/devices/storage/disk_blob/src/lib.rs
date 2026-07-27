@@ -9,6 +9,9 @@
 pub mod blob;
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 use blob::Blob;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
