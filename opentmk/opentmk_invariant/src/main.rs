@@ -35,7 +35,7 @@ fn main() {
         // Note: println() will no longer work after this step
         // since init() will exit boot services where enabled.
         // use log from henceforth for SERIAL port 2 logging
-        match opentmk::uefi::init() {
+        match opentmk::uefi::init::init() {
             Ok(_) => log::info!("OpenTMK initialization complete!"),
             Err(e) => {
                 log::info!("OpenTMK initialization failed! - {:?}", e);

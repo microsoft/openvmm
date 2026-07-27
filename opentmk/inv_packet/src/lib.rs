@@ -1,3 +1,4 @@
+#![no_std]
 //! This contains the packet API library used for communication between the inv-agent and opentmk
 //! components.
 //!
@@ -13,7 +14,7 @@
 //! opentmk ack'ing each packet.
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
