@@ -137,8 +137,9 @@ fn serve(mut stream: TcpStream, content: &[u8], behavior: Behavior) -> std::io::
     // asked for -- the Content-Length matches what is actually sent. That is
     // precisely the case the `Blob` contract is about: the client sees a
     // successful response, and must not mistake a partly filled buffer for
-    // success.
-    let body = if behavior == Behavior::ShortBody {
+    // success. A one-byte range cannot be shortened this way, since an empty
+    // body has no `Content-Range` that describes it, so send it in full.
+    let body = if behavior == Behavior::ShortBody && full.len() > 1 {
         &full[..full.len() - 1]
     } else {
         full
