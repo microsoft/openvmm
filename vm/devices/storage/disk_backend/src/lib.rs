@@ -496,15 +496,13 @@ impl Disk {
     ///
     /// * `buffers` - An object representing the data buffers into which the disk data will be transferred.
     /// * `sector` - The logical sector at which the read operation starts.
-    pub fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    pub async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        async move {
-            self.check_representable(sector, self.buffer_sectors(buffers))?;
-            self.0.disk.read_vectored(buffers, sector).await
-        }
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.0.disk.read_vectored(buffers, sector).await
     }
 
     /// Issues an asynchronous write-gather operation to the disk.
@@ -518,16 +516,14 @@ impl Disk {
     /// # Panics
     ///
     /// The caller must pass a buffer with an integer number of sectors.
-    pub fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    pub async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        async move {
-            self.check_representable(sector, self.buffer_sectors(buffers))?;
-            self.0.disk.write_vectored(buffers, sector, fua).await
-        }
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.0.disk.write_vectored(buffers, sector, fua).await
     }
 
     /// Issues an asynchronous flush operation to the disk.
