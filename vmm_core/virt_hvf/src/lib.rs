@@ -1109,7 +1109,9 @@ impl HvfVcpu {
 
 impl Drop for HvfVcpu {
     fn drop(&mut self) {
-        self.destroy().expect("vcpu destroy cannot fail");
+        if let Err(err) = self.destroy() {
+            tracing::error!(?err, "failed to destroy HVF vCPU");
+        }
     }
 }
 
@@ -1436,10 +1438,9 @@ impl HvfProcessor<'_> {
 
 impl Drop for HvfProcessor<'_> {
     fn drop(&mut self) {
-        self.inner
-            .actor
-            .remove_vcpu(|| self.vcpu.destroy())
-            .expect("vcpu destroy cannot fail");
+        if let Err(err) = self.inner.actor.remove_vcpu(|| self.vcpu.destroy()) {
+            tracing::error!(?err, "failed to remove HVF vCPU");
+        }
     }
 }
 
@@ -1688,7 +1689,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     // Report the lock as implemented and unlocked.
                                     0x8
                                 } else {
-                                    tracing::warn!(
+                                    tracelimit::warn_ratelimited!(
                                         ?reg,
                                         pc = self.vcpu.pc(),
                                         "returning zero for unknown system register"
@@ -1712,7 +1713,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     |index| self.partition.vps[index].notify(),
                                 );
                                 if !handled_by_gic && !self.pmu.write_sysreg(reg, value, now) {
-                                    tracing::warn!(
+                                    tracelimit::warn_ratelimited!(
                                         ?reg,
                                         value,
                                         pc = self.vcpu.pc(),
