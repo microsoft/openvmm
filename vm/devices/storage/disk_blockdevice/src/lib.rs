@@ -915,7 +915,7 @@ mod tests {
         output.contains("5.13")
     }
 
-    fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
+    fn new_block_device_from(file: fs::File) -> Result<BlockDevice, NewDeviceError> {
         // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
         static POOL: OnceCell<PoolClient> = OnceCell::new();
 
@@ -928,16 +928,62 @@ mod tests {
             })
             .map_err(|err| NewDeviceError::IoctlError(DiskError::Io(err)))?;
 
-        let test_file = tempfile::tempfile().unwrap();
-        test_file.set_len(1024 * 64).unwrap();
         block_on(BlockDevice::new(
-            test_file.try_clone().unwrap(),
+            file,
             false,
             client.initiator().clone(),
             None,
             None,
             false,
         ))
+    }
+
+    fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
+        let test_file = tempfile::tempfile().unwrap();
+        test_file.set_len(1024 * 64).unwrap();
+        new_block_device_from(test_file)
+    }
+
+    /// A loop device over a temporary file, detached when dropped.
+    ///
+    /// Attaching one requires `CAP_SYS_ADMIN`, which is why the test using this
+    /// is ignored by default.
+    struct LoopDevice {
+        path: String,
+        _backing: tempfile::NamedTempFile,
+    }
+
+    impl LoopDevice {
+        fn new(size: u64) -> Self {
+            let backing = tempfile::NamedTempFile::new().unwrap();
+            backing.as_file().set_len(size).unwrap();
+            let output = std::process::Command::new("losetup")
+                .arg("--find")
+                .arg("--show")
+                .arg(backing.path())
+                .output()
+                .expect("losetup should be installed");
+            assert!(
+                output.status.success(),
+                "losetup failed (needs root): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Self {
+                path: String::from_utf8(output.stdout).unwrap().trim().to_owned(),
+                _backing: backing,
+            }
+        }
+    }
+
+    impl Drop for LoopDevice {
+        fn drop(&mut self) {
+            // Detach on the way out even if the test panicked, so that loop
+            // devices are not leaked.
+            let _ = std::process::Command::new("losetup")
+                .arg("-d")
+                .arg(&self.path)
+                .status();
+        }
     }
 
     macro_rules! get_block_device_or_skip {
@@ -966,12 +1012,38 @@ mod tests {
     ///
     /// This exercises the `DeviceType::File` path, where the kernel does not
     /// enforce bounds and the backend's own checks are the only thing stopping
-    /// a write past the end from extending the file. The other path, a real
-    /// block device where the kernel does enforce, is not covered here because
-    /// creating a loop device needs root.
+    /// a write past the end from extending the file. See
+    /// [`sector_range_conformance_loop_device`] for the other path.
     #[async_test]
     async fn sector_range_conformance() {
         let disk = disk_backend::Disk::new(get_block_device_or_skip!()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    /// The same suite over a real block device.
+    ///
+    /// This is the case the tempfile path cannot cover. For a block device the
+    /// kernel enforces the bounds and this backend delegates to it, rather than
+    /// checking the range itself, so it is the delegation that is under test
+    /// here.
+    ///
+    /// Attaching a loop device needs `CAP_SYS_ADMIN`, so this is ignored by
+    /// default. To run it:
+    ///
+    /// ```text
+    /// sudo -E $(which cargo) nextest run -p disk_blockdevice \
+    ///     --run-ignored all -E 'test(loop_device)'
+    /// ```
+    #[async_test]
+    #[ignore = "needs root to attach a loop device"]
+    async fn sector_range_conformance_loop_device() {
+        let loop_device = LoopDevice::new(1024 * 1024);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&loop_device.path)
+            .unwrap();
+        let disk = disk_backend::Disk::new(new_block_device_from(file).unwrap()).unwrap();
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 

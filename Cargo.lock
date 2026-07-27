@@ -2595,6 +2595,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_disk_layered"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "disk_backend",
+ "disklayer_ram",
+ "guestmem",
+ "libfuzzer-sys",
+ "pal_async",
+ "scsi_buffers",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [

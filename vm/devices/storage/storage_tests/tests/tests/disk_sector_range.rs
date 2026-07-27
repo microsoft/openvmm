@@ -13,11 +13,14 @@ use disk_layered::DiskLayer;
 use disk_layered::LayerConfiguration;
 use disk_layered::LayeredDisk;
 use disklayer_ram::RamDiskLayer;
+#[cfg(any(windows, target_os = "linux"))]
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use storage_tests::sector_range::test_disk_sector_range_conformance;
 use test_with_tracing::test;
 
+/// Only the NVMe test needs this, and it is not built everywhere.
+#[cfg(any(windows, target_os = "linux"))]
 const SECTOR_SIZE: u64 = 512;
 const DISK_SIZE: u64 = 1024 * 1024;
 
