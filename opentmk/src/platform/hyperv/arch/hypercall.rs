@@ -25,10 +25,12 @@ use zerocopy::IntoBytes;
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
 pub struct HvcallPage {
+    /// Raw page-sized backing buffer used for hypercall input/output data.
     pub buffer: [u8; HV_PAGE_SIZE as usize],
 }
 
 impl HvcallPage {
+    /// Create a new zero-initialized hypercall page.
     pub const fn new() -> Self {
         HvcallPage {
             buffer: [0; HV_PAGE_SIZE as usize],

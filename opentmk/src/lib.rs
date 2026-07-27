@@ -7,7 +7,6 @@
 // UNSAFETY: This crate contains unsafe code to perform low-level operations such as managing memory, handling interrupts, and invoking hypercalls.
 #![expect(unsafe_code)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
-#![allow(missing_docs)]
 
 #[macro_use]
 pub extern crate alloc;

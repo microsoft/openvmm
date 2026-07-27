@@ -47,6 +47,10 @@ where
     }
 }
 
+/// Format an assertion result as a JSON log line.
+///
+/// If `terminate_new_line` is true, a trailing newline is appended so the
+/// output can be streamed directly to a line-oriented sink.
 pub fn format_assert_json_string<T>(
     s: &str,
     terminate_new_line: bool,
@@ -66,6 +70,7 @@ where
     out
 }
 
+/// Write a string directly to the TMK logger's underlying writer.
 pub fn write_str(s: &str) {
     _ = crate::tmk_logger::LOGGER.get_writer().write_str(s);
 }

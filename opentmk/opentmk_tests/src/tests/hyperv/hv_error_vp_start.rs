@@ -9,7 +9,7 @@ use opentmk::context::VpExecToken;
 use opentmk::context::VtlPlatformTrait;
 use opentmk::tmk_assert;
 
-/// Executes a series of negitive tests to validate VTL and VP functionalities.
+/// Executes a series of negative tests to validate VTL and VP functionalities.
 pub fn exec<T>(ctx: &mut T)
 where
     T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,

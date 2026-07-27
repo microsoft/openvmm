@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Low-level x86_64 port I/O helpers wrapping the `in`/`out` instructions.
+
 use core::arch::asm;
 
 /// Write a byte to a port.
@@ -39,7 +41,7 @@ pub unsafe fn inb(port: u16) -> u8 {
 ///
 /// # Safety
 /// Caller should assume that the port being read from is safe to do so
-pub unsafe fn inh(port: u16) -> u16 {
+pub unsafe fn inw(port: u16) -> u16 {
     let mut data;
     // SAFETY: The caller has assured us this is safe.
     unsafe {
@@ -56,7 +58,7 @@ pub unsafe fn inh(port: u16) -> u16 {
 ///
 /// # Safety
 /// Caller should assume that the port being written to is safe to do so
-pub unsafe fn outh(port: u16, data: u16) {
+pub unsafe fn outw(port: u16, data: u16) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
         asm! {
