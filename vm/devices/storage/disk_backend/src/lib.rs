@@ -428,8 +428,15 @@ impl Disk {
     }
 
     /// Returns the number of sectors spanned by `buffers`.
+    ///
+    /// Callers must pass a whole number of sectors, so this is normally exact.
+    /// Rounding down is nonetheless the right choice for a caller that does
+    /// not: `max_sector` is `i64::MAX` rounded *down* to a sector, which for a
+    /// power-of-two sector size leaves exactly `sector_size - 1` bytes of slack
+    /// below `i64::MAX` — enough to cover a partial trailing sector. So the end
+    /// byte offset stays representable either way.
     fn buffer_sectors(&self, buffers: &RequestBuffers<'_>) -> u64 {
-        (buffers.len() as u64).div_ceil(self.0.sector_size as u64)
+        (buffers.len() as u64) >> self.0.sector_shift
     }
 
     /// Unmap sectors from the disk.
