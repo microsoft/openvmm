@@ -163,19 +163,23 @@ impl UefiDevice {
             vsm_config,
             time_source,
         } = runtime_deps;
-        let final_vars = firmware_uefi_custom_vars::FinalVars::resolve(
-            cfg.base_template,
-            cfg.custom_template_delta,
-        );
-        let final_vars = match final_vars {
-            Ok(final_vars) => final_vars,
-            Err(err) => {
-                logger
-                    .log_initialization_failure(
-                        firmware_uefi_resources::platform::UefiInitializationFailure::CustomVars,
-                    )
-                    .await;
-                return Err(err.into());
+        let final_vars = if is_restoring {
+            // Template variables are first-boot inputs; restore uses the existing NVRAM state.
+            firmware_uefi_custom_vars::FinalVars::default()
+        } else {
+            match firmware_uefi_custom_vars::FinalVars::resolve(
+                cfg.base_template,
+                cfg.custom_template_delta,
+            ) {
+                Ok(final_vars) => final_vars,
+                Err(err) => {
+                    logger
+                        .log_initialization_failure(
+                            firmware_uefi_resources::platform::UefiInitializationFailure::CustomVars,
+                        )
+                        .await;
+                    return Err(err.into());
+                }
             }
         };
 

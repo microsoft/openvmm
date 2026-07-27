@@ -28,7 +28,7 @@ pub struct UefiVars {
 pub struct BaseTemplateVars(UefiVars);
 
 /// A complete set of variables ready for NVRAM injection.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FinalVars(UefiVars);
 
 impl From<UefiVars> for BaseTemplateVars {
@@ -110,45 +110,6 @@ pub enum ApplyDeltaError {
     RestrictedUefiVar { name: String, guid: Guid },
 }
 
-fn validate_delta(
-    has_base_signatures: bool,
-    delta: &delta::UefiVarsDelta,
-) -> Result<(), ApplyDeltaError> {
-    use delta::SignatureDelta;
-    use delta::SignatureDeltaVec;
-    use delta::SignaturesDelta;
-
-    if !has_base_signatures {
-        match &delta.signatures {
-            SignaturesDelta::Append(..) => return Err(ApplyDeltaError::AppendWithoutBase),
-            SignaturesDelta::Replace(replace)
-                if matches!(replace.pk, SignatureDelta::Default)
-                    || matches!(replace.kek, SignatureDeltaVec::Default)
-                    || matches!(replace.db, SignatureDeltaVec::Default)
-                    || matches!(replace.dbx, SignatureDeltaVec::Default)
-                    || matches!(replace.moklist, Some(SignatureDeltaVec::Default))
-                    || matches!(replace.moklistx, Some(SignatureDeltaVec::Default)) =>
-            {
-                return Err(ApplyDeltaError::DefaultWithoutBase);
-            }
-            SignaturesDelta::Replace(_) => {}
-        }
-    }
-
-    if let Some((name, var)) = delta
-        .non_signature_vars
-        .iter()
-        .find(|(name, var)| name == "dbDefault" && var.guid == EFI_GLOBAL_VARIABLE)
-    {
-        return Err(ApplyDeltaError::RestrictedUefiVar {
-            name: name.clone(),
-            guid: var.guid,
-        });
-    }
-
-    Ok(())
-}
-
 impl UefiVars {
     /// Create a new, blank set of UEFI variables.
     pub fn new() -> UefiVars {
@@ -163,10 +124,10 @@ impl UefiVars {
         use delta::SignaturesDelta;
         use delta::SignaturesReplace;
 
-        validate_delta(self.signatures.is_some(), &delta)?;
-
         let signatures = match (self.signatures, delta.signatures) {
-            (None, SignaturesDelta::Append(..)) => unreachable!("delta was validated"),
+            (None, SignaturesDelta::Append(..)) => {
+                return Err(ApplyDeltaError::AppendWithoutBase);
+            }
             (
                 None,
                 SignaturesDelta::Replace(SignaturesReplace {
@@ -178,27 +139,35 @@ impl UefiVars {
                     moklistx,
                 }),
             ) => {
-                fn deny_default(sig_delta: SignatureDelta) -> Signature {
+                fn deny_default(sig_delta: SignatureDelta) -> Result<Signature, ApplyDeltaError> {
                     match sig_delta {
-                        SignatureDelta::Sig(sig) => sig,
-                        SignatureDelta::Default => unreachable!("delta was validated"),
+                        SignatureDelta::Sig(sig) => Ok(sig),
+                        SignatureDelta::Default => Err(ApplyDeltaError::DefaultWithoutBase),
                     }
                 }
 
-                fn deny_default_vec(sig_delta_vec: SignatureDeltaVec) -> Vec<Signature> {
+                fn deny_default_vec(
+                    sig_delta_vec: SignatureDeltaVec,
+                ) -> Result<Vec<Signature>, ApplyDeltaError> {
                     match sig_delta_vec {
-                        SignatureDeltaVec::Sigs(sig) => sig,
-                        SignatureDeltaVec::Default => unreachable!("delta was validated"),
+                        SignatureDeltaVec::Sigs(sig) => Ok(sig),
+                        SignatureDeltaVec::Default => Err(ApplyDeltaError::DefaultWithoutBase),
                     }
                 }
 
                 Signatures {
-                    pk: deny_default(pk),
-                    kek: deny_default_vec(kek),
-                    db: deny_default_vec(db),
-                    dbx: deny_default_vec(dbx),
-                    moklist: moklist.map(deny_default_vec).unwrap_or_default(),
-                    moklistx: moklistx.map(deny_default_vec).unwrap_or_default(),
+                    pk: deny_default(pk)?,
+                    kek: deny_default_vec(kek)?,
+                    db: deny_default_vec(db)?,
+                    dbx: deny_default_vec(dbx)?,
+                    moklist: moklist
+                        .map(deny_default_vec)
+                        .transpose()?
+                        .unwrap_or_default(),
+                    moklistx: moklistx
+                        .map(deny_default_vec)
+                        .transpose()?
+                        .unwrap_or_default(),
                 }
             }
             (
@@ -299,6 +268,13 @@ impl UefiVars {
 
         // Replace overwritten vars, append new vars
         'outer: for (new_key, new_val) in delta.non_signature_vars {
+            if new_key == "dbDefault" && new_val.guid == EFI_GLOBAL_VARIABLE {
+                return Err(ApplyDeltaError::RestrictedUefiVar {
+                    name: new_key,
+                    guid: new_val.guid,
+                });
+            }
+
             for (old_key, old_val) in &mut non_signature_vars {
                 if *old_key == new_key {
                     *old_val = new_val;
