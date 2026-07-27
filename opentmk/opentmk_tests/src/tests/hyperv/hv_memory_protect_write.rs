@@ -11,13 +11,13 @@ use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 use spin::Mutex;
 
+use crate::create_function_with_restore;
 use opentmk::context::InterruptPlatformTrait;
 use opentmk::context::SecureInterceptPlatformTrait;
 use opentmk::context::VirtualProcessorPlatformTrait;
 use opentmk::context::VpExecToken;
 use opentmk::context::VtlPlatformTrait;
 use opentmk::tmk_assert;
-use crate::create_function_with_restore;
 
 static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);

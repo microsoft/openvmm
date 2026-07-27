@@ -5,12 +5,12 @@ use core::arch::asm;
 
 use spin::Mutex;
 
+use crate::create_function_with_restore;
 use opentmk::context::InterruptPlatformTrait;
 use opentmk::context::SecureInterceptPlatformTrait;
 use opentmk::context::VirtualProcessorPlatformTrait;
 use opentmk::context::VtlPlatformTrait;
 use opentmk::tmk_assert;
-use crate::create_function_with_restore;
 
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
