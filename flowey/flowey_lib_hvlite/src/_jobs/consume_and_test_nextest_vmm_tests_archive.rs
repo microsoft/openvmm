@@ -467,14 +467,7 @@ mod failure_summary {
     /// always the relevant ones.
     const MAX_EXCERPT_LINES: usize = 20;
 
-    /// Maximum number of error annotations to emit per job.
-    ///
-    /// GitHub renders only a limited number of annotations, and a job that
-    /// failed wholesale should not drown out the other jobs' annotations on
-    /// the run summary page.
-    const MAX_ANNOTATIONS: usize = 10;
-
-    /// Maximum length of a failure reason shown in an annotation or table cell.
+    /// Maximum length of a failure reason shown in a summary table cell.
     const MAX_REASON_CHARS: usize = 300;
 
     /// Base URL of the petri log viewer.
@@ -491,7 +484,7 @@ mod failure_summary {
     }
 
     impl Outcome {
-        /// Short description used in annotations and the summary table.
+        /// Short description used in the job log and the summary table.
         fn describe(self) -> &'static str {
             match self {
                 Outcome::Failed => "failed",
@@ -576,7 +569,7 @@ mod failure_summary {
     }
 
     /// Collapses whitespace and truncates, so that a multi-line error can be
-    /// used in a single-line annotation or a table cell.
+    /// used in a summary table cell.
     fn one_line(s: &str) -> String {
         let mut collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.chars().count() > MAX_REASON_CHARS {
@@ -688,52 +681,6 @@ mod failure_summary {
         out
     }
 
-    /// Renders one GitHub error annotation per failing test.
-    ///
-    /// Annotations are surfaced at the top of the workflow run summary page,
-    /// aggregated across every job, so they are the only place a failing test
-    /// name shows up without first opening a job. They are plain workflow
-    /// commands on stdout, so unlike the Checks API they need no permissions
-    /// and work for pull requests from forks.
-    fn render_annotations(
-        failures: &[FailedTest],
-        run_id: Option<&str>,
-        log_artifact_name: &str,
-    ) -> String {
-        use std::fmt::Write as _;
-
-        let mut out = String::new();
-        for test in failures.iter().take(MAX_ANNOTATIONS) {
-            let reason = match &test.error {
-                Some(error) => format!(": {error}"),
-                None => String::new(),
-            };
-            let logs = match log_viewer_url(run_id, log_artifact_name, test) {
-                Some(url) => format!(" -- logs: {url}"),
-                None => String::new(),
-            };
-            // Annotations are single-line; the message must not contain a
-            // newline or it would be read as the end of the command.
-            let _ = writeln!(
-                out,
-                "::error title={log_artifact_name}::{} {}{reason}{logs}",
-                test.name,
-                test.outcome.describe(),
-            );
-        }
-
-        // GitHub caps how many annotations it renders, so say so rather than
-        // silently dropping the rest.
-        if failures.len() > MAX_ANNOTATIONS {
-            let _ = writeln!(
-                out,
-                "::error title={log_artifact_name}::...and {} more failing tests; see the job summary",
-                failures.len() - MAX_ANNOTATIONS
-            );
-        }
-        out
-    }
-
     /// Renders the markdown table appended to the GitHub Actions job summary.
     fn render_job_summary(
         failures: &[FailedTest],
@@ -787,13 +734,6 @@ mod failure_summary {
             "{}",
             render_job_log(failures, is_github, run_id.as_deref(), log_artifact_name)
         );
-
-        if is_github {
-            print!(
-                "{}",
-                render_annotations(failures, run_id.as_deref(), log_artifact_name)
-            );
-        }
 
         let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") else {
             return;
@@ -1101,82 +1041,6 @@ mod failure_summary {
             );
             // Without a run ID there is nothing to link to.
             assert!(!rendered.contains("full logs"));
-        }
-
-        #[test]
-        fn annotations_name_each_failing_test() {
-            let failures = [
-                failed_test("x86_64::boot", Outcome::Failed, &[]),
-                failed_test("x86_64::flaky", Outcome::FailedUnstable, &[]),
-            ];
-
-            let rendered = render_annotations(&failures, Some("42"), "x64-linux-vmm-tests-logs");
-
-            assert_eq!(
-                rendered,
-                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed -- logs: https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__boot\n\
-                 ::error title=x64-linux-vmm-tests-logs::x86_64::flaky failed (unstable) -- logs: https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__flaky\n"
-            );
-            // Annotations are terminated by a newline, so a message must never
-            // contain one.
-            assert!(rendered.lines().all(|l| l.starts_with("::error ")));
-        }
-
-        #[test]
-        fn annotations_omit_link_without_run_id() {
-            let failures = [failed_test("x86_64::boot", Outcome::Failed, &[])];
-
-            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
-
-            assert_eq!(
-                rendered,
-                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed\n"
-            );
-        }
-
-        #[test]
-        fn annotations_include_the_failure_reason() {
-            let mut test = failed_test("x86_64::boot", Outcome::Failed, &[]);
-            test.error = Some("guest did not boot within 300s".to_owned());
-
-            let rendered = render_annotations(&[test], None, "x64-linux-vmm-tests-logs");
-
-            assert_eq!(
-                rendered,
-                "::error title=x64-linux-vmm-tests-logs::x86_64::boot failed: guest did not boot within 300s\n"
-            );
-        }
-
-        #[test]
-        fn annotations_report_an_incomplete_test() {
-            let failures = [failed_test("x86_64::hung", Outcome::Incomplete, &[])];
-
-            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
-
-            assert_eq!(
-                rendered,
-                "::error title=x64-linux-vmm-tests-logs::x86_64::hung did not complete\n"
-            );
-        }
-
-        #[test]
-        fn annotations_are_capped_with_a_pointer_to_the_summary() {
-            let names: Vec<String> = (0..MAX_ANNOTATIONS + 3)
-                .map(|i| format!("x86_64::test_{i}"))
-                .collect();
-            let failures: Vec<FailedTest> = names
-                .iter()
-                .map(|name| failed_test(name, Outcome::Failed, &[]))
-                .collect();
-
-            let rendered = render_annotations(&failures, None, "x64-linux-vmm-tests-logs");
-
-            assert_eq!(rendered.lines().count(), MAX_ANNOTATIONS + 1);
-            assert!(rendered.contains("x86_64::test_0 failed"));
-            assert!(!rendered.contains(&format!("x86_64::test_{MAX_ANNOTATIONS} failed")));
-            assert!(rendered.ends_with(
-                "::error title=x64-linux-vmm-tests-logs::...and 3 more failing tests; see the job summary\n"
-            ));
         }
 
         #[test]

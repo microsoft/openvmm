@@ -102,10 +102,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     let (vm, agent) = config.run().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
-    // TEMPORARY: deliberately fail after a successful boot so that the CI
-    // failure reporting introduced alongside this change can be reviewed in a
-    // PR. Revert before merging.
-    anyhow::bail!("deliberate failure to demonstrate CI failure reporting");
+    Ok(())
 }
 
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
