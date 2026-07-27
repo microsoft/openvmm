@@ -101,27 +101,37 @@ impl<T: IoAccess> Serial<T> {
         }
     }
 
+    /// Write a single byte to the serial port, blocking until the transmit
+    /// holding register is empty.
     pub fn write_byte(&self, b: u8) {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
-            while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {}
+            while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
             self.io.outb(self.serial_port.value(), b);
         }
     }
 
+    /// Read a single byte from the serial port, blocking until one is
+    /// available.
     pub fn read_byte(&self) -> u8 {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
-            while self.io.inb(self.serial_port.value() + 5) & 1 == 0 {}
+            while self.io.inb(self.serial_port.value() + 5) & 1 == 0 {
+                core::hint::spin_loop();
+            }
             self.io.inb(self.serial_port.value())
         }
     }
 
+    /// Drain any bytes currently pending in the receive FIFO.
     pub fn drain(&self) {
         unsafe {
             // SAFETY: reading text to the serial device is safe
             while self.io.inb(self.serial_port.value() + 5) & 1 != 0 {
                 self.io.inb(self.serial_port.value());
+                core::hint::spin_loop();
             }
         }
     }
