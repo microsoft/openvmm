@@ -67,11 +67,13 @@ message DirectBoot {
 }
 
 message UEFI {
+    // Path to the UEFI firmware image on the host.
     string firmware_path = 1;
-    string device_path = 2;
-    // Optional data to include for uefi boot. For Linux this could be used as the kernel
-    // commandline.
-    string optional_data = 3;
+
+    // Fields 2 and 3 were previously `device_path` and `optional_data`. They
+    // had no OpenVMM equivalent and were never honored.
+    reserved 2, 3;
+    reserved "device_path", "optional_data";
 }
 
 message MemoryConfig {

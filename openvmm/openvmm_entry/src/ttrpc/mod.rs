@@ -68,6 +68,7 @@ use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -101,6 +102,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -694,30 +696,9 @@ impl VmService {
         // passed in over the fd-passing protocol.
         let registry = self.registry.clone();
 
-        let load_mode = match req_config
-            .boot_config
-            .context("missing boot configuration")?
-        {
-            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
-                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd = if boot.initrd_path.is_empty() {
-                    None
-                } else {
-                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
-                };
-                LoadMode::Linux {
-                    kernel,
-                    initrd,
-                    cmdline: boot.kernel_cmdline,
-                    enable_serial: true,
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                }
-            }
-            vmservice::vm_config::BootConfig::Uefi(_) => {
-                anyhow::bail!("uefi not yet supported")
-            }
-        };
-
+        // Serial ports are set up before the boot configuration because UEFI
+        // needs to know whether any are present to decide whether to enable its
+        // serial console.
         let mut ports = [(); 4].map(|_| None);
         for port in req_config.serial_config.iter().flat_map(|c| &c.ports) {
             let pc = ports
@@ -728,17 +709,93 @@ impl VmService {
                 format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
+        let any_serial_configured = ports.iter().any(|port| port.is_some());
+        let com1_configured = ports[0].is_some();
 
         #[cfg(guest_arch = "aarch64")]
         let arch = vm_manifest_builder::MachineArch::Aarch64;
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
-        let chipset_builder = VmManifestBuilder::new(
-            vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            arch,
-        )
-        .with_serial(ports);
+        // The boot configuration also determines the base chipset, since the
+        // firmware and the device model have to agree on the platform.
+        let (load_mode, base_chipset_type) = match req_config
+            .boot_config
+            .take()
+            .context("missing boot configuration")?
+        {
+            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
+                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
+                (
+                    LoadMode::Linux {
+                        kernel,
+                        initrd,
+                        cmdline: boot.kernel_cmdline,
+                        enable_serial: true,
+                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                )
+            }
+            vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                let firmware = File::open(&uefi.firmware_path).with_context(|| {
+                    format!("failed to open uefi firmware {}", uefi.firmware_path)
+                })?;
+                (
+                    LoadMode::Uefi {
+                        firmware,
+                        enable_serial: any_serial_configured,
+                        // Route the firmware console to COM1 when it is
+                        // available. The firmware's default console is the
+                        // video device, so without this the firmware and
+                        // anything it launches would have nowhere to write on a
+                        // VM with no graphics adapter.
+                        uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
+                        bios_guid: Guid::new_random(),
+                        enable_vmbus: true,
+                        // Everything below is fixed for now. The proto has no
+                        // way to express these yet; fields will be added as
+                        // callers need them.
+                        //
+                        // Note that memory protections match the CLI in
+                        // defaulting to off, since Linux currently fails to
+                        // boot with them enabled.
+                        enable_memory_protections: false,
+                        enable_debugging: false,
+                        disable_frontpage: false,
+                        enable_tpm: false,
+                        enable_battery: false,
+                        enable_vpci_boot: false,
+                        default_boot_always_attempt: false,
+                        force_dma_bounce: false,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                )
+            }
+        };
+
+        let mut chipset_builder =
+            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if matches!(load_mode, LoadMode::Uefi { .. }) {
+            // The UEFI helper device backs the firmware's variable store and
+            // runtime services, so it is required for a UEFI boot. The store is
+            // ephemeral: with no VMGS file configured there is nowhere to
+            // persist boot entries or secure boot state across reboots.
+            chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
+                arch,
+                firmware_uefi_custom_vars::CustomVars::default(),
+                false,
+                firmware_uefi_resources::LogLevel::make_default(),
+                None,
+                EphemeralNonVolatileStoreHandle.into_resource(),
+                None,
+            ));
+        }
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()

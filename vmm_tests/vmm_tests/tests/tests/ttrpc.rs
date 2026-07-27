@@ -665,6 +665,243 @@ fn test_ttrpc_interface(
     })
 }
 
+petri::test!(test_ttrpc_uefi_boot, |resolver| {
+    let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
+    let (firmware, guest_disk) = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => (
+            resolver
+                .require(artifacts::loadable::UEFI_FIRMWARE_X64)
+                .erase(),
+            resolver
+                .require(artifacts::test_vhd::GUEST_TEST_UEFI_X64)
+                .erase(),
+        ),
+        petri_artifacts_common::tags::MachineArch::Aarch64 => (
+            resolver
+                .require(artifacts::loadable::UEFI_FIRMWARE_AARCH64)
+                .erase(),
+            resolver
+                .require(artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64)
+                .erase(),
+        ),
+    };
+    Some([openvmm.erase(), firmware, guest_disk])
+});
+
+/// Boots a VM with UEFI firmware over ttrpc, using the `guest_test_uefi` image
+/// as the boot disk on a vmbus SCSI controller.
+///
+/// The `guest_test_uefi` EFI application prints its banner to the UEFI console,
+/// which the firmware routes to COM1. Seeing that banner proves the firmware
+/// loaded, enumerated the SCSI disk, and launched the application off of it --
+/// rather than merely proving the firmware started.
+fn test_ttrpc_uefi_boot(
+    params: petri::PetriTestParams<'_>,
+    [openvmm, firmware_path, guest_disk_path]: [ResolvedArtifact; 3],
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let socket_path = tempdir.path().join("ttrpc.sock");
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let com1_path = tempdir.path().join("com1.sock");
+
+    DefaultPool::run_with(async |driver| {
+        let (mut child, client, _stderr_task) =
+            launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig {
+                        memory_config: Some(vmservice::MemoryConfig {
+                            memory_mb: 512,
+                            ..Default::default()
+                        }),
+                        processor_config: Some(vmservice::ProcessorConfig {
+                            processor_count: 1,
+                            ..Default::default()
+                        }),
+                        boot_config: Some(vmservice::vm_config::BootConfig::Uefi(
+                            vmservice::Uefi {
+                                firmware_path: firmware_path.get().to_string_lossy().to_string(),
+                            },
+                        )),
+                        serial_config: Some(vmservice::SerialConfig {
+                            ports: vec![vmservice::serial_config::Config {
+                                port: 0,
+                                socket_path: com1_path.to_string_lossy().into(),
+                                connect: false,
+                            }],
+                        }),
+                        devices_config: Some(vmservice::DevicesConfig {
+                            scsi_disks: vec![vmservice::ScsiDisk {
+                                controller: 0,
+                                lun: 0,
+                                host_path: guest_disk_path.get().to_string_lossy().to_string(),
+                                read_only: true,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let com1 = PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?;
+
+        // Drain COM1 for as long as the VM is alive, rather than stopping once
+        // the banner shows up. The 16550 only reports its transmit holding
+        // register empty once the backend has taken the data, so a guest that
+        // keeps printing with nothing draining the socket stalls indefinitely.
+        let (marker_send, marker_recv) = mesh::oneshot();
+        let _com1_task = driver.spawn(
+            "com1",
+            log_serial(
+                params.logger.log_file("uefi")?,
+                com1,
+                UEFI_BANNER,
+                marker_send,
+            ),
+        );
+
+        // Start waiting for the halt before resuming, so that a guest that
+        // reaches the end of its run quickly cannot beat us to it.
+        let waiter = client.call().start(vmservice::Vm::WaitVm, ());
+
+        client
+            .call()
+            .start(vmservice::Vm::ResumeVm, ())
+            .await
+            .unwrap();
+
+        // The firmware takes a while to initialize and enumerate the SCSI
+        // controller before it can launch anything off of the disk.
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(120))
+            .until_cancelled(marker_recv)
+            .await
+            .context("timed out waiting for the guest UEFI application to run")?
+            .context("com1 closed before the guest UEFI application ran")?;
+
+        // `guest_test_uefi` deliberately triple faults once it has finished its
+        // run, so waiting for the halt confirms the guest ran to completion
+        // rather than just reaching its first line of output.
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(120))
+            .until_cancelled(waiter)
+            .await
+            .context("timed out waiting for the guest to halt")?
+            .unwrap();
+
+        let props = client
+            .call()
+            .start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            props.state,
+            vmservice::VmState::Halted as i32,
+            "guest triple faulted, expected HALTED"
+        );
+        let halt_reason = props.halt_reason.unwrap_or_default();
+        assert!(
+            halt_reason.contains("TripleFault"),
+            "expected a triple fault halt, got {halt_reason:?}"
+        );
+
+        // Tearing down a VM that has a SCSI controller used to hang here, so
+        // this also covers that: the teardown has to drop the controller's
+        // request channel before waiting for the VM worker to stop.
+        client
+            .call()
+            .start(vmservice::Vm::TeardownVm, ())
+            .await
+            .unwrap();
+
+        let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+
+        let exit_status = child.wait().await?;
+        tracing::info!(?exit_status, "openvmm exited");
+        assert!(
+            exit_status.success(),
+            "openvmm exited abnormally: {:?}",
+            exit_status
+        );
+
+        Ok(())
+    })
+}
+
+/// The first thing `guest_test_uefi` prints once the firmware hands off to it.
+const UEFI_BANNER: &str = "UEFI vendor =";
+
+/// Logs everything read from `reader` until the stream ends, signalling
+/// `marker_send` the first time `marker` appears in the output.
+///
+/// This keeps running after the marker is seen: the guest stalls if its serial
+/// output is not drained, so the reader has to stay attached for the lifetime
+/// of the VM.
+async fn log_serial(
+    log_file: petri::PetriLogFile,
+    mut reader: impl futures::AsyncRead + Unpin,
+    marker: &str,
+    marker_send: mesh::OneshotSender<()>,
+) {
+    let mut marker_send = Some(marker_send);
+    // Only the text before the marker needs to be retained, to spot a marker
+    // split across two reads.
+    let mut seen = String::new();
+    let mut pending = String::new();
+    let mut buf = [0u8; 256];
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) => {
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "error reading from com1"
+                );
+                break;
+            }
+        };
+
+        let chunk = String::from_utf8_lossy(&buf[..n]);
+
+        // Log whole lines only, so that partial reads don't split log entries.
+        pending.push_str(&chunk);
+        while let Some(i) = pending.find('\n') {
+            let line: String = pending.drain(..=i).collect();
+            log_file.write_entry(line.trim_end());
+        }
+
+        if let Some(send) = marker_send.take() {
+            seen.push_str(&chunk);
+            if seen.contains(marker) {
+                seen = String::new();
+                send.send(());
+            } else {
+                // Keep just enough context to match a marker spanning reads.
+                let keep = seen.len().saturating_sub(marker.len() - 1);
+                seen.drain(..keep);
+                marker_send = Some(send);
+            }
+        }
+    }
+
+    if !pending.trim_end().is_empty() {
+        log_file.write_entry(pending.trim_end());
+    }
+}
+
 /// Wraps a `PcieDeviceKind` as a device attachment behind a PCIe port.
 fn attachment_device(device: vmservice::PcieDeviceKind) -> vmservice::PcieAttachment {
     vmservice::PcieAttachment {
