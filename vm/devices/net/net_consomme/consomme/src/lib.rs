@@ -373,7 +373,6 @@ impl ConsommeConfig {
         }
         ns
     }
-
 }
 
 impl ConsommePrimaryRuntime {
@@ -898,9 +897,9 @@ impl Consomme {
 
     /// Updates parameters and reconciles dependent runtime state.
     ///
-    /// Existing connections keep the settings with which they were created.
-    /// Updated UDP timeouts and TCP buffer bounds apply to subsequent polling
-    /// and newly created TCP connections, respectively.
+    /// Changes take effect for subsequent packet processing. TCP buffer bounds
+    /// apply only to connections created after the update. UDP timeout changes
+    /// affect existing mappings on their next poll.
     pub fn update_params(&mut self, update: impl FnOnce(&mut ConsommeParams)) {
         update(&mut self.primary.config.params);
 
