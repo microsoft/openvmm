@@ -73,17 +73,16 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        final_vars: FinalVars,
+        final_vars: Option<FinalVars>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
-        is_restoring: bool,
     ) -> Result<NvramServices, NvramSetupError> {
         let mut nvram = NvramServices {
             services: NvramSpecServices::new(nvram_storage),
             vsm_config,
         };
 
-        if !is_restoring {
+        if let Some(final_vars) = final_vars {
             nvram.inject_vars_on_first_boot(final_vars).await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;

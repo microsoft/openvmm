@@ -35,8 +35,9 @@ pub struct SignaturesAppend {
     pub moklistx: Option<Vec<Signature>>,
 }
 
-/// Replace MUST include the base secure boot vars, and may optionally include
-/// the moklist vars.
+/// Replace the underlying template signatures, optionally using `Default` values
+/// from a base template. If no base template is provided, all required signature
+/// values must be specified explicitly.
 #[derive(Debug, Clone, Protobuf)]
 pub struct SignaturesReplace {
     pub pk: SignatureDelta,

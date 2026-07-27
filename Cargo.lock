@@ -2120,7 +2120,6 @@ dependencies = [
 name = "firmware_uefi_resources"
 version = "0.0.0"
 dependencies = [
- "async-trait",
  "chipset_resources",
  "firmware_uefi_custom_vars",
  "hcl_compat_uefi_nvram_resources",

@@ -165,19 +165,18 @@ impl UefiDevice {
         } = runtime_deps;
         let final_vars = if is_restoring {
             // Template variables are first-boot inputs; restore uses the existing NVRAM state.
-            firmware_uefi_custom_vars::FinalVars::default()
+            None
         } else {
             match firmware_uefi_custom_vars::FinalVars::resolve(
                 cfg.base_template,
                 cfg.custom_template_delta,
             ) {
-                Ok(final_vars) => final_vars,
+                Ok(final_vars) => Some(final_vars),
                 Err(err) => {
-                    logger
-                        .log_initialization_failure(
-                            firmware_uefi_resources::platform::UefiInitializationFailure::CustomVars,
-                        )
-                        .await;
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to apply custom UEFI template delta"
+                    );
                     return Err(err.into());
                 }
             }
@@ -197,7 +196,6 @@ impl UefiDevice {
                     final_vars,
                     cfg.secure_boot,
                     vsm_config,
-                    is_restoring,
                 )
                 .await?,
                 event_log: service::event_log::EventLogServices::new(logger),

@@ -75,7 +75,6 @@ use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
-use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
@@ -2576,10 +2575,11 @@ async fn new_underhill_vm(
                 match res {
                     Ok(delta) => Some(delta),
                     Err(e) => {
-                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                        get_client
-                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                            .await;
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            error = &e as &dyn std::error::Error,
+                            "failed to load custom UEFI variable delta"
+                        );
                         return Err(e).context("failed to load custom UEFI variables");
                     }
                 }

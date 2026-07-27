@@ -28,7 +28,7 @@ pub struct UefiVars {
 pub struct BaseTemplateVars(UefiVars);
 
 /// A complete set of variables ready for NVRAM injection.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FinalVars(UefiVars);
 
 impl From<UefiVars> for BaseTemplateVars {
