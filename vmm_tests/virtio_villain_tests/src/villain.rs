@@ -69,8 +69,16 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                 lineno + 1
             )
         })?;
-        let _version = cols.next();
-        let _spec_section = cols.next();
+        let _version = cols.next().filter(|s| !s.is_empty()).with_context(|| {
+            format!("{}:{}: missing version column", path.display(), lineno + 1)
+        })?;
+        let _spec_section = cols.next().filter(|s| !s.is_empty()).with_context(|| {
+            format!(
+                "{}:{}: missing spec_section column",
+                path.display(),
+                lineno + 1
+            )
+        })?;
         let device_id = cols.next().with_context(|| {
             format!(
                 "{}:{}: missing device_id column",
@@ -98,6 +106,43 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                 path.display(),
                 lineno + 1,
                 flags,
+            )
+        })?;
+        // required_features (col 7) and min_queues (col 8) are not yet consumed
+        // by the harness, but validate their presence and format so a column
+        // added or removed after `flags` fails loudly rather than silently
+        // shifting the remaining fields.
+        let required_features = cols.next().with_context(|| {
+            format!(
+                "{}:{}: missing required_features column",
+                path.display(),
+                lineno + 1
+            )
+        })?;
+        required_features
+            .strip_prefix("0x")
+            .and_then(|h| u64::from_str_radix(h, 16).ok())
+            .with_context(|| {
+                format!(
+                    "{}:{}: invalid required_features {:?} (expected 0x-prefixed u64 hex)",
+                    path.display(),
+                    lineno + 1,
+                    required_features,
+                )
+            })?;
+        let min_queues = cols.next().with_context(|| {
+            format!(
+                "{}:{}: missing min_queues column",
+                path.display(),
+                lineno + 1
+            )
+        })?;
+        min_queues.parse::<u32>().with_context(|| {
+            format!(
+                "{}:{}: invalid min_queues {:?} (expected decimal integer)",
+                path.display(),
+                lineno + 1,
+                min_queues,
             )
         })?;
 
@@ -393,11 +438,37 @@ mod tests {
     fn parse_tsv_rejects_truncated_row() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
-        // Only name + desc; device_id column missing entirely.
-        std::fs::write(&p, "t\tdesc\n").unwrap();
+        // Has name/desc/version/spec_section but the device_id column is missing.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("missing device_id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_tsv_rejects_missing_trailing_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // name..flags present (6 cols) but required_features/min_queues absent.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("missing required_features"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_tsv_rejects_bad_min_queues() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // min_queues column present but not a decimal integer.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\tnope\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid min_queues"),
             "unexpected error: {err:#}"
         );
     }
