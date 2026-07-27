@@ -5,7 +5,8 @@
 //! therefore marked *ignored* in the libtest-mimic harness.
 //!
 //! This list lives here (in the OpenVMM tree), not upstream in villain,
-//! because it describes OpenVMM device-model bugs, not villain bugs.
+//! because it describes OpenVMM-specific outcomes — device-model bugs *or*
+//! accepted behavioral differences — not villain bugs.
 //!
 //! Ignored tests behave like libtest `#[ignore]` tests:
 //! - They are **skipped by default**, so CI (which runs with the default
@@ -24,7 +25,10 @@
 //! cheaper.
 //!
 //! When a bug is fixed, remove its entry here; the test then runs (and gates)
-//! in CI again. Each entry should link to a filed OpenVMM issue.
+//! in CI again. Bug entries should link to a filed OpenVMM issue. A few entries
+//! are instead **accepted-by-design** differences that OpenVMM will not change
+//! (e.g. RNG0004 — see its reason); those stay listed and are documented in the
+//! ai-repo knowledge base rather than tracked as bugs.
 
 /// A villain test that OpenVMM is known to fail, and that we therefore skip by
 /// default (mark ignored).
@@ -102,17 +106,20 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
     },
     KnownFailure {
         name: "RNG0004",
-        reason: "virtio-rng non-atomic writable-descriptor handling: OpenVMM \
-                 streams entropy into an over-long writable descriptor and \
-                 clobbers backed guest RAM (vring + init) before erroring on the \
-                 first unbacked page, killing the guest before it emits its \
-                 verdict. Not a host hang and not a spec violation (spec 2.7.5 \
-                 puts buffer validity on the driver); QEMU (map-first) and Cloud \
-                 Hypervisor (check_range) resolve the full range before writing \
-                 and pass. Robustness gap: validate a writable descriptor's full \
-                 (addr,len) range before writing. See ai repo \
-                 knowledge/context/virtio-huge-len-descriptor-validation.md \
-                 (microsoft/openvmm#TODO)",
+        reason: "virtio-rng non-atomic writable-descriptor handling. OpenVMM \
+                 streams entropy into an over-long writable descriptor (len past \
+                 end of RAM) and writes the backed portion of guest RAM (vring + \
+                 init) before erroring on the first unbacked page, killing the \
+                 guest before it emits its verdict. ACCEPTED BY DESIGN, not a \
+                 bug: this write-through behavior matches physical/vDPA hardware \
+                 (which faults per-access via the IOMMU after a partial write); \
+                 the software VMMs QEMU (map-first) and Cloud Hypervisor \
+                 (check_range) instead pre-validate the whole range and write \
+                 nothing. Not a host hang, not a spec violation (spec 2.7.5 puts \
+                 buffer validity on the driver), and no host-memory-safety issue. \
+                 OpenVMM is intentionally left as-is. Represents the villain \
+                 `*_huge_len_past_ram` (\"crosses end of RAM\") family. See ai \
+                 repo knowledge/context/virtio-huge-len-descriptor-validation.md",
     },
     KnownFailure {
         name: "S0048",
