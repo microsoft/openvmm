@@ -401,8 +401,19 @@ impl SimpleFlowNode for Node {
                 let test_log_path = test_log_path.claim(ctx);
                 move |rt| {
                     let log_dir = rt.read(test_log_path);
-                    let failures = failure_summary::collect_failed_tests(&log_dir)?;
-                    failure_summary::report_failed_tests(&failures, is_github, &log_artifact_name);
+                    // Summarizing is ancillary to the test run. If it fails,
+                    // warn rather than propagate: this step is ordered before
+                    // the one that reports test failures, so returning an
+                    // error here would replace "encountered test failures"
+                    // with an unrelated error and hide what actually broke.
+                    match failure_summary::collect_failed_tests(&log_dir) {
+                        Ok(failures) => failure_summary::report_failed_tests(
+                            &failures,
+                            is_github,
+                            &log_artifact_name,
+                        ),
+                        Err(err) => failure_summary::warn_summary_unavailable(is_github, &err),
+                    }
                     Ok(())
                 }
             })
@@ -569,7 +580,7 @@ mod failure_summary {
     }
 
     /// Collapses whitespace and truncates, so that a multi-line error can be
-    /// used in a summary table cell.
+    /// used in a summary table cell or a single-line workflow command.
     fn one_line(s: &str) -> String {
         let mut collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.chars().count() > MAX_REASON_CHARS {
@@ -749,6 +760,28 @@ mod failure_summary {
         };
         if let Err(err) = write_summary() {
             log::warn!("failed to write job summary: {err}");
+        }
+    }
+
+    /// Renders the workflow command warning that the summary is missing.
+    fn render_summary_warning(message: &str) -> String {
+        // Workflow commands are terminated by a newline, so the message has to
+        // be collapsed onto one line.
+        format!("::warning title=vmm test summary::{}\n", one_line(message))
+    }
+
+    /// Reports that the failure summary could not be produced.
+    ///
+    /// Callers deliberately do not fail the job over this: the summary exists
+    /// to explain a test failure, so replacing that failure with an error
+    /// about the summary itself would defeat the purpose. Warn instead, and on
+    /// GitHub surface it on the run summary page so that an absent table is
+    /// noticed rather than silently ignored.
+    pub fn warn_summary_unavailable(is_github: bool, err: &anyhow::Error) {
+        let message = format!("failed to summarize failing vmm tests: {err:#}");
+        log::warn!("{message}");
+        if is_github {
+            print!("{}", render_summary_warning(&message));
         }
     }
 
@@ -1081,6 +1114,19 @@ mod failure_summary {
                     "| `x86_64::boot` | failed |  | `x64-linux-vmm-tests-logs` artifact |"
                 )
             );
+        }
+
+        #[test]
+        fn summary_warning_is_a_single_workflow_command() {
+            // A multi-line error must not break the workflow command, which is
+            // terminated by the first newline.
+            let rendered = render_summary_warning("broke:\n  because\n  reasons");
+
+            assert_eq!(
+                rendered,
+                "::warning title=vmm test summary::broke: because reasons\n"
+            );
+            assert_eq!(rendered.lines().count(), 1);
         }
 
         #[test]
