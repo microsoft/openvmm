@@ -11,9 +11,11 @@
 //! Note: this is inert until `openvmm-deps` cuts a release that includes the
 //! virtio-villain artifact (and `cfg_versions::OPENVMM_DEPS` is bumped to it).
 
+use anyhow::Context;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::common::CommonArch;
+use std::path::PathBuf;
 
 /// Build and run the virtio-villain test suite against OpenVMM.
 #[derive(clap::Args)]
@@ -29,6 +31,16 @@ pub struct VirtioVillainRunCli {
     #[clap(long)]
     pub filter: Option<String>,
 
+    /// Directory to stage test content into and publish per-test results
+    /// (JUnit + petri logs) under. Defaults to `<repo>/target/virtio_villain`.
+    #[clap(long)]
+    pub dir: Option<PathBuf>,
+
+    /// Run under the nextest `ci` profile (which emits JUnit) rather than the
+    /// `default` profile.
+    #[clap(long)]
+    pub ci_profile: bool,
+
     /// Verbose pipeline output.
     #[clap(long)]
     pub verbose: bool,
@@ -39,6 +51,8 @@ impl IntoPipeline for VirtioVillainRunCli {
         let Self {
             run_ignored,
             filter,
+            dir,
+            ci_profile,
             verbose,
         } = self;
 
@@ -51,6 +65,14 @@ impl IntoPipeline for VirtioVillainRunCli {
             (FlowArch::Aarch64, FlowPlatform::Linux(_)) => CommonArch::Aarch64,
             _ => anyhow::bail!("virtio-villain tests currently require a Linux host"),
         };
+
+        // Stage test content + publish results here, mirroring `vmm-tests-run`'s
+        // `--dir` (defaulting under `target/` rather than the internal flowey
+        // work dir).
+        let test_content_dir = dir
+            .unwrap_or_else(|| crate::repo_root().join("target").join("virtio_villain"));
+        std::fs::create_dir_all(&test_content_dir)
+            .context("failed to create virtio-villain output directory")?;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(crate::repo_root()),
@@ -86,6 +108,8 @@ impl IntoPipeline for VirtioVillainRunCli {
                     arch,
                     run_ignored,
                     nextest_filter_expr: filter,
+                    test_content_dir,
+                    ci_profile,
                     done: ctx.new_done_handle(),
                 },
             )

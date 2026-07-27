@@ -71,4 +71,5 @@ pub mod run_test_igvm_agent_rpc_server;
 pub mod stop_test_igvm_agent_rpc_server;
 pub mod test_nextest_unit_tests_archive;
 pub mod test_nextest_vmm_tests_archive;
+pub mod test_virtio_villain;
 pub mod write_incubator_target_runner;
