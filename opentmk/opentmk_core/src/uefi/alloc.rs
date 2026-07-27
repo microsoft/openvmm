@@ -57,7 +57,11 @@ unsafe impl GlobalAlloc for MemoryAllocator {
 }
 
 impl MemoryAllocator {
-    pub fn mmap(&self, ty: AllocateType, num_pages: usize) -> Result<NonNull<u8>, uefi::Error> {
+    pub fn allocate_pages(
+        &self,
+        ty: AllocateType,
+        num_pages: usize,
+    ) -> Result<NonNull<u8>, uefi::Error> {
         boot::allocate_pages(ty, MemoryType::LOADER_DATA, num_pages)
     }
 

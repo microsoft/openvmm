@@ -97,7 +97,7 @@ impl<T: IoAccess> Serial<T> {
             self.io.outb(self.serial_port.value(), 1); // Low byte divisor
             self.io.outb(self.serial_port.value() + 1, 0); // High byte divisor
             self.io.outb(self.serial_port.value() + 3, 0x03); // 8 bits, 1 stop bit, no parity
-            self.io.outb(self.serial_port.value() + 2, 0x07); // Enable FIFO, clear them, with 14-byte threshold
+            self.io.outb(self.serial_port.value() + 2, 0x07); // Enable FIFO, clear them
         }
     }
 
