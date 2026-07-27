@@ -3,6 +3,7 @@
 
 use core::alloc::GlobalAlloc;
 use core::cell::RefCell;
+use core::ptr::NonNull;
 
 use linked_list_allocator::LockedHeap;
 use spin::Mutex;
@@ -56,11 +57,8 @@ unsafe impl GlobalAlloc for MemoryAllocator {
 }
 
 impl MemoryAllocator {
-    pub fn mmap(&self, ty: AllocateType, num_pages: usize) -> bool {
-        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> =
-            boot::allocate_pages(ty, MemoryType::LOADER_DATA, num_pages);
-
-        !mem.is_err()
+    pub fn mmap(&self, ty: AllocateType, num_pages: usize) -> Result<NonNull<u8>, uefi::Error> {
+        boot::allocate_pages(ty, MemoryType::LOADER_DATA, num_pages)
     }
 
     pub fn switch_to_capped_heap(&self, size: usize) -> bool {

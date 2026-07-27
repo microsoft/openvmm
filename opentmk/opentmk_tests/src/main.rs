@@ -1,4 +1,4 @@
-//! Runs a liteny of hyper-v tests using opentmk framework
+//! Runs a litany of hyper-v tests using opentmk framework
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 

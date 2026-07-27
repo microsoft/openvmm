@@ -46,7 +46,7 @@ pub unsafe fn inh(port: u16) -> u16 {
         asm! {
             "in ax, dx",
             in("dx") port,
-            out("eax") data,
+            out("ax") data,
         }
     }
     data
@@ -62,7 +62,7 @@ pub unsafe fn outh(port: u16, data: u16) {
         asm! {
             "out dx, ax",
             in("dx") port,
-            in("eax") data,
+            in("ax") data,
         }
     }
 }
