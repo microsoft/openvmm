@@ -129,7 +129,13 @@ pub fn run_one(
             .with_prebuilt_initrd(initramfs)
             .modify_backend(move |b| {
                 attach_kitchen_sink(
-                    b, cmdline, pmem_path, fs_path, vsock_socket, vsock_listener, mmio,
+                    b,
+                    cmdline,
+                    pmem_path,
+                    fs_path,
+                    vsock_socket,
+                    vsock_listener,
+                    mmio,
                 )
             });
 

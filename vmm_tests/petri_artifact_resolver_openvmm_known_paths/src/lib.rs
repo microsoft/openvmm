@@ -707,7 +707,8 @@ fn virtio_villain_path(arch: MachineArch, file: VirtioVillainFile) -> anyhow::Re
 }
 
 /// Path to our packaged linux direct test kernel.
-fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {    use petri_artifacts_vmm_test::artifacts::loadable;
+fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
     get_path(
         ".packages/underhill-deps-private",
         resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase()).unwrap(),

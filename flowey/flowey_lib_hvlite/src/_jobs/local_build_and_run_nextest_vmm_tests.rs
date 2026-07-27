@@ -90,6 +90,9 @@ flowey_request! {
 
         pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
 
+        /// Also run tests marked `#[ignore]` (e.g. host-incompatible tests).
+        pub run_ignored: bool,
+
         pub reuse_prepped_vhds: bool,
 
         pub disable_secure_avic: bool,
@@ -152,6 +155,7 @@ impl SimpleFlowNode for Node {
             custom_kernel,
             skip_vhd_prompt,
             nextest_profile,
+            run_ignored,
             reuse_prepped_vhds,
             disable_secure_avic,
             incubator_profile,
@@ -798,7 +802,7 @@ impl SimpleFlowNode for Node {
             tool_config_files: Vec::new(),
             nextest_profile: nextest_profile.as_str().to_owned(),
             nextest_filter_expr: Some(nextest_filter_expr.clone()),
-            run_ignored: false,
+            run_ignored,
             fail_fast: None,
             extra_env: Some(extra_env.clone()),
             extra_commands: register_prep_steps

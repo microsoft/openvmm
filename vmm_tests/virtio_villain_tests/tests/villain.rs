@@ -109,7 +109,9 @@ fn resolve_artifacts() -> anyhow::Result<petri::TestArtifacts> {
 fn require_villain_initrd(resolver: &petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact {
     use petri_artifacts_vmm_test::artifacts::virtio_villain;
     match MachineArch::host() {
-        MachineArch::X86_64 => resolver.require(virtio_villain::VIRTIO_VILLAIN_INITRD_X64).erase(),
+        MachineArch::X86_64 => resolver
+            .require(virtio_villain::VIRTIO_VILLAIN_INITRD_X64)
+            .erase(),
         MachineArch::Aarch64 => resolver
             .require(virtio_villain::VIRTIO_VILLAIN_INITRD_AARCH64)
             .erase(),
@@ -120,7 +122,9 @@ fn require_villain_initrd(resolver: &petri::ArtifactResolver<'_>) -> petri::Reso
 fn require_villain_tsv(resolver: &petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact {
     use petri_artifacts_vmm_test::artifacts::virtio_villain;
     match MachineArch::host() {
-        MachineArch::X86_64 => resolver.require(virtio_villain::VIRTIO_VILLAIN_TSV_X64).erase(),
+        MachineArch::X86_64 => resolver
+            .require(virtio_villain::VIRTIO_VILLAIN_TSV_X64)
+            .erase(),
         MachineArch::Aarch64 => resolver
             .require(virtio_villain::VIRTIO_VILLAIN_TSV_AARCH64)
             .erase(),

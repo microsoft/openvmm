@@ -14,6 +14,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
@@ -102,6 +103,25 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     ci_profile: bool,
 
+    /// Which test suite to run.
+    ///
+    /// `vmm-tests` (the default) is the standard suite with automatic artifact
+    /// discovery. `virtio-villain` is the guest virtio conformance /
+    /// fault-injection suite; it runs on the Linux/KVM host and ignores the
+    /// vmm_tests-specific options (`--target`, `--incubator`, VHD/kernel
+    /// options), reusing only the shared options (`--dir`, `--filter`,
+    /// `--ci-profile`, `--run-ignored`, `--verbose`, `--install-missing-deps`).
+    #[clap(long, value_enum, default_value_t = TestSuiteCli::VmmTests)]
+    suite: TestSuiteCli,
+
+    /// Also run tests marked `#[ignore]`.
+    ///
+    /// For `vmm-tests` this includes host-incompatible tests; for
+    /// `virtio-villain` this includes the known-failing tests that exercise
+    /// OpenVMM bugs (some wedge the VM), useful during fix development.
+    #[clap(long)]
+    run_ignored: bool,
+
     /// Don't reuse prepped vhds, even if they already exist.
     /// Use when making changes to prep_steps
     #[clap(long)]
@@ -182,10 +202,28 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_kernel,
             custom_uefi_firmware,
             ci_profile,
+            suite,
+            run_ignored,
             no_reuse_prepped_vhds,
             disable_secure_avic,
             incubator,
         } = self;
+
+        // The virtio-villain suite is a separate nextest package whose test list
+        // lives in a versioned guest artifact, so it can't participate in the
+        // vmm_tests build-time artifact discovery below. Route it to its own job
+        // (which builds a fixed artifact set), reusing the shared options.
+        if matches!(suite, TestSuiteCli::VirtioVillain) {
+            return into_virtio_villain_pipeline(VirtioVillainArgs {
+                backend_hint,
+                dir,
+                filter,
+                ci_profile,
+                verbose,
+                run_ignored,
+                install_missing_deps,
+            });
+        }
 
         // When --incubator is set, --target must also be specified
         // to indicate the cross-compilation target for the incubator.
@@ -239,7 +277,7 @@ impl IntoPipeline for VmmTestsRunCli {
         // checks (the source of nextest's `#[ignore]` flag) would wrongly drop
         // incubator tests, so for the incubator path we enumerate ignored tests
         // too — their artifacts still need to be built.
-        let include_ignored = build_only || incubator_profile.is_some();
+        let include_ignored = build_only || incubator_profile.is_some() || run_ignored;
 
         // Run artifact discovery inline at pipeline construction time since
         // flowey doesn't support conditional requests yet
@@ -446,6 +484,7 @@ impl IntoPipeline for VmmTestsRunCli {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                    run_ignored,
                     disable_secure_avic,
                     incubator_profile,
                     done: ctx.new_done_handle(),
@@ -456,6 +495,101 @@ impl IntoPipeline for VmmTestsRunCli {
 
         Ok(pipeline)
     }
+}
+
+struct VirtioVillainArgs {
+    backend_hint: PipelineBackendHint,
+    dir: Option<PathBuf>,
+    filter: String,
+    ci_profile: bool,
+    verbose: bool,
+    run_ignored: bool,
+    install_missing_deps: bool,
+}
+
+/// Build OpenVMM and run the virtio-villain guest conformance /
+/// fault-injection suite against it.
+///
+/// virtio-villain's test list lives in a versioned `openvmm-deps` guest
+/// artifact, so it can't participate in the vmm_tests build-time artifact
+/// discovery above; it routes to its own job with a fixed artifact set.
+fn into_virtio_villain_pipeline(args: VirtioVillainArgs) -> anyhow::Result<Pipeline> {
+    let VirtioVillainArgs {
+        backend_hint,
+        dir,
+        filter,
+        ci_profile,
+        verbose,
+        run_ignored,
+        install_missing_deps,
+    } = args;
+
+    // Phase 1 is Linux-only (villain drives OpenVMM under KVM).
+    let arch = match (
+        FlowArch::host(backend_hint),
+        FlowPlatform::host(backend_hint),
+    ) {
+        (FlowArch::X86_64, FlowPlatform::Linux(_)) => CommonArch::X86_64,
+        (FlowArch::Aarch64, FlowPlatform::Linux(_)) => CommonArch::Aarch64,
+        _ => anyhow::bail!("the virtio-villain suite currently requires a Linux host"),
+    };
+
+    // Stage test content + publish results here, mirroring the vmm_tests `--dir`
+    // (defaulting under `target/` rather than the internal flowey work dir).
+    let test_content_dir =
+        dir.unwrap_or_else(|| crate::repo_root().join("target").join("virtio_villain"));
+    std::fs::create_dir_all(&test_content_dir)
+        .context("failed to create virtio-villain output directory")?;
+
+    // Shared with vmm_tests: filter defaults to `all()`; villain wants None.
+    let nextest_filter_expr = (filter != "all()").then_some(filter);
+
+    let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
+        ReadVar::from_static(crate::repo_root()),
+    );
+
+    let mut pipeline = Pipeline::new();
+
+    pipeline
+        .new_job(
+            FlowPlatform::host(backend_hint),
+            FlowArch::host(backend_hint),
+            "virtio-villain: run tests",
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+        .dep_on(
+            |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                hvlite_repo_source: openvmm_repo.clone(),
+            },
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+            local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                interactive: true,
+                auto_install: install_missing_deps,
+                ignore_rust_version: true,
+            }),
+            verbose: ReadVar::from_static(verbose),
+            locked: false,
+            deny_warnings: false,
+            no_incremental: false,
+        })
+        .dep_on(
+            |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
+                arch,
+                run_ignored,
+                nextest_filter_expr,
+                test_content_dir,
+                nextest_profile: if ci_profile {
+                    flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci
+                } else {
+                    flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
+                },
+                done: ctx.new_done_handle(),
+            },
+        )
+        .finish();
+
+    Ok(pipeline)
 }
 
 /// Get test binaries and associated matching tests for a given nextest filter.
@@ -614,6 +748,14 @@ fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>>
     artifacts.append(&mut required);
     artifacts.append(&mut optional);
     Ok(artifacts)
+}
+
+#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq)]
+enum TestSuiteCli {
+    /// The standard vmm_tests suite (with automatic artifact discovery).
+    VmmTests,
+    /// The virtio-villain guest conformance / fault-injection suite.
+    VirtioVillain,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone)]

@@ -109,9 +109,9 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
                     device_id,
                 )
             })?;
-        let flags = cols.next().with_context(|| {
-            format!("{}:{}: missing flags column", path.display(), lineno + 1)
-        })?;
+        let flags = cols
+            .next()
+            .with_context(|| format!("{}:{}: missing flags column", path.display(), lineno + 1))?;
         let flags = flags.parse::<u8>().with_context(|| {
             format!(
                 "{}:{}: invalid flags {:?} (expected decimal u8)",
