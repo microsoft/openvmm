@@ -103,20 +103,6 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
                  huge-len/address-wrap family) (microsoft/openvmm#TODO)",
     },
     KnownFailure {
-        name: "M0031",
-        reason: "virtio-mmio QueueNotify-with-notification-data test self-SKIPs: \
-                 OpenVMM does not negotiate VIRTIO_F_NOTIFICATION_DATA. Not a \
-                 bug, just an unsupported feature; ignored so the SKIP does not \
-                 fail the suite",
-    },
-    KnownFailure {
-        name: "M0032",
-        reason: "virtio-mmio config-change interrupt test self-SKIPs: OpenVMM's \
-                 kitchen-sink devices do not raise the config-change interrupt \
-                 the test needs. Not a bug, just an unmet precondition; ignored \
-                 so the SKIP does not fail the suite",
-    },
-    KnownFailure {
         name: "P0003",
         reason: "virtio-blk packed descriptor list exceeding queue size wedges \
                  the device (microsoft/openvmm#TODO)",

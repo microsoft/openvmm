@@ -243,12 +243,23 @@ fn main() -> anyhow::Result<()> {
             let required_features = test.required_features;
             let min_queues = test.min_queues;
             let mmio = test.is_mmio();
-            let expected_skip = supported_devices::skip_expected(device_id);
-            // Ignore (don't even boot a VM for) tests whose target device we
-            // don't attach — they would only self-SKIP, so booting ~one VM each
-            // is wasted CI time. They report as ignored, not as false passes.
-            // Known product failures are ignored too (see `known_failures`).
-            let ignored = expected_skip || known_failures::lookup(&name).is_some();
+            // Ignore (don't even boot a VM for) tests that can only self-SKIP on
+            // the kitchen-sink VM: a device we don't attach, a feature/queue count
+            // we don't offer, or a villain harness limitation. They report as
+            // ignored, not as false passes; see `supported_devices::expected_skip`
+            // for the rule and the reason string it returns. Known product
+            // failures are ignored too (see `known_failures`).
+            let expected_skip = supported_devices::expected_skip(
+                &name,
+                device_id,
+                mmio,
+                required_features,
+                min_queues,
+            );
+            if let Some(reason) = expected_skip {
+                tracing::debug!(name, reason, "ignoring villain test (expected skip)");
+            }
+            let ignored = expected_skip.is_some() || known_failures::lookup(&name).is_some();
             Trial::test(test.name.clone(), move || -> Result<(), Failed> {
                 let artifacts = artifacts
                     .as_ref()

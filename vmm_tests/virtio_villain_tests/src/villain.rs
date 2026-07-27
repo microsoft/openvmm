@@ -303,7 +303,7 @@ pub fn evaluate(scan: VerdictScan) -> anyhow::Result<()> {
              exercised nothing. On the kitchen-sink VM a skip means a device we meant \
              to attach silently wasn't (a harness/config bug); if the device is \
              deliberately not attached, the test should be ignored via \
-             supported_devices::SUPPORTED_DEVICE_IDS"
+             supported_devices::expected_skip"
         ),
         VerdictScan::Found(v) => {
             if v.is_good() {
