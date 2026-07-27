@@ -42,9 +42,8 @@ flowey_request! {
         /// Directory to stage test content into and publish per-test logs
         /// (JUnit + petri logs) under.
         pub test_content_dir: PathBuf,
-        /// Run under the nextest `ci` profile (which emits JUnit) rather than
-        /// the `default` profile.
-        pub ci_profile: bool,
+        /// Nextest profile to run under (e.g. `ci` to emit JUnit).
+        pub nextest_profile: NextestProfile,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -66,7 +65,7 @@ impl SimpleFlowNode for Node {
             run_ignored,
             nextest_filter_expr,
             test_content_dir,
-            ci_profile,
+            nextest_profile,
             done,
         } = request;
 
@@ -111,11 +110,7 @@ impl SimpleFlowNode for Node {
             arch,
             openvmm,
             run_kind: NextestRunKind::BuildAndRun(build_params),
-            nextest_profile: if ci_profile {
-                NextestProfile::Ci
-            } else {
-                NextestProfile::Default
-            },
+            nextest_profile,
             nextest_filter_expr,
             run_ignored,
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),

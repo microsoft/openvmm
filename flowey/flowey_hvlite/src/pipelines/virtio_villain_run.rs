@@ -109,7 +109,11 @@ impl IntoPipeline for VirtioVillainRunCli {
                     run_ignored,
                     nextest_filter_expr: filter,
                     test_content_dir,
-                    ci_profile,
+                    nextest_profile: if ci_profile {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci
+                    } else {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
+                    },
                     done: ctx.new_done_handle(),
                 },
             )
