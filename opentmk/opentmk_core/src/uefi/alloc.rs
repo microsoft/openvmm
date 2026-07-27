@@ -56,6 +56,13 @@ unsafe impl GlobalAlloc for MemoryAllocator {
 }
 
 impl MemoryAllocator {
+    pub fn mmap(&self, ty: AllocateType, num_pages: usize) -> bool {
+        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> =
+            boot::allocate_pages(ty, MemoryType::LOADER_DATA, num_pages);
+
+        !mem.is_err()
+    }
+
     pub fn switch_to_capped_heap(&self, size: usize) -> bool {
         let pages = ((SIZE_1MB * size) / 4096) + 1;
         let size = pages * 4096;
@@ -74,7 +81,6 @@ impl MemoryAllocator {
         true
     }
 
-    #[expect(dead_code)]
     pub fn get_page_aligned_memory(&self, size: usize) -> *mut u8 {
         let pages = ((SIZE_1MB * size) / PAGE_SIZE) + 1;
         let mem: Result<core::ptr::NonNull<u8>, uefi::Error> = boot::allocate_pages(

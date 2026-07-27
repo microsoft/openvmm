@@ -24,8 +24,8 @@ use zerocopy::IntoBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
-pub(crate) struct HvcallPage {
-    pub(crate) buffer: [u8; HV_PAGE_SIZE as usize],
+pub struct HvcallPage {
+    pub buffer: [u8; HV_PAGE_SIZE as usize],
 }
 
 impl HvcallPage {
@@ -101,7 +101,7 @@ impl HvCall {
 
     /// Makes a hypercall.
     /// rep_count is Some for rep hypercalls
-    pub(crate) fn dispatch_hvcall(
+    pub fn dispatch_hvcall(
         &mut self,
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
@@ -199,7 +199,7 @@ impl HvCall {
     }
 
     /// Returns a mutable reference to the hypercall input page.
-    pub(crate) fn input_page(&mut self) -> &mut HvcallPage {
+    pub fn input_page(&mut self) -> &mut HvcallPage {
         &mut self.input_page
     }
 

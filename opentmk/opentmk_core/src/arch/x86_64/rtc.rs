@@ -91,8 +91,11 @@ impl DateTime {
 
 // Read from CMOS/RTC register
 fn read_cmos(reg: u8) -> u8 {
-    outb(CMOS_ADDRESS, reg);
-    inb(CMOS_DATA)
+    unsafe {
+        // SAFETY: port should be safe to be interacted in this way
+        outb(CMOS_ADDRESS, reg);
+        inb(CMOS_DATA)
+    }
 }
 
 // Check if RTC update is in progress
