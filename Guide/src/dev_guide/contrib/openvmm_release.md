@@ -121,6 +121,11 @@ the commit ID.
 More than one OpenVMM release tag on `HEAD` fails the build rather than
 selecting an arbitrary version.
 
+The `openvmm-v*` namespace is reserved for canonical release tags. A tag in that
+namespace that is not a canonical three-component version also fails the build
+rather than being ignored, so the reserved prefix cannot be repurposed for
+non-release markers such as a moving `openvmm-vnext`.
+
 `openvmm --version` prints the concise displayed version. The full source
 revision remains available as separate embedded build information.
 
@@ -131,8 +136,12 @@ an official release identity. The official OpenVMM source archive described
 below instead includes generated release metadata and retains the exact release
 identity without Git.
 
-Windows numeric version resources use `MAJOR.MINOR.PATCH.0` for an official
-release and `0.0.0.0` for a development build.
+Windows numeric version resources use `MAJOR.MINOR.PATCH.<BUILD>` for an
+official release and `0.0.0.0` for a development build. The public release
+binary leaves the fourth field `0`. That field is reserved for distributors who
+ship more than one build of a single OpenVMM release and need each build to be
+uniquely numbered. It never changes which OpenVMM release the
+`MAJOR.MINOR.PATCH` prefix names.
 
 ### Independent version spaces
 
@@ -174,7 +183,9 @@ public GitHub build provenance attestation before the release is published.
 ```admonish warning title="Windows signing is not implemented"
 The public release workflow does not Authenticode-sign Windows artifacts.
 Downloaded Windows executables are therefore unsigned, and release notes and
-documentation should not present them as signed.
+documentation should not present them as signed. Authenticode signing is a
+committed fast-follow. Until it ships, integrity comes from `SHA256SUMS` and the
+build provenance attestations.
 ```
 
 ## Building a release from source
@@ -352,8 +363,10 @@ requests, or discussions. Report them privately through the Microsoft Security
 Response Center (MSRC) as described in the repository
 [`SECURITY.md`](https://github.com/microsoft/openvmm/blob/main/SECURITY.md).
 
-A confirmed security issue in the currently supported OpenVMM release ships as a
-patch following the patch release runbook above.
+Before `1.0`, a confirmed security issue in the currently supported OpenVMM
+release ships in the next release rolled forward from `main`, cut early when the
+fix is urgent. Post-`1.0`, once stable release branches exist, it instead ships
+as a patch following the [patch release runbook](#patch-release-runbook).
 
 ## Future policy
 
