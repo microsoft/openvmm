@@ -549,3 +549,12 @@ fn update_params_preserves_runtime_state_for_unrelated_changes() {
     );
 }
 
+#[test]
+fn update_params_preserves_nameserver_update() {
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
+    let nameserver = IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1));
+
+    consomme.update_params(|params| params.nameservers = vec![nameserver]);
+
+    assert_eq!(consomme.primary.config.params.nameservers, [nameserver]);
+}

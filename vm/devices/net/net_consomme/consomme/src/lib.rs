@@ -917,7 +917,6 @@ impl Consomme {
         self.shard
             .tcp
             .update_buffer_bounds(tcp_rx_buffer, tcp_tx_buffer);
-        self.refresh_dns_nameservers();
     }
 
     /// Clears cached translations between host-local and guest-visible virtual
@@ -928,16 +927,6 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.primary.runtime.local_addr_map.clear();
-    }
-
-    fn refresh_dns_nameservers(&mut self) {
-        if self.primary.dns.is_some() {
-            self.primary.config.params.nameservers = self
-                .primary
-                .config
-                .immutable
-                .internal_nameservers(self.primary.config.ipv6_enabled);
-        }
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -1185,11 +1174,6 @@ impl<T: Client> Access<'_, T> {
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
-    }
-
-    /// Updates the DNS nameservers based on the current consomme parameters.
-    pub fn update_dns_nameservers(&mut self) {
-        self.inner.refresh_dns_nameservers();
     }
 }
 

@@ -57,7 +57,6 @@ impl Icmp {
             connections: HashMap::new(),
         }
     }
-
 }
 
 impl Inspect for Icmp {

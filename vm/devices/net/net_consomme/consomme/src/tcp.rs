@@ -731,7 +731,7 @@ struct Sender<'a, T> {
 
 impl<T: Client> Sender<'_, T> {
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
-    let payload_len = payload.as_ref().map_or(0, |p| p.len());
+        let payload_len = payload.as_ref().map_or(0, |p| p.len());
         let buffer = &mut self.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.config.client_mac);
@@ -824,7 +824,7 @@ impl<T: Client> Sender<'_, T> {
         tcp_packet.set_checksum(checksum);
 
         let header_len = n - payload_len;
-    let buffer = &self.buffer;
+        let buffer = &self.buffer;
         let header = &buffer[..header_len];
         if b.is_empty() {
             self.client.recv_segments(&[header, a], &checksum_state);

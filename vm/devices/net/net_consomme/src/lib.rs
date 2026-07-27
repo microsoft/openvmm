@@ -141,10 +141,7 @@ impl ConsommeEndpoint {
         }
     }
 
-    pub fn new_dynamic(
-        config: ConsommeConfig,
-        params: ConsommeParams,
-    ) -> (Self, ConsommeControl) {
+    pub fn new_dynamic(config: ConsommeConfig, params: ConsommeParams) -> (Self, ConsommeControl) {
         let consomme = Consomme::new(config, params);
         let (send, recv) = mesh::channel();
         (

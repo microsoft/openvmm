@@ -84,7 +84,6 @@ impl Udp {
     pub fn update_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
-
 }
 
 impl InspectMut for Udp {
@@ -338,12 +337,14 @@ impl<T: Client> Access<'_, T> {
         }
 
         while let Some(response) =
-            self.inner.primary.dns.as_mut().and_then(|dns| {
-                match dns.poll_udp_response(cx) {
+            self.inner
+                .primary
+                .dns
+                .as_mut()
+                .and_then(|dns| match dns.poll_udp_response(cx) {
                     Poll::Ready(resp) => resp,
                     Poll::Pending => None,
-                }
-            })
+                })
         {
             if let Err(e) = self.send_dns_response(&response) {
                 tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS response");
@@ -451,7 +452,11 @@ impl<T: Client> Access<'_, T> {
         };
 
         // Resolve virtual mapped addresses back to the real host address.
-        let mut dst_sock_addr = self.inner.primary.runtime.resolve_destination(&dst_sock_addr);
+        let mut dst_sock_addr = self
+            .inner
+            .primary
+            .runtime
+            .resolve_destination(&dst_sock_addr);
         if self
             .inner
             .primary
