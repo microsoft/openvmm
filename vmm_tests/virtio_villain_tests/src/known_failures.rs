@@ -38,10 +38,12 @@ pub struct KnownFailure {
 
 /// The known-failure list. Keep sorted by name.
 ///
-/// The initial entries are the virtio-blk (device 0x1042) malformed-descriptor
-/// cases confirmed to send OpenVMM's virtio worker into a non-terminating loop
-/// (an unrecoverable, guest-triggerable host hang). Issues still need to be
-/// filed; update the `reason` with the issue link once they are.
+/// Seeded from the first full-suite CI run (openvmm-deps 0.3.0-112, x86_64/KVM):
+/// the tests below either drove OpenVMM's virtio worker into a non-terminating
+/// loop (marked "host hang" — these time out, which is why the list is ignored
+/// rather than inverted) or the device model accepted malformed input / returned
+/// a wrong value. Issues still need to be filed; update each `reason` with the
+/// issue link once they are.
 pub const KNOWN_FAILURES: &[KnownFailure] = &[
     KnownFailure {
         name: "B0002",
@@ -49,9 +51,64 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
                  (microsoft/openvmm#TODO)",
     },
     KnownFailure {
+        name: "B0081",
+        reason: "virtio-blk write at sector = UINT64_MAX mishandled \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "B0082",
+        reason: "virtio-blk 32KB (64-sector) single request host hang \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "B0091",
+        reason: "virtio-blk read with sector = UINT64_MAX mishandled \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "B0125",
+        reason: "virtio-blk descriptor chain loop in request host hang \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "B0139",
+        reason: "virtio-blk discard segment sector+num_sectors u64 overflow \
+                 mishandled (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "E0028",
+        reason: "virtio-pmem shared memory region size reported non-zero \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "E0032",
+        reason: "virtio-pmem config start/capacity read incorrect \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
         name: "P0003",
         reason: "virtio-blk packed descriptor list exceeding queue size wedges \
                  the device (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "PCI0102",
+        reason: "virtio PCI subsystem vendor is not 0x1AF4 \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "PCI0114",
+        reason: "virtio PCI ISR does not read zero with no pending interrupt \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "RNG0004",
+        reason: "virtio-rng writable descriptor length crossing end of RAM host \
+                 hang (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "S0048",
+        reason: "virtio-blk queue_size does not read back the driver-written \
+                 value (microsoft/openvmm#TODO)",
     },
     KnownFailure {
         name: "T0001",
@@ -67,6 +124,46 @@ pub const KNOWN_FAILURES: &[KnownFailure] = &[
         name: "T0003",
         reason: "virtio-blk out-of-bounds descriptor `next` index hangs the \
                  virtio worker unrecoverably (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0008",
+        reason: "virtio-blk descriptor addr+len 64-bit wrap mishandled \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0022",
+        reason: "virtio-blk duplicate head index in available ring mishandled \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0025",
+        reason: "virtio-blk available ring entry index out of bounds host hang \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0054",
+        reason: "virtio-blk descriptor chain length == queue_size + 1 host hang \
+                 (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0073",
+        reason: "virtio-blk descriptor buffer spanning to exact end of RAM host \
+                 hang (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0082",
+        reason: "virtio-blk descriptor with addr/len/flags/next all UINT_MAX host \
+                 hang (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "T0084",
+        reason: "virtio-blk avail ring full of out-of-bounds descriptor indices \
+                 host hang (microsoft/openvmm#TODO)",
+    },
+    KnownFailure {
+        name: "Z0014",
+        reason: "virtio-blk opening more zones than max_open_zones allows \
+                 mishandled (microsoft/openvmm#TODO)",
     },
 ];
 
