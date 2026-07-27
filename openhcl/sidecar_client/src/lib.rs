@@ -149,7 +149,13 @@ impl SidecarClient {
                 }
                 Err(err) => return Err(err),
             };
-            assert_eq!(node.cpus.start, expected_base);
+            // Nodes are ascending but may now have gaps (a node skipped during servicing restore).
+            assert!(
+                node.cpus.start >= expected_base,
+                "sidecar node {} starts at cpu {} before expected base {expected_base}",
+                nodes.len(),
+                node.cpus.start,
+            );
             expected_base = node.cpus.end;
             nodes.push(node);
         }
@@ -164,12 +170,11 @@ impl SidecarClient {
             .expect("invalid cpu")
     }
 
-    /// Returns the CPU index that manages the given VP.
-    pub fn base_cpu(&self, cpu: u32) -> u32 {
+    /// Returns the base CPU managing the given VP, or `None` if not sidecar-managed.
+    pub fn base_cpu(&self, cpu: u32) -> Option<u32> {
         self.nodes
             .iter()
             .find_map(|node| node.cpus.contains(&cpu).then_some(node.cpus.start))
-            .expect("invalid cpu")
     }
 }
 

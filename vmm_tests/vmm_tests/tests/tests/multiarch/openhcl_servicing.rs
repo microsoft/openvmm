@@ -333,6 +333,113 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
     Ok(())
 }
 
+/// Regression test for the sidecar non-contiguous-node servicing crash: fully
+/// excluding a leading sidecar node's APs makes `openhcl_boot` skip it, so the
+/// surviving sidecar devices no longer start at CPU 0. This used to panic
+/// `SidecarClient::new` (prod `left: 24, right: 0`); servicing must now succeed.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_sidecar_leading_node_skipped(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    use petri::ApicMode;
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+
+    // No faults; the pinned reads below just map an IO queue onto each CPU.
+    let mut fault_start_updater = CellUpdater::new(false);
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell());
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024;
+    let vp_count: u32 = 8;
+
+    // 2 NUMA nodes of 4 VPs -> sidecar nodes at base VP 0 (APs 1..=3) and 4.
+    let (mut vm, agent) = create_keepalive_test_config_custom(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(4),
+            enable_smt: Some(false),
+            apic_mode: Some(ApicMode::X2apicSupported),
+        },
+        Default::default(),
+        &["OPENHCL_SIDECAR=log"],
+        9,
+        8,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // Pinning is off-by-one on multi-VP sockets, so pin 0..=4 to map queues
+    // onto node 0's APs (1..=3) without reaching node 1's APs (6..=7).
+    for target_cpu in 0..=4 {
+        run_cpu_pinned_io(&agent, disk_path, target_cpu).await?;
+    }
+
+    let issuers = find_cpus_with_io_issuers(&vm).await?;
+    for ap in 1..=3u32 {
+        assert!(
+            issuers.contains(&ap),
+            "leading sidecar node AP {ap} has no NVMe issuer; cannot force node-0 \
+             exclusion. CPUs with issuers: {issuers:?}"
+        );
+    }
+    assert!(
+        (5..=7u32).any(|ap| !issuers.contains(&ap)),
+        "node 1 has no sidecar-eligible AP left; the whole VM would disable \
+         sidecar and not reproduce the gap. CPUs with issuers: {issuers:?}"
+    );
+
+    vm.save_openhcl(igvm_file.clone(), flags).await?;
+    vm.restore_openhcl().await?;
+
+    // Confirm the leading node was skipped (the gap formed).
+    let boot_logs = vm
+        .inspect_openhcl("vm/runtime_params/bootshim_logs", Some(2), None)
+        .await?;
+    let boot_logs_str = format!("{}", boot_logs.json());
+    assert!(
+        boot_logs_str.contains("node at base VP 0")
+            && boot_logs_str.contains("has no sidecar-started APs"),
+        "expected the leading sidecar node (base VP 0) to be skipped; boot logs: {boot_logs_str}"
+    );
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+    let online = cmd!(sh, "cat /sys/devices/system/cpu/online")
+        .read()
+        .await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", vp_count - 1),
+        "not all VPs came online after restore"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],

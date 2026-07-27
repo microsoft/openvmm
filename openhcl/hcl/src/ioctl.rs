@@ -1977,9 +1977,9 @@ impl Hcl {
         }
     }
 
-    /// Returns the base CPU that manages the given sidecar VP.
+    /// Returns the base CPU managing the given sidecar VP, or `None`.
     pub fn sidecar_base_cpu(&self, vp_index: u32) -> Option<u32> {
-        Some(self.sidecar.as_ref()?.base_cpu(vp_index))
+        self.sidecar.as_ref()?.base_cpu(vp_index)
     }
 
     /// Returns whether sidecar support is enabled for this partition.
