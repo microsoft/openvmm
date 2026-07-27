@@ -729,6 +729,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
             reuse_prepped_vhds,
+            stage_uefi_and_virtio_win: true,
         });
 
         let mut side_effects = Vec::new();

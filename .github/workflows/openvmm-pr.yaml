@@ -6898,18 +6898,6 @@ jobs:
     - name: unpack openvmm-test-linux archives
       run: flowey e 30 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 30 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 30 flowey_lib_common::install_dist_pkg 1
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey e 30 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey e 30 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
-      shell: bash
     - name: setting up vmm_tests env
       run: flowey e 30 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash

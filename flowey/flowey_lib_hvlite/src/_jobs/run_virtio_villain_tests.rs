@@ -114,6 +114,9 @@ impl SimpleFlowNode for Node {
             use_relative_paths: false,
             disable_remote_artifacts: false,
             reuse_prepped_vhds: false,
+            // Linux-direct only: skip the UEFI firmware and Windows virtio-win
+            // driver downloads, which villain never uses.
+            stage_uefi_and_virtio_win: false,
         });
 
         // Resolve the virtio-villain guest artifact (initramfs + tests.tsv) and

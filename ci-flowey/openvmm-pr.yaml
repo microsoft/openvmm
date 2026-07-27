@@ -2389,14 +2389,6 @@ jobs:
     displayName: unpack openvmm-test-initrd archives
   - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
     displayName: unpack openvmm-test-linux archives
-  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_dist_pkg 0
-    displayName: checking if packages need to be installed
-  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_dist_pkg 1
-    displayName: installing packages
-  - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
-    displayName: unpack mu_msvm package (x64)
-  - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
-    displayName: unpack openvmm-test-virtio-win archive
   - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::init_vmm_tests_env 0
     displayName: setting up vmm_tests env
   - bash: |-

@@ -68,6 +68,14 @@ flowey_request! {
         pub disable_remote_artifacts: bool,
         /// Whether to reuse VHDs created with prep_steps
         pub reuse_prepped_vhds: bool,
+        /// Whether to resolve and stage the UEFI firmware (`mu_msvm`) and the
+        /// Windows `virtio-win` guest drivers into the content dir.
+        ///
+        /// The full vmm_tests suite needs both (UEFI guests, Windows guests), so
+        /// its callers set this true. Linux-direct-only callers such as the
+        /// virtio-villain runner never use either, so they set this false to
+        /// skip those downloads.
+        pub stage_uefi_and_virtio_win: bool,
     }
 }
 
@@ -110,6 +118,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
+            stage_uefi_and_virtio_win,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -138,10 +147,12 @@ impl SimpleFlowNode for Node {
                     })
                 });
 
-        let uefi =
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
+        let uefi = stage_uefi_and_virtio_win.then(|| {
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v })
+        });
 
-        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
+        let virtio_win_dir = stage_uefi_and_virtio_win
+            .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
         // In CI, unstable test failures are non-gating and should be reported as
         // passing (with a warning). Outside of CI, unstable test failures are
@@ -170,14 +181,14 @@ impl SimpleFlowNode for Node {
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
-            let uefi = uefi.claim(ctx);
-            let virtio_win_dir = virtio_win_dir.claim(ctx);
+            let uefi = uefi.map(|v| v.claim(ctx));
+            let virtio_win_dir = virtio_win_dir.map(|v| v.claim(ctx));
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
                 let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
-                let uefi = rt.read(uefi);
+                let uefi = uefi.map(|v| rt.read(v));
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
 
@@ -488,18 +499,20 @@ impl SimpleFlowNode for Node {
                     )?;
                 }
 
-                let uefi_dir = test_content_dir.join(match arch {
-                    CommonArch::Aarch64 => {
-                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
-                    }
-                    CommonArch::X86_64 => {
-                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
-                    }
-                });
-                fs_err::create_dir_all(&uefi_dir)?;
-                fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+                if let Some(uefi) = uefi {
+                    let uefi_dir = test_content_dir.join(match arch {
+                        CommonArch::Aarch64 => {
+                            "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                        }
+                        CommonArch::X86_64 => {
+                            "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                        }
+                    });
+                    fs_err::create_dir_all(&uefi_dir)?;
+                    fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+                }
 
-                {
+                if let Some(virtio_win_dir) = virtio_win_dir {
                     let src = rt.read(virtio_win_dir);
                     let dst = test_content_dir.join("virtio-win");
                     let _ = fs_err::remove_dir_all(&dst);
