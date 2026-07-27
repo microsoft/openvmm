@@ -76,6 +76,12 @@ flowey_request! {
         /// virtio-villain runner never use either, so they set this false to
         /// skip those downloads.
         pub stage_uefi_and_virtio_win: bool,
+        /// Whether to resolve and stage the virtio-villain guest artifact (the
+        /// initramfs and `tests.tsv`) into the content dir.
+        ///
+        /// Only the virtio-villain runner needs this, so its callers set this
+        /// true; the standard vmm_tests callers set it false.
+        pub stage_virtio_villain: bool,
     }
 }
 
@@ -87,6 +93,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_virtio_villain::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -119,6 +126,7 @@ impl SimpleFlowNode for Node {
             disable_remote_artifacts,
             reuse_prepped_vhds,
             stage_uefi_and_virtio_win,
+            stage_virtio_villain,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -154,6 +162,9 @@ impl SimpleFlowNode for Node {
         let virtio_win_dir = stage_uefi_and_virtio_win
             .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
+        let virtio_villain = stage_virtio_villain
+            .then(|| ctx.reqv(|v| crate::resolve_virtio_villain::Request::Get(arch, v)));
+
         // In CI, unstable test failures are non-gating and should be reported as
         // passing (with a warning). Outside of CI, unstable test failures are
         // reported as failures unless the user explicitly opts in.
@@ -183,6 +194,7 @@ impl SimpleFlowNode for Node {
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
             let uefi = uefi.map(|v| v.claim(ctx));
             let virtio_win_dir = virtio_win_dir.map(|v| v.claim(ctx));
+            let virtio_villain = virtio_villain.map(|v| v.claim(ctx));
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
@@ -496,6 +508,18 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(
                         bzimage_path,
                         test_content_dir.join(arch_dir).join("bzImage"),
+                    )?;
+                }
+
+                if let Some(virtio_villain) = virtio_villain {
+                    let artifact = rt.read(virtio_villain);
+                    fs_err::copy(
+                        artifact.initramfs,
+                        test_content_dir.join(arch_dir).join("villain-initrd"),
+                    )?;
+                    fs_err::copy(
+                        artifact.tsv,
+                        test_content_dir.join(arch_dir).join("villain-tests.tsv"),
                     )?;
                 }
 

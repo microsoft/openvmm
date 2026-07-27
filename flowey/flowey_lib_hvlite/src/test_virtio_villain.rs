@@ -12,12 +12,12 @@
 //! differs between them — build from source vs. run a prebuilt archive — is
 //! expressed through the [`NextestRunKind`] passed in as [`Request::run_kind`].
 //!
-//! Concretely, this node stages OpenVMM + the linux-direct guest kernel into a
-//! test content dir (via [`crate::init_vmm_tests_env`], which also exports
-//! `TEST_OUTPUT_PATH` for the publishable per-test petri logs), resolves the
-//! villain guest artifact (initramfs + `tests.tsv`) into the `VILLAIN_*` env
-//! vars, runs the nextest suite, and publishes the JUnit + per-test logs so the
-//! `upload-petri-results` workflow forwards them to the logview website.
+//! Concretely, this node stages OpenVMM, the linux-direct guest kernel, and the
+//! villain guest artifact (initramfs + `tests.tsv`) into a test content dir
+//! (via [`crate::init_vmm_tests_env`], which also exports `TEST_OUTPUT_PATH`
+//! for the publishable per-test petri logs), runs the nextest suite, and
+//! publishes the JUnit + per-test logs so the `upload-petri-results` workflow
+//! forwards them to the logview website.
 
 use crate::build_openvmm::OpenvmmOutput;
 use crate::common::CommonArch;
@@ -75,7 +75,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
-        ctx.import::<crate::resolve_virtio_villain::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -103,13 +102,14 @@ impl SimpleFlowNode for Node {
         }
         .as_triple();
 
-        // Stage OpenVMM + the linux-direct guest kernel into the content dir and
-        // get the env the villain crate needs (VMM_TESTS_CONTENT_DIR points the
-        // known-paths resolver at OpenVMM + the kernel; TEST_OUTPUT_PATH is the
-        // publishable per-test log dir). All the other `register_*` inputs are
-        // vmm_tests-specific and villain does not use them.
+        // Stage OpenVMM, the linux-direct guest kernel, and the villain guest
+        // artifact (initramfs + tests.tsv) into the content dir and get the env
+        // the villain crate needs (VMM_TESTS_CONTENT_DIR points the known-paths
+        // resolver at all of them; TEST_OUTPUT_PATH is the publishable per-test
+        // log dir). All the other `register_*` inputs are vmm_tests-specific and
+        // villain does not use them.
         let (test_log_path, get_test_log_path) = ctx.new_var();
-        let base_env = ctx.reqv(|get_env| crate::init_vmm_tests_env::Request {
+        let extra_env = ctx.reqv(|get_env| crate::init_vmm_tests_env::Request {
             test_content_dir: test_content_dir.clone(),
             vmm_tests_target: target.clone(),
             register_openvmm: Some(openvmm),
@@ -136,18 +136,7 @@ impl SimpleFlowNode for Node {
             // Linux-direct only: skip the UEFI firmware and Windows virtio-win
             // driver downloads, which villain never uses.
             stage_uefi_and_virtio_win: false,
-        });
-
-        // Resolve the villain guest artifact (initramfs + tests.tsv) and merge
-        // its env vars into the base env.
-        let villain = ctx.reqv(|v| crate::resolve_virtio_villain::Request::Get(arch, v));
-        let extra_env = base_env.zip(ctx, villain).map(ctx, |(mut env, a)| {
-            env.insert(
-                "VILLAIN_INITRAMFS".to_string(),
-                a.initramfs.display().to_string(),
-            );
-            env.insert("VILLAIN_TSV".to_string(), a.tsv.display().to_string());
-            env
+            stage_virtio_villain: true,
         });
 
         let mut pre_run_deps = Vec::new();

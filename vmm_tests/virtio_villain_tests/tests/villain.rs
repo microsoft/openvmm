@@ -23,11 +23,13 @@
 //! that OpenVMM is known to fail ([`known_failures`]) are marked *ignored*, so
 //! CI skips them but they can still be run locally with `--run-ignored`.
 //!
-//! x86_64/KVM. The villain `initramfs.cpio.gz` and
-//! `tests.tsv` are supplied locally via `--villain-initramfs`/`--villain-tsv`
-//! (or the `VILLAIN_INITRAMFS`/`VILLAIN_TSV` env vars); the guest kernel is the
-//! existing OpenVMM linux-direct test `vmlinux`. A later phase resolves these
-//! from the `openvmm-deps` release artifact via flowey.
+//! x86_64/KVM. The villain `initramfs.cpio.gz` and `tests.tsv` are resolved
+//! from the `openvmm-deps` release artifact via petri's known-paths resolver
+//! (staged into `VMM_TESTS_CONTENT_DIR` by flowey), the same way the guest
+//! kernel (the existing OpenVMM linux-direct test `vmlinux`) is. For local
+//! development against a custom villain build, `--villain-initramfs` /
+//! `--villain-tsv` (or the `VILLAIN_INITRAMFS` / `VILLAIN_TSV` env vars)
+//! override the resolved artifact.
 //!
 //! [virtio-villain]: https://github.com/weltling/virtio-villain
 
@@ -51,13 +53,16 @@ use virtio_villain_tests::villain;
     about = "Run virtio-villain against OpenVMM"
 )]
 struct Cli {
-    /// Path to villain's `initramfs.cpio.gz`. Falls back to the
-    /// `VILLAIN_INITRAMFS` environment variable.
+    /// Override the villain `initramfs.cpio.gz` with a local path (for
+    /// developing against a custom villain build). Falls back to the
+    /// `VILLAIN_INITRAMFS` environment variable; if neither is set, the
+    /// initramfs is resolved from the staged `openvmm-deps` artifact.
     #[arg(long)]
     villain_initramfs: Option<PathBuf>,
 
-    /// Path to villain's `tests.tsv` (from `init --list-tsv`). Falls back to
-    /// the `VILLAIN_TSV` environment variable.
+    /// Override villain's `tests.tsv` (from `init --list-tsv`) with a local
+    /// path. Falls back to the `VILLAIN_TSV` environment variable; if neither
+    /// is set, the tsv is resolved from the staged `openvmm-deps` artifact.
     #[arg(long)]
     villain_tsv: Option<PathBuf>,
 
@@ -100,6 +105,46 @@ fn resolve_artifacts() -> anyhow::Result<petri::TestArtifacts> {
     Ok(artifacts)
 }
 
+/// Require the host-architecture villain initramfs artifact.
+fn require_villain_initrd(resolver: &petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact {
+    use petri_artifacts_vmm_test::artifacts::virtio_villain;
+    match MachineArch::host() {
+        MachineArch::X86_64 => resolver.require(virtio_villain::VIRTIO_VILLAIN_INITRD_X64).erase(),
+        MachineArch::Aarch64 => resolver
+            .require(virtio_villain::VIRTIO_VILLAIN_INITRD_AARCH64)
+            .erase(),
+    }
+}
+
+/// Require the host-architecture villain `tests.tsv` artifact.
+fn require_villain_tsv(resolver: &petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact {
+    use petri_artifacts_vmm_test::artifacts::virtio_villain;
+    match MachineArch::host() {
+        MachineArch::X86_64 => resolver.require(virtio_villain::VIRTIO_VILLAIN_TSV_X64).erase(),
+        MachineArch::Aarch64 => resolver
+            .require(virtio_villain::VIRTIO_VILLAIN_TSV_AARCH64)
+            .erase(),
+    }
+}
+
+/// Resolve a single villain artifact path via petri's known-paths resolver
+/// (staged under `VMM_TESTS_CONTENT_DIR`). Used for the initramfs and the tsv,
+/// each of which can be overridden by a CLI flag / env var for local dev.
+fn resolve_villain_file(
+    pick: impl Fn(&petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact,
+) -> anyhow::Result<PathBuf> {
+    let resolver =
+        petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
+    let mut requirements = petri::TestArtifactRequirements::new();
+    pick(&petri::ArtifactResolver::collector(&mut requirements));
+    let artifacts = requirements
+        .resolve(&resolver)
+        .context("failed to resolve villain artifact")?;
+    Ok(pick(&petri::ArtifactResolver::resolver(&artifacts))
+        .get()
+        .to_path_buf())
+}
+
 /// Sanitize a villain test name into a filesystem-safe directory component.
 fn sanitize(name: &str) -> String {
     name.chars()
@@ -116,16 +161,26 @@ fn sanitize(name: &str) -> String {
 fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
 
-    let initramfs = cli
+    // Local-dev overrides: a custom villain build's initramfs / tsv can be
+    // pointed at explicitly (CLI flag, else env var). When unset, the files are
+    // resolved from the staged `openvmm-deps` artifact via petri's known-paths
+    // resolver.
+    let initramfs_override = cli
         .villain_initramfs
         .clone()
         .or_else(|| std::env::var_os("VILLAIN_INITRAMFS").map(PathBuf::from));
-    let tsv = cli
+    let tsv_override = cli
         .villain_tsv
         .clone()
-        .or_else(|| std::env::var_os("VILLAIN_TSV").map(PathBuf::from))
-        .context("villain tsv not specified (--villain-tsv or VILLAIN_TSV)")?;
+        .or_else(|| std::env::var_os("VILLAIN_TSV").map(PathBuf::from));
 
+    // The test list comes from the tsv, which is needed for both `--list` and
+    // running. Prefer the override; otherwise resolve it from the artifact.
+    let tsv = match tsv_override {
+        Some(tsv) => tsv,
+        None => resolve_villain_file(require_villain_tsv)
+            .context("failed to resolve villain tests.tsv")?,
+    };
     let tests = villain::parse_tsv(&tsv)?;
 
     // Resolve the base log dir: explicit `--log-dir`, else `TEST_OUTPUT_PATH`
@@ -151,9 +206,11 @@ fn main() -> anyhow::Result<()> {
         let base_logger =
             petri::try_init_tracing(&log_dir, tracing::level_filters::LevelFilter::INFO)
                 .context("failed to initialize tracing")?;
-        let initramfs = initramfs.context(
-            "villain initramfs not specified (--villain-initramfs or VILLAIN_INITRAMFS)",
-        )?;
+        let initramfs = match initramfs_override {
+            Some(initramfs) => initramfs,
+            None => resolve_villain_file(require_villain_initrd)
+                .context("failed to resolve villain initramfs")?,
+        };
         (Some(resolve_artifacts()?), initramfs, Some(base_logger))
     };
 
