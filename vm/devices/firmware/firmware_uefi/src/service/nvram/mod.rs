@@ -418,7 +418,6 @@ mod tests {
     use firmware_uefi_custom_vars::delta::SignaturesAppend;
     use firmware_uefi_custom_vars::delta::SignaturesDelta;
     use pal_async::async_test;
-    use test_with_tracing::test;
     use ucs2::Ucs2LeSlice;
     use uefi_nvram_storage::EFI_TIME;
     use uefi_nvram_storage::NvramStorage;

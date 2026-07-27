@@ -70,7 +70,8 @@ async fn create_custom_uefi_vmgs(
 /// the same JSON through the production VMGS `CUSTOM_UEFI` path because it owns
 /// the UEFI device inside VTL2.
 #[vmm_test(
-    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
@@ -116,7 +117,8 @@ async fn custom_uefi_append_non_signature_var<T: PetriVmmBackend>(
 /// Verify that replacing Secure Boot signatures with their base-template
 /// defaults also applies non-signature variables.
 #[vmm_test(
-    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
@@ -172,7 +174,8 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
 
 /// Verify that a SHA-256 signature delta is appended to dbx.
 #[vmm_test(
-    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
