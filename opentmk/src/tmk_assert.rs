@@ -47,7 +47,7 @@ where
     }
 }
 
-pub(crate) fn format_assert_json_string<T>(
+pub fn format_assert_json_string<T>(
     s: &str,
     terminate_new_line: bool,
     line: String,
@@ -66,7 +66,7 @@ where
     out
 }
 
-pub(crate) fn write_str(s: &str) {
+pub fn write_str(s: &str) {
     _ = crate::tmk_logger::LOGGER.get_writer().write_str(s);
 }
 

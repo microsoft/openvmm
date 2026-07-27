@@ -1,0 +1,17 @@
+[package]
+name = "opentmk_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hvdef.workspace = true
+log.workspace = true
+opentmk.workspace = true
+spin.workspace = true
+nostd_spin_channel.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

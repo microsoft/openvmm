@@ -5,12 +5,12 @@ use core::arch::asm;
 
 use spin::Mutex;
 
-use crate::context::InterruptPlatformTrait;
-use crate::context::SecureInterceptPlatformTrait;
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VtlPlatformTrait;
+use opentmk::context::InterruptPlatformTrait;
+use opentmk::context::SecureInterceptPlatformTrait;
+use opentmk::context::VirtualProcessorPlatformTrait;
+use opentmk::context::VtlPlatformTrait;
+use opentmk::tmk_assert;
 use crate::create_function_with_restore;
-use crate::tmk_assert;
 
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
@@ -46,7 +46,7 @@ where
 {
     use hvdef::Vtl;
 
-    use crate::context::VpExecToken;
+    use opentmk::context::VpExecToken;
 
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");

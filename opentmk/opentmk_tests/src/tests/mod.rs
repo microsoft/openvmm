@@ -5,7 +5,7 @@
 
 // only one test is run at a time so there is dead code in other tests
 #![expect(dead_code)]
-use crate::platform::hyperv::ctx::HvTestCtx;
+use opentmk::platform::hyperv::ctx::HvTestCtx;
 mod hyperv;
 
 /// Runs all the tests.
