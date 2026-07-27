@@ -9,6 +9,9 @@ rust-version.workspace = true
 [features]
 default = ["tpm"]
 
+# Enable per-VM measured product policy support.
+product_policy = ["underhill_entry/product_policy"]
+
 # see the `underhill_entry` crate for more info on these features
 gdb = ["underhill_entry/gdb", "openvmm_hcl_resources/debug_worker"]
 tpm = ["openvmm_hcl_resources/tpm"]

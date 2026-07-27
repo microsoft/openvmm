@@ -282,6 +282,7 @@ mod hyperv {
 
     petri::unstable_test!(
         hyperv_openhcl_tmks,
-        resolve_openhcl_tmks::<HyperVPetriBackend>
+        resolve_openhcl_tmks::<HyperVPetriBackend>,
+        "Hyper-V OpenHCL TMK execution is not yet reliable"
     );
 }

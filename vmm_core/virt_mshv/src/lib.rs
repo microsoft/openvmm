@@ -17,9 +17,8 @@ use aarch64 as arch;
 #[cfg(guest_arch = "x86_64")]
 use x86_64 as arch;
 
-// irqfd is arch-independent but only wired up on x86_64 for now.
-// TODO: wire up on aarch64 once MSI signaling is implemented.
-#[cfg(guest_arch = "x86_64")]
+// irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
+// x86_64 and aarch64.
 pub mod irqfd;
 
 use guestmem::DoorbellRegistration;
@@ -252,7 +251,6 @@ struct MshvPartitionInner {
     vps: Vec<MshvVpInner>,
     #[cfg(guest_arch = "x86_64")]
     irq_routes: virt::irqcon::IrqRoutes,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
     caps: virt::PartitionCapabilities,
@@ -264,6 +262,11 @@ struct MshvPartitionInner {
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
+    /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
+    /// assertions via a v2m frame.
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
 }
 
 struct MshvVpInner {

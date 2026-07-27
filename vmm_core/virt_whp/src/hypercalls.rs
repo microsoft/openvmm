@@ -734,8 +734,8 @@ mod x86 {
     use std::sync::atomic::Ordering;
     use tracing_helpers::ErrorValueExt;
     use virt::VpIndex;
-
     use virt_support_x86emu::translate::TranslateFlags;
+    use virt_support_x86emu::translate::TranslatePrivilegeCheck;
     use virt_support_x86emu::translate::TranslateResult;
     use virt_support_x86emu::translate::translate_gva_to_gpa;
     use vmcore::vpci_msi::VpciInterruptParameters;
@@ -1304,30 +1304,108 @@ mod x86 {
                 todo!("WHP can only translate gvas against VTL0");
             }
 
-            let flags = convert_translate_control_flags(control_flags)?;
+            let result = if self.vp.vp.partition.caps.nested_virt {
+                // When nested virtualization is enabled, the software page table
+                // walker cannot account for the hypervisor's nested paging
+                // state, so defer the translation to the hypervisor via
+                // `WHvTranslateGva`.
+                //
+                // Validate and normalize the control flags the same way as the
+                // non-nested path so that unsupported/reserved bits still return
+                // `HvError::InvalidParameter` rather than being silently ignored,
+                // then build the WHP flags from the validated result. Controls
+                // that `WHvTranslateGva` cannot represent (an explicit
+                // user/supervisor access mode) are rejected rather than dropped.
+                let translate_flags = convert_translate_control_flags(control_flags)?;
 
-            let result = translate_gva_to_gpa(
-                &self.vp.vp.partition.gm,
-                gva_page * HV_PAGE_SIZE,
-                &self.vp.translation_registers(Vtl::Vtl0),
-                flags,
-            );
-
-            let result = match result {
-                Ok(TranslateResult { gpa, cache_info: _ }) => {
-                    hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-                        gpa_page: gpa / HV_PAGE_SIZE,
-                        ..FromZeros::new_zeroed()
+                let mut flags = whp::abi::WHvTranslateGvaFlagNone;
+                if translate_flags.validate_read {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateRead;
+                }
+                if translate_flags.validate_write {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateWrite;
+                }
+                if translate_flags.validate_execute {
+                    flags |= whp::abi::WHvTranslateGvaFlagValidateExecute;
+                }
+                match translate_flags.privilege_check {
+                    // No privilege checks: exempt the walk from access-mode
+                    // enforcement.
+                    TranslatePrivilegeCheck::None => {
+                        flags |= whp::abi::WHvTranslateGvaFlagPrivilegeExempt;
+                    }
+                    // Check against the VP's current privilege level. This is
+                    // `WHvTranslateGva`'s default behavior when no privilege
+                    // flag is set, so there is nothing to map.
+                    TranslatePrivilegeCheck::CurrentPrivilegeLevel => {}
+                    // WHP has no way to request an explicit user- or
+                    // supervisor-mode access independent of the current CPL, so
+                    // these controls cannot be honored under nested virt.
+                    //
+                    // TODO: `WHvTranslateGva` exposes no equivalent of the
+                    // `USER_ACCESS`/`SUPERVISOR_ACCESS` hypercall flags. No
+                    // in-tree caller sets them today, so reject them rather than
+                    // silently translating with different privilege semantics.
+                    TranslatePrivilegeCheck::User
+                    | TranslatePrivilegeCheck::Supervisor
+                    | TranslatePrivilegeCheck::Both => {
+                        return Err(HvError::InvalidParameter);
                     }
                 }
-                Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-                    translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
-                        result: hvdef::hypercall::TranslateGvaResult::new()
-                            .with_result_code(TranslateGvaResultCode::from(err).0),
+                if translate_flags.override_smap {
+                    flags |= whp::abi::WHvTranslateGvaFlagOverrideSmap;
+                }
+                if translate_flags.enforce_smap {
+                    flags |= whp::abi::WHvTranslateGvaFlagEnforceSmap;
+                }
+                if translate_flags.set_page_table_bits {
+                    flags |= whp::abi::WHvTranslateGvaFlagSetPageTableBits;
+                }
+
+                match self.vp.translate_gva_via_hypervisor(
+                    Vtl::Vtl0,
+                    gva_page * HV_PAGE_SIZE,
+                    flags,
+                ) {
+                    Ok(gpa) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        gpa_page: gpa / HV_PAGE_SIZE,
                         ..FromZeros::new_zeroed()
                     },
-                    ..FromZeros::new_zeroed()
-                },
+                    Err(code) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
+                            result: hvdef::hypercall::TranslateGvaResult::new()
+                                .with_result_code(code.0),
+                            ..FromZeros::new_zeroed()
+                        },
+                        ..FromZeros::new_zeroed()
+                    },
+                }
+            } else {
+                let flags = convert_translate_control_flags(control_flags)?;
+
+                let result = translate_gva_to_gpa(
+                    &self.vp.vp.partition.gm,
+                    gva_page * HV_PAGE_SIZE,
+                    &self.vp.translation_registers(Vtl::Vtl0),
+                    flags,
+                );
+
+                match result {
+                    Ok(TranslateResult { gpa, cache_info: _ }) => {
+                        hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                            gpa_page: gpa / HV_PAGE_SIZE,
+                            ..FromZeros::new_zeroed()
+                        }
+                    }
+                    Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
+                            result: hvdef::hypercall::TranslateGvaResult::new()
+                                .with_result_code(TranslateGvaResultCode::from(err).0),
+                            ..FromZeros::new_zeroed()
+                        },
+                        ..FromZeros::new_zeroed()
+                    },
+                }
             };
 
             Ok(result)

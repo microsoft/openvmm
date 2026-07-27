@@ -46,6 +46,14 @@ unsafe extern "system" {
         len: u32,
     ) -> HRESULT;
 
+    pub fn WHvGetPartitionCounters(
+        _: WHV_PARTITION_HANDLE,
+        counter_set: WHV_PARTITION_COUNTER_SET,
+        buffer: *mut u8,
+        len: u32,
+        out_len: *mut u32,
+    ) -> HRESULT;
+
     pub fn WHvRequestInterrupt(
         _: WHV_PARTITION_HANDLE,
         control: *const WHV_INTERRUPT_CONTROL,

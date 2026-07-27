@@ -3,13 +3,6 @@
 
 //! Implements a loader that serializes the loaded state into the IGVM binary format.
 
-use crate::identity_mapping::Measurement;
-use crate::identity_mapping::SnpMeasurement;
-use crate::identity_mapping::TdxMeasurement;
-use crate::identity_mapping::VbsMeasurement;
-use crate::signed_measurement::generate_snp_measurement;
-use crate::signed_measurement::generate_tdx_measurement;
-use crate::signed_measurement::generate_vbs_measurement;
 use crate::vp_context_builder::VpContextBuilder;
 use crate::vp_context_builder::VpContextPageState;
 use crate::vp_context_builder::VpContextState;
@@ -20,6 +13,7 @@ use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
 use crate::vp_context_builder::vbs::VbsVpContext;
 use anyhow::Context;
+use crypto::sha_384::Sha384;
 use hvdef::Vtl;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
@@ -50,8 +44,6 @@ use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use range_map_vec::Entry;
 use range_map_vec::RangeMap;
-use sha2::Digest;
-use sha2::Sha384;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -172,15 +164,6 @@ pub trait IgvmLoaderRegister: VbsRegister {
         Box<dyn VpContextBuilder<Register = Self>>,
     );
 
-    /// Generate a measurement based on isolation type.
-    fn generate_measurement(
-        isolation: LoaderIsolationType,
-        initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &mut Vec<IgvmDirectiveHeader>,
-        svn: u32,
-        debug_enabled: bool,
-    ) -> anyhow::Result<Option<Measurement>>;
-
     /// The IGVM file revision to use for the built igvm file.
     fn igvm_revision() -> IgvmRevision;
 }
@@ -262,46 +245,6 @@ impl IgvmLoaderRegister for X86Register {
         }
     }
 
-    fn generate_measurement(
-        isolation: LoaderIsolationType,
-        initialization_headers: &[IgvmInitializationHeader],
-        directive_headers: &mut Vec<IgvmDirectiveHeader>,
-        svn: u32,
-        debug_enabled: bool,
-    ) -> anyhow::Result<Option<Measurement>> {
-        let measurement = match isolation {
-            LoaderIsolationType::Snp { .. } => {
-                let ld = generate_snp_measurement(initialization_headers, directive_headers, svn)
-                    .context("generating snp measurement failed")?;
-                Some(Measurement::Snp(SnpMeasurement::new(
-                    ld,
-                    svn,
-                    debug_enabled,
-                )))
-            }
-            LoaderIsolationType::Tdx { .. } => {
-                let mrtd = generate_tdx_measurement(directive_headers)
-                    .context("generating tdx measurement failed")?;
-                Some(Measurement::Tdx(TdxMeasurement::new(
-                    mrtd,
-                    svn,
-                    debug_enabled,
-                )))
-            }
-            LoaderIsolationType::Vbs { enable_debug } => {
-                let boot_digest = generate_vbs_measurement(directive_headers, enable_debug, svn)
-                    .context("generating vbs measurement failed")?;
-                Some(Measurement::Vbs(VbsMeasurement::new(
-                    boot_digest,
-                    svn,
-                    debug_enabled,
-                )))
-            }
-            _ => None,
-        };
-        Ok(measurement)
-    }
-
     fn igvm_revision() -> IgvmRevision {
         // For now, x86 built files always uses V1 of the IGVM format. This is
         // to maintain compatibility with older OS repo loaders that do not
@@ -321,16 +264,6 @@ impl IgvmLoaderRegister for Aarch64Register {
         Box<dyn VpContextBuilder<Register = Self>>,
     ) {
         unreachable!("should never be called")
-    }
-
-    fn generate_measurement(
-        _isolation: LoaderIsolationType,
-        _initialization_headers: &[IgvmInitializationHeader],
-        _directive_headers: &mut Vec<IgvmDirectiveHeader>,
-        _svn: u32,
-        _debug_enabled: bool,
-    ) -> anyhow::Result<Option<Measurement>> {
-        Ok(None)
     }
 
     fn igvm_revision() -> IgvmRevision {
@@ -490,7 +423,6 @@ impl Display for MapFile {
 pub struct IgvmOutput {
     pub guest: IgvmFile,
     pub map: MapFile,
-    pub doc: Option<Measurement>,
 }
 
 impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
@@ -578,11 +510,11 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
         });
-        hasher.finalize().to_vec()
+        hasher.finish().to_vec()
     }
 
     /// Finalize the loader state, returning an IGVM file.
-    pub fn finalize(mut self, guest_svn: u32) -> anyhow::Result<IgvmOutput> {
+    pub fn finalize(mut self) -> anyhow::Result<IgvmOutput> {
         // Finalize any VP state.
         let mut state = Vec::new();
         self.vp_context.take().unwrap().finalize(&mut state);
@@ -659,20 +591,11 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             ));
         }
 
-        // Merge the page_data_directives into the others directives. This must be done before
-        // generating the launch measurement.
+        // Merge the page_data_directives into the others directives. This
+        // must be done before constructing the IGVM file so that subsequent
+        // measurement computation (in `IgvmSerializer`) sees the full set
+        // of directives.
         self.directives.append(&mut self.page_data_directives);
-
-        // Generate the launch measurement for the isolation type being used.
-        // The measurement is output for external signing.
-        let debug_enabled = self.confidential_debug();
-        let doc = R::generate_measurement(
-            self.isolation_type,
-            &self.initialization_headers,
-            &mut self.directives,
-            guest_svn,
-            debug_enabled,
-        )?;
 
         // Display a report about the build igvm file's layout.
         let map_file = MapFile {
@@ -716,7 +639,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         let output = IgvmOutput {
             guest: igvm_file,
             map: map_file,
-            doc,
         };
         Ok(output)
     }
@@ -774,17 +696,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         R::arch()
     }
 
-    /// Returns true if this is an isolated guest with debug enabled, false
-    /// otherwise.
-    pub fn confidential_debug(&self) -> bool {
-        match self.isolation_type {
-            LoaderIsolationType::Vbs { enable_debug } => enable_debug,
-            LoaderIsolationType::Snp { policy, .. } => policy.debug() == 1,
-            LoaderIsolationType::Tdx { policy } => policy.debug_allowed() == 1,
-            _ => false,
-        }
-    }
-
     pub fn loader(&mut self) -> IgvmVtlLoader<'_, R> {
         IgvmVtlLoader {
             vtl: self.max_vtl,
@@ -797,7 +708,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         mut data: &[u8],
     ) -> Result<(), anyhow::Error> {
@@ -831,9 +742,26 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
 
-            // Data size must match SNP VMSA size.
-            if data.len() != size_of::<SevVmsa>() {
-                anyhow::bail!("data len {:x} does not match VMSA size", data.len());
+            // The VP context builder produces the architectural VMSA
+            // (`x86defs::snp::SevVmsa`, 1648 bytes); the igvm crate's `SevVmsa`
+            // is padded out to a full 4K page, so accept input in the range
+            // [architectural size, padded size] and zero-pad it to the padded
+            // size before reading. Anything smaller than the architectural size
+            // would be silently zero-extended into a malformed VMSA, so reject
+            // it.
+            if data.len() < size_of::<x86defs::snp::SevVmsa>() {
+                anyhow::bail!(
+                    "data len {:x} is smaller than the architectural VMSA size {:x}",
+                    data.len(),
+                    size_of::<x86defs::snp::SevVmsa>()
+                );
+            }
+            if data.len() > size_of::<SevVmsa>() {
+                anyhow::bail!(
+                    "data len {:x} exceeds VMSA size {:x}",
+                    data.len(),
+                    size_of::<SevVmsa>()
+                );
             }
 
             // Page count must be 1.
@@ -841,11 +769,16 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 anyhow::bail!("page count {page_count:x} for snp vmsa is not 1");
             }
 
+            let mut padded = vec![0u8; size_of::<SevVmsa>()];
+            padded[..data.len()].copy_from_slice(data);
+
             self.directives.push(IgvmDirectiveHeader::SnpVpContext {
                 gpa: page_base * PAGE_SIZE_4K,
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 vp_index: 0,
-                vmsa: Box::new(SevVmsa::read_from_bytes(data).expect("should be correct size")), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                vmsa: Box::new(
+                    SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size"),
+                ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             });
         } else {
             for page in page_base..page_base + page_count {
@@ -857,7 +790,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                         IgvmPageDataType::NORMAL,
                         IgvmPageDataFlags::new().with_unmeasured(true),
                     ),
-                    BootPageAcceptance::ErrorPage => todo!(),
                     BootPageAcceptance::SecretsPage => {
                         (IgvmPageDataType::SECRETS, IgvmPageDataFlags::new())
                     }
@@ -1024,7 +956,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         data: &[u8],
     ) -> anyhow::Result<()> {
@@ -1252,7 +1184,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
 mod tests {
     use super::IgvmLoader;
     use super::*;
-    use crate::identity_mapping::Measurement;
+    use igvm::IgvmSerializer;
     use loader::importer::BootPageAcceptance;
     use loader::importer::ImageLoad;
     use loader_defs::paravisor::ImportedRegionDescriptor;
@@ -1289,20 +1221,20 @@ mod tests {
             .import_pages(20, 1, "data", BootPageAcceptance::Shared, &data)
             .unwrap();
 
-        let igvm_output = loader.finalize(1).unwrap();
-        let doc = igvm_output.doc.expect("doc");
-        let Measurement::Snp(snp_measurement) = doc else {
-            panic!("known to be snp")
-        };
-        assert_eq!(ref_ld, snp_measurement.series[0].reference.snp_ld);
+        let igvm_output = loader.finalize().unwrap();
+        let serializer = IgvmSerializer::new(&igvm_output.guest).unwrap();
+        let measurement = serializer
+            .measurement_for(IgvmPlatformType::SEV_SNP)
+            .expect("snp measurement");
+        assert_eq!(ref_ld.as_slice(), measurement.digest.as_slice());
     }
 
     #[test]
     fn test_tdx_measurement() {
         let ref_mrtd: [u8; 48] = [
-            214, 88, 54, 138, 48, 41, 223, 124, 152, 113, 236, 159, 157, 24, 134, 87, 36, 12, 163,
-            162, 115, 128, 222, 247, 130, 13, 114, 103, 87, 67, 73, 89, 166, 251, 86, 245, 63, 209,
-            246, 246, 164, 240, 96, 164, 22, 183, 142, 219,
+            200, 137, 46, 40, 88, 218, 231, 7, 90, 231, 125, 247, 18, 243, 41, 158, 32, 81, 49, 30,
+            168, 163, 220, 29, 216, 52, 151, 164, 255, 25, 88, 0, 246, 62, 147, 140, 34, 201, 70,
+            89, 34, 32, 239, 182, 77, 169, 96, 235,
         ];
 
         let mut loader = IgvmLoader::<X86Register>::new(
@@ -1327,12 +1259,12 @@ mod tests {
             .import_pages(20, 1, "data", BootPageAcceptance::Shared, &data)
             .unwrap();
 
-        let igvm_output = loader.finalize(1).unwrap();
-        let doc = igvm_output.doc.expect("doc");
-        let Measurement::Tdx(tdx_measurement) = doc else {
-            panic!("known to be tdx")
-        };
-        assert_eq!(ref_mrtd, tdx_measurement.series[0].reference.tdx_mrtd);
+        let igvm_output = loader.finalize().unwrap();
+        let serializer = IgvmSerializer::new(&igvm_output.guest).unwrap();
+        let measurement = serializer
+            .measurement_for(IgvmPlatformType::TDX)
+            .expect("tdx measurement");
+        assert_eq!(ref_mrtd.as_slice(), measurement.digest.as_slice());
     }
 
     #[test]
@@ -1366,15 +1298,12 @@ mod tests {
                 .unwrap();
         }
 
-        let igvm_output = loader.finalize(1).unwrap();
-        let doc = igvm_output.doc.expect("doc");
-        let Measurement::Vbs(vbs_measurement) = doc else {
-            panic!("known to be vbs")
-        };
-        assert_eq!(
-            ref_digest,
-            vbs_measurement.series[0].reference.vbs_boot_digest
-        );
+        let igvm_output = loader.finalize().unwrap();
+        let serializer = IgvmSerializer::new(&igvm_output.guest).unwrap();
+        let measurement = serializer
+            .measurement_for(IgvmPlatformType::VSM_ISOLATION)
+            .expect("vbs measurement");
+        assert_eq!(ref_digest.as_slice(), measurement.digest.as_slice());
     }
 
     #[test]

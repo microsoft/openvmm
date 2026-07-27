@@ -7,6 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable per-VM measured product policy support.
+product_policy = ["underhill_core/product_policy"]
 # Enable gdbstub support.
 gdb = ["underhill_core/gdb"]
 

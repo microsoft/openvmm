@@ -73,6 +73,25 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
     }
 }
 
+/// Returns true if, with per-CPU sidecar overrides active, the sidecar node
+/// whose VPs are `base_vp..base_vp + size` has no application processors left
+/// for sidecar to start (every AP is kernel-started).
+///
+/// The first VP of a node is its base VP and is always kernel-started, so
+/// sidecar only ever starts the remaining VPs.
+fn sidecar_node_is_empty(
+    overrides: &sidecar_defs::PerCpuState,
+    base_vp: usize,
+    size: usize,
+) -> bool {
+    // Without per-CPU overrides sidecar starts every non-base VP.
+    if !overrides.per_cpu_state_specified {
+        return size == 1;
+    }
+    // Empty iff no non-base VP is left for sidecar to start.
+    !(1..size).any(|i| overrides.sidecar_starts_cpu[base_vp + i])
+}
+
 pub fn start_sidecar<'a>(
     p: &ShimParams,
     partition_info: &PartitionInfo,
@@ -143,8 +162,6 @@ pub fn start_sidecar<'a>(
         log::info!("sidecar: all NUMA nodes have one CPU");
         return None;
     }
-    let node_count = cpus_by_node().count();
-
     let mut total_ram;
     {
         let SidecarParams {
@@ -163,8 +180,29 @@ pub fn start_sidecar<'a>(
 
         let mut base_vp = 0;
         total_ram = 0;
+        *node_count = 0;
         *initial_state = partition_info.sidecar_cpu_overrides.clone();
-        for (cpus, node) in cpus_by_node().zip(nodes) {
+        for cpus in cpus_by_node() {
+            // Skip creating a sidecar node when none of its application
+            // processors are left for sidecar to start (all are kernel-started).
+            if sidecar_node_is_empty(
+                &partition_info.sidecar_cpu_overrides,
+                base_vp as usize,
+                cpus.len(),
+            ) {
+                if initial_state.per_cpu_state_specified {
+                    // Kernel-start the base VP too; its APs are already
+                    // excluded, so every VP in the node ends up in `boot_cpus=`.
+                    initial_state.sidecar_starts_cpu[base_vp as usize] = false;
+                }
+                log::info!(
+                    "sidecar: node at base VP {base_vp} ({} VPs) has no sidecar-started APs; kernel-starting all of them",
+                    cpus.len(),
+                );
+                base_vp += cpus.len() as u32;
+                continue;
+            }
+
             let required_ram = sidecar_defs::required_memory(cpus.len() as u32) as u64;
             // Take some VTL2 RAM for sidecar use. Try to use the same NUMA node
             // as the first CPU.
@@ -200,7 +238,7 @@ pub fn start_sidecar<'a>(
                 }
             };
 
-            *node = SidecarNodeParams {
+            nodes[*node_count as usize] = SidecarNodeParams {
                 memory_base: mem.range.start(),
                 memory_size: mem.range.len(),
                 base_vp,
@@ -221,6 +259,14 @@ pub fn start_sidecar<'a>(
             *node_count += 1;
             total_ram += required_ram;
         }
+    }
+
+    // If per-CPU overrides left every node empty, there is nothing for
+    // sidecar to do; behave as if it were disabled entirely.
+    let node_count = sidecar_params.node_count as usize;
+    if node_count == 0 {
+        log::info!("sidecar: no nodes have sidecar-started APs; disabling sidecar");
+        return None;
     }
 
     // SAFETY: the parameter blob is trusted.

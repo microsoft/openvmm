@@ -51,7 +51,7 @@ fn err(e: crate::BackendError) -> Pkcs7Error {
 }
 
 fn x509_to_pkcs7(e: crate::x509::X509Error) -> Pkcs7Error {
-    Pkcs7Error(e.0)
+    Pkcs7Error(crate::x509::mac::backend_err(e))
 }
 
 pub struct Pkcs7SignedDataInner {
@@ -105,7 +105,7 @@ impl Pkcs7SignedDataInner {
         // through PKCS#12 import for that one path is excessive, so the
         // test helper builds the SignedData with the `cms` crate instead.
         let der = cms_sign(cert, key_pair, data)?;
-        Self::from_der(&der).map_err(|e| crate::rsa::RsaError(e.0))
+        Self::from_der(&der).map_err(|Pkcs7Error(e)| crate::rsa::RsaError(e))
     }
 
     /// Returns the first (and only) signer's embedded certificate and
@@ -334,7 +334,9 @@ fn cms_sign(
     use x509_cert::spki::AlgorithmIdentifierOwned;
 
     let signature = key_pair.pkcs1_sign(data, crate::HashAlgorithm::Sha256)?;
-    let cert_der = cert.to_der().map_err(|e| crate::rsa::RsaError(e.0))?;
+    let cert_der = cert
+        .to_der()
+        .map_err(|e| crate::rsa::RsaError(crate::x509::mac::backend_err(e)))?;
     let parsed_cert = Certificate::from_der(&cert_der)
         .map_err(|e| crate::rsa::RsaError(crate::BackendError::Der(e, "parsing signer cert")))?;
 

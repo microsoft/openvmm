@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::queue::QueueCompletion;
 use crate::queue::QueueCoreCompleteWork;
 use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
-use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
@@ -104,18 +104,39 @@ fn read_from_payload_at_offset(
 /// and will not automatically post a completion.
 #[must_use]
 pub struct VirtioQueueCallbackWork {
-    work: QueueWork,
+    completion: QueueCompletion,
     pub payload: Vec<VirtioQueuePayload>,
 }
 
 impl VirtioQueueCallbackWork {
-    pub(crate) fn new(mut work: QueueWork) -> Self {
-        let payload = std::mem::take(&mut work.payload);
-        Self { work, payload }
+    pub(crate) fn from_parts(
+        completion: QueueCompletion,
+        payload: Vec<VirtioQueuePayload>,
+    ) -> Self {
+        Self {
+            completion,
+            payload,
+        }
+    }
+
+    /// Borrows the completion token, used internally to advance the available
+    /// index for a peeked descriptor.
+    pub(crate) fn completion(&self) -> &QueueCompletion {
+        &self.completion
     }
 
     pub fn descriptor_index(&self) -> u16 {
-        self.work.descriptor_index()
+        self.completion.descriptor_index()
+    }
+
+    /// Discards the payload buffer descriptors and returns the lightweight
+    /// [`QueueCompletion`] token, which carries only the state
+    /// [`VirtioQueue::complete_prepared`] needs to publish the used ring entry.
+    ///
+    /// Use this to buffer a completion (e.g. for in-order publication) without
+    /// retaining the full payload.
+    pub fn into_completion(self) -> QueueCompletion {
+        self.completion
     }
 
     // Determine the total size of all readable or all writeable payload buffers.
@@ -167,7 +188,9 @@ impl VirtioQueueCallbackWork {
                 remaining.len(),
             );
             let (current, next) = remaining.split_at(size);
-            mem.write_at(payload.address + skip_bytes, current)?;
+            // Saturating add so an overflowing guest address lands out of range
+            // rather than wrapping to a low GPA (mirrors the read path).
+            mem.write_at(payload.address.saturating_add(skip_bytes), current)?;
             remaining = next;
             if remaining.is_empty() {
                 break;
@@ -206,11 +229,11 @@ pub enum VirtioWriteError {
 /// available for the next peek/next call.
 pub struct PeekedWork<'a> {
     queue: &'a mut VirtioQueue,
-    work: QueueWork,
+    work: VirtioQueueCallbackWork,
 }
 
 impl<'a> PeekedWork<'a> {
-    fn new(queue: &'a mut VirtioQueue, work: QueueWork) -> Self {
+    fn new(queue: &'a mut VirtioQueue, work: VirtioQueueCallbackWork) -> Self {
         Self { queue, work }
     }
 
@@ -245,8 +268,8 @@ impl<'a> PeekedWork<'a> {
     /// Returns a [`VirtioQueueCallbackWork`] that must be explicitly
     /// completed via [`VirtioQueue::complete`].
     pub fn consume(self) -> VirtioQueueCallbackWork {
-        self.queue.core.advance(&self.work);
-        VirtioQueueCallbackWork::new(self.work)
+        self.queue.core.advance(self.work.completion());
+        self.work
     }
 }
 
@@ -310,11 +333,7 @@ impl VirtioQueue {
     /// used in a poll loop with [`poll_kick`](Self::poll_kick), the kick will
     /// be armed automatically before sleeping.
     pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        Ok(self
-            .core
-            .try_next_work()
-            .map_err(Error::other)?
-            .map(VirtioQueueCallbackWork::new))
+        self.core.try_next_work().map_err(Error::other)
     }
 
     /// Peek at the next available descriptor without advancing the available
@@ -362,7 +381,23 @@ impl VirtioQueue {
     /// Takes ownership of the work item, ensuring it can only be completed
     /// once.
     pub fn complete(&mut self, work: VirtioQueueCallbackWork, bytes_written: u32) {
-        match self.complete.complete_descriptor(&work.work, bytes_written) {
+        self.complete_prepared(work.into_completion(), bytes_written);
+    }
+
+    /// Completes a descriptor from a lightweight [`QueueCompletion`] token
+    /// previously obtained via [`VirtioQueueCallbackWork::into_completion`].
+    ///
+    /// Equivalent to [`complete`](Self::complete) but does not require holding
+    /// the payload, so callers that buffer completions can store only the
+    /// token.
+    pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+        // The completion token is consumed even if publishing it to the used ring
+        // fails, so release its in-flight capacity before attempting the write.
+        self.core.work_completed(&completion);
+        match self
+            .complete
+            .complete_descriptor(&completion, bytes_written)
+        {
             Ok(true) => {
                 self.notify_guest.deliver();
             }

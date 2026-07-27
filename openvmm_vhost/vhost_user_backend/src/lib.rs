@@ -34,7 +34,9 @@ use pal_async::socket::PolledSocket;
 use pal_event::Event;
 use std::os::fd::OwnedFd;
 use std::path::Path;
+use unix_socket::ScmReceiver;
 use unix_socket::UnixListener;
+use vhost_user_protocol::VHOST_USER_MAX_FDS;
 use virtio::DeviceTraits;
 use virtio::DynVirtioDevice;
 use virtio::queue::QueueState;
@@ -119,8 +121,12 @@ impl VhostUserDeviceServer {
         let traits = self.device.traits();
         let mut state = ConnectionState::new(&traits);
 
+        // Reused across the connection so each recv doesn't allocate a control
+        // buffer for fd passing.
+        let mut receiver = ScmReceiver::new(VHOST_USER_MAX_FDS);
+
         loop {
-            let (hdr, payload, fds) = match socket.recv_message().await {
+            let (hdr, payload, fds) = match socket.recv_message(&mut receiver).await {
                 Ok(msg) => msg,
                 Err(SocketError::Closed) => return Ok(()),
                 Err(e) => return Err(e.into()),
@@ -819,7 +825,11 @@ mod tests {
         payload: &[u8],
     ) -> Vec<u8> {
         send_msg(socket, code, payload, &[] as &[OwnedFd]).await;
-        let (hdr, reply_payload, _fds) = socket.recv_message().await.expect("recv reply failed");
+        let mut receiver = ScmReceiver::new(VHOST_USER_MAX_FDS);
+        let (hdr, reply_payload, _fds) = socket
+            .recv_message(&mut receiver)
+            .await
+            .expect("recv reply failed");
         assert!(hdr.is_reply(), "expected reply flag");
         reply_payload
     }

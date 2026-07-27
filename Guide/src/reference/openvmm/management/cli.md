@@ -16,20 +16,27 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,shared=on,prefetch=off
   ```
 
+  The keys below select the guest RAM **memory backing**. For an explanation
+  of shared vs. private memory, prefetch, huge pages, and file-backed RAM —
+  and how to choose between them — see
+  [Memory Backing](../../architecture/openvmm/memory-backing.md).
+
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
-  * `shared=on|off` - use shared file-backed guest RAM. The default is
+  * `shared[=on|off]` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
-  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
-  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
-    This is Linux-only, requires shared memory, and cannot be combined
-    with file-backed memory or PCAT/legacy x86 RAM splitting.
-  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
-    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
-    OpenVMM uses 2 MB pages.
+  * `prefetch[=on|off]` - pre-populate guest RAM mappings up front.
+    Only has an effect under WHP; a no-op on KVM/mshv.
+  * `thp[=on|off]` - mark guest RAM (shared or private) as Transparent Huge
+    Page eligible. Linux-only, best-effort, and on by default; pass `thp=off` to
+    opt out.
+  * `hugepages[=on|off]` - allocate guest RAM from explicit large/huge pages
+    (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
+    shared memory.
+  * `hugepage_size=<SIZE>` - request a specific large-page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; defaults to 2 MB. On
+    Windows only 2 MB is supported.
   * `file=<PATH>` - use an existing file as the guest RAM backing file.
     This is used by snapshots.
 
@@ -39,7 +46,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory 4G
   --memory size=64GB,hugepages=on,hugepage_size=2MB
   --memory size=4G,file=path/to/memory.bin
-  --memory size=4G,shared=off,thp=on
+  --memory size=4G,thp=off
   ```
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
@@ -225,6 +232,13 @@ status code as `exit:<code>` (0-255); a bare `exit` uses 0:
 A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
 a supervisor can tell the exit reasons apart.
 
+* `--crash-dump-path <PATH>`: when the guest triple-faults, write a
+  WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
+  `PATH` before the `--guest-crash-action` is applied (see
+  [VM Memory Dumps](../../../user_guide/openvmm/vm_memory_dumps.md)). This is a
+  host-side, whole-VM dump, distinct from `--openhcl-dump-path` (OpenHCL's
+  in-guest crash dump device driven by the guest OS).
+
 `--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
 firmware frontpage (the menu shown when there is no bootable device). Combined
 with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
@@ -296,6 +310,8 @@ name:
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
 - `cxl`: marks the root port as CXL-capable.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 `--pcie-switch` accepts optional comma-separated options as well:
 
@@ -308,6 +324,8 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 ### Generic initiators
 
@@ -405,21 +423,48 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 ### SMMU (aarch64 only)
 
-`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
-root complex. The flag is repeatable — use one `--smmu` per root complex
-that should have an SMMU. Devices behind a covered root complex get
-software IOVA→GPA translation for DMA and MSI addresses.
+`--smmu` enables an emulated Arm SMMUv3 IOMMU for a named PCIe root
+complex. The flag is repeatable — use one `--smmu` per root complex that
+should have an SMMU. Devices behind a covered root complex get software
+IOVA→GPA translation for DMA and MSI addresses.
+
+The syntax is a comma-separated key/value list:
 
 ```sh
-# Enable SMMU on root complex rc0
---smmu rc0
-
-# Multiple root complexes
---smmu rc0 --smmu rc1
+--smmu rc=<name>[,accel][,oas=auto|N]
 ```
 
-VFIO devices cannot currently be placed behind an SMMU-covered root
-complex because iommufd nested translation is not yet available.
+- `rc=<name>` (required): the PCIe root complex this SMMU covers.
+- `accel` (optional): enable hardware-accelerated (iommufd-nested)
+  translation, delegating stage-1 walks to the host IOMMU. See the note
+  below — this is not yet wired up and currently fails at startup.
+- `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
+  `auto` (the default) advertises a fixed 48 bits, which covers typical
+  configurations. Very large RAM or an explicitly pinned high MMIO/ECAM
+  base can exceed this, requiring an explicit larger `oas=` (e.g. `oas=52`).
+  A fixed `N` must be one of the SMMUv3-legal encodings: `32`, `36`, `40`,
+  `42`, `44`, `48`, or `52`.
+
+```sh
+# Enable an emulated SMMU on root complex rc0
+--smmu rc=rc0
+
+# Multiple root complexes
+--smmu rc=rc0 --smmu rc=rc1
+
+# Pin the output address size to 48 bits
+--smmu rc=rc0,oas=48
+```
+
+```admonish warning
+`accel` is accepted by the parser but the acceleration backend is not yet
+implemented: requesting it fails during SMMU setup rather than silently
+falling back to emulated translation.
+
+VFIO devices therefore cannot currently be placed behind an SMMU-covered
+root complex, because host passthrough requires the (not-yet-available)
+iommufd nested translation path.
+```
 
 ### AMD IOMMU (x86_64 only)
 

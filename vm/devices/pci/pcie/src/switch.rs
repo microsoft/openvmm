@@ -18,10 +18,10 @@ use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
-use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
@@ -34,6 +34,7 @@ use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
+use pci_core::spec::caps::pci_express::MaxEndEndTlpPrefixes;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -52,7 +53,13 @@ pub struct UpstreamSwitchPort {
 
 impl UpstreamSwitchPort {
     /// Constructs a new [`UpstreamSwitchPort`] emulator.
-    pub fn new() -> Self {
+    pub fn new(end_end_tlp_prefixing_supported: bool) -> Self {
+        let mut pcie_cap = PciExpressCapability::new(DevicePortType::UpstreamSwitchPort, None);
+
+        if end_end_tlp_prefixing_supported {
+            pcie_cap = pcie_cap.with_tlp_prefixing_supported(MaxEndEndTlpPrefixes::Four);
+        }
+
         let cfg_space = ConfigSpaceType1Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -64,10 +71,7 @@ impl UpstreamSwitchPort {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(PciExpressCapability::new(
-                DevicePortType::UpstreamSwitchPort,
-                None,
-            ))],
+            vec![Box::new(pcie_cap)],
             vec![],
         );
         Self { cfg_space }
@@ -178,6 +182,19 @@ pub enum InvalidSwitchError {
     /// A downstream port's devfn could not be assigned.
     #[error(transparent)]
     Devfn(#[from] PortDevfnError),
+    /// All ports within a switch have to expose the same value for TLP prefixing support.
+    #[error("End-to-End TLP prefixing support is inconsistent within the switch")]
+    InconsistentEndToEndTlpPrefixing,
+    /// If the switch supports End-to-End TLP Prefixing, all downstream ports must support up to 4 prefixes.
+    #[error(
+        "downstream port '{name}' has invalid max end-to-end TLP prefixing support ({supported_prefixes} != 0)"
+    )]
+    InvalidMaxEndToEndTlpPrefixing {
+        /// Name of the offending downstream port.
+        name: Arc<str>,
+        /// The MaxEndToEndTlpPrefixes value, encoded as defined by the PCIe specification.
+        supported_prefixes: u32,
+    },
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -204,17 +221,41 @@ pub struct GenericPcieSwitch {
 impl GenericPcieSwitch {
     /// Constructs a new [`GenericPcieSwitch`] emulator.
     pub fn new(definition: GenericPcieSwitchDefinition) -> Result<Self, InvalidSwitchError> {
-        let upstream_port = UpstreamSwitchPort::new();
+        let any_port_supports_tlp_prefixing = definition
+            .downstream_ports
+            .iter()
+            .any(|port_def| port_def.settings.tlp_prefixing_supported.is_some());
 
-        // CXL is not supported on switch downstream ports (there is no CHBCR /
-        // component-register infrastructure behind a switch).
         for port_def in &definition.downstream_ports {
+            // CXL is not supported on switch downstream ports (there is no CHBCR /
+            // component-register infrastructure behind a switch).
             if port_def.settings.cxl_flex_bus_port_capability.is_some() {
                 return Err(InvalidSwitchError::CxlUnsupported {
                     name: port_def.name.clone(),
                 });
             }
+
+            // If any port supports End-to-End TLP prefixing, all ports must support it.
+            // See PCI Express Base Specification, Revision 7.0 Section 7.5.3.15
+            if any_port_supports_tlp_prefixing
+                != port_def.settings.tlp_prefixing_supported.is_some()
+            {
+                return Err(InvalidSwitchError::InconsistentEndToEndTlpPrefixing);
+            }
+
+            // If the switch supports End-to-End TLP prefixing, all downstream ports must support up to 4 prefixes.
+            // See PCI Express Base Specification, Revision 7.0 Section 7.5.3.15
+            if let Some(max_prefixes) = port_def.settings.tlp_prefixing_supported {
+                if max_prefixes.into_bits() != MaxEndEndTlpPrefixes::Four.into_bits() {
+                    return Err(InvalidSwitchError::InvalidMaxEndToEndTlpPrefixing {
+                        name: port_def.name.clone(),
+                        supported_prefixes: max_prefixes.into_bits(),
+                    });
+                }
+            }
         }
+
+        let upstream_port = UpstreamSwitchPort::new(any_port_supports_tlp_prefixing);
 
         // Assign each downstream port a devfn, shared with the root-complex
         // root-port assignment. Honors explicit devfns and packs the rest from
@@ -297,7 +338,7 @@ impl GenericPcieSwitch {
         let (_, _, downstream_port) = self
             .downstream_ports
             .iter_mut()
-            .find(|(devfn, _, _)| *devfn == addr.device_function)?;
+            .find(|(devfn, _, _)| *devfn == addr.devfn)?;
         Some(downstream_port.port.cfg_space.read(addr, value))
     }
 
@@ -310,7 +351,7 @@ impl GenericPcieSwitch {
         let (_, _, downstream_port) = self
             .downstream_ports
             .iter_mut()
-            .find(|(devfn, _, _)| *devfn == addr.device_function)?;
+            .find(|(devfn, _, _)| *devfn == addr.devfn)?;
         Some(downstream_port.port.cfg_space.write(addr, value))
     }
 
@@ -367,70 +408,53 @@ impl ChipsetDevice for GenericPcieSwitch {
 
 impl PciConfigSpace for GenericPcieSwitch {
     /// Reads the switch's own upstream-port config space (Type 0 view).
-    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+    fn pci_cfg_read(&mut self, byte_offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         self.upstream_port
             .cfg_space
-            .read_byte_enabled(offset, value)
+            .read_byte_enabled(byte_offset, value)
     }
 
     /// Writes the switch's own upstream-port config space (Type 0 view).
-    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+    fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         self.upstream_port
             .cfg_space
-            .write_byte_enabled(offset, value)
+            .write_byte_enabled(byte_offset, value)
     }
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
         mut value: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        // If target_bus == secondary_bus, this is a Type 0 access to the switch's own config space.
-        // We only implement function 0.
-        if target_bus == secondary_bus {
-            if function == 0 {
-                return self
-                    .upstream_port
-                    .cfg_space
-                    .read_byte_enabled(offset, value);
+        // Type 0 accesses are handled by the upstream port emulator, only devfn 0 is valid.
+        if access_type == PciConfigAccessType::Type0 {
+            if address.devfn == 0 {
+                return self.upstream_port.cfg_space.read(address, value);
             } else {
                 value.set(!0);
                 return IoResult::Ok;
             }
         }
 
-        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
-
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
+        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
         if upstream_bus_range == (0..=0) {
             value.set(!0);
             return IoResult::Ok;
         }
 
         // If the target bus is not within the upstream bus range, we cannot route it. Return all-1s.
-        if !upstream_bus_range.contains(&target_bus) {
+        if !upstream_bus_range.contains(&address.bus) {
             value.set(!0);
             return IoResult::Ok;
         }
 
         // If the target bus is the start of the upstream bus range, this access targets one of the
         // downstream ports on the internal bus of the switch.
-        if target_bus == *upstream_bus_range.start() {
+        if address.bus == *upstream_bus_range.start() {
             return self
-                .handle_downstream_port_read(addr, value.reborrow())
+                .handle_downstream_port_read(address, value.reborrow())
                 .unwrap_or_else(|| {
                     value.set(!0);
                     IoResult::Ok
@@ -440,62 +464,47 @@ impl PciConfigSpace for GenericPcieSwitch {
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
-        self.bus_cfg_handler.read(addr, value, &mut callback)
+        self.bus_cfg_handler.read(address, value, &mut callback)
     }
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        // If target_bus == secondary_bus, this is a Type 0 access to the switch's own config space.
-        // We only implement function 0.
-        if target_bus == secondary_bus {
-            if function == 0 {
-                return self
-                    .upstream_port
-                    .cfg_space
-                    .write_byte_enabled(offset, value);
+        // Type 0 accesses are handled by the upstream port emulator, only devfn 0 is valid.
+        if access_type == PciConfigAccessType::Type0 {
+            if address.devfn == 0 {
+                return self.upstream_port.cfg_space.write(address, value);
             } else {
                 return IoResult::Ok;
             }
         }
 
-        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
-
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration.
+        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
         if upstream_bus_range == (0..=0) {
             return IoResult::Ok;
         }
 
         // If the target bus is not within the upstream bus range, we cannot route it.
-        if !upstream_bus_range.contains(&target_bus) {
+        if !upstream_bus_range.contains(&address.bus) {
             return IoResult::Ok;
         }
 
         // If the target bus is the start of the upstream bus range, this access targets one of the
         // downstream ports on the internal bus of the switch.
-        if target_bus == *upstream_bus_range.start() {
+        if address.bus == *upstream_bus_range.start() {
             return self
-                .handle_downstream_port_write(addr, value)
+                .handle_downstream_port_write(address, value)
                 .unwrap_or(IoResult::Ok);
         }
 
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
-        self.bus_cfg_handler.write(addr, value, &mut callback)
+        self.bus_cfg_handler.write(address, value, &mut callback)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -696,6 +705,7 @@ mod save_restore {
 mod tests {
     use super::*;
     use pci_core::msi::MsiConnection;
+    use pci_core::test_helpers::TestCfgAccess;
 
     /// Builds a switch definition with `downstream_port_count` uniform
     /// downstream ports named `{name}-downstream-{i}`, mirroring the naming
@@ -726,15 +736,95 @@ mod tests {
         GenericPcieSwitch::new(definition).unwrap()
     }
 
+    fn tlp_prefixing_settings(max_prefixes: MaxEndEndTlpPrefixes) -> PciePortSettings {
+        PciePortSettings {
+            tlp_prefixing_supported: Some(max_prefixes),
+            ..PciePortSettings::default()
+        }
+    }
+
     #[test]
     fn test_upstream_switch_port_creation() {
-        let port = UpstreamSwitchPort::new();
-
         // Verify that we can read the vendor/device ID from config space
-        let mut vendor_device_id: u32 = 0;
-        port.cfg_space.read_u32(0x0, &mut vendor_device_id).unwrap();
+        let port = UpstreamSwitchPort::new(false);
+        let vendor_device_id = port.cfg_space.read_u32(0x0);
         let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
+
+        let port = UpstreamSwitchPort::new(true);
+        let vendor_device_id = port.cfg_space.read_u32(0x0);
+        let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(vendor_device_id, expected);
+    }
+
+    #[test]
+    fn test_switch_rejects_inconsistent_tlp_prefixing_support() {
+        let mut definition = switch_def(
+            "test-switch",
+            2,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        );
+        definition.downstream_ports[1].settings =
+            tlp_prefixing_settings(MaxEndEndTlpPrefixes::Four);
+
+        let Err(err) = GenericPcieSwitch::new(definition) else {
+            panic!("switch with inconsistent TLP prefixing support should fail");
+        };
+        assert!(matches!(
+            err,
+            InvalidSwitchError::InconsistentEndToEndTlpPrefixing
+        ));
+    }
+
+    #[test]
+    fn test_switch_rejects_non_four_tlp_prefixing_support() {
+        for max_prefixes in [
+            MaxEndEndTlpPrefixes::One,
+            MaxEndEndTlpPrefixes::Two,
+            MaxEndEndTlpPrefixes::Three,
+        ] {
+            let definition = switch_def(
+                "test-switch",
+                2,
+                false,
+                tlp_prefixing_settings(max_prefixes),
+                MsiTarget::disconnected(),
+            );
+
+            let Err(err) = GenericPcieSwitch::new(definition) else {
+                panic!("switch with {max_prefixes:?} TLP prefixes should fail");
+            };
+            assert!(matches!(
+                err,
+                InvalidSwitchError::InvalidMaxEndToEndTlpPrefixing {
+                    supported_prefixes,
+                    ..
+                } if supported_prefixes == max_prefixes.into_bits()
+            ));
+        }
+    }
+
+    #[test]
+    fn test_switch_with_four_tlp_prefixes_reports_upstream_support() {
+        let switch = build(switch_def(
+            "test-switch",
+            2,
+            false,
+            tlp_prefixing_settings(MaxEndEndTlpPrefixes::Four),
+            MsiTarget::disconnected(),
+        ));
+        let device_caps_2 = pci_core::spec::caps::pci_express::DeviceCapabilities2::from_bits(
+            switch.upstream_port.cfg_space().read_u32(0x64),
+        );
+
+        assert!(device_caps_2.extended_fmt_field_supported());
+        assert!(device_caps_2.end_end_tlp_prefix_supported());
+        assert_eq!(
+            device_caps_2.max_end_end_tlp_prefixes().into_bits(),
+            MaxEndEndTlpPrefixes::Four.into_bits()
+        );
     }
 
     #[test]
@@ -749,11 +839,7 @@ mod tests {
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
-        let mut vendor_device_id: u32 = 0;
-        port.port
-            .cfg_space
-            .read_u32(0x0, &mut vendor_device_id)
-            .unwrap();
+        let vendor_device_id = port.port.cfg_space.read_u32(0x0);
         let expected = (DOWNSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
     }
@@ -768,11 +854,7 @@ mod tests {
             &MsiTarget::disconnected(),
             PciePortSettings::default(),
         );
-        let mut header_type_value: u32 = 0;
-        port_default
-            .cfg_space()
-            .read_u32(0x0C, &mut header_type_value)
-            .unwrap();
+        let header_type_value = port_default.cfg_space().read_u32(0x0C);
         let header_type_field = (header_type_value >> 16) & 0xFF;
         assert_eq!(
             header_type_field & 0x80,
@@ -788,11 +870,7 @@ mod tests {
             &MsiTarget::disconnected(),
             PciePortSettings::default(),
         );
-        let mut header_type_value_false: u32 = 0;
-        port_false
-            .cfg_space()
-            .read_u32(0x0C, &mut header_type_value_false)
-            .unwrap();
+        let header_type_value_false = port_false.cfg_space().read_u32(0x0C);
         let header_type_field_false = (header_type_value_false >> 16) & 0xFF;
         assert_eq!(
             header_type_field_false & 0x80,
@@ -808,11 +886,7 @@ mod tests {
             &MsiTarget::disconnected(),
             PciePortSettings::default(),
         );
-        let mut header_type_value_true: u32 = 0;
-        port_true
-            .cfg_space()
-            .read_u32(0x0C, &mut header_type_value_true)
-            .unwrap();
+        let header_type_value_true = port_true.cfg_space().read_u32(0x0C);
         let header_type_field_true = (header_type_value_true >> 16) & 0xFF;
         assert_eq!(
             header_type_field_true & 0x80,
@@ -833,11 +907,7 @@ mod tests {
         );
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
-        let mut vendor_device_id: u32 = 0;
-        port_no_hotplug
-            .cfg_space()
-            .read_u32(0x0, &mut vendor_device_id)
-            .unwrap();
+        let vendor_device_id = port_no_hotplug.cfg_space().read_u32(0x0);
         let expected = (DOWNSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
 
@@ -849,11 +919,7 @@ mod tests {
             &MsiTarget::disconnected(),
             PciePortSettings::default(),
         );
-        let mut vendor_device_id_hotplug: u32 = 0;
-        port_with_hotplug
-            .cfg_space()
-            .read_u32(0x0, &mut vendor_device_id_hotplug)
-            .unwrap();
+        let vendor_device_id_hotplug = port_with_hotplug.cfg_space().read_u32(0x0);
         assert_eq!(vendor_device_id_hotplug, expected);
         // The slot number and hotplug capability would be tested via PCIe capability registers
         // but that requires more complex setup
@@ -956,12 +1022,7 @@ mod tests {
         assert!(add_result.is_ok());
 
         // Test basic configuration space access through the PCI interface
-        let mut value = 0u32;
-        let result = switch
-            .upstream_port
-            .cfg_space_mut()
-            .read_u32(0x0, &mut value);
-        assert!(matches!(result, IoResult::Ok));
+        let value = switch.upstream_port.cfg_space_mut().read_u32(0x0);
 
         // Verify vendor/device ID is from the upstream port
         let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
@@ -1048,10 +1109,7 @@ mod tests {
         let subordinate_bus = 10u8;
         // Set secondary bus number (offset 0x18) - bits 8-15 of the 32-bit value at 0x18
         let bus_config = (subordinate_bus as u32) << 16 | ((secondary_bus as u32) << 8);
-        let result = switch.pci_cfg_write_with_routing(
-            0,
-            0,
-            0,
+        let result = switch.pci_cfg_write(
             0x18,
             ByteEnabledDwordWrite::with_all_bytes_enabled(bus_config),
         );
@@ -1064,10 +1122,8 @@ mod tests {
         // Test direct access to downstream port 0 using function = 0
         let mut value = 0u32;
         let result = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(switch_internal_bus, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
@@ -1079,10 +1135,8 @@ mod tests {
         // Test direct access to downstream port 2 using function = 2
         let mut value2 = 0u32;
         let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            2,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(switch_internal_bus, 2, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value2),
         );
         assert!(matches!(result2, IoResult::Ok));
@@ -1091,10 +1145,8 @@ mod tests {
         // Test access to non-existent downstream port using function = 5
         let mut value3 = 0u32;
         let result3 = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            5,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(switch_internal_bus, 5, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value3),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1118,30 +1170,24 @@ mod tests {
         // Test that any access returns 1s when bus range is invalid
         let mut value = 0u32;
         let result = switch.pci_cfg_read_with_routing(
-            0,
-            1,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(1, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
         assert_eq!(value, !0);
 
         let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            1,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(1, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result2, IoResult::Ok));
         assert_eq!(value, !0);
 
         let result3 = switch.pci_cfg_read_with_routing(
-            0,
-            2,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(2, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1167,8 +1213,7 @@ mod tests {
         switch
             .upstream_port
             .cfg_space_mut()
-            .write_u32(0x18, bus_config)
-            .unwrap();
+            .write_u32(0x18, bus_config);
 
         // Downstream ports still have invalid bus ranges (0..=0 by default)
         // so any access to buses beyond the secondary bus should return 1s.
@@ -1176,10 +1221,8 @@ mod tests {
 
         // Access to bus 2 should return 1s since no downstream port has a valid bus range
         let result = switch.pci_cfg_read_with_routing(
-            0,
-            2,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(2, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
@@ -1187,10 +1230,8 @@ mod tests {
 
         // Access to bus 5 should also return 1s
         let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            5,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(5, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result2, IoResult::Ok));
@@ -1198,10 +1239,8 @@ mod tests {
 
         // Access to the secondary bus (switch internal) should still work for downstream port config
         let result3 = switch.pci_cfg_read_with_routing(
-            secondary_bus,
-            secondary_bus,
-            0,
-            0x0,
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(secondary_bus, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1225,11 +1264,7 @@ mod tests {
             if let Some((_, _, downstream_port)) =
                 multi_port_switch.downstream_ports.get(port_num as usize)
             {
-                let mut header_type_value: u32 = 0;
-                downstream_port
-                    .cfg_space()
-                    .read_u32(0x0C, &mut header_type_value)
-                    .unwrap();
+                let header_type_value = downstream_port.cfg_space().read_u32(0x0C);
 
                 // Extract the header type field (bits 16-23, with multi-function bit at bit 23)
                 let header_type_field = (header_type_value >> 16) & 0xFF;
@@ -1267,11 +1302,7 @@ mod tests {
             if let Some((_, _, downstream_port)) =
                 single_port_switch.downstream_ports.get(port_num as usize)
             {
-                let mut header_type_value: u32 = 0;
-                downstream_port
-                    .cfg_space()
-                    .read_u32(0x0C, &mut header_type_value)
-                    .unwrap();
+                let header_type_value = downstream_port.cfg_space().read_u32(0x0C);
 
                 // Extract the header type field (bits 16-23)
                 let header_type_field = (header_type_value >> 16) & 0xFF;
@@ -1404,8 +1435,7 @@ mod tests {
         switch
             .upstream_port
             .cfg_space_mut()
-            .write_u32(0x18, bus_config)
-            .unwrap();
+            .write_u32(0x18, bus_config);
 
         // Verify the bus range is set
         let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
@@ -1460,11 +1490,7 @@ mod tests {
             let bus_config = ((subordinate_bus as u32) << 16)
                 | ((secondary_bus as u32) << 8)
                 | (primary_bus as u32);
-            downstream_port
-                .port
-                .cfg_space
-                .write_u32(0x18, bus_config)
-                .unwrap();
+            downstream_port.port.cfg_space.write_u32(0x18, bus_config);
         }
 
         // Verify the downstream port bus range is set
@@ -1521,16 +1547,11 @@ mod tests {
         switch
             .upstream_port
             .cfg_space_mut()
-            .write_u32(0x18, 0x0014_1200)
-            .unwrap();
+            .write_u32(0x18, 0x0014_1200);
 
         // Downstream port 1 bus range.
         if let Some((_, _, downstream_port)) = switch.downstream_ports.get_mut(1) {
-            downstream_port
-                .port
-                .cfg_space
-                .write_u32(0x18, 0x0020_1f12)
-                .unwrap();
+            downstream_port.port.cfg_space.write_u32(0x18, 0x0020_1f12);
         }
 
         let saved_state = switch.save().expect("save should succeed");
@@ -1579,34 +1600,28 @@ mod tests {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_read_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
+            Some(PciConfigSpace::pci_cfg_read_with_routing(
+                &mut self.0,
+                access_type,
+                address,
                 value,
             ))
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_write_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
+            Some(PciConfigSpace::pci_cfg_write_with_routing(
+                &mut self.0,
+                access_type,
+                address,
                 value,
             ))
         }
@@ -1642,9 +1657,7 @@ mod tests {
         );
 
         // Configure the root port's bus range: secondary=1, subordinate=10
-        port.cfg_space
-            .write_u32(0x18, (10u32 << 16) | (1u32 << 8))
-            .unwrap();
+        port.cfg_space.write_u32(0x18, (10u32 << 16) | (1u32 << 8));
 
         // Create and attach a switch behind the port
         let switch = build(switch_def(
@@ -1705,12 +1718,7 @@ mod tests {
         ));
 
         // Upstream switch ports do not expose ACS in this model.
-        let mut upstream_header = 0u32;
-        switch
-            .upstream_port()
-            .cfg_space()
-            .read_u32(0x100, &mut upstream_header)
-            .unwrap();
+        let upstream_header = switch.upstream_port().cfg_space().read_u32(0x100);
         assert_eq!(upstream_header, 0);
 
         let mut switch = switch;
@@ -1720,21 +1728,13 @@ mod tests {
             .next()
             .expect("expected downstream port");
 
-        let mut downstream_header = 0u32;
-        downstream_port
-            .cfg_space_mut()
-            .read_u32(0x100, &mut downstream_header)
-            .unwrap();
+        let downstream_header = downstream_port.cfg_space_mut().read_u32(0x100);
         assert_eq!(
             downstream_header & 0xffff,
             ExtendedCapabilityId::ACS.0 as u32
         );
 
-        let mut caps_control = 0u32;
-        downstream_port
-            .cfg_space_mut()
-            .read_u32(0x104, &mut caps_control)
-            .unwrap();
+        let caps_control = downstream_port.cfg_space_mut().read_u32(0x104);
         assert_eq!(caps_control as u16, 0x0001);
     }
 

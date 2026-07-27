@@ -39,7 +39,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory::MemoryMapper;
-use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -53,7 +52,6 @@ use std::task::Waker;
 use thiserror::Error;
 use virt::IsolationType;
 use virt::NeedsYield;
-use virt::PageVisibility;
 use virt::PartitionAccessState;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
@@ -110,6 +108,13 @@ struct WhpPartitionInner {
     mem_layout: MemoryLayout,
     #[inspect(skip)]
     gm: GuestMemory,
+    /// Resolves guest-memory-access faults on demand, letting the memory
+    /// backing commit lazily-backed pages and opportunistically widen the
+    /// mapped range to a soft large page. Set when the memory backing supplies
+    /// one via [`virt::PartitionConfig::fault_resolver`].
+    #[inspect(skip)]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    fault_resolver: Option<Arc<dyn virt::ResolveMemoryFault>>,
     vtl2_emulation: Option<vtl2::Vtl2Emulation>,
     #[cfg(guest_arch = "x86_64")]
     irq_routes: virt::irqcon::IrqRoutes,
@@ -128,6 +133,7 @@ struct WhpPartitionInner {
 }
 
 #[derive(Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 struct VtlPartition {
     #[inspect(skip)]
     whp: whp::Partition,
@@ -151,6 +157,23 @@ struct VtlPartition {
 }
 
 impl VtlPartition {
+    /// Adds the WHP partition's SLAT (nested page table) mapping counters to
+    /// the inspection under `memory`, reporting how many guest pages the
+    /// hypervisor has mapped at 4 KB, 2 MB, and 1 GB granularity.
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field(
+            "memory",
+            inspect::adhoc(|req| {
+                if let Ok(counters) = self.whp.memory_counters() {
+                    req.respond()
+                        .field("mapped_4k", counters.Mapped4KPageCount)
+                        .field("mapped_2m", counters.Mapped2MPageCount)
+                        .field("mapped_1g", counters.Mapped1GPageCount);
+                }
+            }),
+        );
+    }
+
     /// Query the default CPUID result for the given leaf/subleaf from VP0.
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
@@ -478,7 +501,10 @@ impl<'a> WhpVpRef<'a> {
 
     #[cfg(guest_arch = "x86_64")]
     fn wake_for_apic(&self, vtl: Vtl) {
-        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
+        // Publish the staged IRR before the wake. The APIC only wakes on the
+        // first transition to pending, so missing this publication can strand
+        // an interrupt with no later wake to rescan it.
+        self.vplc(vtl).scan_irr.store(true, Ordering::Release);
         self.wake();
     }
 
@@ -552,17 +578,18 @@ impl virt::ScrubVtl for WhpPartition {
 impl virt::AcceptInitialPages for WhpPartition {
     type Error = Error;
 
-    fn accept_initial_pages(&self, pages: &[(MemoryRange, PageVisibility)]) -> Result<(), Error> {
+    fn accept_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), Error> {
         assert!(self.inner.isolation.is_isolated());
 
-        for (range, vis) in pages {
+        for page in pages {
             self.inner
                 .vtl0
-                .accept_pages(range, *vis)
+                .accept_pages(&page.range, page.import_type.page_visibility())
                 .map_err(Error::AcceptPages)?;
 
             if let Some(vtl2) = &self.inner.vtl2 {
-                vtl2.accept_pages(range, *vis).map_err(Error::AcceptPages)?;
+                vtl2.accept_pages(&page.range, page.import_type.page_visibility())
+                    .map_err(Error::AcceptPages)?;
             }
         }
 
@@ -585,7 +612,7 @@ impl virt::Partition for WhpPartition {
         (!self.inner.isolation.is_isolated()).then_some(self)
     }
 
-    fn supports_initial_accept_pages(
+    fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as virt::Hv1>::Error>> {
         self.inner.isolation.is_isolated().then_some(self)
@@ -938,6 +965,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             .unwrap()
     }
 
+    fn supports_memory_fault_resolution(&self) -> bool {
+        // WHP forwards guest memory-access faults back to the VMM, so the
+        // memory backing can resolve them on demand (soft large pages, lazy
+        // commit).
+        true
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
@@ -1258,6 +1292,7 @@ impl WhpPartitionInner {
             vps,
             mem_layout: config.mem_layout.clone(),
             gm: config.guest_memory.clone(),
+            fault_resolver: config.fault_resolver.clone(),
             vtl2_emulation,
             #[cfg(guest_arch = "x86_64")]
             irq_routes: Default::default(),
@@ -1724,7 +1759,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
     ) -> Result<guestmem::LockedPages, hvdef::HvError> {
-        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
+        Ok(self
+            .0
+            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .unwrap())
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {

@@ -41,14 +41,16 @@ engineers' local machines and in CI. Put these special words in your test to opt
 
 ### "unstable" tests
 
-If a test is not yet reliable enough to gate PRs, add `unstable` to the macro.
+If a test is not yet reliable enough to gate PRs, mark it `unstable`. Every
+`unstable` marker requires a `reason` string documenting why the test is
+unstable (ideally referencing a tracking issue).
 
-For individual variants:
+To mark a single variant unstable, wrap it in `unstable(reason = "...", <config>)`:
 
 ```rust,ignore
 #[vmm_test(
     // unstable variant:
-    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    unstable(reason = "flaky on aarch64 in CI (microsoft/openvmm#1234)", hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
     // other reliable variants:
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
     // ...
@@ -58,10 +60,11 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
-For all variants of the test:
+To mark all variants of the test unstable, apply `unstable(reason = "...")` as a
+test-wide attribute alongside `configs(...)`:
 
 ```rust,ignore
-#[vmm_test_with(unstable, configs(
+#[vmm_test_with(unstable(reason = "flaky in CI (microsoft/openvmm#1234)"), configs(
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
     // ...
@@ -71,15 +74,52 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
-Unstable tests run in the same CI job as stable tests. When an unstable test fails
-the CI run will pass with a warning. Outside of CI, an unstable test failure is
-reported as a failure like any other test.
+Unstable tests run in the same CI job as stable tests. In CI the
+`PETRI_IGNORE_UNSTABLE_FAILURES` environment variable is set, so when an unstable
+test fails the CI run passes with a warning. Outside of CI that variable is not
+set by default, so an unstable test failure is reported as a failure like any
+other test.
 
-To promote an unstable test to stable, remove `unstable` from the macro. This is
-a single-place change — no CI or configuration updates are required.
+To promote an unstable test to stable, remove the `unstable(...)` wrapper. This
+is a single-place change — no CI or configuration updates are required.
 
 To suppress failures from `unstable` tests when running locally (matching the CI
 behavior), set the following environment variable: `PETRI_IGNORE_UNSTABLE_FAILURES=1`
+
+### "ignore" tests
+
+If a test (or a specific variant) should not run by default at all — for example
+it depends on functionality that isn't ready yet — mark it `ignore`, analogous to
+libtest's `#[ignore]`. Like `unstable`, every `ignore` marker requires a `reason`
+string (ideally referencing a tracking issue). Ignored tests are skipped unless
+explicitly requested.
+
+To ignore a single variant, wrap it in `ignore(reason = "...", <config>)`:
+
+```rust,ignore
+#[vmm_test(
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2139)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+```
+
+To ignore all variants of the test, apply `ignore(reason = "...")` as a test-wide
+attribute alongside `configs(...)`:
+
+```rust,ignore
+#[vmm_test_with(ignore(reason = "needs functionality not yet implemented (microsoft/openvmm#1234)"), configs(
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+))]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+```
 
 ## Running VMM Tests (Flowey)
 
@@ -109,12 +149,27 @@ build for a different platform. The supported targets are:
 and run Windows VMM tests directly from your WSL2 shell. This requires the
 cross-compilation environment to be set up first.
 
-Then target Windows as usual. The output directory **must** be on the Windows
-filesystem (e.g., `/mnt/d/...`):
+Then target Windows as usual:
+
+```bash
+cargo xflowey vmm-tests-run --target windows-x64
+```
+
+Most tests work with the default output directory (on the WSL filesystem),
+because their disk images are either streamed on demand or opened as plain
+files (fixed VHD1, VMGS, ISO), which work fine over the `\\wsl$` path. You only
+need to override `--dir` to a Windows filesystem path (a DrvFs mount like
+`/mnt/d/...`) when the selected tests use disk images that require a Windows
+filesystem — namely **Hyper-V tests** (their VHDs are attached to a real
+Hyper-V VM) or tests using **VHDX / dynamic VHD1** images (opened via the
+Windows virtual-disk mount API):
 
 ```bash
 cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
 ```
+
+`vmm-tests-run` detects this automatically and will tell you if `--dir` is
+required for your selection.
 
 For full cross-compilation setup instructions, see
 [Cross Compiling for Windows](../getting_started/cross_compile.md).
