@@ -10,6 +10,7 @@
 //! them, and the shared helpers they use, once per binary.
 
 mod disk_sector_range;
+mod http_server;
 mod storvsc;
 
 // The emulated NVMe harness and its only consumers are limited to the platforms

@@ -47,5 +47,8 @@ vmbus_channel.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+disk_vhdmp.workspace = true
+
 [lints]
 workspace = true

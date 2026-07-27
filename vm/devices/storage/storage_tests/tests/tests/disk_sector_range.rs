@@ -18,6 +18,7 @@ use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_blob::BlobDisk;
 use disk_blob::blob::file::FileBlob;
+use disk_blob::blob::http::HttpBlob;
 use disk_crypt::CryptDisk;
 use disk_delay::DelayDisk;
 use disk_file::FileDisk;
@@ -27,6 +28,8 @@ use disk_layered::LayeredDisk;
 use disk_prwrap::DiskWithReservations;
 use disk_striped::StripedDisk;
 use disk_vhd1::Vhd1Disk;
+#[cfg(windows)]
+use disk_vhdmp::VhdmpDisk;
 use disklayer_ram::RamDiskLayer;
 use disklayer_sqlite::FormatParams;
 use disklayer_sqlite::SqliteDiskLayer;
@@ -34,10 +37,16 @@ use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use scsi_buffers::OwnedRequestBuffers;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::time::Duration;
 use storage_tests::sector_range::test_disk_representability;
 use storage_tests::sector_range::test_disk_sector_range_conformance;
 use test_with_tracing::test;
+
+use crate::http_server::Behavior;
+use crate::http_server::TestHttpServer;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -76,6 +85,26 @@ fn vhd1_disk() -> Disk {
     Disk::new(Vhd1Disk::open_fixed(fixed_vhd1_file(), false).unwrap()).unwrap()
 }
 
+/// A fixed VHD1 parsed by the Windows VHDMP driver rather than by `disk_vhd1`.
+///
+/// The file needs a `.vhd` extension for VHDMP to recognise the format, and
+/// needs to stay on disk for as long as the driver holds it open, so the
+/// temporary path is returned alongside the disk.
+#[cfg(windows)]
+fn vhdmp_disk() -> (Disk, tempfile::TempPath) {
+    let file = tempfile::Builder::new().suffix(".vhd").tempfile().unwrap();
+    file.as_file().set_len(DISK_SIZE).unwrap();
+    Vhd1Disk::make_fixed(file.as_file()).unwrap();
+    let path = file.into_temp_path();
+
+    let vhd = VhdmpDisk::options()
+        .read_only(false)
+        .open(path.as_ref())
+        .unwrap();
+    let disk = Disk::new(VhdmpDisk::new(vhd, false).unwrap()).unwrap();
+    (disk, path)
+}
+
 fn crypt_disk() -> Disk {
     // XTS requires the two halves of the key to differ; a uniform key is
     // rejected by the crypto backend at cipher init, which would make every
@@ -112,6 +141,34 @@ fn blob_raw_disk() -> Disk {
 async fn blob_vhd1_disk() -> Disk {
     Disk::new(
         BlobDisk::new_fixed_vhd1(FileBlob::new(fixed_vhd1_file()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The bytes of a fixed VHD1 image, for serving over HTTP.
+fn fixed_vhd1_bytes() -> Vec<u8> {
+    let mut file = fixed_vhd1_file();
+    let mut buf = Vec::new();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.read_to_end(&mut buf).unwrap();
+    buf
+}
+
+/// A raw blob served over HTTP, so that the `Blob` implementation under test is
+/// `HttpBlob` rather than `FileBlob`.
+async fn http_blob_raw_disk() -> Disk {
+    let server = TestHttpServer::new(vec![0; DISK_SIZE as usize], Behavior::Correct);
+    Disk::new(BlobDisk::new(HttpBlob::new(&server.url()).await.unwrap())).unwrap()
+}
+
+/// A fixed VHD1 served over HTTP, so the footer case is covered there too and
+/// not only over a file.
+async fn http_blob_vhd1_disk() -> Disk {
+    let server = TestHttpServer::new(fixed_vhd1_bytes(), Behavior::Correct);
+    Disk::new(
+        BlobDisk::new_fixed_vhd1(HttpBlob::new(&server.url()).await.unwrap())
             .await
             .unwrap(),
     )
@@ -273,10 +330,17 @@ mod conformance {
         file => file_disk();
         /// Fixed VHD1 in a host file.
         vhd1 => vhd1_disk();
+        /// Fixed VHD1 parsed by the Windows VHDMP driver.
+        #[cfg(windows)]
+        vhdmp => vhdmp_disk();
         /// Read-only blob whose length is exactly the disk size.
         blob_raw => blob_raw_disk();
         /// Read-only blob strictly larger than the disk it presents.
         blob_fixed_vhd1 => blob_vhd1_disk().await;
+        /// Read-only blob over HTTP rather than a file.
+        http_blob_raw => http_blob_raw_disk().await;
+        /// Read-only blob over HTTP, strictly larger than the disk it presents.
+        http_blob_fixed_vhd1 => http_blob_vhd1_disk().await;
         /// A single RAM layer.
         ram => ram_disk();
         /// A single SQLite layer.
@@ -306,6 +370,47 @@ mod conformance {
 // --------------------------------------------------------------------------
 // Targeted tests for individual defects
 // --------------------------------------------------------------------------
+
+/// `BlobDisk` cannot tell a short read from a successful one by itself, so it
+/// relies on the `Blob` contract requiring `UnexpectedEof` rather than partial
+/// success. A server that misbehaves must therefore surface as an error and
+/// never as a read that quietly returns less, or the wrong, data.
+///
+/// These are responses a well-behaved server would not produce, which is why
+/// they are worth testing: they are the cases the contract exists for.
+#[async_test]
+async fn http_blob_misbehaving_server_never_reports_success() {
+    let content = vec![0xab; DISK_SIZE as usize];
+    for behavior in [
+        Behavior::ShortBody,
+        Behavior::IgnoreRange,
+        Behavior::RangeNotSatisfiable,
+        Behavior::CloseMidBody,
+    ] {
+        let server = TestHttpServer::new(content.clone(), behavior);
+        let disk = Disk::new(BlobDisk::new(HttpBlob::new(&server.url()).await.unwrap())).unwrap();
+        let mem = GuestMemory::allocate(SECTOR_SIZE as usize);
+        let r = disk
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, SECTOR_SIZE as usize, true).buffer(&mem),
+                0,
+            )
+            .await;
+
+        match behavior {
+            // The `Blob` documentation is specific about this one: a buffer
+            // that is not completely filled must be reported as
+            // `UnexpectedEof`, not as any kind of partial success. Assert the
+            // documented error rather than merely that something went wrong,
+            // since a short read succeeding is the failure mode that matters.
+            Behavior::ShortBody => match r {
+                Err(DiskError::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {}
+                r => panic!("{behavior:?}: expected UnexpectedEof, got {r:?}"),
+            },
+            _ => assert!(r.is_err(), "{behavior:?}: reported success"),
+        }
+    }
+}
 
 /// A blob larger than the disk it presents is the case where delegating the
 /// range check to the backing object is not sufficient: a read one sector past
