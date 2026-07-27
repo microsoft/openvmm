@@ -1,6 +1,7 @@
-//! Runs a litany of hyper-v tests using opentmk framework
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
+//! Runs a litany of hyper-v tests using opentmk framework
 
 // UNSAFETY: This crate contains unsafe code to perform low-level operations such as managing memory, handling interrupts, and invoking hypercalls.
 #![expect(unsafe_code)]

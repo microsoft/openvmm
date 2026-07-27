@@ -57,7 +57,6 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
-  "opentmk",
   "opentmk/opentmk_tests",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
