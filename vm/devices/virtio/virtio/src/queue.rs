@@ -39,6 +39,52 @@ pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout
         .map_err(QueueError::Memory)
 }
 
+/// In-flight (consumed-but-not-completed) buffers for a split queue: the
+/// difference of the free-running avail/used head counters.
+///
+/// Errors with [`QueueError::InvalidSavedState`] if that exceeds the queue size
+/// (a corrupt/malicious state — restore is a host trust boundary).
+fn split_in_flight(avail: u16, used: u16, queue_size: u16) -> Result<u16, QueueError> {
+    let in_flight = avail.wrapping_sub(used);
+    if in_flight > queue_size {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    Ok(in_flight)
+}
+
+/// In-flight (consumed-but-not-completed) descriptors for a packed queue, from
+/// its saved cursors (ring index in bits 0..14, lap/wrap bit in bit 15).
+/// Projecting each cursor onto a doubled ring `[0, 2 * queue_size)` turns the
+/// span from `used` to `avail` into a modular distance; the lap bit tells an
+/// empty ring from a full one.
+///
+/// Errors with [`QueueError::InvalidSavedState`] if the cursors imply more than a
+/// full ring in flight (a corrupt/malicious state — restore is a trust boundary).
+fn packed_in_flight(avail: u16, used: u16, queue_size: u16) -> Result<u16, QueueError> {
+    if avail & 0x7fff >= queue_size || used & 0x7fff >= queue_size {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    let ring = queue_size as i32;
+    let position = |cursor: u16| (cursor & 0x7FFF) as i32 + i32::from(cursor & 0x8000 != 0) * ring;
+    let in_flight = (position(avail) - position(used)).rem_euclid(2 * ring);
+    if in_flight > ring {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    Ok(in_flight as u16)
+}
+
 /// Saved progress state for a single virtio queue.
 ///
 /// For split queues: `avail_index` and `used_index` are plain ring indices.
@@ -63,6 +109,24 @@ pub enum QueueError {
     TooLong,
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
+    #[error(
+        "guest oversubscribed queue size {queue_size}: {in_flight} already in flight, \
+         {requested} more requested"
+    )]
+    TooManyInFlightDescriptors {
+        in_flight: u16,
+        requested: u16,
+        queue_size: u16,
+    },
+    #[error(
+        "corrupt queue saved state: avail index {avail_index:#x}, used index {used_index:#x}, \
+         queue size {queue_size}"
+    )]
+    InvalidSavedState {
+        avail_index: u16,
+        used_index: u16,
+        queue_size: u16,
+    },
 }
 
 struct QueueDescriptor {
@@ -93,6 +157,13 @@ pub struct QueueCompletion {
 impl QueueCompletion {
     pub fn descriptor_index(&self) -> u16 {
         self.descriptor_index
+    }
+
+    fn in_flight_cost(&self) -> u16 {
+        match &self.context {
+            QueueCompletionContext::Split => 1,
+            QueueCompletionContext::Packed(context) => context.descriptor_count(),
+        }
     }
 }
 
@@ -132,6 +203,12 @@ pub(crate) struct QueueCoreGetWork {
     inner: QueueGetWorkInner,
     /// Whether kick notification is currently armed.
     armed: bool,
+    /// Consumed-but-not-completed ring capacity, in the format's native unit:
+    /// buffers (heads) for split, descriptors (slots) for packed — the two forms
+    /// of the virtio "Queue Size" limit (spec §2.7.1 vs §2.8.1).
+    /// [`try_peek_work`](Self::try_peek_work) rejects work that would push this
+    /// past the queue size, so it stays in `0..=queue_size`.
+    in_flight: u16,
 }
 
 impl QueueCoreGetWork {
@@ -148,7 +225,8 @@ impl QueueCoreGetWork {
         params: QueueParams,
         initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        if params.size == 0 {
+        // Both ring layouts cap queue size at 2^15 (spec §2.7.1, §2.8.1).
+        if params.size == 0 || params.size > 1 << 15 {
             return Err(QueueError::InvalidQueueSize(params.size));
         }
         let initial_avail = initial_state.map(|s| s.avail_index);
@@ -181,6 +259,17 @@ impl QueueCoreGetWork {
                 index,
             )?)
         };
+        // Seed from the restored cursors in the matching unit (heads for split,
+        // descriptors for packed) so the running count stays consistent; a fresh
+        // queue is zero. Both reject a state implying more than a full ring
+        // in flight, since restore is a host trust boundary.
+        let in_flight = match initial_state {
+            None => 0,
+            Some(state) if features.ring_packed() => {
+                packed_in_flight(state.avail_index, state.used_index, params.size)?
+            }
+            Some(state) => split_in_flight(state.avail_index, state.used_index, params.size)?,
+        };
         Ok(Self {
             queue_desc,
             queue_size: params.size,
@@ -188,6 +277,7 @@ impl QueueCoreGetWork {
             mem,
             inner,
             armed: false,
+            in_flight,
         })
     }
 
@@ -213,7 +303,24 @@ impl QueueCoreGetWork {
         };
         let Some(index) = index else { return Ok(None) };
         self.suppress_if_armed();
-        self.work_from_index(index).map(Some)
+        let work = self.work_from_index(index)?;
+
+        // Reject a guest that oversubscribes the ring: the whole chain must fit
+        // in the remaining capacity, not just "we aren't already full" (spec caps
+        // in flight at the queue size — §2.7.1/§2.8.1). A compliant guest,
+        // bounded by ring space, never trips this; a misbehaving one (split
+        // reusing avail slots, or packed re-stamping wrap flags early) is caught
+        // before it can grow host tracking or overlap in-flight descriptors.
+        let requested = work.completion().in_flight_cost();
+        if requested > self.queue_size - self.in_flight {
+            return Err(QueueError::TooManyInFlightDescriptors {
+                in_flight: self.in_flight,
+                requested,
+                queue_size: self.queue_size,
+            });
+        }
+
+        Ok(Some(work))
     }
 
     /// Arms kick notification so the guest will send a doorbell when new work
@@ -271,6 +378,7 @@ impl QueueCoreGetWork {
     /// Advances the available index after a successful
     /// [`try_peek_work`](Self::try_peek_work) call.
     pub fn advance(&mut self, completion: &QueueCompletion) {
+        let cost = completion.in_flight_cost();
         match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.advance(),
             QueueGetWorkInner::Packed(packed) => {
@@ -280,6 +388,20 @@ impl QueueCoreGetWork {
                 packed.advance(ctx.descriptor_count());
             }
         }
+        // The chain-fits bound in [`try_peek_work`] keeps this within the queue
+        // size; `checked_add` only guards against corrupt accounting.
+        self.in_flight = self
+            .in_flight
+            .checked_add(cost)
+            .expect("in-flight count overflowed");
+    }
+
+    /// Releases the ring capacity held by a consumed work item.
+    pub fn work_completed(&mut self, completion: &QueueCompletion) {
+        self.in_flight = self
+            .in_flight
+            .checked_sub(completion.in_flight_cost())
+            .expect("completed more than was consumed");
     }
 
     fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
@@ -574,5 +696,67 @@ impl Iterator for DescriptorChain<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_descriptor().transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueueError;
+    use super::packed_in_flight;
+
+    /// Encodes a packed cursor as it is stored in `QueueState`:
+    /// `index | (wrap_counter << 15)`.
+    fn cursor(index: u16, wrap: bool) -> u16 {
+        index | (u16::from(wrap) << 15)
+    }
+
+    #[test]
+    fn packed_in_flight_decode() {
+        let qs = 8;
+
+        // Empty ring: cursors equal, same wrap.
+        assert_eq!(
+            packed_in_flight(cursor(2, false), cursor(2, false), qs).unwrap(),
+            0
+        );
+        assert_eq!(
+            packed_in_flight(cursor(5, true), cursor(5, true), qs).unwrap(),
+            0
+        );
+
+        // Partial, same wrap: avail ahead of used within the same lap.
+        assert_eq!(
+            packed_in_flight(cursor(5, false), cursor(2, false), qs).unwrap(),
+            3
+        );
+
+        // Full ring: cursors equal index, opposite wrap.
+        assert_eq!(
+            packed_in_flight(cursor(3, true), cursor(3, false), qs).unwrap(),
+            8
+        );
+        assert_eq!(
+            packed_in_flight(cursor(0, false), cursor(0, true), qs).unwrap(),
+            8
+        );
+
+        // Avail has wrapped past the end while used trails in the prior lap.
+        // used at 6, avail at 1 (next lap) → slots 6, 7, 0 in flight.
+        assert_eq!(
+            packed_in_flight(cursor(1, true), cursor(6, false), qs).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn packed_in_flight_rejects_corrupt_state() {
+        // Same wrap but avail index behind used index implies more than a full
+        // ring in flight — an impossible, corrupt saved state. It must be
+        // rejected with an error rather than panicking, since the restore path
+        // is a host trust boundary.
+        assert!(matches!(
+            packed_in_flight(cursor(1, false), cursor(6, false), 8),
+            Err(QueueError::InvalidSavedState { queue_size: 8, .. })
+        ));
     }
 }

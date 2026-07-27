@@ -541,77 +541,98 @@ pub mod caps {
         use zerocopy::IntoBytes;
         use zerocopy::KnownLayout;
 
-        /// PCIe Link Speed encoding values for use in Link Capabilities and other registers.
-        ///
-        /// Values are defined in PCIe Base Specification for the Max Link Speed field
-        /// in Link Capabilities Register and similar fields.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum LinkSpeed {
-            /// 2.5 GT/s link speed
-            Speed2_5GtS = 0b0001,
-            /// 5.0 GT/s link speed
-            Speed5_0GtS = 0b0010,
-            /// 8.0 GT/s link speed
-            Speed8_0GtS = 0b0011,
-            /// 16.0 GT/s link speed
-            Speed16_0GtS = 0b0100,
-            /// 32.0 GT/s link speed
-            Speed32_0GtS = 0b0101,
-            /// 64.0 GT/s link speed
-            Speed64_0GtS = 0b0110,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Link Speed encoding values for use in Link Capabilities and other registers.
+            ///
+            /// Values are defined in PCIe Base Specification for the Max Link Speed field
+            /// in Link Capabilities Register and similar fields.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum LinkSpeed: u32 {
+                #![allow(non_upper_case_globals)]
+                /// 2.5 GT/s link speed
+                Speed2_5GtS = 0b0001,
+                /// 5.0 GT/s link speed
+                Speed5_0GtS = 0b0010,
+                /// 8.0 GT/s link speed
+                Speed8_0GtS = 0b0011,
+                /// 16.0 GT/s link speed
+                Speed16_0GtS = 0b0100,
+                /// 32.0 GT/s link speed
+                Speed32_0GtS = 0b0101,
+                /// 64.0 GT/s link speed
+                Speed64_0GtS = 0b0110,
+            }
         }
 
         impl LinkSpeed {
             pub const fn from_bits(bits: u32) -> Self {
-                match bits {
-                    0b0001 => LinkSpeed::Speed2_5GtS,
-                    0b0010 => LinkSpeed::Speed5_0GtS,
-                    0b0011 => LinkSpeed::Speed8_0GtS,
-                    0b0100 => LinkSpeed::Speed16_0GtS,
-                    0b0101 => LinkSpeed::Speed32_0GtS,
-                    0b0110 => LinkSpeed::Speed64_0GtS,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             pub const fn into_bits(self) -> u32 {
-                self as u32
+                self.0
             }
         }
 
-        /// PCIe Supported Link Speeds Vector encoding values for use in Link Capabilities 2 register.
-        ///
-        /// Values are defined in PCIe Base Specification for the Supported Link Speeds Vector field
-        /// in Link Capabilities 2 Register. Each bit represents support for a specific generation.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum SupportedLinkSpeedsVector {
-            /// Support up to Gen 1 (2.5 GT/s)
-            UpToGen1 = 0b0000001,
-            /// Support up to Gen 2 (5.0 GT/s)
-            UpToGen2 = 0b0000011,
-            /// Support up to Gen 3 (8.0 GT/s)
-            UpToGen3 = 0b0000111,
-            /// Support up to Gen 4 (16.0 GT/s)
-            UpToGen4 = 0b0001111,
-            /// Support up to Gen 5 (32.0 GT/s)
-            UpToGen5 = 0b0011111,
-            /// Support up to Gen 6 (64.0 GT/s)
-            UpToGen6 = 0b0111111,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Supported Link Speeds Vector encoding values for use in Link Capabilities 2 register.
+            ///
+            /// Values are defined in PCIe Base Specification for the Supported Link Speeds Vector field
+            /// in Link Capabilities 2 Register. Each bit represents support for a specific generation.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum SupportedLinkSpeedsVector: u32 {
+                #![allow(non_upper_case_globals)]
+                /// Support up to Gen 1 (2.5 GT/s)
+                UpToGen1 = 0b0000001,
+                /// Support up to Gen 2 (5.0 GT/s)
+                UpToGen2 = 0b0000011,
+                /// Support up to Gen 3 (8.0 GT/s)
+                UpToGen3 = 0b0000111,
+                /// Support up to Gen 4 (16.0 GT/s)
+                UpToGen4 = 0b0001111,
+                /// Support up to Gen 5 (32.0 GT/s)
+                UpToGen5 = 0b0011111,
+                /// Support up to Gen 6 (64.0 GT/s)
+                UpToGen6 = 0b0111111,
+            }
         }
 
         impl SupportedLinkSpeedsVector {
             pub const fn from_bits(bits: u32) -> Self {
+                Self(bits)
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self.0
+            }
+        }
+
+        /// PCIe max TLP prefix values for use in Device Capabilities 2.
+        ///
+        /// Values are defined in PCIe Base Specification for the Max End-End TLP Prefixes
+        /// field in Device Capabilities 2 Register and similar fields.
+        #[derive(Copy, Clone, Debug)]
+        #[repr(u32)]
+        pub enum MaxEndEndTlpPrefixes {
+            /// 1 End-End TLP Prefix / OHC-E1
+            One = 0b01,
+            /// 2 End-End TLP Prefixes / OHC-E2
+            Two = 0b10,
+            /// 3 End-End TLP Prefixes / OHC-E4
+            Three = 0b11,
+            /// 4 End-End TLP Prefixes / OHC-E4
+            Four = 0b00,
+        }
+
+        impl MaxEndEndTlpPrefixes {
+            pub(crate) const fn from_bits(bits: u32) -> Self {
                 match bits {
-                    0b0000001 => SupportedLinkSpeedsVector::UpToGen1,
-                    0b0000011 => SupportedLinkSpeedsVector::UpToGen2,
-                    0b0000111 => SupportedLinkSpeedsVector::UpToGen3,
-                    0b0001111 => SupportedLinkSpeedsVector::UpToGen4,
-                    0b0011111 => SupportedLinkSpeedsVector::UpToGen5,
-                    0b0111111 => SupportedLinkSpeedsVector::UpToGen6,
+                    0b01 => MaxEndEndTlpPrefixes::One,
+                    0b10 => MaxEndEndTlpPrefixes::Two,
+                    0b11 => MaxEndEndTlpPrefixes::Three,
+                    0b00 => MaxEndEndTlpPrefixes::Four,
                     _ => unreachable!(),
                 }
             }
@@ -621,40 +642,34 @@ pub mod caps {
             }
         }
 
-        /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
-        ///
-        /// Values are defined in PCIe Base Specification for the Max Link Width field
-        /// in Link Capabilities Register and similar fields.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum LinkWidth {
-            /// x1 link width
-            X1 = 0b000001,
-            /// x2 link width
-            X2 = 0b000010,
-            /// x4 link width
-            X4 = 0b000100,
-            /// x8 link width
-            X8 = 0b001000,
-            /// x16 link width
-            X16 = 0b010000,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
+            ///
+            /// Values are defined in PCIe Base Specification for the Max Link Width field
+            /// in Link Capabilities Register and similar fields.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum LinkWidth: u32 {
+                /// x1 link width
+                X1 = 0b000001,
+                /// x2 link width
+                X2 = 0b000010,
+                /// x4 link width
+                X4 = 0b000100,
+                /// x8 link width
+                X8 = 0b001000,
+                /// x16 link width
+                X16 = 0b010000,
+            }
         }
 
         impl LinkWidth {
             pub const fn from_bits(bits: u32) -> Self {
-                match bits {
-                    0b000001 => LinkWidth::X1,
-                    0b000010 => LinkWidth::X2,
-                    0b000100 => LinkWidth::X4,
-                    0b001000 => LinkWidth::X8,
-                    0b010000 => LinkWidth::X16,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             pub const fn into_bits(self) -> u32 {
-                self as u32
+                self.0
             }
         }
 
@@ -714,28 +729,25 @@ pub mod caps {
             pub flit_mode_supported: bool,
         }
 
-        #[derive(Debug)]
-        #[repr(u16)]
-        pub enum DevicePortType {
-            Endpoint = 0b0000,
-            RootPort = 0b0100,
-            UpstreamSwitchPort = 0b0101,
-            DownstreamSwitchPort = 0b0110,
+        open_enum::open_enum! {
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum DevicePortType: u16 {
+                #![allow(non_upper_case_globals)]
+                Endpoint = 0b0000,
+                RootPort = 0b0100,
+                UpstreamSwitchPort = 0b0101,
+                DownstreamSwitchPort = 0b0110,
+            }
         }
 
         impl DevicePortType {
             const fn from_bits(bits: u16) -> Self {
-                match bits {
-                    0b0000 => DevicePortType::Endpoint,
-                    0b0100 => DevicePortType::RootPort,
-                    0b0101 => DevicePortType::UpstreamSwitchPort,
-                    0b0110 => DevicePortType::DownstreamSwitchPort,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             const fn into_bits(self) -> u16 {
-                self as u16
+                self.0
             }
         }
 
@@ -806,9 +818,9 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkCapabilities {
             #[bits(4)]
-            pub max_link_speed: u32,
+            pub max_link_speed: LinkSpeed,
             #[bits(6)]
-            pub max_link_width: u32,
+            pub max_link_width: LinkWidth,
             #[bits(2)]
             pub aspm_support: u32,
             #[bits(3)]
@@ -855,9 +867,9 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkStatus {
             #[bits(4)]
-            pub current_link_speed: u16,
+            pub current_link_speed: LinkSpeed,
             #[bits(6)]
-            pub negotiated_link_width: u16,
+            pub negotiated_link_width: LinkWidth,
             #[bits(1)]
             _reserved: u16,
             pub link_training: bool,
@@ -991,7 +1003,7 @@ pub mod caps {
             pub extended_fmt_field_supported: bool,
             pub end_end_tlp_prefix_supported: bool,
             #[bits(2)]
-            pub max_end_end_tlp_prefixes: u32,
+            pub max_end_end_tlp_prefixes: MaxEndEndTlpPrefixes,
             #[bits(2)]
             pub emergency_power_reduction_supported: u32,
             pub emergency_power_reduction_init_required: bool,
@@ -1038,7 +1050,7 @@ pub mod caps {
             #[bits(1)]
             _reserved: u32,
             #[bits(7)]
-            pub supported_link_speeds_vector: u32,
+            pub supported_link_speeds_vector: SupportedLinkSpeedsVector,
             pub crosslink_supported: bool,
             #[bits(7)]
             pub lower_skp_os_generation_supported_speeds_vector: u32,
@@ -1056,7 +1068,7 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkControl2 {
             #[bits(4)]
-            pub target_link_speed: u16,
+            pub target_link_speed: LinkSpeed,
             pub enter_compliance: bool,
             pub hardware_autonomous_speed_disable: bool,
             #[bits(1)]

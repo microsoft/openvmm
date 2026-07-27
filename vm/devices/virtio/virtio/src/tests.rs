@@ -13,6 +13,7 @@ use crate::QueueResources;
 use crate::VirtioDevice;
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::spec::pci::*;
@@ -5510,4 +5511,280 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
     // behind it; completing index 1 twice while buffered must panic.
     in_order.complete(&mut queue, w1a.into_completion(), 1);
     in_order.complete(&mut queue, w1b.into_completion(), 1);
+}
+
+const BOUND_TEST_QUEUE_SIZE: u16 = 4;
+const BOUND_TEST_DESC_ADDR: u64 = 0x1000;
+const BOUND_TEST_AVAIL_ADDR: u64 = 0x2000;
+const BOUND_TEST_USED_ADDR: u64 = 0x3000;
+const BOUND_TEST_DATA_ADDR: u64 = 0x4000;
+
+fn bound_test_params(size: u16) -> QueueParams {
+    QueueParams {
+        size,
+        enable: true,
+        desc_addr: BOUND_TEST_DESC_ADDR,
+        avail_addr: BOUND_TEST_AVAIL_ADDR,
+        used_addr: BOUND_TEST_USED_ADDR,
+    }
+}
+
+fn new_bound_test_queue(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> (GuestMemory, VirtioQueue) {
+    new_bound_test_queue_result(driver, packed, initial_state).unwrap()
+}
+
+fn new_bound_test_queue_result(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    init_avail_ring(&mem, BOUND_TEST_AVAIL_ADDR);
+    init_used_ring(&mem, BOUND_TEST_USED_ADDR);
+    if !packed {
+        for index in 0..BOUND_TEST_QUEUE_SIZE {
+            write_descriptor(
+                &mem,
+                BOUND_TEST_DESC_ADDR,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                0x100,
+                DescriptorFlags::new().with_write(true),
+                0,
+            );
+        }
+    }
+    let features = if packed {
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED)
+    } else {
+        VirtioDeviceFeatures::new()
+    };
+    let queue = VirtioQueue::new(
+        features,
+        bound_test_params(BOUND_TEST_QUEUE_SIZE),
+        mem.clone(),
+        Interrupt::from_event(Event::new()),
+        PolledWait::new(driver, Event::new()).unwrap(),
+        initial_state,
+    )?;
+    Ok((mem, queue))
+}
+
+fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
+    let error = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<QueueError>());
+    assert!(matches!(
+        error,
+        Some(QueueError::TooManyInFlightDescriptors {
+            in_flight: actual_in_flight,
+            requested: actual_requested,
+            queue_size: BOUND_TEST_QUEUE_SIZE,
+        }) if *actual_in_flight == in_flight && *actual_requested == requested
+    ));
+}
+
+fn next_error(queue: &mut VirtioQueue) -> io::Error {
+    match queue.try_next() {
+        Err(error) => error,
+        Ok(_) => panic!("queue accepted too many in-flight descriptors"),
+    }
+}
+
+fn make_split_bound_test_work(mem: &GuestMemory, count: u16, initial_avail: u16) {
+    use crate::test_helpers::make_available;
+
+    let mut avail = initial_avail;
+    for index in 0..count {
+        make_available(
+            mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            index % BOUND_TEST_QUEUE_SIZE,
+            &mut avail,
+        );
+    }
+}
+
+fn write_packed_descriptor(
+    mem: &GuestMemory,
+    index: u16,
+    addr: u64,
+    buffer_id: u16,
+    flags: DescriptorFlags,
+) {
+    let base = BOUND_TEST_DESC_ADDR + size_of::<PackedDescriptor>() as u64 * u64::from(index);
+    for (offset, bytes) in [
+        (
+            std::mem::offset_of!(PackedDescriptor, address),
+            addr.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, buffer_id),
+            buffer_id.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, flags_raw),
+            u16::from(flags).to_le_bytes().as_slice(),
+        ),
+    ] {
+        mem.write_at(base + offset as u64, bytes).unwrap();
+    }
+    mem.write_at(
+        base + std::mem::offset_of!(PackedDescriptor, length) as u64,
+        &0x100u32.to_le_bytes(),
+    )
+    .unwrap();
+}
+
+#[async_test]
+async fn split_queue_rejects_too_many_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_restamped_slots(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    for index in 0..BOUND_TEST_QUEUE_SIZE {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            available,
+        );
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+
+    write_packed_descriptor(
+        &mem,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0,
+        DescriptorFlags::new().with_write(true).with_used(true),
+    );
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    let write = |index, flags| {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            flags,
+        );
+    };
+    write(0, available.with_next(true));
+    write(1, available);
+    let _ = queue.try_next().unwrap().unwrap();
+
+    write(2, available.with_next(true));
+    write(3, available.with_next(true));
+    write(0, available);
+    assert_in_flight_error(next_error(&mut queue), 2, 3);
+}
+
+#[async_test]
+async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    let mut works = Vec::new();
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        works.push(queue.try_next().unwrap().expect("within queue size"));
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+    queue.complete(works.remove(0), 1);
+    let _ = queue.try_next().unwrap().unwrap();
+}
+
+#[async_test]
+async fn split_queue_restore_seeds_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(
+        &driver,
+        false,
+        Some(QueueState {
+            avail_index: 3,
+            used_index: 1,
+        }),
+    );
+    make_split_bound_test_work(&mem, 3, 3);
+
+    for _ in 0..2 {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), 4, 1);
+}
+
+#[async_test]
+async fn packed_queue_new_rejects_oversized_size(driver: DefaultDriver) {
+    let mem = GuestMemory::allocate(0x110000);
+    let params = QueueParams {
+        size: (1 << 15) + 1,
+        enable: true,
+        desc_addr: 0x1000,
+        avail_addr: 0x100000,
+        used_addr: 0x101000,
+    };
+    let features =
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    assert!(matches!(
+        VirtioQueue::new(
+            features,
+            params,
+            mem,
+            Interrupt::from_event(Event::new()),
+            queue_event,
+            None,
+        ),
+        Err(QueueError::InvalidQueueSize(size)) if size == (1 << 15) + 1
+    ));
+}
+
+#[async_test]
+async fn queue_new_rejects_corrupt_saved_state(driver: DefaultDriver) {
+    let cases = [
+        (false, 10, 0),
+        (true, 1, 6),
+        (true, BOUND_TEST_QUEUE_SIZE, 0),
+        (true, 0, BOUND_TEST_QUEUE_SIZE),
+    ];
+    for (packed, avail_index, used_index) in cases {
+        assert!(matches!(
+            new_bound_test_queue_result(
+                &driver,
+                packed,
+                Some(QueueState {
+                    avail_index,
+                    used_index,
+                }),
+            ),
+            Err(QueueError::InvalidSavedState {
+                avail_index: actual_avail,
+                used_index: actual_used,
+                queue_size: BOUND_TEST_QUEUE_SIZE,
+            }) if actual_avail == avail_index && actual_used == used_index
+        ));
+    }
 }

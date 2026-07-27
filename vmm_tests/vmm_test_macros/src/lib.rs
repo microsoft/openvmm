@@ -997,7 +997,8 @@ pub fn vmm_test(
 /// capabilities, such as `vpci`, and execution environments can advertise
 /// capabilities via the `PETRI_CAPABILITIES` environment variable. When a
 /// required capability is not available, the test is skipped, so it
-/// self-excludes on any host that cannot provide it.
+/// self-excludes on any host that cannot provide it. Capability availability
+/// is evaluated in the context of each config's resolved VMM.
 ///
 /// By convention the vmm (if specified) comes first and `configs(...)` comes
 /// last; both are enforced.
@@ -1220,8 +1221,15 @@ fn build_requirements(
     }
 
     for capability in requires_capabilities {
+        let vmm = match resolved_vmm {
+            Vmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
+            Vmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
+        };
         requirement_expr = quote!(#requirement_expr.and(
-            ::petri::requirements::TestRequirement::RequiresCapability(#capability)
+            ::petri::requirements::TestRequirement::RequiresCapability {
+                name: #capability,
+                vmm: #vmm,
+            }
         ));
     }
 

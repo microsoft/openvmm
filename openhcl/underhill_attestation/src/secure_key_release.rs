@@ -77,6 +77,7 @@ pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
 fn pkcs11_rsa_aes_key_unwrap(
     unwrapping_rsa_key: &RsaKeyPair,
     wrapped_key_blob: &[u8],
+    rsa_aes_key_wrap_384_used: bool,
 ) -> Result<RsaKeyPair, Pkcs11RsaAesKeyUnwrapError> {
     let modulus_size = unwrapping_rsa_key.modulus_size();
 
@@ -91,8 +92,18 @@ fn pkcs11_rsa_aes_key_unwrap(
         return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);
     }
 
+    // The IGVM Agent signals via `rsa_aes_key_wrap_384_used` whether AKV wrapped
+    // the AES KEK using the SHA-384 variant (RSA_AES_KEY_WRAP_384, inner
+    // RSA-OAEP-SHA384). Otherwise fall back to the default scheme (inner
+    // RSA-OAEP-SHA1).
+    let oaep_hash_algorithm = if rsa_aes_key_wrap_384_used {
+        HashAlgorithm::Sha384
+    } else {
+        HashAlgorithm::Sha1
+    };
+
     let unwrapped_aes_key = unwrapping_rsa_key
-        .oaep_decrypt(wrapped_aes_key, HashAlgorithm::Sha1)
+        .oaep_decrypt(wrapped_aes_key, oaep_hash_algorithm)
         .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
     let unwrapped_rsa_key = crypto::aes_kwp::AesKeyWrap::new(&unwrapped_aes_key)
         .and_then(|kw| kw.unwrapper()?.unwrap(wrapped_rsa_key))
@@ -109,6 +120,10 @@ struct WrappedKeyVmgsEncryptionKeys {
     rsa_aes_wrapped_key: Vec<u8>,
     /// Optional wrapped DiskEncryptionSettings key blob.
     wrapped_des_key: Option<Vec<u8>>,
+    /// Whether the IGVM Agent signaled that AKV used the SHA-384 variant of the
+    /// RSA+AES key-wrap scheme (`RSA_AES_KEY_WRAP_384`) for `rsa_aes_wrapped_key`.
+    /// When `false`, the default scheme (inner RSA-OAEP using SHA-1) is used.
+    rsa_aes_key_wrap_384_used: bool,
 }
 
 /// The return values of [`request_vmgs_encryption_keys`].
@@ -180,9 +195,14 @@ pub async fn request_vmgs_encryption_keys(
         Ok(WrappedKeyVmgsEncryptionKeys {
             rsa_aes_wrapped_key,
             wrapped_des_key,
+            rsa_aes_key_wrap_384_used,
         }) => {
-            let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
+            let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(
+                &transfer_key,
+                &rsa_aes_wrapped_key,
+                rsa_aes_key_wrap_384_used,
+            )
+            .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),
@@ -368,9 +388,13 @@ async fn make_igvm_attest_requests(
 
     match igvm_attest::key_release::parse_response(&response.response, transfer_key.modulus_size())
     {
-        Ok(rsa_aes_wrapped_key) => Ok(WrappedKeyVmgsEncryptionKeys {
+        Ok(igvm_attest::key_release::KeyReleaseResponse {
+            wrapped_key: rsa_aes_wrapped_key,
+            rsa_aes_key_wrap_384_used,
+        }) => Ok(WrappedKeyVmgsEncryptionKeys {
             rsa_aes_wrapped_key,
             wrapped_des_key,
+            rsa_aes_key_wrap_384_used,
         }),
         Err(e) => {
             // Notify host for diagnosis.
@@ -391,7 +415,7 @@ mod tests {
 
         // undersized aes key blob
         let wrapped_key_blob = vec![0; 256 - 1];
-        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob, false);
         assert!(matches!(
             result,
             Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
@@ -401,7 +425,7 @@ mod tests {
 
         // empty rsa key blob
         let wrapped_key_blob = vec![0; 256];
-        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob, false);
         assert!(matches!(
             result,
             Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey)
@@ -411,28 +435,37 @@ mod tests {
     #[test]
     #[expect(deprecated)]
     fn pkcs11_rsa_aes_key_unwrap_roundtrip() {
-        let target_key = RsaKeyPair::generate(2048).unwrap();
-        let pkcs8_target_key = target_key.to_pkcs8_der().unwrap();
+        // Exercise both the default (SHA-1) and SHA-384 key-wrap schemes.
+        for (rsa_aes_key_wrap_384_used, oaep_hash_algorithm) in
+            [(false, HashAlgorithm::Sha1), (true, HashAlgorithm::Sha384)]
+        {
+            let target_key = RsaKeyPair::generate(2048).unwrap();
+            let pkcs8_target_key = target_key.to_pkcs8_der().unwrap();
 
-        let mut wrapping_aes_key = [0u8; 32];
-        getrandom::fill(&mut wrapping_aes_key).expect("rng failure");
+            let mut wrapping_aes_key = [0u8; 32];
+            getrandom::fill(&mut wrapping_aes_key).expect("rng failure");
 
-        let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
-        let wrapped_aes_key = wrapping_rsa_key
-            .oaep_encrypt(&wrapping_aes_key, HashAlgorithm::Sha1)
+            let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
+            let wrapped_aes_key = wrapping_rsa_key
+                .oaep_encrypt(&wrapping_aes_key, oaep_hash_algorithm)
+                .unwrap();
+            let wrapped_target_key = crypto::aes_kwp::AesKeyWrap::new(&wrapping_aes_key)
+                .unwrap()
+                .wrapper()
+                .unwrap()
+                .wrap(&pkcs8_target_key)
+                .unwrap();
+            let wrapped_key_blob = [wrapped_aes_key, wrapped_target_key].concat();
+            let unwrapped_target_key = pkcs11_rsa_aes_key_unwrap(
+                &wrapping_rsa_key,
+                wrapped_key_blob.as_slice(),
+                rsa_aes_key_wrap_384_used,
+            )
             .unwrap();
-        let wrapped_target_key = crypto::aes_kwp::AesKeyWrap::new(&wrapping_aes_key)
-            .unwrap()
-            .wrapper()
-            .unwrap()
-            .wrap(&pkcs8_target_key)
-            .unwrap();
-        let wrapped_key_blob = [wrapped_aes_key, wrapped_target_key].concat();
-        let unwrapped_target_key =
-            pkcs11_rsa_aes_key_unwrap(&wrapping_rsa_key, wrapped_key_blob.as_slice()).unwrap();
-        assert_eq!(
-            unwrapped_target_key.to_pkcs8_der().unwrap(),
-            target_key.to_pkcs8_der().unwrap()
-        );
+            assert_eq!(
+                unwrapped_target_key.to_pkcs8_der().unwrap(),
+                target_key.to_pkcs8_der().unwrap()
+            );
+        }
     }
 }

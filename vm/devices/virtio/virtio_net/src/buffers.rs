@@ -145,6 +145,24 @@ impl BufferAccess for VirtioWorkPool {
         }
     }
 
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        let packet = self.rx_packets[id.0 as usize]
+            .as_mut()
+            .expect("invalid buffer index");
+        let mut offset = header_size() as u64;
+        for segment in segments {
+            if let Err(err) = packet.work.write_at_offset(offset, &self.mem, segment) {
+                tracelimit::warn_ratelimited!(
+                    len = segment.len(),
+                    error = &err as &dyn std::error::Error,
+                    "rx memory write failure"
+                );
+            }
+            offset += segment.len() as u64;
+        }
+        self.write_header(id, metadata);
+    }
+
     fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let packet = self.rx_packets[id.0 as usize]
             .as_ref()

@@ -99,8 +99,31 @@ jobs:
               "ghbranch=$SOURCE_BRANCH" \
               "ghpr=$SOURCE_PR" \
             --auth-mode login
+
+          # Run-and-attempt-keyed runs and details. For now, these will live alongside
+          # the legacy run-keyed uploads above, but the site will be switched to
+          # read from the attempt-keyed uploads once a full 30-day retention
+          # window has elapsed.
+          run_key="${run_id}_${run_attempt}"
+
+          az storage blob upload-batch \
+            --destination "$BASE_URL/results" \
+            --destination-path "$run_key" \
+            --source results \
+            --auth-mode login
+
+          az storage blob upload \
+            --blob-url "$BASE_URL/results/attempts/$run_key" \
+            --file /dev/null \
+            --metadata \
+              "petrifailed=$FAIL_COUNT" \
+              "petripassed=$PASS_COUNT" \
+              "ghbranch=$SOURCE_BRANCH" \
+              "ghpr=$SOURCE_PR" \
+            --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
 
       - name: Upload to memory validation results to Azure Blob Storage
         run: |

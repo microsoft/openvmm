@@ -285,6 +285,31 @@ pub trait BufferAccess {
         self.write_data(id, data);
         self.write_header(id, metadata);
     }
+
+    /// Writes the packet header and a payload composed of multiple
+    /// discontiguous segments, in order, as a single logical packet.
+    ///
+    /// This allows callers to hand off a frame whose bytes are not contiguous
+    /// in memory (for example, an Ethernet/IP/TCP header followed by payload
+    /// that wraps a ring buffer) without first linearizing it into a scratch
+    /// buffer.
+    ///
+    /// The default implementation copies the segments into a temporary
+    /// contiguous buffer and forwards to [`BufferAccess::write_packet`].
+    /// Backends that write directly into guest memory should override this to
+    /// write each segment at its running offset and avoid the copy.
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        if let [segment] = segments {
+            self.write_packet(id, metadata, segment);
+            return;
+        }
+        let total = segments.iter().map(|s| s.len()).sum();
+        let mut data = Vec::with_capacity(total);
+        for segment in segments {
+            data.extend_from_slice(segment);
+        }
+        self.write_packet(id, metadata, &data);
+    }
 }
 
 pub const ETHERNET_HEADER_LEN: u32 = 14;
