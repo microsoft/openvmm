@@ -394,8 +394,8 @@ impl PetriVmConfigOpenVmm {
         if matches!(firmware, Firmware::Uefi { .. }) {
             let uefi_cfg = firmware.uefi_config();
             let template_arch = match arch {
-                MachineArch::X86_64 => hyperv_secure_boot_templates::UefiArch::X64,
-                MachineArch::Aarch64 => hyperv_secure_boot_templates::UefiArch::Aarch64,
+                MachineArch::X86_64 => hyperv_secure_boot_templates::UefiTemplateArch::X64,
+                MachineArch::Aarch64 => hyperv_secure_boot_templates::UefiTemplateArch::Aarch64,
             };
             let base_template = uefi_cfg
                 .and_then(|c| c.secure_boot_template)
