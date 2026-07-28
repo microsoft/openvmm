@@ -2544,6 +2544,8 @@ async fn new_underhill_vm(
         let template_arch = UefiTemplateArch::X64;
         #[cfg(guest_arch = "aarch64")]
         let template_arch = UefiTemplateArch::Aarch64;
+        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
+        compile_error!("no UEFI Secure Boot templates for this guest architecture");
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
