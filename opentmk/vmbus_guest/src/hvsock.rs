@@ -1,64 +1,122 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! hv-socket wire types and a `TlConnectRequest[2]` helper.
+//! hv-socket wire helpers.
 //!
-//! §7 of `tasks/vmbus-port-design.md` deliberately keeps this to a
-//! structs-only pass plus a single `send_hvsock_connect` helper — we
-//! don't yet implement listen/accept, pipe framing, or a stream API.
+//! §7 of `tasks/vmbus-port-design.md` keeps the initial pass to:
+//! * the wire structs (re-exported from [`crate::protocol`]),
+//! * an outbound `TlConnectRequest[/2]` helper, and
+//! * a callback slot for the resulting `TlConnectResult`.
 //!
-//! # Follow-up work
+//! # Follow-up work (out of scope for this port)
 //!
-//! * Listen side: register a service GUID with the host so
-//!   incoming `TlConnectRequest` messages route to a callback.
-//! * Pipe framing: `PipeType::BYTE` / `PipeType::MESSAGE` on top of the
-//!   ring layer (see `vmbus_ring::pipe_protocol` in openvmm).
-//! * A real socket / stream API layered on top of the pipe framing.
+//! * Listen side: register a service GUID with the host so incoming
+//!   `TlConnectRequest`s route to a callback.
+//! * Pipe framing (`PipeType::BYTE` / `PipeType::MESSAGE` on top of
+//!   the ring layer — see `vmbus_ring::pipe_protocol` in openvmm).
+//! * A real socket/stream API layered on top of the pipe framing.
 
 use crate::Error;
 use crate::Result;
 use crate::protocol::Guid;
+use crate::protocol::HEADER_SIZE;
+use crate::protocol::MessageHeader;
+use crate::protocol::MessageType;
 use crate::protocol::TlConnectRequest;
 use crate::protocol::TlConnectRequest2;
 use crate::protocol::TlConnectResult;
+use crate::protocol::Version;
+use alloc::vec::Vec;
+use core::mem::size_of;
 use opentmk::context::HypercallTrait;
+use spin::Mutex;
+use zerocopy::IntoBytes;
 
 pub use crate::protocol::HvsockParametersVersion;
 pub use crate::protocol::HvsockUserDefinedParameters;
 
-/// Post a `TlConnectRequest` (or `TlConnectRequest2` when a silo id is
-/// supplied and the negotiated version is ≥ RS5).
-///
-/// The completion (`TlConnectResult`) is delivered asynchronously via
-/// the message dispatcher; register a callback with
-/// [`set_connect_result_handler`] before calling this.
-///
-/// **Not implemented in the scaffold.**
-pub fn send_hvsock_connect<C: HypercallTrait>(
-    _ctx: &mut C,
-    _endpoint: Guid,
-    _service: Guid,
-    _silo: Option<Guid>,
-) -> Result<()> {
-    // TODO(vmbus-port): pick between `TlConnectRequest` and
-    // `TlConnectRequest2` based on the negotiated version + whether
-    // `silo.is_some()`, encode, and post via `hypercalls::post_message`.
-    Err(Error::NotImplemented)
-}
-
 /// Callback fired when the host sends `TlConnectResult`.
 pub type ConnectResultHandler = fn(&TlConnectResult);
 
+/// Global handler slot. `None` when no client has registered.
+static HANDLER: Mutex<Option<ConnectResultHandler>> = Mutex::new(None);
+
 /// Register a handler to receive `TlConnectResult` messages.
 ///
-/// **Not implemented in the scaffold.**
-pub fn set_connect_result_handler(_handler: ConnectResultHandler) {
-    // TODO(vmbus-port): store the handler in a `Mutex<Option<_>>` and
-    // invoke it from the message dispatcher when a `TL_CONNECT_RESULT`
-    // arrives.
+/// The handler is installed globally and replaces any previous
+/// registration. To unregister, pass a no-op handler (there is no
+/// explicit `unregister` API).
+///
+/// The handler is invoked from the message-page drain (see
+/// [`crate::interrupt`]), so it runs in whatever context the pump
+/// runs in.
+pub fn set_connect_result_handler(handler: ConnectResultHandler) {
+    *HANDLER.lock() = Some(handler);
 }
 
-// Silence dead-code warnings for the unused imports the scaffold leaves
-// in place so callers see the intended shape.
-// Reference the wire types so IDE navigation/consumers see the shape.
-fn _reference_types(_a: TlConnectRequest, _b: TlConnectRequest2, _c: HvsockUserDefinedParameters) {}
+/// Dispatch a decoded `TlConnectResult` to the registered handler, if
+/// any. Called from [`crate::message::route_message`] via the
+/// [`MessageSink::tl_connect_result`](crate::message::MessageSink)
+/// hook when a completion arrives.
+pub fn dispatch_connect_result(result: &TlConnectResult) {
+    if let Some(handler) = *HANDLER.lock() {
+        handler(result);
+    }
+}
+
+/// Encode a `TlConnectRequest[/2]` for the given endpoint / service /
+/// silo, picking the wire layout based on the negotiated version and
+/// whether a silo id was supplied.
+///
+/// Returns the byte buffer ready to be posted via
+/// [`crate::hypercalls::post_message`].
+pub fn encode_tl_connect_request(
+    version: Version,
+    endpoint_id: Guid,
+    service_id: Guid,
+    silo: Option<Guid>,
+) -> Vec<u8> {
+    let use_v2 = silo.is_some() && version >= Version::Win10Rs5;
+    let mut buf = Vec::new();
+    if use_v2 {
+        let msg = TlConnectRequest2 {
+            base: TlConnectRequest {
+                endpoint_id,
+                service_id,
+            },
+            silo_id: silo.unwrap_or_default(),
+        };
+        buf.reserve(HEADER_SIZE + size_of::<TlConnectRequest2>());
+        buf.extend_from_slice(MessageHeader::new(MessageType::TL_CONNECT_REQUEST).as_bytes());
+        buf.extend_from_slice(msg.as_bytes());
+    } else {
+        let msg = TlConnectRequest {
+            endpoint_id,
+            service_id,
+        };
+        buf.reserve(HEADER_SIZE + size_of::<TlConnectRequest>());
+        buf.extend_from_slice(MessageHeader::new(MessageType::TL_CONNECT_REQUEST).as_bytes());
+        buf.extend_from_slice(msg.as_bytes());
+    }
+    buf
+}
+
+/// Post a `TlConnectRequest[/2]` and return immediately without
+/// waiting for `TlConnectResult`. The result arrives asynchronously
+/// through the message-page drain and is delivered to the handler
+/// registered via [`set_connect_result_handler`].
+///
+/// Requires a negotiated connection ([`crate::connection::initiate`])
+/// to have completed.
+pub fn send_hvsock_connect<C: HypercallTrait>(
+    ctx: &mut C,
+    endpoint: Guid,
+    service: Guid,
+    silo: Option<Guid>,
+) -> Result<()> {
+    let state = crate::connection::connection()
+        .clone()
+        .ok_or(Error::VersionMismatch)?;
+    let payload = encode_tl_connect_request(state.selected_version, endpoint, service, silo);
+    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &payload)
+}

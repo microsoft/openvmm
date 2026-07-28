@@ -30,10 +30,33 @@
 //!
 //! # Status
 //!
-//! This crate is currently a **scaffold**. Wire types are complete and
-//! round-trip through `zerocopy`; module bodies for protocol handlers are
-//! stubs that return [`Error::NotImplemented`] and will be filled in by
-//! follow-up work described in `tasks/vmbus-port-design.md`.
+//! Fully implemented and unit-tested on the host target:
+//!
+//! * All wire types (round-trip via `zerocopy`).
+//! * Ring-buffer send/recv with wraparound and signal semantics.
+//! * GPADL header/body encoder + completion flow.
+//! * Message completion table with per-request keys.
+//! * Version-negotiation state machine.
+//! * `RequestOffers` enumeration.
+//! * `OpenChannel[/2]` / `CloseChannel` / `RelIdReleased`.
+//! * `TlConnectRequest[/2]` encoder + result callback.
+//! * SIMP-slot draining + EOM.
+//!
+//! The following are UEFI-target only (host tests exercise the
+//! state-machine layer with a mock ctx and scripted pump):
+//!
+//! * SynIC page allocation (`init_synic`).
+//! * `SimpPump` reading from a real SIMP GPA.
+//!
+//! Follow-up work explicitly out of scope for the initial port:
+//!
+//! * Real SINT2 ISR installation (we use polling with a bounded retry
+//!   inside [`SimpPump`](interrupt::SimpPump)).
+//! * Ring buffer allocation helpers (caller supplies the ring GPADL).
+//! * Rescind teardown semantics on [`channel::Channel`] beyond acking.
+//! * Reserved channels, `ModifyChannel`, monitor-page signalling,
+//!   confidential VMBus.
+//! * A high-level hv-socket / pipe API (only the wire helpers ship).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -78,4 +101,10 @@ pub fn init<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 /// until `AllOffersDelivered` is received.
 pub fn request_offers<C: HypercallTrait>(ctx: &mut C) -> Result<Vec<protocol::OfferChannel>> {
     connection::request_offers(ctx)
+}
+
+/// Post an `Unload` and wait for `UnloadComplete`, then clear the
+/// process-wide connection state.
+pub fn unload<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+    connection::unload(ctx)
 }

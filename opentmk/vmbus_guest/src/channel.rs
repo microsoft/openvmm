@@ -1,19 +1,41 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Channel lifecycle (open, close, rel-id-released) and the
-//! [`Channel`] handle exposed to consumers.
+//! Channel lifecycle: [`open_channel`] / [`close_channel`] +
+//! [`RelIdReleased`] cleanup.
 //!
-//! Public API mirrors the shape described in §2 of the design doc.
+//! The wire-level state machine (post `OpenChannel[/2]`, wait for
+//! `OpenResult`) is factored into [`open_channel_with`] /
+//! [`close_channel_with`] which take an explicit
+//! [`crate::message::CompletionTable`] and
+//! [`crate::connection::MessagePump`]. The UEFI entry points wrap
+//! those with the process-wide table and SIMP pump.
+//!
+//! Ring-buffer memory ownership belongs to the caller: [`Channel`]
+//! records the GPADL handle it was opened over but does **not**
+//! allocate or free the pages. This keeps the state machine
+//! host-testable and lets callers plug in either the
+//! [`crate::ring::OwnedRingMem`] host allocator or a UEFI page
+//! allocation.
 
 use crate::Error;
 use crate::Result;
 use crate::gpadl::GpadlHandle;
 use crate::protocol::ChannelId;
+use crate::protocol::FeatureFlags;
+use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::OfferChannel;
-use crate::ring::PacketFlags;
-use crate::ring::RecvPacket;
+use crate::protocol::OpenChannel;
+use crate::protocol::OpenChannel2;
+use crate::protocol::OpenChannelFlags;
+use crate::protocol::OpenResult;
+use crate::protocol::RelIdReleased;
+use crate::protocol::UserDefinedData;
+pub use crate::ring::PacketFlags;
+pub use crate::ring::RecvPacket;
+use alloc::vec::Vec;
 use opentmk::context::HypercallTrait;
+use zerocopy::IntoBytes;
 
 /// Whether the channel is usable.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -29,13 +51,11 @@ pub enum ChannelState {
 
 /// A guest-side handle to a VMBus channel.
 ///
-/// Owned by the caller; drop-time behaviour is the caller's
-/// responsibility (call [`close_channel`] explicitly). See §6 of the
-/// design doc for rescind semantics.
-#[expect(
-    dead_code,
-    reason = "scaffold: fields will be read once ring send/recv lands"
-)]
+/// Ownership of the ring memory sits with the caller — [`Channel`]
+/// only records the [`GpadlHandle`] and the ids the host assigned.
+/// Drop the value only after [`close_channel`] (or after an observed
+/// rescind).
+#[derive(Debug)]
 pub struct Channel {
     pub(crate) channel_id: ChannelId,
     pub(crate) open_id: u32,
@@ -51,73 +71,236 @@ impl Channel {
         self.channel_id
     }
 
+    /// The `open_id` we used when opening this channel.
+    pub fn open_id(&self) -> u32 {
+        self.open_id
+    }
+
+    /// The GPADL backing the ring buffer.
+    pub fn ring_gpadl(&self) -> GpadlHandle {
+        self.ring_gpadl
+    }
+
+    /// Connection id used to signal the host on send.
+    pub fn connection_id(&self) -> u32 {
+        self.connection_id
+    }
+
+    /// Event flag used to signal the host on send.
+    pub fn event_flag(&self) -> u16 {
+        self.event_flag
+    }
+
     /// Current lifecycle state.
     pub fn state(&self) -> ChannelState {
         self.state
     }
 
-    /// Send an inband packet (`VM_PKT_DATA_INBAND`).
+    /// Signal the host that we've published data on the send ring.
     ///
-    /// **Not implemented in the scaffold.**
-    pub fn send_inband<C: HypercallTrait>(
-        &mut self,
-        _ctx: &mut C,
-        _payload: &[u8],
-        _flags: PacketFlags,
-    ) -> Result<()> {
-        Err(Error::NotImplemented)
-    }
-
-    /// Send a `VM_PKT_DATA_USING_GPA_DIRECT` packet.
-    ///
-    /// **Not implemented in the scaffold.**
-    pub fn send_gpa_direct<C: HypercallTrait>(
-        &mut self,
-        _ctx: &mut C,
-        _hdr: &[u8],
-        _ranges: &[crate::protocol::GpaRange],
-    ) -> Result<()> {
-        Err(Error::NotImplemented)
-    }
-
-    /// Block for the next packet on the recv ring.
-    ///
-    /// **Not implemented in the scaffold.**
-    pub fn recv<'a, C: HypercallTrait>(
-        &mut self,
-        _ctx: &mut C,
-        _buf: &'a mut [u8],
-    ) -> Result<RecvPacket<'a>> {
-        Err(Error::NotImplemented)
-    }
-
-    /// Non-blocking variant of [`Channel::recv`].
-    ///
-    /// **Not implemented in the scaffold.**
-    pub fn try_recv<'a, C: HypercallTrait>(
-        &mut self,
-        _ctx: &mut C,
-        _buf: &'a mut [u8],
-    ) -> Result<Option<RecvPacket<'a>>> {
-        Err(Error::NotImplemented)
+    /// Only invokes `HvSignalEvent`; monitor-page-based signalling is
+    /// out of scope for the initial port (§4 signal-path notes).
+    pub fn signal<C: HypercallTrait>(&self, ctx: &mut C) -> Result<()> {
+        if self.state != ChannelState::Open {
+            return Err(Error::Rescinded);
+        }
+        crate::hypercalls::signal_event(ctx, self.connection_id, self.event_flag)
     }
 }
 
-/// Open the specified `offer` with `ring_pages` pages of send + recv ring.
+/// Allocate a fresh 32-bit `open_id`. Uses a process-wide atomic
+/// counter, starting at 1 so a zero id can be used as a sentinel.
+pub fn allocate_open_id() -> u32 {
+    use core::sync::atomic::AtomicU32;
+    use core::sync::atomic::Ordering;
+    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Encode `OpenChannel` / `OpenChannel2` (depending on negotiated
+/// feature flags) for the given parameters. Returns the wire bytes
+/// ready to be posted.
+pub fn encode_open_channel(
+    channel_id: ChannelId,
+    open_id: u32,
+    ring_gpadl: crate::protocol::GpadlId,
+    target_vp: u32,
+    downstream_page_offset: u32,
+    connection_id: u32,
+    event_flag: u16,
+    flags: OpenChannelFlags,
+    negotiated: FeatureFlags,
+) -> Vec<u8> {
+    use crate::protocol::HEADER_SIZE;
+    use crate::protocol::MessageHeader;
+    use crate::protocol::MessageType;
+    use crate::protocol::VmbusMessage;
+    use core::mem::size_of;
+
+    let base = OpenChannel {
+        channel_id,
+        open_id,
+        ring_buffer_gpadl_id: ring_gpadl,
+        target_vp,
+        downstream_ring_buffer_page_offset: downstream_page_offset,
+        user_data: UserDefinedData::default(),
+    };
+    let use_v2 = negotiated.guest_specified_signal_parameters()
+        || negotiated.channel_interrupt_redirection();
+
+    let mut buf = Vec::new();
+    if use_v2 {
+        let msg = OpenChannel2 {
+            open_channel: base,
+            connection_id,
+            event_flag,
+            flags,
+        };
+        buf.reserve(HEADER_SIZE + size_of::<OpenChannel2>());
+        buf.extend_from_slice(MessageHeader::new(MessageType::OPEN_CHANNEL).as_bytes());
+        buf.extend_from_slice(msg.as_bytes());
+    } else {
+        buf.reserve(HEADER_SIZE + size_of::<OpenChannel>());
+        buf.extend_from_slice(
+            MessageHeader::new(<OpenChannel as VmbusMessage>::MESSAGE_TYPE).as_bytes(),
+        );
+        buf.extend_from_slice(base.as_bytes());
+    }
+    buf
+}
+
+/// Pump-based [`open_channel`] the host tests can drive.
 ///
-/// **Not implemented in the scaffold.** See §4 step 7 of the design.
+/// * `offer` — the offer chosen for opening.
+/// * `ring_gpadl` — GPADL handle covering the ring buffer memory.
+///   `ring_pages` describes its layout: `1 + send_data_pages`
+///   contiguous pages for the send ring, then `1 + recv_data_pages`
+///   for the recv ring. The `downstream_ring_buffer_page_offset`
+///   field posted to the host is `1 + send_data_pages`.
+/// * `send_data_pages` — data pages for the send ring (must be
+///   power-of-two).
+pub fn open_channel_with<C, P>(
+    ctx: &mut C,
+    table: &crate::message::CompletionTable,
+    pump: &mut P,
+    sink: &mut dyn crate::message::MessageSink,
+    offer: &OfferChannel,
+    ring_gpadl: GpadlHandle,
+    send_data_pages: u32,
+    connection_id: u32,
+    event_flag: u16,
+) -> Result<Channel>
+where
+    C: HypercallTrait,
+    P: crate::connection::MessagePump,
+{
+    let state = crate::connection::connection()
+        .clone()
+        .ok_or(Error::VersionMismatch)?;
+
+    let open_id = allocate_open_id();
+    let downstream_page_offset = 1 + send_data_pages;
+    let payload = encode_open_channel(
+        offer.channel_id,
+        open_id,
+        ring_gpadl.gpadl_id,
+        0,
+        downstream_page_offset,
+        connection_id,
+        event_flag,
+        OpenChannelFlags::new(),
+        state.feature_flags,
+    );
+
+    let completion = table.register(crate::message::CompletionKey::OpenChannelResult(open_id));
+    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &payload)?;
+    pump.poll_until(ctx, &completion, sink)?;
+    let bytes = completion.take_response().ok_or(Error::Timeout)?;
+    let result: OpenResult = crate::message::parse(&bytes)?;
+    if result.status != 0 {
+        return Err(Error::Parse {
+            ty: Some(crate::protocol::MessageType::OPEN_CHANNEL_RESULT),
+            reason: "host returned non-success OpenResult status",
+        });
+    }
+
+    Ok(Channel {
+        channel_id: offer.channel_id,
+        open_id,
+        ring_gpadl,
+        connection_id,
+        event_flag,
+        state: ChannelState::Open,
+    })
+}
+
+/// Pump-based [`close_channel`].
+///
+/// Posts `CloseChannel`, then `RelIdReleased`. Neither requires a
+/// completion — the host tears the channel down synchronously.
+pub fn close_channel_with<C>(ctx: &mut C, channel: Channel) -> Result<()>
+where
+    C: HypercallTrait,
+{
+    use crate::protocol::CloseChannel;
+    let state = crate::connection::connection()
+        .clone()
+        .ok_or(Error::VersionMismatch)?;
+
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+
+    // Skip the CloseChannel post if the channel has already been
+    // rescinded — the host has torn it down for us; we only need to
+    // release our end.
+    if channel.state != ChannelState::Rescinded {
+        let close = CloseChannel {
+            channel_id: channel.channel_id,
+        };
+        let used = crate::message::encode(&close, &mut buf);
+        crate::hypercalls::post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+    }
+
+    let rel = RelIdReleased {
+        channel_id: channel.channel_id,
+    };
+    let used = crate::message::encode(&rel, &mut buf);
+    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+
+    Ok(())
+}
+
+/// UEFI entry point: open `offer` over a caller-supplied ring GPADL
+/// and default parameters.
+///
+/// * `send_data_pages` — power-of-two data pages for the send ring.
+/// * `connection_id` / `event_flag` — populated only when Copper's
+///   `GUEST_SPECIFIED_SIGNAL_PARAMETERS` feature was negotiated.
 pub fn open_channel<C: HypercallTrait>(
-    _ctx: &mut C,
-    _offer: &OfferChannel,
-    _ring_pages: usize,
+    ctx: &mut C,
+    offer: &OfferChannel,
+    ring_gpadl: GpadlHandle,
+    send_data_pages: u32,
+    connection_id: u32,
+    event_flag: u16,
 ) -> Result<Channel> {
-    Err(Error::NotImplemented)
+    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = crate::message::completion_table();
+    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let mut sink = crate::connection::OfferCollector::default();
+    open_channel_with(
+        ctx,
+        table,
+        &mut pump,
+        &mut sink,
+        offer,
+        ring_gpadl,
+        send_data_pages,
+        connection_id,
+        event_flag,
+    )
 }
 
-/// Close a previously opened channel, tear down the ring GPADL, and
-/// release the rel-id.
-///
-/// **Not implemented in the scaffold.**
-pub fn close_channel<C: HypercallTrait>(_ctx: &mut C, _channel: Channel) -> Result<()> {
-    Err(Error::NotImplemented)
+/// UEFI entry point: [`close_channel_with`].
+pub fn close_channel<C: HypercallTrait>(ctx: &mut C, channel: Channel) -> Result<()> {
+    close_channel_with(ctx, channel)
 }

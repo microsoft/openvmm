@@ -232,23 +232,136 @@ pub fn establish_gpadl_partial<C: HypercallTrait>(
 /// Full `establish_gpadl` — posts the header/body chain and waits for
 /// `GpadlCreated`.
 ///
-/// **Not implemented in the scaffold.** Requires the request-completion
-/// table from [`crate::message`] and the message-page drain from
-/// [`crate::interrupt`].
-pub fn establish_gpadl<C: HypercallTrait>(
-    _ctx: &mut C,
-    _channel_id: ChannelId,
-    _buffer: &[u8],
-) -> Result<GpadlHandle> {
-    Err(Error::NotImplemented)
+/// This is the pump-based variant that host tests can drive with a
+/// scripted `MessagePump`. The UEFI entry point [`establish_gpadl`]
+/// wraps it with the process-wide table and SIMP pump.
+pub fn establish_gpadl_with<C, P>(
+    ctx: &mut C,
+    table: &crate::message::CompletionTable,
+    pump: &mut P,
+    sink: &mut dyn crate::message::MessageSink,
+    channel_id: ChannelId,
+    gpadl_id: GpadlId,
+    total_bytes: u32,
+    pfns: &[u64],
+) -> Result<GpadlHandle>
+where
+    C: HypercallTrait,
+    P: crate::connection::MessagePump,
+{
+    if !(total_bytes as u64).is_multiple_of(hvdef::HV_PAGE_SIZE) {
+        return Err(Error::Parse {
+            ty: None,
+            reason: "GPADL total_bytes must be page-aligned",
+        });
+    }
+    let expected_pfns = (total_bytes as u64 / hvdef::HV_PAGE_SIZE) as usize;
+    if pfns.len() != expected_pfns {
+        return Err(Error::Parse {
+            ty: None,
+            reason: "GPADL pfn count doesn't match total_bytes",
+        });
+    }
+
+    let payload = build_single_range_payload(total_bytes, pfns);
+    let msgs = encode_gpadl_messages(channel_id, gpadl_id, 1, &payload);
+
+    let handle = table.register(crate::message::CompletionKey::GpadlCreated(gpadl_id));
+    let conn_id = connection_id_from_state()?;
+    for m in &msgs.messages {
+        crate::hypercalls::post_message(ctx, conn_id, m)?;
+    }
+
+    pump.poll_until(ctx, &handle, sink)?;
+    let bytes = handle.take_response().ok_or(Error::Timeout)?;
+    let created: crate::protocol::GpadlCreated = crate::message::parse(&bytes)?;
+    if created.status != 0 {
+        return Err(Error::Parse {
+            ty: Some(MessageType::GPADL_CREATED),
+            reason: "host returned non-success GpadlCreated status",
+        });
+    }
+    Ok(GpadlHandle {
+        channel_id,
+        gpadl_id,
+    })
 }
 
 /// Post `GpadlTeardown` for `handle` and wait for `GpadlTorndown`.
-///
-/// **Not implemented in the scaffold** — same reason as
-/// [`establish_gpadl`].
-pub fn teardown_gpadl<C: HypercallTrait>(_ctx: &mut C, _handle: GpadlHandle) -> Result<()> {
-    Err(Error::NotImplemented)
+pub fn teardown_gpadl_with<C, P>(
+    ctx: &mut C,
+    table: &crate::message::CompletionTable,
+    pump: &mut P,
+    sink: &mut dyn crate::message::MessageSink,
+    handle: GpadlHandle,
+) -> Result<()>
+where
+    C: HypercallTrait,
+    P: crate::connection::MessagePump,
+{
+    use crate::protocol::GpadlTeardown;
+    use crate::protocol::MAX_MESSAGE_SIZE;
+
+    let msg = GpadlTeardown {
+        channel_id: handle.channel_id,
+        gpadl_id: handle.gpadl_id,
+    };
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+    let used = crate::message::encode(&msg, &mut buf);
+    let completion = table.register(crate::message::CompletionKey::GpadlTorndown(
+        handle.gpadl_id,
+    ));
+    let conn_id = connection_id_from_state()?;
+    crate::hypercalls::post_message(ctx, conn_id, &buf[..used])?;
+    pump.poll_until(ctx, &completion, sink)?;
+    if !completion.completed() {
+        return Err(Error::Timeout);
+    }
+    Ok(())
+}
+
+/// UEFI entry point: [`establish_gpadl_with`] using the process-wide
+/// completion table and SIMP pump.
+pub fn establish_gpadl<C: HypercallTrait>(
+    ctx: &mut C,
+    channel_id: ChannelId,
+    total_bytes: u32,
+    pfns: &[u64],
+) -> Result<GpadlHandle> {
+    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = crate::message::completion_table();
+    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let mut sink = crate::connection::OfferCollector::default();
+    let gpadl_id = allocate_gpadl_id();
+    establish_gpadl_with(
+        ctx,
+        table,
+        &mut pump,
+        &mut sink,
+        channel_id,
+        gpadl_id,
+        total_bytes,
+        pfns,
+    )
+}
+
+/// UEFI entry point: [`teardown_gpadl_with`] using the process-wide
+/// completion table and SIMP pump.
+pub fn teardown_gpadl<C: HypercallTrait>(ctx: &mut C, handle: GpadlHandle) -> Result<()> {
+    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = crate::message::completion_table();
+    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let mut sink = crate::connection::OfferCollector::default();
+    teardown_gpadl_with(ctx, table, &mut pump, &mut sink, handle)
+}
+
+/// Allocate a fresh `GpadlId`. Uses a process-wide atomic counter,
+/// starting at 1 so a zero id can be used as a sentinel.
+pub fn allocate_gpadl_id() -> GpadlId {
+    use core::sync::atomic::AtomicU32;
+    use core::sync::atomic::Ordering;
+    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+    GpadlId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Retrieve the currently negotiated post-message connection id from

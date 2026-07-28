@@ -360,6 +360,7 @@ pub fn route_message<S: MessageSink + ?Sized>(
         if let MessageType::TL_CONNECT_RESULT = ty {
             let result: crate::protocol::TlConnectResult = parse(bytes)?;
             sink.tl_connect_result(&result);
+            crate::hvsock::dispatch_connect_result(&result);
         }
         match table.deliver(key, bytes.to_vec()) {
             Ok(()) | Err(Error::OrphanCompletion) => {}
