@@ -15,6 +15,11 @@ so no public OpenVMM release tag should be created yet. Read
 until the implementation lands.
 ```
 
+Releases are phased. The initial releases publish source only, so that
+downstream distributions can build and package OpenVMM from public source.
+Prebuilt binary archives follow in a later phase. Sections describing the
+binary phase say so explicitly.
+
 ## One repository, two products
 
 OpenVMM and OpenHCL share a repository and substantial code, but they are
@@ -55,6 +60,12 @@ command-line behavior, device models, snapshot formats, and other interfaces.
 Breaking changes should be intentional and documented in the release notes,
 with migration guidance when practical.
 
+The workspace minimum supported Rust version (MSRV), declared as `rust-version`
+in the root `Cargo.toml`, advances over time. An MSRV increase can break
+downstream builds on distributions whose packaged Rust toolchain is older, so
+treat it as a breaking change: raise it in a normal minor release and call it
+out in the release notes.
+
 A patch release corrects the currently supported minor line in isolation and
 avoids breaking changes unless a fix genuinely requires one, such as an urgent
 security fix that cannot be made compatibly. Servicing a line in isolation
@@ -73,6 +84,13 @@ first. Before `1.0`, every fix — including security fixes and release-blocking
 regressions — reaches users by rolling forward: the fix lands on `main` and
 rides the next release, cut early when it is urgent. Once a newer release
 ships, the previous line leaves support.
+
+This support policy covers OpenVMM releases published by this project. A
+distribution that packages OpenVMM sets its own support policy and commonly
+holds a release for far longer, carrying fixes as distribution package
+revisions against a pinned OpenVMM version. Such a package may therefore
+receive a fix for a release this project no longer supports. That is a normal
+downstream arrangement and does not extend upstream support for that release.
 
 ## Release tags
 
@@ -171,8 +189,38 @@ the OpenVMM product version.
 
 ## Release assets
 
-The initial release contains the following archives plus a separate `SHA256SUMS`
-checksum file:
+### Source release
+
+Every release publishes:
+
+- `openvmm-<VERSION>-source.tar.gz`;
+- `SHA256SUMS`.
+
+The source archive contains `.openvmm-release.json` at its root, recording the
+metadata schema, release version, release tag, and full source revision. A
+build from this archive retains the exact release identity without a `.git`
+directory, which is what makes it the supported input for downstream
+packagers. See
+[Packaging OpenVMM for a Linux Distribution](./openvmm_packaging.md).
+
+`SHA256SUMS` covers every archive in the release. Every archive and `SHA256SUMS`
+receives a public GitHub build provenance attestation before the release is
+published.
+
+The archive is a source release, not a vendored build environment. It does not
+carry the crate dependency tree. A packager producing an offline build vendors
+dependencies themselves and covers that vendored tarball with their own
+distribution integrity metadata.
+
+### Binary archives
+
+```admonish note title="A later phase"
+The initial releases do not publish prebuilt binaries. This section describes
+the intended binary release once that phase begins.
+```
+
+The binary phase adds four targets, each with a separate runtime and symbol
+archive:
 
 - `openvmm-<VERSION>-windows-x64.zip`;
 - `openvmm-<VERSION>-windows-x64-symbols.zip`;
@@ -181,27 +229,29 @@ checksum file:
 - `openvmm-<VERSION>-linux-x64-musl.tar.gz`;
 - `openvmm-<VERSION>-linux-x64-musl-symbols.tar.gz`;
 - `openvmm-<VERSION>-linux-arm64-musl.tar.gz`;
-- `openvmm-<VERSION>-linux-arm64-musl-symbols.tar.gz`;
-- `openvmm-<VERSION>-source.tar.gz`;
-- `SHA256SUMS`.
+- `openvmm-<VERSION>-linux-arm64-musl-symbols.tar.gz`.
 
 Runtime archives contain the runnable binary and `LICENSE`. Symbol archives
 contain the matching debug symbols and `LICENSE`. Linux runtime binaries retain
-executable permissions.
+executable permissions. The prebuilt Linux binaries are statically linked
+`musl` builds, which differ from the dynamically linked glibc build a Linux
+distribution package produces.
 
-`SHA256SUMS` covers every archive in the release. Every archive and `SHA256SUMS`
-receives a public GitHub build provenance attestation before the release is
-published.
-
-```admonish warning title="Windows signing is not implemented"
-The public release workflow does not Authenticode-sign Windows artifacts.
-Downloaded Windows executables are therefore unsigned, and release notes and
-documentation should not present them as signed. Authenticode signing is a
-committed fast-follow. Until it ships, integrity comes from `SHA256SUMS` and the
-build provenance attestations.
+```admonish warning title="Windows signing is a prerequisite for this phase"
+The release workflow cannot Authenticode-sign Windows artifacts today.
+Publishing unsigned Windows executables is not acceptable, so Authenticode
+signing must land before the binary phase begins. Deferring binaries keeps this
+off the critical path for the source release, whose integrity comes from
+`SHA256SUMS` and the build provenance attestations.
 ```
 
 ## Building a release from source
+
+Building from source is the primary supported way to consume an OpenVMM
+release today. Distributors packaging OpenVMM for an operating system should
+read [Packaging OpenVMM for a Linux Distribution](./openvmm_packaging.md),
+which covers the distribution build configuration, native dependencies, and
+offline vendoring.
 
 A real Git checkout with the exact release tag available derives its version
 directly from Git:
@@ -219,20 +269,17 @@ cargo build
 ```
 
 See [Building OpenVMM](../getting_started/build_openvmm.md) for prerequisites
-and additional build options. Distributors packaging a release for an operating
-system should also read
-[Packaging OpenVMM](./openvmm_packaging.md).
+and additional build options.
 
-Each release also publishes an official attested source archive. The archive
-contains `.openvmm-release.json` at its root, recording the metadata schema,
-release version, release tag, and full source revision. Builds from this
-archive retain the exact release identity without a `.git` directory.
+A build from `openvmm-<VERSION>-source.tar.gz` needs no Git checkout: the
+`.openvmm-release.json` the archive carries supplies the same release identity.
 
 ```admonish warning title="Use the official source archive"
 GitHub's automatic "Source code (zip)" and "Source code (tar.gz)" links omit Git
-metadata and do not preserve the OpenVMM release identity. They are convenience
-snapshots, not supported version-preserving build inputs. Use a real checkout of
-the release tag or `openvmm-<VERSION>-source.tar.gz`.
+metadata and do not preserve the OpenVMM release identity. A build from one of
+them reports a development version rather than the release it was cut from.
+They are convenience snapshots, not supported version-preserving build inputs.
+Use a real checkout of the release tag or `openvmm-<VERSION>-source.tar.gz`.
 ```
 
 ## Normal release runbook
@@ -275,12 +322,14 @@ Do not move, delete, or recreate a pushed release tag.
 The tag starts the OpenVMM release workflow. The workflow:
 
 1. validates the tag and commit topology;
-2. builds Windows x64, Windows ARM64, Linux musl x64, and Linux musl ARM64;
-3. creates separate runtime and symbol archives;
-4. creates the official source archive;
-5. creates `SHA256SUMS`;
-6. attests every archive and the checksum file;
-7. publishes a non-draft GitHub Release with generated notes.
+2. creates the official source archive, including `.openvmm-release.json`;
+3. creates `SHA256SUMS`;
+4. attests every archive and the checksum file;
+5. publishes a non-draft GitHub Release with generated notes.
+
+Once the binary phase begins, the workflow also builds Windows x64, Windows
+ARM64, Linux musl x64, and Linux musl ARM64, and creates a separate runtime and
+symbol archive for each before checksumming and attesting.
 
 If a build, packaging, checksum, or attestation step fails, no public release
 is created. The same immutable tag may be rerun after a pipeline or
@@ -294,14 +343,19 @@ Correct a bad published release with a new version rather than mutating it.
 After the workflow succeeds, confirm that:
 
 - the release page points to the intended tag and revision;
-- all four targets have separate runtime and symbol archives;
 - the official source archive is present;
-- every runtime and symbol archive contains `LICENSE`;
+- the source archive contains `.openvmm-release.json` naming the intended
+  release version, tag, and revision;
+- a build from the extracted source archive reports the release version;
 - `SHA256SUMS` covers every published archive;
 - every archive and `SHA256SUMS` has a provenance attestation;
-- generated notes cover the intended pull requests;
-- Windows assets are not described as signed;
+- generated notes cover the intended pull requests, including any change to the
+  minimum supported Rust version;
 - the release is presented as the newest supported OpenVMM release.
+
+Once the binary phase begins, also confirm that all four targets have separate
+runtime and symbol archives and that every runtime and symbol archive contains
+`LICENSE`.
 
 After downloading all assets into one directory, verify the checksums:
 
@@ -315,8 +369,9 @@ Verify an asset's provenance with the GitHub CLI:
 gh attestation verify path/to/<ASSET> --repo microsoft/openvmm
 ```
 
-Smoke-test runnable archives on compatible hosts where practical. At minimum,
-confirm that the executable starts and reports the expected version.
+Once the binary phase begins, smoke-test runnable archives on compatible hosts
+where practical. At minimum, confirm that the executable starts and reports the
+expected version.
 
 ## Patch release runbook
 

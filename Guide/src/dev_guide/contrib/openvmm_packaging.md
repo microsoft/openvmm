@@ -18,9 +18,11 @@ determines the native dependencies below.
 ## What a distribution package builds
 
 A distribution package builds the host `x86_64-unknown-linux-gnu` target:
-dynamically linked against the system glibc and OpenSSL. This differs from the
-official prebuilt Linux release archives, which are statically linked `musl`
-binaries built through the repository's own provisioning tooling.
+dynamically linked against the system glibc and OpenSSL. Building from the
+official source release is the supported way to consume OpenVMM today, and this
+is the configuration to use. It differs from the statically linked `musl`
+binaries that the repository's own provisioning tooling produces, which is what
+the project will ship if and when it publishes prebuilt Linux archives.
 
 The gnu build deliberately avoids the repository's `.packages/` provisioning
 (`cargo xflowey restore-packages`), which fetches prebuilt native libraries a
@@ -100,9 +102,13 @@ export OPENSSL_NO_VENDOR=1
 
 ## Offline vendored build
 
-A package build should be reproducible and offline. Vendor all dependencies —
-including the Git dependencies and the `[patch.crates-io]` pins — into a tarball
-alongside the source archive:
+A package build should be reproducible and offline. The OpenVMM source release
+is a source archive only: it does not carry the crate dependency tree, so the
+packager produces the vendored tarball and covers it with the distribution's
+own integrity metadata alongside the source archive.
+
+Vendor all dependencies — including the Git dependencies and the
+`[patch.crates-io]` pins — into a tarball alongside the source archive:
 
 ```bash
 cargo vendor vendor/ > vendor-config.toml
@@ -142,11 +148,13 @@ Use `openvmm-<VERSION>-source.tar.gz` from the release as `Source0` so the build
 retains its release identity through `.openvmm-release.json`. GitHub's automatic
 archive links drop that metadata, so they do not work as `Source0`.
 
-Declare the build and runtime dependencies:
+Declare the build and runtime dependencies. Require a Rust toolchain at least as
+new as the workspace MSRV — read the current value from `rust-version` in the
+source you are packaging rather than copying the one below:
 
 ```spec
-BuildRequires:  rust >= 1.95
-BuildRequires:  cargo >= 1.95
+BuildRequires:  rust >= <MSRV>
+BuildRequires:  cargo >= <MSRV>
 BuildRequires:  gcc glibc-devel binutils kernel-headers
 BuildRequires:  openssl-devel
 BuildRequires:  protobuf-compiler protobuf-devel
