@@ -159,6 +159,19 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
             )
         })?;
 
+        // min_queues (col 8) is the last column villain's `list_tests_tsv`
+        // emits. Reject any trailing column so a schema addition fails loudly
+        // here rather than being silently dropped.
+        if let Some(extra) = cols.next() {
+            anyhow::bail!(
+                "{}:{}: unexpected trailing column {:?} after min_queues \
+                 (tests.tsv schema changed?)",
+                path.display(),
+                lineno + 1,
+                extra,
+            );
+        }
+
         tests.push(VillainTest {
             name: name.to_string(),
             desc: desc.to_string(),
@@ -193,7 +206,9 @@ pub enum Verdict {
     Wedged,
     /// Known-failing test that failed as expected (guest-side xfail).
     Xfail,
-    /// Known-failing test that unexpectedly passed (guest-side xfail).
+    /// A test flagged as a known xfail that unexpectedly passed. Villain treats
+    /// this as a *failure* (`verdict_failed()` in `bin/init.c`): an XPASS means
+    /// the underlying bug is gone and the stale xfail marker must be removed.
     Xpass,
 }
 
@@ -212,18 +227,20 @@ impl Verdict {
     }
 
     /// Whether this verdict is a "good" outcome (the device model behaved
-    /// correctly or it is a guest-side xfail/xpass — none of which indicate an
+    /// correctly or it is a guest-side xfail — neither of which indicates an
     /// OpenVMM device-model bug).
     ///
     /// Note `Verdict::Skip` is deliberately **not** good: on the kitchen-sink VM
     /// a skip means the device was absent or a precondition was unmet, so the
     /// test exercised nothing. That is always a failure; tests for devices we do
     /// not attach are `#[ignore]`d up front (see [`crate::supported_devices`]).
+    ///
+    /// `Verdict::Xpass` is likewise **not** good: villain only emits it for an
+    /// xfail-flagged test that unexpectedly passed, which it counts as a failure
+    /// so the stale marker gets noticed and removed. Treating it as success here
+    /// would silently mask that signal.
     pub fn is_good(self) -> bool {
-        matches!(
-            self,
-            Verdict::Pass | Verdict::Reject | Verdict::Xfail | Verdict::Xpass
-        )
+        matches!(self, Verdict::Pass | Verdict::Reject | Verdict::Xfail)
     }
 }
 
@@ -340,7 +357,8 @@ mod tests {
         assert!(evaluate(VerdictScan::Found(Verdict::Pass)).is_ok());
         assert!(evaluate(VerdictScan::Found(Verdict::Reject)).is_ok());
         assert!(evaluate(VerdictScan::Found(Verdict::Xfail)).is_ok());
-        assert!(evaluate(VerdictScan::Found(Verdict::Xpass)).is_ok());
+        // XPASS is a failure by villain's own semantics (stale xfail marker).
+        assert!(evaluate(VerdictScan::Found(Verdict::Xpass)).is_err());
         assert!(evaluate(VerdictScan::Found(Verdict::Fail)).is_err());
         assert!(evaluate(VerdictScan::Found(Verdict::Wedged)).is_err());
         assert!(evaluate(VerdictScan::MarkerMissing).is_err());
@@ -486,6 +504,19 @@ mod tests {
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("invalid min_queues"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_tsv_rejects_trailing_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        // All 8 columns present plus an unexpected 9th column.
+        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\t1\textra\n").unwrap();
+        let err = parse_tsv(&p).unwrap_err();
+        assert!(
+            err.to_string().contains("unexpected trailing column"),
             "unexpected error: {err:#}"
         );
     }
