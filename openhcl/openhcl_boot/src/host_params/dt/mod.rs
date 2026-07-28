@@ -246,8 +246,10 @@ fn allocate_vtl2_ram(
     };
 
     // Next, calculate the amount of memory that needs to be allocated per numa
-    // node.
-    let ram_per_node = vtl2_size / numa_node_count as u64;
+    // node. Make sure ram_per_node is page aligned by aligning up to the next
+    // page.
+    let ram_per_node =
+        ((vtl2_size / numa_node_count as u64) + (HV_PAGE_SIZE - 1)) & !(HV_PAGE_SIZE - 1);
 
     // Seed the remaining allocation list with the memory required per node.
     let mut memory_per_node = off_stack!(ArrayVec<u64, MAX_NUMA_NODES>, ArrayVec::new_const());
