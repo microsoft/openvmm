@@ -379,7 +379,7 @@ impl<'a> SidecarVp<'a> {
     /// Runs the VP.
     pub fn run(&mut self) -> Result<SidecarRun<'_, 'a>, SidecarError> {
         tracing::trace!("run vp");
-        self.set_command::<_, u8>(SidecarCommand::RUN_VP, (), 0);
+        self.set_command::<_, u8>(SidecarCommand::RUN_VP, RunVpResponse { intercept: 0 }, 0);
         self.start_async()?;
         Ok(SidecarRun {
             vp: self,
