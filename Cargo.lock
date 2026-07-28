@@ -4043,7 +4043,7 @@ dependencies = [
 
 [[package]]
 name = "inv_decoder"
-version = "0.3.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "num-traits",
@@ -4053,7 +4053,7 @@ dependencies = [
 
 [[package]]
 name = "inv_packet"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "serde",
 ]
@@ -5704,7 +5704,7 @@ dependencies = [
 
 [[package]]
 name = "opentmk_invariant"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "hvdef",
  "inv_decoder",
@@ -5712,7 +5712,6 @@ dependencies = [
  "log",
  "opentmk_core",
  "postcard",
- "serde",
  "spin",
  "uefi",
  "zerocopy",

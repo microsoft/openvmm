@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Guest-side decoder for per-hypercall static metadata sent from the
 //! host fuzzer.
 //!

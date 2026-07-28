@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // UNSAFETY: This module contains unsafe code because we are doing raw I/O port via within a fuzzer
 // context
 #![expect(unsafe_code)]

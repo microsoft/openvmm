@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 extern crate alloc;
 use alloc::rc::Rc;
 use core::cell::RefCell;

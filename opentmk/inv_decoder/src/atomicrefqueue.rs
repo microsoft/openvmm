@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use alloc::vec::Vec;

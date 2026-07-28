@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::functions::hvcall_meta::unpack_hvcall_meta;
 use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
 #[allow(unused)]

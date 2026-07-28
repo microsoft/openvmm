@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![no_std]
 //! This contains the packet API library used for communication between the inv-agent and opentmk
 //! components.

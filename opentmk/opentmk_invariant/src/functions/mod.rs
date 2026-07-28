@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 pub mod hvcall_meta;
 pub mod hyperv;
 pub mod io_port;

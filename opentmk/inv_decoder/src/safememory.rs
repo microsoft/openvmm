@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 /// This represents a virtual memory map that can be used to safely write/read from

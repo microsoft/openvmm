@@ -1,8 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 [package]
 name = "inv_decoder"
-version = "0.3.0"
-authors = ["VRTD <vrtd@microsoft.com>"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,3 +13,6 @@ anyhow = { version = "1.0", default-features = false }
 num-traits.workspace = true
 spin.workspace = true
 zerocopy.workspace = true
+
+[lints]
+workspace = true

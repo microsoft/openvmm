@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! This is a extended prelude crate that imports a number of common rust API entities that
 //! would've been imported from the `alloc` crate.
 #[cfg(target_os = "uefi")]
