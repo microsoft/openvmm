@@ -15,6 +15,8 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
 use spin::Mutex;
 
+use crate::context::HypercallConfig;
+use crate::context::HypercallTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
@@ -113,7 +115,7 @@ impl HvTestCtx {
         HvTestCtx::exec_handler(Vtl::Vtl0);
     }
 
-    /// Busy-loop executor that runs on every VP.  
+    /// Busy-loop executor that runs on every VP.
     /// Extracts commands from the per-VP queue and executes them in the
     /// appropriate VTL, switching VTLs when necessary.
     fn exec_handler(vtl: Vtl) {
@@ -151,6 +153,39 @@ impl HvTestCtx {
                 cmd(&mut ctx);
             }
         }
+    }
+}
+
+impl HypercallTrait for HvTestCtx {
+    fn hypercall(
+        &mut self,
+        code: u64,
+        input: &[u8],
+        output: &mut [u8],
+        cfg: HypercallConfig,
+    ) -> TmkResult<()> {
+        let code =
+            hvdef::HypercallCode(code.try_into().ok().ok_or(TmkError::InvalidHypercallCode)?);
+
+        let inp_len = input.len().min(self.hvcall.input_page.buffer.len());
+        let out_len = output.len().min(self.hvcall.output_page.buffer.len());
+
+        // Write to input page
+        self.hvcall.input_page.buffer[0..inp_len].copy_from_slice(&input[0..inp_len]);
+
+        let result = if out_len == 0 && inp_len <= 16 && cfg.pass_by_register_hint {
+            // Do a fast pass-by-register call
+            self.hvcall.dispatch_hvcall_fast(code)
+        } else {
+            // Do a normal call, then write to output buffer if we have any to write
+            let result =
+                self.hvcall
+                    .dispatch_hvcall_ex(code, cfg.rep_start, cfg.rep_count, cfg.size);
+            output[0..out_len].copy_from_slice(&self.hvcall.output_page.buffer[0..out_len]);
+            result
+        };
+
+        Ok(result.result()?)
     }
 }
 

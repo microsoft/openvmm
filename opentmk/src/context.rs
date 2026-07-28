@@ -35,7 +35,7 @@ pub trait InterruptPlatformTrait {
     /// Associates an interrupt vector with a handler inside the
     /// non-secure world.
     ///
-    /// * `interrupt_idx` – IDT/GIC index to program  
+    /// * `interrupt_idx` – IDT/GIC index to program
     /// * `handler` – Function that will be executed when the interrupt
     ///   fires.
     fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(Self)) -> TmkResult<()>;
@@ -58,6 +58,49 @@ pub trait MsrPlatformTrait {
     /// # Safety
     /// Caller must ensure that writing to the specified MSR is a safe operation.
     unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
+}
+
+/// Trait for platforms that supports invoking a hypercall like interface.
+pub trait HypercallTrait {
+    /// Performs a hypercall. When the input buffer exceeds what can be passed
+    /// the excess data is silently truncated. Likewise if the actual output
+    /// data exceeds what can be written into the output buffer, that output
+    /// is likewise truncated. It is up to the caller to determine that they
+    /// have allocated a sufficiently large buffer to accept the output data.
+    ///
+    /// On Hyper-V platforms the input and output arguments are passed via
+    /// memory and then the hypercall is invoked.
+    ///
+    /// On other platforms, the values in `input` may be passed via registers
+    /// with the return value register written back into `output`
+    ///
+    /// There's also a hypercall configuration struct that contains some
+    /// platform-dependent parameters that may not be honored by all platforms
+    fn hypercall(
+        &mut self,
+        code: u64,
+        input: &[u8],
+        output: &mut [u8],
+        cfg: HypercallConfig,
+    ) -> TmkResult<()>;
+}
+
+/// Collection of parameters for hypercalls that are platform-dependent.
+#[derive(Default)]
+pub struct HypercallConfig {
+    /// A repetition start index used for some Hyper-V hypercalls.
+    pub rep_start: Option<usize>,
+    /// A repetition count used for some Hyper-V hypercalls.
+    pub rep_count: Option<usize>,
+    /// A size value used for some Hyper-V hypercalls.
+    pub size: Option<usize>,
+    /// Whether to hint that we want to pass the arguments by register. This
+    /// may be ignored by the underlying platform depending on the specific
+    /// hypercall.
+    ///
+    /// Additionally, certain platforms may only support passing by register
+    /// so this hint would just be moot anyways.
+    pub pass_by_register_hint: bool,
 }
 
 /// Trait for platforms that support Virtual Processors (VPs) and VTL management.
