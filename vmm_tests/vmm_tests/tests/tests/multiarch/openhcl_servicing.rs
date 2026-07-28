@@ -242,7 +242,7 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
 
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 4 * 1024 * 1024; // 4 MiB
-    let vp_count: u32 = 24;
+    let vp_count: u32 = 20;
 
     // Use 2 NUMA nodes (vps_per_socket=12). Sidecar requires >1 VP per
     // node to activate.
