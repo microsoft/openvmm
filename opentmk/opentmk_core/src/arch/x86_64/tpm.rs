@@ -44,7 +44,7 @@ impl<'a> Tpm<'a> {
         let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
         let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
         unsafe {
-            // SAFETY: these ports are safe to interact with
+            // SAFETY: TPM ports can not cause any UB
             super::io::outl(control_port, command);
             super::io::inl(data_port)
         }
