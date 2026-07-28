@@ -321,6 +321,239 @@ fn packet_descriptor_size() {
 }
 
 // ---------------------------------------------------------------------------
+// Completion table tests
+// ---------------------------------------------------------------------------
+
+mod completion_tests {
+    use crate::Error;
+    use crate::message::CompletionKey;
+    use crate::message::CompletionTable;
+    use crate::message::completion_key_for;
+    use crate::message::encode;
+    use crate::protocol::ChannelId;
+    use crate::protocol::GpadlCreated;
+    use crate::protocol::GpadlId;
+    use crate::protocol::GpadlTorndown;
+    use crate::protocol::MAX_MESSAGE_SIZE;
+    use crate::protocol::OpenResult;
+    use crate::protocol::UnloadComplete;
+    use crate::protocol::VersionResponse;
+    use zerocopy::FromZeros;
+
+    #[test]
+    fn register_deliver_take() {
+        let table = CompletionTable::new();
+        let handle = table.register(CompletionKey::VersionResponse);
+        assert!(!handle.completed());
+        assert_eq!(handle.take_response(), None);
+
+        table
+            .deliver(CompletionKey::VersionResponse, alloc::vec![1u8, 2, 3])
+            .unwrap();
+        assert!(handle.completed());
+        assert_eq!(handle.take_response(), Some(alloc::vec![1u8, 2, 3]));
+        // Second take yields None.
+        assert_eq!(handle.take_response(), None);
+    }
+
+    #[test]
+    fn deliver_orphan_completion() {
+        let table = CompletionTable::new();
+        let err = table
+            .deliver(CompletionKey::VersionResponse, alloc::vec![])
+            .unwrap_err();
+        assert!(matches!(err, Error::OrphanCompletion));
+    }
+
+    #[test]
+    fn multiple_keys_independent() {
+        let table = CompletionTable::new();
+        let a = table.register(CompletionKey::GpadlCreated(GpadlId(1)));
+        let b = table.register(CompletionKey::GpadlCreated(GpadlId(2)));
+        assert_eq!(table.pending(), 2);
+        table
+            .deliver(CompletionKey::GpadlCreated(GpadlId(2)), alloc::vec![])
+            .unwrap();
+        assert!(b.completed());
+        assert!(!a.completed());
+    }
+
+    #[test]
+    fn drop_removes_registration() {
+        let table = CompletionTable::new();
+        {
+            let _h = table.register(CompletionKey::VersionResponse);
+            assert_eq!(table.pending(), 1);
+        }
+        assert_eq!(table.pending(), 0);
+    }
+
+    #[test]
+    fn completion_key_for_version_response() {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        let vr = VersionResponse::new_zeroed();
+        let used = encode(&vr, &mut buf);
+        let key = completion_key_for(&buf[..used]).unwrap().unwrap();
+        assert_eq!(key, CompletionKey::VersionResponse);
+    }
+
+    #[test]
+    fn completion_key_for_gpadl_created_uses_id() {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        let mut gc = GpadlCreated::new_zeroed();
+        gc.gpadl_id = GpadlId(0xDEAD_BEEF);
+        let used = encode(&gc, &mut buf);
+        let key = completion_key_for(&buf[..used]).unwrap().unwrap();
+        assert_eq!(key, CompletionKey::GpadlCreated(GpadlId(0xDEAD_BEEF)));
+    }
+
+    #[test]
+    fn completion_key_for_open_result_uses_open_id() {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        let mut or = OpenResult::new_zeroed();
+        or.channel_id = ChannelId(1);
+        or.open_id = 0x1234;
+        let used = encode(&or, &mut buf);
+        let key = completion_key_for(&buf[..used]).unwrap().unwrap();
+        assert_eq!(key, CompletionKey::OpenChannelResult(0x1234));
+    }
+
+    #[test]
+    fn completion_key_for_torndown_and_unload() {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        let mut gt = GpadlTorndown::new_zeroed();
+        gt.gpadl_id = GpadlId(9);
+        let used = encode(&gt, &mut buf);
+        let key = completion_key_for(&buf[..used]).unwrap().unwrap();
+        assert_eq!(key, CompletionKey::GpadlTorndown(GpadlId(9)));
+
+        let used = encode(&UnloadComplete, &mut buf);
+        let key = completion_key_for(&buf[..used]).unwrap().unwrap();
+        assert_eq!(key, CompletionKey::UnloadComplete);
+    }
+
+    #[test]
+    fn completion_key_for_non_completion_returns_none() {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        // OfferChannel is not a completion.
+        let oc = crate::protocol::OfferChannel::new_zeroed();
+        let used = encode(&oc, &mut buf);
+        assert!(completion_key_for(&buf[..used]).unwrap().is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SynIC tests (register programming layer, host-testable)
+// ---------------------------------------------------------------------------
+
+mod synic_tests {
+    use crate::Error;
+    use crate::synic::VMBUS_INTERRUPT_VECTOR;
+    use crate::synic::program_synic_registers;
+    use alloc::vec::Vec;
+    use hvdef::HvError;
+    use hvdef::HvSynicSimpSiefp;
+    use hvdef::HvSynicSint;
+    use hvdef::HypercallCode;
+    use hvdef::hypercall::GetSetVpRegisters;
+    use hvdef::hypercall::HvRegisterAssoc;
+    use opentmk::context::HypercallConfig;
+    use opentmk::context::HypercallTrait;
+    use opentmk::tmkdefs::TmkResult;
+    use zerocopy::FromBytes;
+
+    /// Mock context that records every hypercall.
+    #[derive(Default)]
+    struct MockCtx {
+        calls: Vec<(u64, Vec<u8>, Option<usize>)>,
+    }
+
+    impl HypercallTrait for MockCtx {
+        fn hypercall(
+            &mut self,
+            code: u64,
+            input: &[u8],
+            _output: &mut [u8],
+            cfg: HypercallConfig,
+        ) -> TmkResult<()> {
+            self.calls.push((code, input.to_vec(), cfg.rep_count));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn program_synic_registers_writes_four_registers() {
+        let mut ctx = MockCtx::default();
+        program_synic_registers(&mut ctx, 0x1000, 0x2000, VMBUS_INTERRUPT_VECTOR).unwrap();
+
+        assert_eq!(ctx.calls.len(), 1);
+        let (code, input, rep) = &ctx.calls[0];
+        assert_eq!(*code, HypercallCode::HvCallSetVpRegisters.0 as u64);
+        assert_eq!(*rep, Some(4));
+
+        // Parse the header + four HvRegisterAssoc.
+        let (_hdr, rest) = GetSetVpRegisters::read_from_prefix(input).unwrap();
+        let mut cur = rest;
+        let mut regs = Vec::new();
+        for _ in 0..4 {
+            let (a, rest) = HvRegisterAssoc::read_from_prefix(cur).unwrap();
+            regs.push(a);
+            cur = rest;
+        }
+
+        // SIMP first: base_gpn = 0x1000 >> 12 = 1, enabled.
+        let simp: HvSynicSimpSiefp = regs[0].value.as_u64().into();
+        assert!(simp.enabled());
+        assert_eq!(simp.base_gpn(), 1);
+
+        // SIEFP second: base_gpn = 2, enabled.
+        let siefp: HvSynicSimpSiefp = regs[1].value.as_u64().into();
+        assert!(siefp.enabled());
+        assert_eq!(siefp.base_gpn(), 2);
+
+        // SINT2 third: vector = 0xF3, masked = false, auto_eoi = true.
+        let sint2: HvSynicSint = regs[2].value.as_u64().into();
+        assert_eq!(sint2.vector(), VMBUS_INTERRUPT_VECTOR);
+        assert!(!sint2.masked());
+        assert!(sint2.auto_eoi());
+
+        // SCONTROL fourth: enabled.
+        let scontrol: hvdef::HvSynicScontrol = regs[3].value.as_u64().into();
+        assert!(scontrol.enabled());
+    }
+
+    #[test]
+    fn program_synic_registers_rejects_unaligned_gpa() {
+        let mut ctx = MockCtx::default();
+        let err =
+            program_synic_registers(&mut ctx, 0x1001, 0x2000, VMBUS_INTERRUPT_VECTOR).unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
+        assert!(ctx.calls.is_empty());
+    }
+
+    #[test]
+    fn program_synic_registers_propagates_hypercall_error() {
+        struct FailCtx;
+        impl HypercallTrait for FailCtx {
+            fn hypercall(
+                &mut self,
+                _code: u64,
+                _input: &[u8],
+                _output: &mut [u8],
+                _cfg: HypercallConfig,
+            ) -> TmkResult<()> {
+                Err(HvError::AccessDenied.into())
+            }
+        }
+
+        let mut ctx = FailCtx;
+        let err =
+            program_synic_registers(&mut ctx, 0x1000, 0x2000, VMBUS_INTERRUPT_VECTOR).unwrap_err();
+        assert!(matches!(err, Error::Hypercall(_)));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Ring buffer tests (§8.1 test 3)
 // ---------------------------------------------------------------------------
 

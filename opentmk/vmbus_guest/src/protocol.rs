@@ -634,6 +634,10 @@ pub struct ModifyChannelResponse {
     pub status: i32,
 }
 
+impl VmbusMessage for ModifyChannelResponse {
+    const MESSAGE_TYPE: MessageType = MessageType::MODIFY_CHANNEL_RESPONSE;
+}
+
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct ModifyConnection {

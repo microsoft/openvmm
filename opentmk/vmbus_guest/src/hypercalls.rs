@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Thin wrappers around the two hypercalls used by the vmbus protocol:
-//! `HvCallPostMessage` (0x5C) and `HvCallSignalEvent` (0x5D).
+//! Thin wrappers around the hypercalls used by the vmbus protocol:
+//! `HvCallPostMessage` (0x5C), `HvCallSignalEvent` (0x5D), and
+//! `HvCallSetVpRegisters` (0x51).
 //!
 //! Callers construct a [`HvTestCtx`](opentmk::platform::hyperv::ctx::HvTestCtx)
 //! and pass it here through the [`HypercallTrait`] abstraction so ownership
@@ -11,7 +12,16 @@
 
 use crate::Error;
 use crate::Result;
+use alloc::vec::Vec;
+use core::mem::size_of;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
+use hvdef::HvRegisterName;
+use hvdef::HvRegisterValue;
 use hvdef::HypercallCode;
+use hvdef::hypercall::GetSetVpRegisters;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::PostMessage;
 use hvdef::hypercall::SignalEvent;
 use opentmk::context::HypercallConfig;
@@ -75,6 +85,65 @@ pub fn signal_event<C: HypercallTrait>(
         &mut [],
         HypercallConfig {
             pass_by_register_hint: true,
+            ..HypercallConfig::default()
+        },
+    )?;
+    Ok(())
+}
+
+/// Set a single VP register on the current VP via
+/// [`HvCallSetVpRegisters`](HypercallCode::HvCallSetVpRegisters).
+///
+/// Convenience wrapper used by [`crate::synic::init_synic`] to program
+/// SIMP / SIEFP / SCONTROL / SINT2. The rep-hypercall is issued with
+/// `rep_count = 1`.
+pub fn set_vp_register<C: HypercallTrait>(
+    ctx: &mut C,
+    name: HvRegisterName,
+    value: HvRegisterValue,
+) -> Result<()> {
+    set_vp_registers(ctx, HvInputVtl::CURRENT_VTL, &[(name, value)])
+}
+
+/// Set N VP registers on the current VP in a single hypercall.
+///
+/// `assocs` is a slice of `(name, value)` pairs; the hypercall is issued
+/// with `rep_count = assocs.len()`.
+pub fn set_vp_registers<C: HypercallTrait>(
+    ctx: &mut C,
+    target_vtl: HvInputVtl,
+    assocs: &[(HvRegisterName, HvRegisterValue)],
+) -> Result<()> {
+    if assocs.is_empty() {
+        return Ok(());
+    }
+
+    let header = GetSetVpRegisters {
+        partition_id: HV_PARTITION_ID_SELF,
+        vp_index: HV_VP_INDEX_SELF,
+        target_vtl,
+        rsvd: [0; 3],
+    };
+
+    let mut input = Vec::with_capacity(
+        size_of::<GetSetVpRegisters>() + assocs.len() * size_of::<HvRegisterAssoc>(),
+    );
+    input.extend_from_slice(header.as_bytes());
+    for &(name, value) in assocs {
+        let assoc = HvRegisterAssoc {
+            name,
+            pad: [0; 3],
+            value,
+        };
+        input.extend_from_slice(assoc.as_bytes());
+    }
+
+    ctx.hypercall(
+        HypercallCode::HvCallSetVpRegisters.0 as u64,
+        &input,
+        &mut [],
+        HypercallConfig {
+            rep_count: Some(assocs.len()),
             ..HypercallConfig::default()
         },
     )?;

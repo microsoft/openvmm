@@ -15,5 +15,8 @@ spin.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc"] }
+
 [lints]
 workspace = true

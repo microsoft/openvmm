@@ -11,15 +11,24 @@
 //! * Decode inbound messages from the SIMP message page by matching on
 //!   `MessageHeader::message_type()`.
 //! * Route completions to the pending request that owns them, matched by
-//!   `(msg_type, extra_key)`.
+//!   `(msg_type, key)` — see [`CompletionKey`].
 
 use crate::Error;
 use crate::Result;
+use crate::protocol::ChannelId;
+use crate::protocol::GpadlId;
 use crate::protocol::HEADER_SIZE;
 use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
 use crate::protocol::MessageType;
 use crate::protocol::VmbusMessage;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use alloc::sync::Weak;
+use alloc::vec::Vec;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
+use spin::Mutex;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -68,4 +77,225 @@ pub fn parse<M: VmbusMessage + FromBytes>(bytes: &[u8]) -> Result<M> {
         reason: "message body cast failed",
     })?;
     Ok(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Completion table
+// ---------------------------------------------------------------------------
+
+/// Discriminator used to route host completions back to the outbound
+/// request that started them.
+///
+/// The key mirrors the disambiguation the host performs when it emits
+/// each response: `VersionResponse`, `AllOffersDelivered` and
+/// `UnloadComplete` are singletons (at most one such request is in
+/// flight at any time by design), everything else keys on the unique
+/// id the guest allocated for the request.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum CompletionKey {
+    /// Completion for the current `InitiateContact`. Singleton.
+    VersionResponse,
+    /// Terminator for `RequestOffers`. Singleton.
+    AllOffersDelivered,
+    /// Completion for `Unload`. Singleton.
+    UnloadComplete,
+    /// Completion for `OpenChannel[/2]`, matched by `open_id`.
+    OpenChannelResult(u32),
+    /// Completion for `GpadlHeader`, matched by `gpadl_id`.
+    GpadlCreated(GpadlId),
+    /// Completion for `GpadlTeardown`, matched by `gpadl_id`.
+    GpadlTorndown(GpadlId),
+    /// Completion for `ModifyChannel`, matched by `channel_id`.
+    ModifyChannelResponse(ChannelId),
+    /// Result of a `TlConnectRequest[/2]`, keyed by `endpoint_id`
+    /// packed into a `u128` (the exact packing is stable but arbitrary
+    /// — it's only used for map ordering).
+    TlConnectResult(u128),
+}
+
+/// Slot holding a single pending completion.
+#[derive(Debug)]
+struct CompletionSlot {
+    completed: AtomicBool,
+    /// The raw wire bytes of the completion message (starting at the
+    /// `MessageHeader`). Filled once, taken once.
+    response: Mutex<Option<Vec<u8>>>,
+}
+
+impl CompletionSlot {
+    fn new() -> Self {
+        Self {
+            completed: AtomicBool::new(false),
+            response: Mutex::new(None),
+        }
+    }
+}
+
+/// Handle held by a caller waiting on a specific completion.
+///
+/// Cloneable so multiple observers may wait; the response bytes may be
+/// taken by exactly one of them.
+#[derive(Clone, Debug)]
+pub struct CompletionHandle {
+    key: CompletionKey,
+    slot: Arc<CompletionSlot>,
+    table: Arc<CompletionTableInner>,
+}
+
+impl CompletionHandle {
+    /// Whether the host has delivered the completion.
+    pub fn completed(&self) -> bool {
+        self.slot.completed.load(Ordering::Acquire)
+    }
+
+    /// Take the completion response bytes, leaving `None` behind.
+    /// Returns `None` if the completion has not arrived or has already
+    /// been taken.
+    pub fn take_response(&self) -> Option<Vec<u8>> {
+        if !self.completed() {
+            return None;
+        }
+        self.slot.response.lock().take()
+    }
+
+    /// Return the key this handle was registered for.
+    pub fn key(&self) -> CompletionKey {
+        self.key
+    }
+}
+
+impl Drop for CompletionHandle {
+    fn drop(&mut self) {
+        // The table only holds a `Weak`, so dropping this handle
+        // implicitly makes the slot unreachable (Weak::upgrade returns
+        // None) — but we still want to prune the map entry so
+        // `pending()` reflects reality. Remove only when this is the
+        // final strong reference to the slot.
+        if Arc::strong_count(&self.slot) == 1 {
+            let _ = self.table.entries.lock().remove(&self.key);
+        }
+    }
+}
+
+/// Guts of [`CompletionTable`] — kept behind an [`Arc`] so
+/// [`CompletionHandle::drop`] can reach the entries map without holding
+/// a reference to the table itself.
+#[derive(Debug)]
+struct CompletionTableInner {
+    entries: Mutex<BTreeMap<CompletionKey, Weak<CompletionSlot>>>,
+}
+
+/// Registry mapping in-flight requests to their pending completions.
+///
+/// Cheap to clone (`Arc` inside).
+#[derive(Clone, Debug)]
+pub struct CompletionTable {
+    inner: Arc<CompletionTableInner>,
+}
+
+impl Default for CompletionTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompletionTable {
+    /// Create an empty table.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(CompletionTableInner {
+                entries: Mutex::new(BTreeMap::new()),
+            }),
+        }
+    }
+
+    /// Register that a completion is expected for `key`.
+    ///
+    /// Returns a [`CompletionHandle`] the caller polls / passes to a
+    /// waiter until [`CompletionHandle::completed`] returns `true`.
+    ///
+    /// Duplicate keys aren't rejected — the newer registration wins.
+    /// The caller is responsible for ensuring only one request per key
+    /// is in flight at any time.
+    pub fn register(&self, key: CompletionKey) -> CompletionHandle {
+        let slot = Arc::new(CompletionSlot::new());
+        self.inner.entries.lock().insert(key, Arc::downgrade(&slot));
+        CompletionHandle {
+            key,
+            slot,
+            table: self.inner.clone(),
+        }
+    }
+
+    /// Deliver the completion for `key` by handing off `response` bytes.
+    ///
+    /// Returns [`Error::OrphanCompletion`] if there is no matching
+    /// pending registration (host sent a completion we didn't ask for,
+    /// or the last waiter dropped out before it arrived).
+    pub fn deliver(&self, key: CompletionKey, response: Vec<u8>) -> Result<()> {
+        let slot = {
+            let entries = self.inner.entries.lock();
+            entries.get(&key).and_then(Weak::upgrade)
+        };
+        let Some(slot) = slot else {
+            return Err(Error::OrphanCompletion);
+        };
+        *slot.response.lock() = Some(response);
+        slot.completed.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Number of live entries (dead `Weak` entries are pruned on read).
+    pub fn pending(&self) -> usize {
+        let mut entries = self.inner.entries.lock();
+        entries.retain(|_, w| w.strong_count() > 0);
+        entries.len()
+    }
+}
+
+/// Given `bytes` starting at a `MessageHeader`, return the
+/// [`CompletionKey`] the message satisfies, or `None` if the message
+/// isn't a completion type.
+///
+/// Used by the message dispatcher to route inbound messages to
+/// [`CompletionTable::deliver`].
+pub fn completion_key_for(bytes: &[u8]) -> Result<Option<CompletionKey>> {
+    let ty = peek_header(bytes)?;
+    let key = match ty {
+        MessageType::VERSION_RESPONSE => Some(CompletionKey::VersionResponse),
+        MessageType::ALL_OFFERS_DELIVERED => Some(CompletionKey::AllOffersDelivered),
+        MessageType::UNLOAD_COMPLETE => Some(CompletionKey::UnloadComplete),
+        MessageType::OPEN_CHANNEL_RESULT => {
+            let msg: crate::protocol::OpenResult = parse(bytes)?;
+            Some(CompletionKey::OpenChannelResult(msg.open_id))
+        }
+        MessageType::GPADL_CREATED => {
+            let msg: crate::protocol::GpadlCreated = parse(bytes)?;
+            Some(CompletionKey::GpadlCreated(msg.gpadl_id))
+        }
+        MessageType::GPADL_TORNDOWN => {
+            let msg: crate::protocol::GpadlTorndown = parse(bytes)?;
+            Some(CompletionKey::GpadlTorndown(msg.gpadl_id))
+        }
+        MessageType::MODIFY_CHANNEL_RESPONSE => {
+            let msg: crate::protocol::ModifyChannelResponse = parse(bytes)?;
+            Some(CompletionKey::ModifyChannelResponse(msg.channel_id))
+        }
+        MessageType::TL_CONNECT_RESULT => {
+            let msg: crate::protocol::TlConnectResult = parse(bytes)?;
+            Some(CompletionKey::TlConnectResult(guid_to_key(
+                &msg.endpoint_id,
+            )))
+        }
+        _ => None,
+    };
+    Ok(key)
+}
+
+/// Pack a `Guid` into a `u128` so it can serve as an ordered map key.
+fn guid_to_key(g: &crate::protocol::Guid) -> u128 {
+    let bytes = g.as_bytes();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes);
+    u128::from_le_bytes(out)
 }
