@@ -102,7 +102,7 @@ impl HvCall {
 
     /// Makes a hypercall.
     /// rep_count is Some for rep hypercalls
-    pub fn dispatch_hvcall(
+    pub(crate) fn dispatch_hvcall(
         &mut self,
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
@@ -111,7 +111,7 @@ impl HvCall {
     }
 
     /// Makes a hypercall with more extended parameter values
-    pub fn dispatch_hvcall_ex(
+    pub(crate) fn dispatch_hvcall_ex(
         &mut self,
         code: hvdef::HypercallCode,
         rep_start: Option<usize>,
@@ -136,7 +136,7 @@ impl HvCall {
 
     /// Makes a fast hypercall, with one or two fast arguments passed via
     /// registers and no output arguments
-    pub fn dispatch_hvcall_fast(
+    pub(crate) fn dispatch_hvcall_fast(
         &mut self,
         code: hvdef::HypercallCode,
     ) -> hvdef::hypercall::HypercallOutput {
