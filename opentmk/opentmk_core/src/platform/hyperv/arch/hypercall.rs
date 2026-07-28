@@ -24,9 +24,8 @@ use zerocopy::IntoBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
-pub struct HvcallPage {
-    /// Raw page-sized backing buffer used for hypercall input/output data.
-    pub buffer: [u8; HV_PAGE_SIZE as usize],
+pub(crate) struct HvcallPage {
+    pub(crate) buffer: [u8; HV_PAGE_SIZE as usize],
 }
 
 impl HvcallPage {
@@ -108,9 +107,22 @@ impl HvCall {
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
+        self.dispatch_hvcall_ex(code, None, rep_count, None)
+    }
+
+    /// Makes a hypercall with more extended parameter values
+    pub fn dispatch_hvcall_ex(
+        &mut self,
+        code: hvdef::HypercallCode,
+        rep_start: Option<usize>,
+        rep_count: Option<usize>,
+        variable_size: Option<usize>,
+    ) -> hvdef::hypercall::HypercallOutput {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(code.0)
-            .with_rep_count(rep_count.unwrap_or_default());
+            .with_rep_start(rep_start.unwrap_or_default())
+            .with_rep_count(rep_count.unwrap_or_default())
+            .with_variable_header_size(variable_size.unwrap_or_default());
 
         // SAFETY: Invoking hypercall per TLFS spec
         unsafe {
@@ -120,6 +132,23 @@ impl HvCall {
                 self.output_page().address(),
             )
         }
+    }
+
+    /// Makes a fast hypercall, with one or two fast arguments passed via
+    /// registers and no output arguments
+    pub fn dispatch_hvcall_fast(
+        &mut self,
+        code: hvdef::HypercallCode,
+    ) -> hvdef::hypercall::HypercallOutput {
+        let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
+            .with_code(code.0)
+            .with_fast(true);
+
+        let fast1 = u64::from_ne_bytes(self.input_page().buffer[0..8].try_into().unwrap());
+        let fast2 = u64::from_ne_bytes(self.input_page().buffer[8..16].try_into().unwrap());
+
+        // SAFETY: Invoking hypercall per TLFS spec
+        unsafe { invoke_hypercall(control, fast1, fast2) }
     }
 
     /// Enables a VTL for the specified partition.
@@ -201,7 +230,7 @@ impl HvCall {
     }
 
     /// Returns a mutable reference to the hypercall input page.
-    pub fn input_page(&mut self) -> &mut HvcallPage {
+    pub(crate) fn input_page(&mut self) -> &mut HvcallPage {
         &mut self.input_page
     }
 
