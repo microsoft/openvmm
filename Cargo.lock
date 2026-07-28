@@ -3776,6 +3776,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "object 0.37.3",
  "product_policy",
  "range_map_vec",
  "serde",
