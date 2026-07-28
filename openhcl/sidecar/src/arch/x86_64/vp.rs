@@ -106,6 +106,16 @@ pub unsafe fn ap_entry() -> ! {
         (*addr_space::command_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
     }
 
+    // Zero the assist page as well. It may hold data from a previous boot, and
+    // the hypervisor consumes fields this kernel never writes, such as the VTL
+    // return actions it parses on every VTL return.
+    //
+    // SAFETY: the assist page has not been enabled with the hypervisor yet, so
+    // it is not concurrently accessed.
+    unsafe {
+        (*addr_space::assist_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
+    }
+
     // Notify the BSP that we are ready.
     let old_state = globals.cpu_status().swap(CpuStatus::IDLE.0, Release);
     assert_eq!(old_state, CpuStatus::RUN.0);
