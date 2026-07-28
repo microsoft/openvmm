@@ -8,7 +8,7 @@ use core::arch::asm;
 /// Write a byte to a port.
 ///
 /// # Safety
-/// Caller should assume that the port being written to is safe to do so
+/// Caller guarantees that writing to the given port at this time does not cause UB
 pub unsafe fn outb(port: u16, data: u8) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
@@ -23,7 +23,7 @@ pub unsafe fn outb(port: u16, data: u8) {
 /// Read a byte from a port.
 ///
 /// # Safety
-/// Caller should assume that the port being read from is safe to do so
+/// Caller guarantees that reading from the port at this time does not cause UB
 pub unsafe fn inb(port: u16) -> u8 {
     let mut data;
     // SAFETY: The caller has assured us this is safe.
@@ -40,7 +40,7 @@ pub unsafe fn inb(port: u16) -> u8 {
 /// Read a word from a port.
 ///
 /// # Safety
-/// Caller should assume that the port being read from is safe to do so
+/// Caller guarantees that reading from the port at this time does not cause UB
 pub unsafe fn inw(port: u16) -> u16 {
     let mut data;
     // SAFETY: The caller has assured us this is safe.
@@ -57,7 +57,7 @@ pub unsafe fn inw(port: u16) -> u16 {
 /// Write a word to a port.
 ///
 /// # Safety
-/// Caller should assume that the port being written to is safe to do so
+/// Caller guarantees that writing to the given port at this time does not cause UB
 pub unsafe fn outw(port: u16, data: u16) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
@@ -72,7 +72,7 @@ pub unsafe fn outw(port: u16, data: u16) {
 /// Read a double word from a port.
 ///
 /// # Safety
-/// Caller should assume that the port being read from is safe to do so
+/// Caller guarantees that reading from the port at this time does not cause UB
 pub unsafe fn inl(port: u16) -> u32 {
     let mut data;
     // SAFETY: The caller has assured us this is safe.
@@ -89,7 +89,7 @@ pub unsafe fn inl(port: u16) -> u32 {
 /// Write a double word to a port.
 ///
 /// # Safety
-/// Caller should assume that the port being written to is safe to do so
+/// Caller guarantees that writing to the given port at this time does not cause UB
 pub unsafe fn outl(port: u16, data: u32) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
