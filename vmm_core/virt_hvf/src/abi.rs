@@ -105,6 +105,10 @@ unsafe extern "C" {
     /// Apple `hv_vcpu.h`: reads the offset in
     /// `CNTVCT_EL0 = mach_absolute_time() - offset`.
     pub fn hv_vcpu_get_vtimer_offset(vcpu: u64, vtimer_offset: *mut u64) -> HvfResult;
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
     pub fn mach_absolute_time() -> u64;
 }
 
