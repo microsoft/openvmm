@@ -126,7 +126,7 @@ impl FlowNodeWithConfig for Node {
         // Determine which architectures we need to download.
         let needed_archs: BTreeSet<CommonArch> = deps.keys().map(|(_, arch)| *arch).collect();
 
-        let persistent_dir = ctx.persistent_dir();
+        let memo_store = ctx.memo_store();
 
         // Download each unique architecture.
         let downloads: BTreeMap<CommonArch, ReadVar<PathBuf>> = needed_archs
@@ -150,7 +150,7 @@ impl FlowNodeWithConfig for Node {
             .collect();
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
-            let persistent_dir = persistent_dir.claim(ctx);
+            let memo_store = memo_store.claim(ctx);
             let downloads: BTreeMap<_, _> = downloads
                 .into_iter()
                 .map(|(key, var)| (key, var.claim(ctx)))
@@ -158,7 +158,7 @@ impl FlowNodeWithConfig for Node {
             let deps = deps.claim(ctx);
             let version = version.clone();
             move |rt| {
-                let persistent_dir = persistent_dir.map(|d| rt.read(d));
+                let memo_store = memo_store.map(|d| rt.read(d));
 
                 // Extract each downloaded archive, keyed by architecture.
                 let extract_dirs: BTreeMap<CommonArch, PathBuf> = downloads
@@ -167,7 +167,7 @@ impl FlowNodeWithConfig for Node {
                         let file = rt.read(var);
                         let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                             rt,
-                            persistent_dir.as_deref(),
+                            memo_store.as_ref(),
                             &file,
                             &version,
                         )?;

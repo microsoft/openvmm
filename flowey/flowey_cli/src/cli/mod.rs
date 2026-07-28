@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
 
+pub mod cache;
 pub mod debug;
 pub mod exec_snippet;
 pub mod pipeline;
@@ -29,6 +30,7 @@ struct Cli<P: Subcommand> {
 enum Commands<P: Subcommand> {
     Pipeline(pipeline::Pipeline<P>),
     Regen(regen::Regen),
+    Cache(cache::Cache),
 
     #[clap(hide = true, alias = "e")]
     ExecSnippet(exec_snippet::ExecSnippet),
@@ -68,6 +70,7 @@ pub fn cli_main<P: Subcommand + IntoPipeline>(
         Commands::Debug(cmd) => cmd.run(),
         Commands::Pipeline(cmd) => cmd.run(flowey_crate, repo_root),
         Commands::Regen(cmd) => cmd.run(repo_root),
+        Commands::Cache(cmd) => cmd.run(),
         Commands::ExecSnippet(cmd) => cmd.run(),
         Commands::VarDb(cmd) => cmd.run(),
     }

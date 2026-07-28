@@ -108,11 +108,20 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        ctx.emit_rust_step("split debug symbols", |ctx| {
+        // `tool` stamps the resolved `objcopy` binary, so a binutils upgrade
+        // (which can change objcopy's output) invalidates the memo entry. This
+        // is resolved at runtime, after the install step above has run.
+        let key = MemoKeySpec::new("flowey_lib_hvlite::run_split_debug_info", 1)
+            .tool(objcopy_bin)
+            .value(
+                "reproducible_without_debuglink",
+                &reproducible_without_debuglink,
+            )
+            .path("in_bin", &in_bin);
+
+        let dir = ctx.emit_memoized_rust_step("split debug symbols", key, |ctx| {
             installed_objcopy.claim(ctx);
-            let in_bin = in_bin.claim(ctx);
-            let out_bin = out_bin.claim(ctx);
-            let out_dbg_info = out_dbg_info.claim(ctx);
+            let in_bin = in_bin.clone().claim(ctx);
             move |rt| {
                 let in_bin = rt.read(in_bin);
 
@@ -133,12 +142,21 @@ impl SimpleFlowNode for Node {
                     .run()?;
                 }
 
-                let output = output.absolute()?;
-
-                rt.write(out_bin, &output);
-                rt.write(out_dbg_info, &output.with_extension("dbg"));
-
                 Ok(())
+            }
+        });
+
+        // both artifacts keep the input's file name, the debug info with an
+        // extra `.dbg` on the end
+        ctx.emit_minor_rust_step("resolve split debug info paths", |ctx| {
+            let dir = dir.claim(ctx);
+            let in_bin = in_bin.claim(ctx);
+            let out_bin = out_bin.claim(ctx);
+            let out_dbg_info = out_dbg_info.claim(ctx);
+            move |rt| {
+                let stripped = rt.read(dir).join(rt.read(in_bin).file_name().unwrap());
+                rt.write(out_dbg_info, &stripped.with_extension("dbg"));
+                rt.write(out_bin, &stripped);
             }
         });
 

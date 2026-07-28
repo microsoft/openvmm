@@ -27,7 +27,8 @@
 //!
 //! Clearing the cache is done in different ways depending on the backend:
 //!
-//! - Local: just delete the cache folder on your machine
+//! - Local: `cargo xflowey-cache clear` (or just delete the memoization store
+//!   on your machine)
 //! - Github: use the cache tasks's web UI to manage cache entries
 //! - ADO: define a pipeline-level variable called `FloweyCacheGeneration`, and set
 //!   it to an new arbitrary value.
@@ -35,9 +36,6 @@
 //!       outside of updating the cache key in the YAML file itself.
 
 use flowey::node::prelude::*;
-use std::collections::BTreeSet;
-use std::io::Seek;
-use std::io::Write;
 
 /// Status of a cache directory.
 #[derive(Debug, Serialize, Deserialize)]
@@ -106,7 +104,7 @@ impl FlowNode for Node {
                 {
                     // work around a bug in how post-job nodes affect stage1 day
                     // culling...
-                    let persistent_dir = ctx.persistent_dir().unwrap();
+                    let memo_store = ctx.memo_store().unwrap();
 
                     // Needed for saving the cache result.
                     let (hitvar_reader, hitvar2) = ctx.new_var();
@@ -115,14 +113,14 @@ impl FlowNode for Node {
 
                     ctx.emit_rust_step(format!("Restore cache: {label}"), |ctx| {
                         require_post_job.claim(ctx);
-                        let persistent_dir = persistent_dir.clone().claim(ctx);
+                        let memo_store = memo_store.clone().claim(ctx);
                         let dir = dir.clone().claim(ctx);
                         let key = key.clone().claim(ctx);
                         let restore_keys = restore_keys.claim(ctx);
                         let hitvar = hitvar.claim(ctx);
                         let hitvar2 = hitvar2.claim(ctx);
                         |rt| {
-                            let persistent_dir = rt.read(persistent_dir);
+                            let store = rt.read(memo_store);
                             let dir = rt.read(dir);
                             let key = rt.read(key);
                             let restore_keys = rt.read(restore_keys);
@@ -133,43 +131,27 @@ impl FlowNode for Node {
                                 rt.write(hitvar2, &val);
                             };
 
-                            // figure out what cache entries are available to us
-                            //
-                            // (reading this entire file into memory seems fine at
-                            // this juncture, given the sort of datasets we're
-                            // working with)
-                            let available_keys: BTreeSet<String> = if let Ok(s) =
-                                fs_err::read_to_string(persistent_dir.join("cache_keys"))
-                            {
-                                s.split('\n').map(|s| s.trim().to_owned()).collect()
-                            } else {
-                                BTreeSet::new()
-                            };
-
                             // using the keys the user provided us, check if there's
                             // a match
-                            let mut existing_cache_dir = None;
+                            let mut restored = None;
                             for (idx, key) in Some(key)
                                 .into_iter()
                                 .chain(restore_keys.into_iter().flatten())
                                 .enumerate()
                             {
-                                if available_keys.contains(&key) {
-                                    existing_cache_dir = Some((idx == 0, hash_key_to_dir(&key)));
+                                if let Some(entry) = store.lookup(&memo_key(&key))? {
+                                    restored = Some((idx == 0, entry));
                                     break;
                                 }
                             }
 
-                            let Some((direct_hit, existing_cache_dir)) = existing_cache_dir else {
+                            let Some((direct_hit, entry)) = restored else {
                                 set_hitvar(CacheHit::Miss);
                                 return Ok(());
                             };
 
-                            crate::_util::copy_dir_all(
-                                persistent_dir.join(existing_cache_dir),
-                                dir,
-                            )
-                            .context("while restoring cache")?;
+                            crate::_util::copy_dir_all(&entry.dir, dir)
+                                .context("while restoring cache")?;
 
                             set_hitvar(if direct_hit {
                                 CacheHit::Hit
@@ -184,35 +166,24 @@ impl FlowNode for Node {
                     ctx.emit_rust_step(format!("Saving cache: {label}"), |ctx| {
                         resolve_post_job.claim(ctx);
                         let hitvar_reader = hitvar_reader.claim(ctx);
-                        let persistent_dir = persistent_dir.clone().claim(ctx);
+                        let memo_store = memo_store.clone().claim(ctx);
                         let dir = dir.claim(ctx);
                         let key = key.claim(ctx);
                         move |rt| {
-                            let persistent_dir = rt.read(persistent_dir);
+                            let store = rt.read(memo_store);
                             let dir = rt.read(dir);
                             let key = rt.read(key);
-                            let hitvar_reader = rt.read(hitvar_reader);
 
-                            let mut cache_keys_file = fs_err::OpenOptions::new()
-                                .append(true)
-                                .create(true)
-                                .read(true)
-                                .open(persistent_dir.join("cache_keys"))?;
-
-                            if matches!(hitvar_reader, CacheHit::Hit) {
+                            if matches!(rt.read(hitvar_reader), CacheHit::Hit) {
                                 // no need to update the cache
                                 log::info!("was direct hit - no updates needed");
                                 return Ok(());
                             }
 
-                            // otherwise, need to update the cache
-                            crate::_util::copy_dir_all(
-                                dir,
-                                persistent_dir.join(hash_key_to_dir(&key)),
-                            )?;
-
-                            cache_keys_file.seek(std::io::SeekFrom::End(0))?;
-                            writeln!(cache_keys_file, "{}", key)?;
+                            store.get_or_insert_with(&memo_key(&key), |out_dir| {
+                                crate::_util::copy_dir_all(&dir, out_dir)?;
+                                Ok(())
+                            })?;
 
                             log::info!("cache saved");
 
@@ -515,13 +486,7 @@ impl FlowNode for Node {
     }
 }
 
-// _technically_, if we want to be _super_ sure we're not gonna have a hash
-// collision, we should also do a content-hash of the thing we're about to
-// cache... but this should be OK for now, given that we don't expect to have a
-// massive number of cache entries.
-fn hash_key_to_dir(key: &str) -> String {
-    let hasher = &mut rustc_hash::FxHasher::default();
-    std::hash::Hash::hash(&key, hasher);
-    let hash = std::hash::Hasher::finish(hasher);
-    format!("{:08x?}", hash)
+/// Map a user-provided cache key onto a memoization store key.
+fn memo_key(key: &str) -> MemoKey {
+    MemoKey::new("flowey_lib_common::cache", 1).with_str("key", key)
 }

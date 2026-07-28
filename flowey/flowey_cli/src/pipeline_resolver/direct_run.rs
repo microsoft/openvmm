@@ -38,7 +38,12 @@ pub fn direct_run(
     out_dir: PathBuf,
     persist_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    direct_run_do_work(pipeline, windows_as_wsl, out_dir.clone(), persist_dir)?;
+    let res = direct_run_do_work(
+        pipeline,
+        windows_as_wsl,
+        out_dir.clone(),
+        persist_dir.clone(),
+    );
 
     // cleanup
     if out_dir.join(".job_artifacts").exists() {
@@ -48,7 +53,73 @@ pub fn direct_run(
         fs_err::remove_dir_all(out_dir.join(".work"))?;
     }
 
+    res?;
+
+    gc_memo_store(&persist_dir);
+
     Ok(())
+}
+
+/// Restores the process's working directory when dropped.
+///
+/// Flowey's contract is that a step's working directory _is_ the process's cwd,
+/// so code that moves cwd owns putting it back before returning up the stack -
+/// otherwise callers holding perfectly ordinary relative paths silently start
+/// resolving them somewhere else.
+///
+/// This has to be a guard rather than a statement at the end of the function,
+/// since every `?` in between - including a failing step - is an exit path that
+/// would otherwise leave the process parked inside a `.work` subdirectory that
+/// the caller is about to delete. (On Windows, deleting a directory that is the
+/// cwd fails outright, so a failed step would surface as a confusing cleanup
+/// error rather than the real failure.)
+struct RestoreCwd(Option<PathBuf>);
+
+impl RestoreCwd {
+    fn new() -> Self {
+        Self(std::env::current_dir().ok())
+    }
+}
+
+impl Drop for RestoreCwd {
+    fn drop(&mut self) {
+        let Some(dir) = self.0.take() else {
+            return;
+        };
+        if let Err(e) = std::env::set_current_dir(&dir) {
+            log::warn!(
+                "failed to restore the working directory to {}: {e}",
+                dir.display()
+            );
+        }
+    }
+}
+
+/// Keep the memoization store from growing without bound.
+///
+/// This is best-effort - a failure to garbage collect shouldn't fail an
+/// otherwise-successful run.
+fn gc_memo_store(persist_dir: &Path) {
+    let gc = || {
+        let root = persist_dir.join(flowey_core::node::memo::MEMO_STORE_DIR_NAME);
+        let Some(store) = flowey_core::node::memo::MemoStore::open_existing(root)? else {
+            return anyhow::Ok(());
+        };
+        let max_bytes = flowey_core::node::memo::configured_max_store_size()?;
+        let summary = store.gc(max_bytes)?;
+        if summary.evicted_entries > 0 {
+            log::info!(
+                "memo store gc: evicted {} entries ({})",
+                summary.evicted_entries,
+                flowey_core::node::memo::format_size_bytes(summary.evicted_bytes),
+            );
+        }
+        Ok(())
+    };
+
+    if let Err(e) = gc() {
+        log::warn!("failed to garbage collect the memoization store: {e:#}");
+    }
 }
 
 fn direct_run_do_work(
@@ -57,6 +128,10 @@ fn direct_run_do_work(
     out_dir: PathBuf,
     persist_dir: PathBuf,
 ) -> anyhow::Result<()> {
+    // this function moves the process's cwd around as it runs each step, so it
+    // owns both restoring it on the way out, and resolving the paths it was
+    // given while it still can.
+    let _restore_cwd = RestoreCwd::new();
     fs_err::create_dir_all(&out_dir)?;
     let out_dir = std::path::absolute(out_dir)?;
 
