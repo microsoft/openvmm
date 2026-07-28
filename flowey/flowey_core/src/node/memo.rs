@@ -800,9 +800,17 @@ impl MemoStore {
             let meta = fs_err::read(dir.join(META_FILE))
                 .ok()
                 .and_then(|raw| serde_json::from_slice::<MemoEntryMeta>(&raw).ok());
+            // An entry whose metadata is missing or corrupt is unusable, but it
+            // still occupies disk. Measuring it keeps it visible to the size
+            // cap, so that gc eventually reclaims it rather than letting the
+            // store silently grow past its cap.
+            let size_bytes = match &meta {
+                Some(meta) => meta.size_bytes,
+                None => dir_size(&dir).unwrap_or(0),
+            };
             out.push(MemoEntryInfo {
                 hash: e.file_name().to_string_lossy().into_owned(),
-                size_bytes: meta.as_ref().map(|m| m.size_bytes).unwrap_or(0),
+                size_bytes,
                 last_used_unix_secs: self.last_used(&dir),
                 meta,
             });

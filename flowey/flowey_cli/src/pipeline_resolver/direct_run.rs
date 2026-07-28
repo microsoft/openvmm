@@ -53,9 +53,13 @@ pub fn direct_run(
         fs_err::remove_dir_all(out_dir.join(".work"))?;
     }
 
-    res?;
-
+    // GC before propagating any failure. A failed run still leaves scratch
+    // dirs (and possibly entries committed by steps that ran before the
+    // failure) behind, and skipping GC here would leave them unaccounted for
+    // until some later run aged them out.
     gc_memo_store(&persist_dir);
+
+    res?;
 
     Ok(())
 }
