@@ -700,6 +700,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
+            // An intercept can report a gpa that is unmapped or even outside the
+            // partition's address space, and the hypervisor fails the whole
+            // hypercall for those rather than reporting a per-page result. Only
+            // mapped lower VTL RAM can carry VTL protections anyway.
+            if !self.vp.partition.is_gpa_lower_vtl_ram(gpa) {
+                return Ok(());
+            }
+
             let cpsr: Cpsr64 = self
                 .vp
                 .runner
