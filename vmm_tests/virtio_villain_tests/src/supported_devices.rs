@@ -47,20 +47,16 @@
 //! Known *product* failures (real device-model bugs) are handled separately in
 //! [`crate::known_failures`]; both are OR'd together at trial construction.
 
-use std::sync::LazyLock;
-
 /// Transport-common feature bits OpenVMM's virtio transport offers for **every**
 /// device, on top of whatever the device model itself advertises. The transport
 /// unconditionally turns these on (see
 /// `vm/devices/virtio/virtio/src/transport/core.rs`, `with_version_1(true)` and
 /// `with_access_platform(true)`), so they must be included when deciding whether
 /// a required feature is offered.
-static COMMON_FEATURES: LazyLock<u64> = LazyLock::new(|| {
-    virtio_spec::VirtioDeviceFeatures::new()
-        .with_version_1(true)
-        .with_access_platform(true)
-        .into_bits()
-});
+const COMMON_FEATURES: u64 = virtio_spec::VirtioDeviceFeatures::new()
+    .with_version_1(true)
+    .with_access_platform(true)
+    .into_bits();
 
 /// The virtio capabilities the kitchen-sink VM exposes for one device.
 struct DeviceCaps {
@@ -79,8 +75,19 @@ impl DeviceCaps {
     /// The full set of feature bits negotiable on this device, i.e. the device's
     /// own bits plus the transport-common [`COMMON_FEATURES`].
     fn offered_features(&self) -> u64 {
-        self.device_features | *COMMON_FEATURES
+        self.device_features | COMMON_FEATURES
     }
+}
+
+/// Ring feature bits every OpenVMM virtio device model advertises.
+const RING_FEATURES: virtio_spec::VirtioDeviceFeatures = virtio_spec::VirtioDeviceFeatures::new()
+    .with_ring_indirect_desc(true)
+    .with_ring_event_idx(true)
+    .with_ring_packed(true);
+
+/// The virtio PCI device id for a device type.
+const fn device_id(device_type: virtio_spec::VirtioDeviceType) -> u16 {
+    virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE + device_type.0
 }
 
 /// Per-device capabilities exposed by [`crate::run`]'s `attach_kitchen_sink`.
@@ -96,76 +103,62 @@ impl DeviceCaps {
 /// * vsock   `vm/devices/virtio/virtio_vsock/src/lib.rs` (`traits`)
 /// * fs      `vm/devices/virtio/virtiofs/src/virtio.rs` (`traits`)
 /// * pmem    `vm/devices/virtio/virtio_pmem/src/lib.rs` (`traits`)
-static DEVICE_CAPS: LazyLock<[DeviceCaps; 7]> = LazyLock::new(|| {
-    use virtio_spec::VirtioDeviceFeatures;
-    use virtio_spec::VirtioDeviceType;
-    use virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
-
-    let ring_features = || {
-        VirtioDeviceFeatures::new()
-            .with_ring_indirect_desc(true)
-            .with_ring_event_idx(true)
-            .with_ring_packed(true)
-    };
-    let device_id = |device_type: VirtioDeviceType| VIRTIO_PCI_DEVICE_ID_BASE + device_type.0;
-
-    [
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::NET),
-            device_features: ring_features()
-                .with_in_order(true)
-                .with_device_specific_low(0x0001_1823)
-                // VIRTIO_NET_F_HOST_USO, overall bit 56.
-                .with_device_specific_high(1 << 5)
-                .into_bits(),
-            num_queues: 2,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::BLK),
-            device_features: ring_features()
-                .with_device_specific_low(
-                    virtio_spec::blk::VIRTIO_BLK_F_SEG_MAX
-                        | virtio_spec::blk::VIRTIO_BLK_F_BLK_SIZE
-                        | virtio_spec::blk::VIRTIO_BLK_F_FLUSH
-                        | virtio_spec::blk::VIRTIO_BLK_F_TOPOLOGY
-                        | virtio_spec::blk::VIRTIO_BLK_F_DISCARD,
-                )
-                .into_bits(),
-            num_queues: 1,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::CONSOLE),
-            device_features: ring_features()
-                // VIRTIO_CONSOLE_F_SIZE.
-                .with_device_specific_low(1 << 0)
-                .into_bits(),
-            num_queues: 2,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::RNG),
-            device_features: ring_features().into_bits(),
-            num_queues: 1,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::VSOCK),
-            device_features: VirtioDeviceFeatures::new()
-                // VIRTIO_VSOCK_F_STREAM and VIRTIO_VSOCK_F_SEQPACKET.
-                .with_device_specific_low((1 << 0) | (1 << 2))
-                .into_bits(),
-            num_queues: 3,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::FS),
-            device_features: ring_features().into_bits(),
-            num_queues: 3,
-        },
-        DeviceCaps {
-            device_id: device_id(VirtioDeviceType::PMEM),
-            device_features: ring_features().into_bits(),
-            num_queues: 1,
-        },
-    ]
-});
+static DEVICE_CAPS: [DeviceCaps; 7] = [
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::NET),
+        device_features: RING_FEATURES
+            .with_in_order(true)
+            .with_device_specific_low(0x0001_1823)
+            // VIRTIO_NET_F_HOST_USO, overall bit 56.
+            .with_device_specific_high(1 << 5)
+            .into_bits(),
+        num_queues: 2,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::BLK),
+        device_features: RING_FEATURES
+            .with_device_specific_low(
+                virtio_spec::blk::VIRTIO_BLK_F_SEG_MAX
+                    | virtio_spec::blk::VIRTIO_BLK_F_BLK_SIZE
+                    | virtio_spec::blk::VIRTIO_BLK_F_FLUSH
+                    | virtio_spec::blk::VIRTIO_BLK_F_TOPOLOGY
+                    | virtio_spec::blk::VIRTIO_BLK_F_DISCARD,
+            )
+            .into_bits(),
+        num_queues: 1,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::CONSOLE),
+        device_features: RING_FEATURES
+            // VIRTIO_CONSOLE_F_SIZE.
+            .with_device_specific_low(1 << 0)
+            .into_bits(),
+        num_queues: 2,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::RNG),
+        device_features: RING_FEATURES.into_bits(),
+        num_queues: 1,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::VSOCK),
+        device_features: virtio_spec::VirtioDeviceFeatures::new()
+            // VIRTIO_VSOCK_F_STREAM and VIRTIO_VSOCK_F_SEQPACKET.
+            .with_device_specific_low((1 << 0) | (1 << 2))
+            .into_bits(),
+        num_queues: 3,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::FS),
+        device_features: RING_FEATURES.into_bits(),
+        num_queues: 3,
+    },
+    DeviceCaps {
+        device_id: device_id(virtio_spec::VirtioDeviceType::PMEM),
+        device_features: RING_FEATURES.into_bits(),
+        num_queues: 1,
+    },
+];
 
 /// The capabilities for `device_id`, if the kitchen-sink VM attaches it.
 fn device_caps(device_id: u16) -> Option<&'static DeviceCaps> {
@@ -634,7 +627,7 @@ mod tests {
         // VERSION_1 (32) and ACCESS_PLATFORM (33) are offered for every device
         // even though the models don't list them (the transport adds them).
         for caps in DEVICE_CAPS.iter() {
-            assert_eq!(caps.offered_features() & *COMMON_FEATURES, *COMMON_FEATURES);
+            assert_eq!(caps.offered_features() & COMMON_FEATURES, COMMON_FEATURES);
         }
     }
 
