@@ -246,11 +246,12 @@ impl ConsommeControl {
             // WSAEADDRNOTAVAIL. Forwarding is best-effort: skip it so the
             // guest's own bind() still succeeds.
             Err(e)
-                if ip_addr.is_some()
+                if ip_addr.is_some_and(|addr| !addr.is_unspecified())
                     && (e.kind() == std::io::ErrorKind::AddrNotAvailable
-                        || e.raw_os_error() == Some(10049)) =>
+                        || (cfg!(windows) && e.raw_os_error() == Some(10049))) =>
             {
-                tracing::info!(
+                tracing::debug!(
+                    error = %e,
                     ?protocol,
                     ?ip_addr,
                     host_port,
