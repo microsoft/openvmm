@@ -10360,6 +10360,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmbus_guest"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "hvdef",
+ "open_enum",
+ "opentmk",
+ "spin",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
