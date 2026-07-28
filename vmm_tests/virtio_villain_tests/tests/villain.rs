@@ -282,13 +282,17 @@ fn main() -> anyhow::Result<()> {
                 let log_source = petri::new_log_source(&test_dir)
                     .context("failed to create per-test log source")
                     .map_err(|e| Failed::from(format!("{e:#}")))?;
+                // Record the start marker up front so a test that dies without
+                // reporting (e.g. a VM hang killed by timeout) is distinguishable
+                // from one that never began.
+                log_source.log_test_start(&name);
                 let result = run::run_one(&params, artifacts, &log_source, &name, mmio)
                     .and_then(villain::evaluate);
                 // Write the petri.passed/petri.failed marker (and log the
                 // outcome to petri.jsonl) so the logview uploader counts this
                 // test. villain tests are never "unstable" — known failures are
                 // skipped via the ignored flag instead.
-                log_source.log_test_result(&name, &result, false);
+                log_source.log_test_result(&result, false);
                 result.map_err(|e| Failed::from(format!("{e:#}")))
             })
             .with_ignored_flag(ignored)
