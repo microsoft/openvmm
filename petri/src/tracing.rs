@@ -308,6 +308,10 @@ macro_rules! log {
 /// (e.g. the villain runner) that generate many trials in a single process:
 /// [`try_init_tracing`] can only install the global subscriber once, so
 /// per-test log isolation relies on constructing per-test log sources here.
+///
+/// `root_path` must already exist: this function canonicalizes it (so printed
+/// attachment paths resolve) and creates `petri.jsonl` inside it. Creating the
+/// directory is the caller's responsibility.
 pub fn new_log_source(root_path: &Path) -> anyhow::Result<PetriLogSource> {
     // Canonicalize so that printed attachment paths are most likely to work.
     let root_path = root_path.fs_err_canonicalize()?;

@@ -10,8 +10,8 @@ reports whether OpenVMM handled the input correctly.
 The suite lives in `vmm_tests/virtio_villain_tests`. Unlike the
 [VMM Tests](./vmm.md), it does not use the `#[vmm_test]` macro. It is a standalone
 runner built on petri (used as a library, like `burette`) and libtest-mimic,
-exposing one nextest case per villain test. It drives OpenVMM over the PCI virtio
-transport and runs on Linux `x86_64` under KVM.
+exposing one nextest case per villain test. It drives OpenVMM over the virtio PCI
+and MMIO transports and runs on Linux (`x86_64` and `aarch64`) under KVM.
 
 ## How it works
 
@@ -56,8 +56,8 @@ skipped by default, and runnable with `--run-ignored`.
 ### Unsupported device (`supported_devices.rs`)
 
 Villain has roughly 1400 tests but only a handful of device classes. Rather than
-list every test to skip, we list the device IDs the kitchen-sink VM attaches, in
-`SUPPORTED_DEVICE_IDS` (IDs follow the virtio convention `0x1040 +
+list every test to skip, we list the devices the kitchen-sink VM attaches, in
+`DEVICE_CAPS` (keyed by device ID, which follows the virtio convention `0x1040 +
 virtio_device_type`):
 
 | device_id | device |
@@ -71,12 +71,14 @@ virtio_device_type`):
 | `0x105b` | pmem |
 
 A test whose target device is not in this set is ignored when its trial is
-constructed, so it never boots a VM. Device-agnostic tests (`device_id ==
-0x0000`, such as transport-level PCI checks) always run.
+constructed, so it never boots a VM. Device-agnostic MMIO tests (`device_id ==
+0x0000`) run against whatever device villain's `virtio_mmio_find` locates. Their
+PCI counterparts are ignored: villain's `virtio_pci_find(0)` looks for a literal
+PCI device `0x0000`, which no virtio device is, so they can only `[SKIP]`.
 
 This avoids booting a VM for roughly 270 tests covering devices OpenVMM does not
 yet emulate (IOMMU, memory balloon, virtio-mem, watchdog, RTC). To enable a
-device's tests, add its ID to `SUPPORTED_DEVICE_IDS` and attach the device in
+device's tests, add an entry to `DEVICE_CAPS` and attach the device in
 `attach_kitchen_sink` (`run.rs`); keep the two in sync.
 
 Because these tests are ignored rather than run, `--run-ignored` will run them and

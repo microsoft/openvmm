@@ -11,9 +11,9 @@
 //! `virtio_villain_tests` crate consumes these two files via the
 //! `VILLAIN_INITRAMFS` / `VILLAIN_TSV` env vars.
 //!
-//! This node is inert until `openvmm-deps` cuts a release that includes the
-//! virtio-villain artifact (and [`crate::_jobs::cfg_versions::OPENVMM_DEPS`] is
-//! bumped to it). Until then, use a local path override.
+//! By default this resolves the artifact from the `openvmm-deps` release pinned
+//! by [`crate::_jobs::cfg_versions::OPENVMM_DEPS`]; pass a local path override to
+//! use a locally built artifact instead.
 
 use crate::common::CommonArch;
 use flowey::node::prelude::*;
@@ -79,11 +79,11 @@ impl FlowNodeWithConfig for Node {
         }
 
         if version.is_some() && !local_paths.is_empty() {
-            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+            anyhow::bail!("cannot specify both `version` and `local_paths`");
         }
 
         if version.is_none() && local_paths.is_empty() {
-            anyhow::bail!("Must specify a Version or LocalPath request");
+            anyhow::bail!("must specify either `version` or `local_paths`");
         }
 
         // -- end of req processing -- //

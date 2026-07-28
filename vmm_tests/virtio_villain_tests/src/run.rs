@@ -268,9 +268,10 @@ fn attach_kitchen_sink(
     if mmio {
         b.with_custom_config(move |c| {
             // Replace the kernel command line wholesale.
-            if let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode {
-                *cl = cmdline;
-            }
+            let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode else {
+                unreachable!("the villain kitchen-sink VM is always linux-direct")
+            };
+            *cl = cmdline;
 
             // Each device becomes a separate virtio-MMIO slot; OpenVMM emits an
             // `LNRO0005` ACPI device per slot so the guest (and thus villain's
@@ -284,9 +285,10 @@ fn attach_kitchen_sink(
         b.with_pcie_root_topology(1, 1, inner.len() as u64)
             .with_custom_config(move |c| {
                 // Replace the kernel command line wholesale.
-                if let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode {
-                    *cl = cmdline;
-                }
+                let LoadMode::Linux { cmdline: cl, .. } = &mut c.load_mode else {
+                    unreachable!("the villain kitchen-sink VM is always linux-direct")
+                };
+                *cl = cmdline;
 
                 for (i, handle) in inner.into_iter().enumerate() {
                     c.pcie_devices.push(PcieDeviceConfig {

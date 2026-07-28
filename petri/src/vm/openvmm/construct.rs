@@ -193,12 +193,13 @@ impl PetriVmConfigOpenVmm {
             "uses_pipette_as_init requires a prebuilt initrd, but none was set"
         );
         if let Some(prebuilt) = properties.prebuilt_initrd.as_ref() {
-            if let LoadMode::Linux { initrd, .. } = &mut load_mode {
-                let file = std::fs::File::open(prebuilt).with_context(|| {
-                    format!("failed to open prebuilt initrd at {}", prebuilt.display())
-                })?;
-                *initrd = Some(file);
-            }
+            let LoadMode::Linux { initrd, .. } = &mut load_mode else {
+                unreachable!("prebuilt_initrd is only meaningful for Linux direct boot")
+            };
+            let file = std::fs::File::open(prebuilt).with_context(|| {
+                format!("failed to open prebuilt initrd at {}", prebuilt.display())
+            })?;
+            *initrd = Some(file);
         }
 
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
