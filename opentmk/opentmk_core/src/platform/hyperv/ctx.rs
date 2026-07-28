@@ -174,13 +174,18 @@ impl HypercallTrait for HvTestCtx {
         self.hvcall.input_page.buffer[0..inp_len].copy_from_slice(&input[0..inp_len]);
 
         let result = if out_len == 0 && inp_len <= 16 && cfg.pass_by_register_hint {
+            // Clear rest of input page if inp_len < 16
+            self.hvcall.input_page.buffer[inp_len..16].fill(0);
+
             // Do a fast pass-by-register call
             self.hvcall.dispatch_hvcall_fast(code)
         } else {
-            // Do a normal call, then write to output buffer if we have any to write
+            // Do a normal call
             let result =
                 self.hvcall
                     .dispatch_hvcall_ex(code, cfg.rep_start, cfg.rep_count, cfg.size);
+
+            // Write to output buffer if we have any to write
             output[0..out_len].copy_from_slice(&self.hvcall.output_page.buffer[0..out_len]);
             result
         };
