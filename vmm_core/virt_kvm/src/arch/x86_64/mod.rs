@@ -905,7 +905,7 @@ impl KvmProcessor<'_> {
 
     /// Tries to deliver any pending synic messages for a VP.
     fn try_deliver_synic_messages(&mut self) -> Option<VmTime> {
-        if !self.scontrol.enabled() && self.simp.enabled() {
+        if !(self.scontrol.enabled() && self.simp.enabled()) {
             return None;
         }
         self.inner

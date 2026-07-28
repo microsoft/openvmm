@@ -986,6 +986,7 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            crash_dump_path: None,
             // The ttrpc/grpc server never exits on a guest power event; it uses
             // the historical defaults (none of which is Exit), so the
             // ExitRequested event handled below is unreachable here.

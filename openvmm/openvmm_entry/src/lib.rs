@@ -2772,6 +2772,7 @@ async fn run_control_inner(
         memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
+        crash_dump_path: opt.crash_dump_path.clone(),
         guest_power_actions: vm_controller::GuestPowerActions {
             shutdown: opt.guest_shutdown_action,
             reset: opt.guest_reset_action,

@@ -1017,7 +1017,8 @@ flags:
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable OpenHCL's guest crash dump device, targeting the specified path
+    /// Enable OpenHCL's crash dump device, writing ELF core dumps of
+    /// VTL2 user-mode components of OpenHCL in the given directory.
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
@@ -1038,6 +1039,16 @@ flags:
     /// the exit status)
     #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
     pub guest_crash_action: GuestPowerAction,
+
+    /// when the guest triple-faults, write a WinDbg-compatible `.vmrs` dump of
+    /// the whole VM's VP state and guest memory to the specified path before
+    /// applying the crash action
+    ///
+    /// This is a host-side, whole-VM dump triggered by a triple fault, distinct
+    /// from `--openhcl-dump-path` (which captures an ELF core dump of user-mode
+    /// components in OpenHCL).
+    #[clap(long, value_name = "PATH")]
+    pub crash_dump_path: Option<PathBuf>,
 
     /// what to do when the guest watchdog fires (the guest stopped petting it):
     /// reset the VM (default), halt it for inspection, or exit the VMM process

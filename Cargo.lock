@@ -10543,6 +10543,7 @@ dependencies = [
  "futures",
  "get_resources",
  "guid",
+ "hvs_file",
  "hyperv_ic_resources",
  "inspect",
  "jiff",

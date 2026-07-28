@@ -11,10 +11,19 @@ pub mod capabilities {
     /// Software VPCI device emulation support.
     pub const VPCI: &str = "vpci";
 
+    /// Support for resetting a partition running Windows.
+    pub const WINDOWS_PARTITION_RESET: &str = "windows_partition_reset";
+
     /// All capability names known to petri, including those defined by
     /// incubators. Incubator device capabilities are the device's profile
     /// `name` with `-` replaced by `_` (e.g. `edu-initiator` → `edu_initiator`).
-    pub const KNOWN_CAPABILITIES: &[&str] = &[VPCI, "test_disk", "edu_initiator", "ivshmem_target"];
+    pub const KNOWN_CAPABILITIES: &[&str] = &[
+        VPCI,
+        WINDOWS_PARTITION_RESET,
+        "test_disk",
+        "edu_initiator",
+        "ivshmem_target",
+    ];
 
     /// Returns `name` if it is a known capability name.
     pub fn known(name: &str) -> Option<&'static str> {

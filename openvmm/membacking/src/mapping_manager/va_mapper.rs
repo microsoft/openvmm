@@ -41,6 +41,13 @@
 // low level memory manipulation functions.
 #![expect(unsafe_code)]
 
+// Soft large pages are a Windows-only optimization; other targets get an
+// uninhabited stub with the same interface (`SoftLp::new` returns `None`) so the
+// fault paths compile without per-item `cfg`s.
+#[cfg_attr(not(windows), path = "va_mapper/soft_lp_stub.rs")]
+mod soft_lp;
+
+use self::soft_lp::SoftLp;
 use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
@@ -70,7 +77,6 @@ use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use thiserror::Error;
@@ -88,20 +94,6 @@ use windows_sys::Win32::System::Memory::SECTION_MAP_WRITE;
 #[error("unexpected page fault")]
 struct UnexpectedPageFault;
 
-/// A failure in one of the steps the fault handler takes to service a guest-RAM
-/// fault on Windows. Each variant names the operation and carries the
-/// underlying OS error as its [`source`](std::error::Error::source), so a
-/// passed-up guest-memory error identifies the step that failed rather than
-/// surfacing a bare OS error code.
-#[cfg(windows)]
-#[derive(Debug, Error)]
-enum FaultError {
-    /// Raising a window to read-write failed (deferred protect / soft large
-    /// pages).
-    #[error("failed to raise window {0} to read-write")]
-    Protect(MemoryRange, #[source] std::io::Error),
-}
-
 /// The role of a [`VaMapper`].
 ///
 /// Exactly one mapper per VM is [`Primary`](Self::Primary): the loader's write
@@ -118,14 +110,21 @@ enum FaultError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum MapperRole {
     /// The single loader/partition mapper; eligible for soft large pages.
-    Primary,
+    Primary {
+        /// Whether the partition delivers guest-memory-access faults to the
+        /// VMM. Soft large pages map a window read-only and rely on the
+        /// resulting write fault being resolved to raise it, so they are only
+        /// enabled when this is set. Carried on the `Primary` variant because it
+        /// is meaningless for a secondary mapper.
+        supports_memory_fault_resolution: bool,
+    },
     /// Any other mapper; plain read-write 4 KB pages.
     Secondary,
 }
 
 /// Properties recorded for each active guest-memory mapping, used to answer
-/// per-address queries (private vs. shared, soft-large-page first-fault state)
-/// without a static snapshot of the RAM layout.
+/// per-address queries (private vs. shared, soft-large-page state) without a
+/// static snapshot of the RAM layout.
 #[derive(Debug)]
 struct MappingProps {
     /// Backed by private anonymous memory (committed up front) rather than a
@@ -133,46 +132,10 @@ struct MappingProps {
     private: bool,
     /// General per-mapping fault counters, always present. See [`FaultStats`].
     stats: FaultStats,
-    /// Soft-large-page state for this range's 2 MB regions. `Some` only for
-    /// writable THP-eligible ranges on the **primary** (local) mapper on Windows
-    /// (soft large pages); `None` otherwise — non-primary (device/DMA) mappers,
-    /// non-THP ranges, and non-Windows hosts spend nothing. The fault paths
-    /// claim a region, materialize backing, and bump counters while holding the
-    /// mapping-index read lock.
-    ///
-    /// `Some` also marks the range (private or shared) as "deferred protect":
-    /// committed/mapped read-only and upgraded to read-write — then materialized
-    /// with a 2 MB prefetch — a window at a time on first write.
+    /// Soft-large-page (Windows THP) state, or `None` when the scheme does not
+    /// apply (non-primary/device mappers, read-only or non-THP ranges, and every
+    /// non-Windows host). See the [`soft_lp`] module.
     soft_lp: Option<SoftLp>,
-}
-
-/// Per-mapping soft-large-page state: the first-fault bitmap plus the
-/// large-page prefetch/promotion counters. Stored inline in [`MappingProps`]
-/// and accessed by the fault paths under the mapping-index read lock.
-#[derive(Debug)]
-struct SoftLp {
-    first_fault: FirstFault,
-    stats: SoftLpStats,
-}
-
-/// Per-mapping counters for the soft-large-page (2 MB window) machinery,
-/// exposed via `Inspect`. These track only the large-page-specific work —
-/// prefetching and promoting 2 MB windows. General fault accounting (the faults
-/// that drive this work) lives in [`FaultStats`].
-///
-/// Kept per mapping (one backing, and thus one set of counters, per NUMA node)
-/// so they scale for large multi-NUMA-node VMs rather than contending on a
-/// single global counter.
-#[derive(Debug, Default, Inspect)]
-struct SoftLpStats {
-    /// 2 MB windows prefetched on the host fault path.
-    host_prefetches: SharedCounter,
-    /// 2 MB windows promoted (first-fault widen) on the guest fault path.
-    guest_promotions: SharedCounter,
-    /// 2 MB windows pre-populated eagerly at build time (prefetch).
-    eager_promotions: SharedCounter,
-    /// Best-effort prefetch failures (no free large page, or pre-Win11).
-    prefetch_failures: SharedCounter,
 }
 
 /// Per-mapping fault counters, exposed via `Inspect`.
@@ -185,10 +148,6 @@ struct SoftLpStats {
 /// (`SharedCounter`), bumped in place under the mapping-index read lock.
 #[derive(Debug, Default, Inspect)]
 struct FaultStats {
-    /// Host write faults that raised a soft-large-page deferred-protect window
-    /// to read-write (e.g. the loader's first write to a window). Nonzero only
-    /// for soft-large-page mappings (Windows, primary mapper, THP-eligible).
-    deferred_protect_faults: SharedCounter,
     /// Guest memory faults resolved for this mapping.
     guest_faults: SharedCounter,
 }
@@ -247,7 +206,7 @@ impl Inspect for VaMapper {
                             let mut resp = req.respond();
                             resp.field("faults", &props.stats);
                             if let Some(sl) = &props.soft_lp {
-                                resp.field("soft_large_pages", &sl.stats);
+                                resp.field("soft_large_pages", sl);
                             }
                         }),
                     );
@@ -282,6 +241,12 @@ struct MapperInner {
     /// since this is the mapping whose host backing drives the guest's SLAT.
     /// Secondary mappers use plain read-write 4 KB pages. See [`MapperRole`].
     primary: bool,
+    /// Whether the partition delivers guest-memory-access faults to the VMM.
+    /// Soft large pages map a window read-only and rely on the resulting write
+    /// fault being resolved to raise it, so without fault resolution they would
+    /// wedge on the first guest write; the primary mapper only enables them when
+    /// this is set.
+    supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
 }
 
@@ -372,23 +337,26 @@ impl MapperTask {
 
     /// Establishes a mapping in the VA space, dispatching on how it is backed.
     fn map(&self, params: MappingParams) -> Result<(), MappingError> {
-        // Soft large pages are a Windows-only, THP-only feature that matters only
-        // on the **primary** mapper: the partition and the loader run against its
-        // VA, so that is the only place a large host backing yields a 2 MB SLAT
-        // entry. Non-primary (device/DMA) mappers, read-only mappings (e.g. ROM),
-        // non-THP ranges, and non-Windows hosts use plain read-write 4 KB pages.
-        let soft_lp = cfg!(windows)
-            && params.policy.transparent_hugepages
-            && params.writable
-            && self.inner.primary;
+        // Soft large pages apply only to writable THP-eligible RAM on the primary
+        // mapper (Windows); `SoftLp::new` returns `None` otherwise. See the
+        // `soft_lp` module. They also depend on the partition delivering write
+        // faults to raise deferred-protect windows, so don't even build one when
+        // the partition can't resolve faults.
+        let soft_lp = if self.inner.supports_memory_fault_resolution {
+            SoftLp::new(
+                params.range,
+                &params.policy,
+                params.writable,
+                self.inner.primary,
+            )
+        } else {
+            None
+        };
 
-        // Deferred protect (map read-only, populate lazily on the first write
-        // fault) drives the *lazy* soft-LP path. When the range is prefetched it
-        // is populated *eagerly* at build time instead, so it stays read-write
-        // (the build-time populate cannot access a read-only mapping) and its
-        // 2 MB windows start already-attempted.
-        let prefetch = soft_lp && params.policy.prefetch;
-        let deferred_protect = soft_lp && !prefetch;
+        // Deferred protect (map read-only, raise on the first write fault) drives
+        // the lazy soft-LP path; prefetched ranges are populated read-write
+        // eagerly at build time instead.
+        let deferred_protect = soft_lp.as_ref().is_some_and(SoftLp::deferred_protect);
 
         let private = match &params.backing {
             MappingBacking::File {
@@ -408,20 +376,7 @@ impl MapperTask {
             MappingProps {
                 private,
                 stats: FaultStats::default(),
-                soft_lp: soft_lp.then(|| {
-                    let regions = large_region_count(params.range);
-                    let stats = SoftLpStats::default();
-                    // Prefetched ranges are populated up front, so mark every
-                    // window attempted and count them as eager promotions; lazy
-                    // ranges start unattempted.
-                    let first_fault = if prefetch {
-                        stats.eager_promotions.add(regions);
-                        FirstFault::new_all_claimed(regions)
-                    } else {
-                        FirstFault::new(regions)
-                    };
-                    SoftLp { first_fault, stats }
-                }),
+                soft_lp,
             },
         );
         Ok(())
@@ -762,6 +717,15 @@ impl VaMapper {
         eager: bool,
         role: MapperRole,
     ) -> Result<Self, VaMapperError> {
+        // Soft large pages apply only to the primary mapper, and only when the
+        // partition resolves faults; `supports_memory_fault_resolution` rides on
+        // the `Primary` variant.
+        let (primary, supports_memory_fault_resolution) = match role {
+            MapperRole::Primary {
+                supports_memory_fault_resolution,
+            } => (true, supports_memory_fault_resolution),
+            MapperRole::Secondary => (false, false),
+        };
         let mapping = match &remote_process {
             None => SparseMapping::new_with_minimum_alignment(
                 len as usize,
@@ -791,7 +755,8 @@ impl VaMapper {
             waiters: Mutex::new(Some(Vec::new())),
             mappings: RwLock::new(RangeMap::new()),
             eager: AtomicBool::new(eager),
-            primary: role == MapperRole::Primary,
+            primary,
+            supports_memory_fault_resolution,
             req_send,
         });
 
@@ -896,53 +861,22 @@ unsafe impl GuestMemoryAccess for VaMapper {
         // Soft large pages (Windows): THP-eligible ranges on the primary mapper
         // are committed/mapped read-only, so the first *write* traps here (reads
         // are served by the zero page and don't fault). This is the loader's
-        // path: raise the whole 2 MB window to read-write and prefetch it so the
-        // OS can back it with a contiguous large page, then retry the write.
-        // Applies to both private and shared (section) RAM.
-        //
-        // The mapping-index read lock is held across the protect/prefetch
-        // syscalls. This only blocks a concurrent *writer* (a structural
-        // map/unmap), which is rare; other faulting VPs are readers and proceed
-        // in parallel.
+        // path; `SoftLp::on_host_write` raises (and prefetches) the covering
+        // 2 MB window, then the write is retried. The mapping-index read lock is
+        // held across the raise; it only blocks a concurrent *writer* (a
+        // structural map/unmap), which is rare.
         #[cfg(windows)]
         if write {
             let mappings = self.inner.mappings.read();
             if let Some(&(start, end, ref props)) = mappings.get_entry(&address) {
                 if let Some(sl) = &props.soft_lp {
-                    // A hit on the write-fault path is a deferred-protect fault.
-                    props.stats.deferred_protect_faults.increment();
-                    let win_base = address & !(LARGE_PAGE_SIZE - 1);
-                    let prot_start = win_base.max(start);
-                    let prot_end = (win_base + LARGE_PAGE_SIZE).min(end + 1);
-                    let off = prot_start as usize;
-                    let plen = (prot_end - prot_start) as usize;
-                    // Raise to read-write (idempotent) so the write proceeds.
-                    if let Err(err) = self.inner.mapping.protect(off, plen, PAGE_READWRITE) {
-                        return PageFaultAction::Fail(PageFaultError::new(
+                    return match sl.on_host_write(&self.inner.mapping, address, start, end) {
+                        Ok(()) => PageFaultAction::Retry,
+                        Err(err) => PageFaultAction::Fail(PageFaultError::new(
                             GuestMemoryErrorKind::Other,
-                            FaultError::Protect(
-                                MemoryRange::new(off as u64..(off + plen) as u64),
-                                err,
-                            ),
-                        ));
-                    }
-                    // Prefetch the whole window in one call so the OS can back it
-                    // with a contiguous large page. Best-effort: a failure
-                    // (pre-Win11, or no large page available) just leaves 4 KB
-                    // backing, so log and proceed. No first-fault claim here —
-                    // leave the guest-side 2 MB widen to `resolve`; a later
-                    // redundant prefetch over resident pages is harmless.
-                    if let Err(err) = self.inner.mapping.prefetch(off, plen) {
-                        sl.stats.prefetch_failures.increment();
-                        tracing::debug!(
-                            error = &err as &dyn std::error::Error,
-                            address,
-                            "soft large page prefetch failed"
-                        );
-                    } else {
-                        sl.stats.host_prefetches.increment();
-                    }
-                    return PageFaultAction::Retry;
+                            err,
+                        )),
+                    };
                 }
             }
         }
@@ -982,10 +916,6 @@ unsafe impl GuestMemoryAccess for VaMapper {
     }
 }
 
-/// The soft-large-page granularity (2 MB) used for opportunistic large SLAT
-/// entries and the per-region first-fault bitmap.
-const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
-
 impl ResolveMemoryFault for VaMapper {
     fn resolve(
         &self,
@@ -1000,22 +930,10 @@ impl ResolveMemoryFault for VaMapper {
             ));
         }
 
-        // Widen to a 2 MB soft large page only on the first *write* fault of a
-        // 2 MB window that both contains the whole fault and lies entirely within
-        // one THP-eligible mapping. Read faults are served read-only from the
-        // zero page and must not claim the window, so that the later first write
-        // still gets its one widening attempt (spending a large page only on the
-        // written working set). Every re-fault of an already-attempted region
-        // (e.g. after the host trimmer reclaimed the pages) resolves to the
-        // caller's range to avoid a hard-fault storm.
-        let base = fault.start() & !(LARGE_PAGE_SIZE - 1);
-        let window_end = base + LARGE_PAGE_SIZE;
-
-        // Hold the mapping-index read lock across the widen decision and the
-        // protect/prefetch syscalls below. This only blocks a concurrent
-        // *writer* (a structural map/unmap), which is rare; other faulting VPs
-        // are readers and proceed in parallel. `end` is the inclusive last
-        // address of the mapping.
+        // Hold the mapping-index read lock across the fault resolution. This only
+        // blocks a concurrent *writer* (a structural map/unmap), which is rare;
+        // other faulting VPs are readers and proceed in parallel. `end` is the
+        // inclusive last address of the mapping.
         let mappings = self.inner.mappings.read();
         let Some(&(start, end, ref props)) = mappings.get_entry(&fault.start()) else {
             return Err(GuestMemoryBackingError::new(
@@ -1037,143 +955,23 @@ impl ResolveMemoryFault for VaMapper {
             ));
         }
         props.stats.guest_faults.increment();
-        let soft_lp = props.soft_lp.as_ref();
 
-        let full_window = fault.end() <= window_end && base >= start && window_end <= end + 1;
-        // Only a write fault claims the window (see the widen comment above); a
-        // read fault leaves `first_fault` clear so the first write can still
-        // widen.
-        let widen = write
-            && full_window
-            && soft_lp.is_some_and(|sl| {
-                sl.first_fault
-                    .try_claim(base / LARGE_PAGE_SIZE - start / LARGE_PAGE_SIZE)
-            });
-        if widen {
-            // `widen` implies `soft_lp` is `Some`.
-            if let Some(sl) = soft_lp {
-                sl.stats.guest_promotions.increment();
-            }
-        }
-
-        // Deferred protect (Windows soft large pages): the range (private or
-        // shared) is committed/mapped read-only, so a write fault must raise it
-        // to read-write before the guest can proceed. Raise the whole 2 MB window
-        // when it lies within the mapping and, on the window's first fault
-        // (`widen`), prefetch it so the OS can back it with a large page;
-        // otherwise raise just the faulting range. Read faults leave the range
-        // read-only (served by the zero page), spending a large page only on the
-        // written working set.
-        #[cfg(windows)]
-        if write {
-            if let Some(sl) = soft_lp {
-                let (prot_start, prot_end) = if full_window {
-                    (base, window_end)
-                } else {
-                    // Clamp to the mapping (`end` is inclusive) so a fault range
-                    // that spills past the region never protects an adjacent one.
-                    (fault.start().max(start), fault.end().min(end + 1))
-                };
-                if let Err(err) = self.inner.mapping.protect(
-                    prot_start as usize,
-                    (prot_end - prot_start) as usize,
-                    PAGE_READWRITE,
-                ) {
-                    return Err(GuestMemoryBackingError::new(
-                        GuestMemoryErrorKind::Other,
-                        fault.start(),
-                        FaultError::Protect(MemoryRange::new(prot_start..prot_end), err),
-                    ));
-                }
-                if widen {
-                    // Prefetch the whole window in one call so the OS can back it
-                    // with a contiguous large page. Best-effort: a failure
-                    // (pre-Win11, or no large page available) just leaves 4 KB
-                    // backing.
-                    if let Err(err) = self
-                        .inner
-                        .mapping
-                        .prefetch(base as usize, LARGE_PAGE_SIZE as usize)
-                    {
-                        sl.stats.prefetch_failures.increment();
-                        tracing::debug!(
-                            error = &err as &dyn std::error::Error,
-                            gpa = fault.start(),
-                            "soft large page prefetch failed"
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(if widen {
-            MemoryRange::new(base..window_end)
-        } else {
-            fault
-        })
-    }
-}
-
-/// Number of aligned 2 MB regions spanned by `range` (by absolute 2 MB region
-/// index), used to size a per-range [`FirstFault`] bitmap.
-fn large_region_count(range: MemoryRange) -> u64 {
-    (range.end() - 1) / LARGE_PAGE_SIZE - range.start() / LARGE_PAGE_SIZE + 1
-}
-
-/// Per-2 MB-region first-fault bitmap for a single THP-eligible mapping (Windows
-/// soft large pages). A set bit means the region has already made its one
-/// soft-large-page widening attempt; later faults resolve to a single page to
-/// avoid a hard-fault storm.
-///
-/// Allocated per range and only for THP RAM on Windows, so guests without THP —
-/// and every non-Windows guest — pay nothing.
-#[derive(Debug)]
-struct FirstFault(Box<[AtomicU64]>);
-
-impl FirstFault {
-    /// Allocates a bitmap covering `regions` 2 MB regions, all bits clear.
-    fn new(regions: u64) -> Self {
-        let words = regions.div_ceil(64);
-        Self(
-            (0..words)
-                .map(|_| AtomicU64::new(0))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        )
-    }
-
-    /// Allocates a bitmap covering `regions` 2 MB regions with every window
-    /// already marked attempted. Used for prefetched ranges: the large pages
-    /// are built eagerly at build time, so the lazy `resolve` path never
-    /// re-widens a window. Bits past `regions` in the final word are set too,
-    /// but are never indexed.
-    fn new_all_claimed(regions: u64) -> Self {
-        let words = regions.div_ceil(64);
-        Self(
-            (0..words)
-                .map(|_| AtomicU64::new(!0))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        )
-    }
-
-    /// Atomically tests and sets the bit for `region`. Returns true if this
-    /// call won the race (the bit was previously clear).
-    fn try_claim(&self, region: u64) -> bool {
-        let word = (region / 64) as usize;
-        let bit = 1u64 << (region % 64);
-        match self.0.get(word) {
-            Some(slot) => slot.fetch_or(bit, Ordering::Relaxed) & bit == 0,
-            None => false,
+        // Soft large pages (Windows) raise the covering 2 MB window on the first
+        // write and may resolve to the whole window; every other mapping (and
+        // every non-Windows host) resolves to the single faulting page.
+        match &props.soft_lp {
+            Some(sl) => sl
+                .resolve(&self.inner.mapping, fault, write, start, end)
+                .map_err(|err| {
+                    GuestMemoryBackingError::new(GuestMemoryErrorKind::Other, fault.start(), err)
+                }),
+            None => Ok(fault),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FirstFault;
-    use super::large_region_count;
-    use memory_range::MemoryRange;
     use sparse_mmap::SparseMapping;
 
     /// Tests that private RAM pages can be allocated, written to, and read from.
@@ -1220,85 +1018,5 @@ mod tests {
         let mut buf = vec![0u8; 64];
         mapping.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, pattern);
-    }
-
-    /// `try_claim` is one-shot: the first claim of a region wins and every
-    /// subsequent claim of the same region loses until it is (never) cleared.
-    #[test]
-    fn first_fault_try_claim_is_one_shot() {
-        let ff = FirstFault::new(4);
-        // First claim of each region wins.
-        for region in 0..4 {
-            assert!(ff.try_claim(region), "first claim of region {region}");
-        }
-        // Repeat claims of the same regions all lose.
-        for region in 0..4 {
-            assert!(!ff.try_claim(region), "repeat claim of region {region}");
-        }
-    }
-
-    /// Claims are independent across regions, including across the 64-bit word
-    /// boundary of the underlying bitmap.
-    #[test]
-    fn first_fault_claims_are_independent() {
-        // Enough regions to span more than one 64-bit word.
-        let ff = FirstFault::new(130);
-        assert!(ff.try_claim(0));
-        assert!(ff.try_claim(63));
-        assert!(ff.try_claim(64));
-        assert!(ff.try_claim(129));
-        // Claiming one region does not claim its neighbors.
-        assert!(ff.try_claim(1));
-        assert!(ff.try_claim(65));
-        // But the already-claimed regions stay claimed.
-        assert!(!ff.try_claim(0));
-        assert!(!ff.try_claim(64));
-    }
-
-    /// Region indices past the end of the allocated bitmap return false rather
-    /// than panicking, so a stray claim can never index out of bounds. (The
-    /// bitmap rounds up to whole 64-bit words, so indices in the final word's
-    /// padding are still claimable; callers only ever pass valid region
-    /// indices.)
-    #[test]
-    fn first_fault_out_of_range_returns_false() {
-        // One region rounds up to a single 64-bit word, so word 1 and beyond are
-        // out of range.
-        let ff = FirstFault::new(1);
-        assert!(!ff.try_claim(64));
-        assert!(!ff.try_claim(1_000_000));
-    }
-
-    /// `new_all_claimed` starts fully claimed, so no in-range window is ever
-    /// widened (used for eagerly prefetched ranges).
-    #[test]
-    fn first_fault_new_all_claimed_prevents_widening() {
-        let regions = 100;
-        let ff = FirstFault::new_all_claimed(regions);
-        for region in 0..regions {
-            assert!(
-                !ff.try_claim(region),
-                "region {region} should already be claimed"
-            );
-        }
-    }
-
-    /// `large_region_count` counts the aligned 2 MB regions a range spans by
-    /// absolute region index, so a range that straddles a 2 MB boundary spans
-    /// two regions even when it is smaller than 2 MB.
-    #[test]
-    fn large_region_count_spans() {
-        const LP: u64 = super::LARGE_PAGE_SIZE;
-        // A single page at the start of a region spans one region.
-        assert_eq!(large_region_count(MemoryRange::new(0..0x1000)), 1);
-        // A full aligned region spans one region.
-        assert_eq!(large_region_count(MemoryRange::new(0..LP)), 1);
-        // A range straddling a 2 MB boundary spans two regions.
-        assert_eq!(
-            large_region_count(MemoryRange::new(LP - 0x1000..LP + 0x1000)),
-            2
-        );
-        // Two full aligned regions span two regions.
-        assert_eq!(large_region_count(MemoryRange::new(0..2 * LP)), 2);
     }
 }

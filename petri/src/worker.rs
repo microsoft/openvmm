@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::OpenHclServicingFlags;
+use anyhow::Context;
 use get_resources::ged::GuestServicingFlags;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -62,6 +63,27 @@ impl Worker {
 
     pub(crate) async fn reset(&self) -> anyhow::Result<()> {
         self.rpc.call(VmRpc::Reset, ()).await??;
+        Ok(())
+    }
+
+    pub(crate) async fn dump_state(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
+        self.rpc
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
+            .await
+            .context("failed to dump state")?;
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
         Ok(())
     }
 

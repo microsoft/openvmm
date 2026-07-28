@@ -318,18 +318,22 @@ impl Inspect for Inner {
                 let mut resp = req.respond();
                 if !unit.dependencies.is_empty() {
                     resp.field_with("dependencies", || {
+                        // Removing a unit leaves stale ids in other units'
+                        // dependency lists (consumers tolerate this via
+                        // `get`), so skip any that no longer resolve.
                         unit.dependencies
                             .iter()
-                            .map(|id| self.units[id].name.as_ref())
+                            .filter_map(|id| self.units.get(id).map(|u| u.name.as_ref()))
                             .collect::<Vec<_>>()
                             .join(",")
                     });
                 }
                 if !unit.dependents.is_empty() {
                     resp.field_with("dependents", || {
+                        // See the note above: skip stale ids for removed units.
                         unit.dependents
                             .iter()
-                            .map(|id| self.units[id].name.as_ref())
+                            .filter_map(|id| self.units.get(id).map(|u| u.name.as_ref()))
                             .collect::<Vec<_>>()
                             .join(",")
                     });
