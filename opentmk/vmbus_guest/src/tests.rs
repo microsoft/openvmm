@@ -443,6 +443,493 @@ mod completion_tests {
 }
 
 // ---------------------------------------------------------------------------
+// Connection / negotiation tests
+// ---------------------------------------------------------------------------
+
+mod connection_tests {
+    use crate::Error;
+    use crate::connection::CLIENT_ID;
+    use crate::connection::MessagePump;
+    use crate::connection::OfferCollector;
+    use crate::connection::encode_initiate_contact;
+    use crate::connection::negotiate_version;
+    use crate::connection::parse_version_response;
+    use crate::connection::request_offers_with;
+    use crate::message::CompletionHandle;
+    use crate::message::CompletionKey;
+    use crate::message::CompletionTable;
+    use crate::message::MessageSink;
+    use crate::message::encode;
+    use crate::protocol::AllOffersDelivered;
+    use crate::protocol::FeatureFlags;
+    use crate::protocol::HEADER_SIZE;
+    use crate::protocol::InitiateContact;
+    use crate::protocol::InitiateContact2;
+    use crate::protocol::MAX_MESSAGE_SIZE;
+    use crate::protocol::OfferChannel;
+    use crate::protocol::TargetInfo;
+    use crate::protocol::VMBUS_CONNECTION_ID_LEGACY;
+    use crate::protocol::VMBUS_CONNECTION_ID_MODERN;
+    use crate::protocol::Version;
+    use crate::protocol::VersionResponse;
+    use crate::protocol::VersionResponse2;
+    use alloc::vec::Vec;
+    use core::mem::size_of;
+    use hvdef::HvError;
+    use opentmk::context::HypercallConfig;
+    use opentmk::context::HypercallTrait;
+    use opentmk::tmkdefs::TmkResult;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    /// Mock ctx that captures every hypercall.
+    #[derive(Default)]
+    struct RecordingCtx {
+        calls: Vec<(u64, Vec<u8>)>,
+        fail_next: bool,
+    }
+
+    impl HypercallTrait for RecordingCtx {
+        fn hypercall(
+            &mut self,
+            code: u64,
+            input: &[u8],
+            _output: &mut [u8],
+            _cfg: HypercallConfig,
+        ) -> TmkResult<()> {
+            self.calls.push((code, input.to_vec()));
+            if self.fail_next {
+                self.fail_next = false;
+                return Err(HvError::OperationFailed.into());
+            }
+            Ok(())
+        }
+    }
+
+    /// Pump that delivers a predetermined sequence of responses on the
+    /// N-th poll, keyed to the completion table it wraps.
+    struct ScriptedPump {
+        table: CompletionTable,
+        script: Vec<(CompletionKey, Vec<u8>)>,
+        offers: Vec<Vec<u8>>,
+    }
+
+    impl MessagePump for ScriptedPump {
+        fn poll_until<C: HypercallTrait>(
+            &mut self,
+            _ctx: &mut C,
+            handle: &CompletionHandle,
+            sink: &mut dyn MessageSink,
+        ) -> Result<(), Error> {
+            // Flush any queued OfferChannel bytes into the sink.
+            for offer_bytes in self.offers.drain(..) {
+                crate::message::route_message(&offer_bytes, &self.table, sink)?;
+            }
+            if handle.completed() {
+                return Ok(());
+            }
+            // Deliver the next scripted response.
+            if let Some((key, bytes)) = self.script.pop() {
+                self.table.deliver(key, bytes)?;
+            }
+            if !handle.completed() {
+                return Err(Error::Timeout);
+            }
+            Ok(())
+        }
+    }
+
+    fn encode_message<M: crate::protocol::VmbusMessage + IntoBytes + zerocopy::Immutable>(
+        msg: &M,
+    ) -> Vec<u8> {
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        let used = encode(msg, &mut buf);
+        buf[..used].to_vec()
+    }
+
+    #[test]
+    fn encode_initiate_contact_pre_copper_no_client_id() {
+        let bytes = encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported());
+        assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact>());
+        let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
+        assert_eq!(ic.version_requested, Version::Win10Rs5.raw());
+        // For ≥ 5.0, interrupt_page_or_target_info is a TargetInfo.
+        let ti = TargetInfo::from(ic.interrupt_page_or_target_info);
+        assert_eq!(ti.sint(), crate::synic::VMBUS_SINT);
+        assert_eq!(ti.vtl(), 0);
+        assert_eq!(ti.feature_flags(), FeatureFlags::supported().into_bits());
+    }
+
+    #[test]
+    fn encode_initiate_contact_copper_uses_v2() {
+        let bytes =
+            encode_initiate_contact(Version::Copper, Some(CLIENT_ID), FeatureFlags::supported());
+        assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact2>());
+        let ic2: InitiateContact2 = crate::message::parse(&bytes).unwrap();
+        assert_eq!(
+            ic2.initiate_contact.version_requested,
+            Version::Copper.raw()
+        );
+        assert_eq!(ic2.client_id, CLIENT_ID);
+    }
+
+    #[test]
+    fn encode_initiate_contact_v1_no_target_info() {
+        let bytes = encode_initiate_contact(Version::Win10, None, FeatureFlags::supported());
+        let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
+        assert_eq!(ic.interrupt_page_or_target_info, 0);
+    }
+
+    #[test]
+    fn parse_version_response_v1_layout() {
+        let vr = VersionResponse {
+            version_supported: 1,
+            connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+            padding: 0,
+            selected_version_or_connection_id: 42,
+        };
+        let bytes = encode_message(&vr);
+        let parsed = parse_version_response(&bytes).unwrap();
+        assert!(parsed.version_supported);
+        assert_eq!(parsed.selected_version_or_connection_id, 42);
+        assert_eq!(parsed.supported_features, FeatureFlags::new());
+    }
+
+    #[test]
+    fn parse_version_response_copper_v2_reads_features() {
+        let vr2 = VersionResponse2 {
+            version_response: VersionResponse {
+                version_supported: 1,
+                connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 4,
+            },
+            supported_features: FeatureFlags::supported().into_bits(),
+        };
+        let bytes = encode_message(&vr2);
+        let parsed = parse_version_response(&bytes).unwrap();
+        assert_eq!(parsed.supported_features, FeatureFlags::supported());
+    }
+
+    fn make_success_response(version: Version, conn_id: u32) -> Vec<u8> {
+        if version >= Version::Copper {
+            let vr2 = VersionResponse2 {
+                version_response: VersionResponse {
+                    version_supported: 1,
+                    connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: conn_id,
+                },
+                supported_features: FeatureFlags::supported().into_bits(),
+            };
+            encode_message(&vr2)
+        } else {
+            let vr = VersionResponse {
+                version_supported: 1,
+                connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: conn_id,
+            };
+            encode_message(&vr)
+        }
+    }
+
+    fn make_fail_response() -> Vec<u8> {
+        let vr = VersionResponse {
+            version_supported: 0,
+            connection_state: crate::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+            padding: 0,
+            selected_version_or_connection_id: 0,
+        };
+        encode_message(&vr)
+    }
+
+    #[test]
+    fn negotiate_first_version_accepted() {
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let mut pump = ScriptedPump {
+            table: table.clone(),
+            script: alloc::vec![(
+                CompletionKey::VersionResponse,
+                make_success_response(Version::Copper, 0xABCD),
+            )],
+            offers: Vec::new(),
+        };
+
+        let state =
+            negotiate_version(&mut ctx, &table, &mut pump, CLIENT_ID, &[Version::Copper]).unwrap();
+        assert_eq!(state.selected_version, Version::Copper);
+        assert_eq!(state.post_message_connection_id, 0xABCD);
+        assert_eq!(state.feature_flags, FeatureFlags::supported());
+
+        // ctx captured a single post_message hypercall for InitiateContact.
+        assert_eq!(ctx.calls.len(), 1);
+        assert_eq!(
+            ctx.calls[0].0,
+            hvdef::HypercallCode::HvCallPostMessage.0 as u64
+        );
+    }
+
+    #[test]
+    fn negotiate_walks_ladder_on_failure() {
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        // Script is popped, so the last entry is delivered first.
+        // Order: Copper fails, Iron succeeds.
+        let mut pump = ScriptedPump {
+            table: table.clone(),
+            script: alloc::vec![
+                (
+                    CompletionKey::VersionResponse,
+                    make_success_response(Version::Iron, 4),
+                ),
+                (CompletionKey::VersionResponse, make_fail_response()),
+            ],
+            offers: Vec::new(),
+        };
+
+        let state = negotiate_version(
+            &mut ctx,
+            &table,
+            &mut pump,
+            CLIENT_ID,
+            &[Version::Copper, Version::Iron],
+        )
+        .unwrap();
+        assert_eq!(state.selected_version, Version::Iron);
+        assert_eq!(state.post_message_connection_id, 4);
+        assert_eq!(ctx.calls.len(), 2);
+    }
+
+    #[test]
+    fn negotiate_empty_ladder_returns_mismatch() {
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let mut pump = ScriptedPump {
+            table: table.clone(),
+            script: Vec::new(),
+            offers: Vec::new(),
+        };
+        let err = negotiate_version(&mut ctx, &table, &mut pump, CLIENT_ID, &[]).unwrap_err();
+        assert!(matches!(err, Error::VersionMismatch));
+    }
+
+    #[test]
+    fn initial_connection_ids() {
+        use crate::connection::initial_connection_id;
+        assert_eq!(
+            initial_connection_id(Version::Win8),
+            VMBUS_CONNECTION_ID_LEGACY
+        );
+        assert_eq!(
+            initial_connection_id(Version::Win10Rs3_1),
+            VMBUS_CONNECTION_ID_MODERN
+        );
+        assert_eq!(
+            initial_connection_id(Version::Copper),
+            VMBUS_CONNECTION_ID_MODERN
+        );
+    }
+
+    #[test]
+    fn request_offers_collects_offers_before_terminator() {
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let offer_a = OfferChannel::new_zeroed();
+        let mut offer_b = OfferChannel::new_zeroed();
+        offer_b.channel_id = crate::protocol::ChannelId(7);
+        let offer_bytes_a = encode_message(&offer_a);
+        let offer_bytes_b = encode_message(&offer_b);
+        let mut pump = ScriptedPump {
+            table: table.clone(),
+            script: alloc::vec![(
+                CompletionKey::AllOffersDelivered,
+                encode_message(&AllOffersDelivered),
+            )],
+            offers: alloc::vec![offer_bytes_a, offer_bytes_b],
+        };
+
+        let mut sink = OfferCollector::default();
+        request_offers_with(&mut ctx, &table, &mut pump, &mut sink, 4).unwrap();
+        assert_eq!(sink.offers.len(), 2);
+        assert_eq!(sink.offers[1].channel_id, crate::protocol::ChannelId(7));
+        assert!(sink.rescinds.is_empty());
+    }
+
+    #[test]
+    fn build_connection_state_pre_5_uses_legacy_conn_id() {
+        use crate::connection::build_connection_state;
+        let parsed = crate::connection::ParsedVersionResponse {
+            version_supported: true,
+            selected_version_or_connection_id: 999,
+            supported_features: FeatureFlags::new(),
+            parent_to_child_monitor_page_gpa: 0,
+            child_to_parent_monitor_page_gpa: 0,
+        };
+        let state = build_connection_state(Version::Win8, parsed);
+        assert_eq!(state.post_message_connection_id, VMBUS_CONNECTION_ID_LEGACY);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt tests (SIMP slot parsing + drain_once)
+// ---------------------------------------------------------------------------
+
+mod interrupt_tests {
+    use crate::Error;
+    use crate::interrupt::HV_REGISTER_EOM;
+    use crate::interrupt::SimpPump;
+    use crate::interrupt::clear_slot;
+    use crate::interrupt::drain_once;
+    use crate::interrupt::read_slot;
+    use crate::message::CompletionKey;
+    use crate::message::CompletionTable;
+    use crate::message::MessageSink;
+    use crate::message::encode;
+    use crate::protocol::MAX_MESSAGE_SIZE;
+    use crate::protocol::VersionResponse;
+    use alloc::vec::Vec;
+    use hvdef::HV_MESSAGE_SIZE;
+    use hvdef::HvMessageType;
+    use hvdef::HypercallCode;
+    use opentmk::context::HypercallConfig;
+    use opentmk::context::HypercallTrait;
+    use opentmk::tmkdefs::TmkResult;
+    use zerocopy::FromZeros;
+
+    #[derive(Default)]
+    struct NullSink;
+    impl MessageSink for NullSink {
+        fn offer(&mut self, _: &crate::protocol::OfferChannel) {}
+        fn rescind(&mut self, _: &crate::protocol::RescindChannelOffer) {}
+    }
+
+    #[derive(Default)]
+    struct RecordingCtx {
+        calls: Vec<u64>,
+    }
+    impl HypercallTrait for RecordingCtx {
+        fn hypercall(
+            &mut self,
+            code: u64,
+            _input: &[u8],
+            _output: &mut [u8],
+            _cfg: HypercallConfig,
+        ) -> TmkResult<()> {
+            self.calls.push(code);
+            Ok(())
+        }
+    }
+
+    fn build_slot_bytes(msg_type: u32, message_pending: bool, payload: &[u8]) -> [u8; 256] {
+        let mut buf = [0u8; HV_MESSAGE_SIZE];
+        buf[0..4].copy_from_slice(&msg_type.to_le_bytes());
+        buf[4] = payload.len() as u8;
+        buf[5] = message_pending as u8;
+        buf[16..16 + payload.len()].copy_from_slice(payload);
+        buf
+    }
+
+    #[test]
+    fn read_slot_none_returns_none() {
+        let buf = [0u8; HV_MESSAGE_SIZE];
+        assert!(read_slot(&buf).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_slot_returns_payload() {
+        let payload = [0xABu8; 12];
+        let buf = build_slot_bytes(1, true, &payload);
+        let view = read_slot(&buf).unwrap().unwrap();
+        assert_eq!(view.message_type, HvMessageType(1));
+        assert_eq!(view.payload_len, 12);
+        assert!(view.message_pending);
+        assert_eq!(view.payload, &payload);
+    }
+
+    #[test]
+    fn read_slot_rejects_oversized_payload() {
+        let mut buf = [0u8; HV_MESSAGE_SIZE];
+        buf[0..4].copy_from_slice(&1u32.to_le_bytes());
+        buf[4] = 250; // payload_len > HV_MESSAGE_PAYLOAD_SIZE(240)
+        let err = read_slot(&buf).unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
+    }
+
+    #[test]
+    fn clear_slot_writes_none() {
+        let mut buf = build_slot_bytes(1, true, &[1, 2, 3]);
+        clear_slot(&mut buf);
+        assert_eq!(&buf[0..4], &0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn drain_once_routes_and_writes_eom_when_pending() {
+        // Prepare a VersionResponse in the slot payload.
+        let vr = VersionResponse::new_zeroed();
+        let mut payload = [0u8; MAX_MESSAGE_SIZE];
+        let used = encode(&vr, &mut payload);
+        let mut slot = build_slot_bytes(1, true, &payload[..used]);
+
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let _handle = table.register(CompletionKey::VersionResponse);
+        let mut sink = NullSink;
+
+        let drained = drain_once(&mut ctx, &mut slot, &table, &mut sink).unwrap();
+        assert!(drained);
+        // Slot was cleared.
+        assert_eq!(&slot[0..4], &0u32.to_le_bytes());
+        // EOM was issued (via HvCallSetVpRegisters).
+        assert!(
+            ctx.calls
+                .contains(&(HypercallCode::HvCallSetVpRegisters.0 as u64))
+        );
+    }
+
+    #[test]
+    fn drain_once_no_eom_when_pending_flag_clear() {
+        let vr = VersionResponse::new_zeroed();
+        let mut payload = [0u8; MAX_MESSAGE_SIZE];
+        let used = encode(&vr, &mut payload);
+        let mut slot = build_slot_bytes(1, /*pending=*/ false, &payload[..used]);
+
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let _handle = table.register(CompletionKey::VersionResponse);
+        let mut sink = NullSink;
+
+        drain_once(&mut ctx, &mut slot, &table, &mut sink).unwrap();
+        assert!(ctx.calls.is_empty());
+    }
+
+    #[test]
+    fn drain_once_empty_slot_returns_false() {
+        let mut slot = [0u8; HV_MESSAGE_SIZE];
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let mut sink = NullSink;
+        let drained = drain_once(&mut ctx, &mut slot, &table, &mut sink).unwrap();
+        assert!(!drained);
+    }
+
+    #[test]
+    fn simp_pump_has_expected_defaults() {
+        let pump = SimpPump::new(0x1000);
+        // Just exercising the builder — retries value is public via
+        // with_max_retries.
+        let _pump2 = pump.with_max_retries(42);
+    }
+
+    #[test]
+    fn eom_register_constant_matches_spec() {
+        // Sanity: EOM register index is 0x40000084 per Hyper-V TLFS.
+        assert_eq!(HV_REGISTER_EOM, 0x40000084);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SynIC tests (register programming layer, host-testable)
 // ---------------------------------------------------------------------------
 

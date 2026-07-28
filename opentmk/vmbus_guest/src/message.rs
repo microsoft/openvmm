@@ -29,8 +29,22 @@ use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
+use spin::Once;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+/// Process-wide completion table, lazily created on first access.
+///
+/// The pump-based APIs in [`crate::connection`] and [`crate::channel`]
+/// route completions through this table; callers that want an
+/// isolated instance can build their own [`CompletionTable`] and use
+/// the `_with` variants instead.
+static COMPLETION_TABLE: Once<CompletionTable> = Once::new();
+
+/// Return a reference to the process-wide completion table.
+pub fn completion_table() -> &'static CompletionTable {
+    COMPLETION_TABLE.call_once(CompletionTable::new)
+}
 
 /// Encode `msg` into a `HV_MESSAGE_PAYLOAD_SIZE`-sized buffer along with
 /// its `MessageHeader`. Returns the number of used bytes.
@@ -298,4 +312,59 @@ fn guid_to_key(g: &crate::protocol::Guid) -> u128 {
     let mut out = [0u8; 16];
     out.copy_from_slice(bytes);
     u128::from_le_bytes(out)
+}
+
+/// Non-completion sinks the message dispatcher can invoke.
+///
+/// Passed to [`route_message`]. Concrete implementations live in
+/// [`crate::connection`] (offer collector) and [`crate::channel`]
+/// (rescind handling).
+pub trait MessageSink {
+    /// Called when the host delivers an `OfferChannel`.
+    fn offer(&mut self, offer: &crate::protocol::OfferChannel);
+    /// Called when the host delivers a `RescindChannelOffer`.
+    fn rescind(&mut self, rescind: &crate::protocol::RescindChannelOffer);
+    /// Called when the host delivers a `TlConnectResult` (routed as a
+    /// completion too — the sink sees a copy).
+    fn tl_connect_result(&mut self, _result: &crate::protocol::TlConnectResult) {}
+}
+
+/// Dispatch a single message (starting at a `MessageHeader`) to the
+/// completion table and/or the sink.
+///
+/// Routing rules:
+///   * completion-type messages call [`CompletionTable::deliver`]. An
+///     orphan completion (no matching pending request) is logged and
+///     ignored, not fatal — the host may race the guest here.
+///   * `OfferChannel` → `sink.offer`.
+///   * `RescindChannelOffer` → `sink.rescind`.
+///   * everything else is ignored.
+pub fn route_message<S: MessageSink + ?Sized>(
+    bytes: &[u8],
+    table: &CompletionTable,
+    sink: &mut S,
+) -> Result<()> {
+    let ty = peek_header(bytes)?;
+    match ty {
+        MessageType::OFFER_CHANNEL => {
+            let offer: crate::protocol::OfferChannel = parse(bytes)?;
+            sink.offer(&offer);
+        }
+        MessageType::RESCIND_CHANNEL_OFFER => {
+            let rescind: crate::protocol::RescindChannelOffer = parse(bytes)?;
+            sink.rescind(&rescind);
+        }
+        _ => {}
+    }
+    if let Some(key) = completion_key_for(bytes)? {
+        if let MessageType::TL_CONNECT_RESULT = ty {
+            let result: crate::protocol::TlConnectResult = parse(bytes)?;
+            sink.tl_connect_result(&result);
+        }
+        match table.deliver(key, bytes.to_vec()) {
+            Ok(()) | Err(Error::OrphanCompletion) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
