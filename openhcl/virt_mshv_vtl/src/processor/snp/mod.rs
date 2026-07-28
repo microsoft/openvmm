@@ -505,7 +505,8 @@ pub struct SnpBackedShared {
     /// Accessor for managing lower VTL timer deadlines.
     #[inspect(skip)]
     guest_timer: hardware_cvm::VmTimeGuestTimer,
-    secure_avic: bool,
+    /// Whether Secure AVIC is enabled for VTL2's VMSA.
+    pub(crate) secure_avic: bool,
     /// Whether virtual NMI (V_NMI) is supported by the host CPU.
     pub(crate) vnmi: bool,
 }

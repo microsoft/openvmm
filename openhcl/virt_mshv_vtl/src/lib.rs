@@ -2043,6 +2043,15 @@ impl<'a> UhProtoPartition<'a> {
 }
 
 impl UhPartition {
+    /// Whether Secure AVIC is enabled; only ever true on SNP-isolated x86_64.
+    #[cfg(guest_arch = "x86_64")]
+    pub fn secure_avic_enabled(&self) -> bool {
+        if let BackingShared::Snp(snp) = &self.inner.backing_shared {
+            return snp.secure_avic;
+        }
+        false
+    }
+
     /// Gets the guest OS ID for VTL0.
     pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, hcl::ioctl::register::GetRegError> {
         // If Underhill is emulating the hypervisor interfaces, get this value

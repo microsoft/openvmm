@@ -253,3 +253,366 @@ mod measured_policy_tests {
         assert_eq!(json.as_deref(), Some(&b"hi"[..]));
     }
 }
+
+mod uefi_security_policy_tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn secure_boot_flag_off_passes_either_way() {
+        let p = SivmPolicy::default();
+        assert!(p.validate_secure_boot_enabled(false).is_ok());
+        assert!(p.validate_secure_boot_enabled(true).is_ok());
+    }
+
+    #[test]
+    fn secure_boot_flag_on_passes_when_enabled() {
+        let p = SivmPolicy {
+            require_secure_boot: true,
+            ..Default::default()
+        };
+        assert!(p.validate_secure_boot_enabled(true).is_ok());
+    }
+
+    #[test]
+    fn secure_boot_flag_on_fails_when_disabled() {
+        let p = SivmPolicy {
+            require_secure_boot: true,
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_enabled(false).unwrap_err();
+        assert!(err.to_string().contains("secure boot"));
+    }
+
+    #[test]
+    fn get_validated_uefi_json_fails_on_empty() {
+        let p = SivmPolicy {
+            custom_uefi_json: vec![],
+            ..Default::default()
+        };
+        let err = p.get_validated_uefi_json().unwrap_err();
+        assert!(err.to_string().contains("custom UEFI JSON"));
+    }
+
+    #[test]
+    fn enforcement_rejects_unparseable_json() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: vec![0xFF, 0xFE],
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("failed to parse"));
+    }
+
+    /// Valid Replace-mode JSON with explicit PK/KEK/db/dbx.
+    const REPLACE_JSON: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": {
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                },
+                "KEK": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "db": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "dbx": [{
+                    "type": "sha256",
+                    "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]
+                }]
+            }
+        }
+    }
+}"#;
+
+    /// Valid Replace-mode JSON with BCD hash custom variable.
+    const REPLACE_JSON_WITH_BCD: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": {
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                },
+                "KEK": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "db": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "dbx": [{
+                    "type": "sha256",
+                    "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]
+                }]
+            },
+            "BootConfigurationDataHash": {
+                "guid": "Yd/ki8qT0hGqDQDgmAMrjA==",
+                "attributes": "BwAAAA==",
+                "value": "aGFzaHZhbHVl"
+            }
+        }
+    }
+}"#;
+
+    /// Replace-mode JSON with a BootConfigurationDataHash under a wrong namespace GUID.
+    const REPLACE_JSON_WITH_BCD_WRONG_GUID: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": {
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                },
+                "KEK": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "db": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }],
+                "dbx": [{
+                    "type": "sha256",
+                    "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]
+                }]
+            },
+            "BootConfigurationDataHash": {
+                "guid": "vZr6d1kDTTK9YCj05494Sw==",
+                "attributes": "BwAAAA==",
+                "value": "aGFzaHZhbHVl"
+            }
+        }
+    }
+}"#;
+
+    /// Append-mode JSON.
+    const APPEND_JSON: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Append",
+            "signatures": {
+                "KEK": [{
+                    "type": "x509",
+                    "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="]
+                }]
+            }
+        }
+    }
+}"#;
+
+    #[test]
+    fn enforcement_rejects_append_mode() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: APPEND_JSON.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("Replace mode"));
+    }
+
+    #[test]
+    fn enforcement_passes_valid_replace_json() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            require_bcd_integrity: false,
+            custom_uefi_json: REPLACE_JSON.to_vec(),
+            ..Default::default()
+        };
+        assert!(p.validate_secure_boot_policy_enforcement().is_ok());
+    }
+
+    #[test]
+    fn bcd_integrity_fails_when_hash_missing() {
+        let p = SivmPolicy {
+            require_bcd_integrity: true,
+            custom_uefi_json: REPLACE_JSON.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("BootConfigurationDataHash"));
+    }
+
+    #[test]
+    fn bcd_integrity_passes_when_hash_present() {
+        let p = SivmPolicy {
+            require_bcd_integrity: true,
+            custom_uefi_json: REPLACE_JSON_WITH_BCD.to_vec(),
+            ..Default::default()
+        };
+        assert!(p.validate_secure_boot_policy_enforcement().is_ok());
+    }
+
+    #[test]
+    fn bcd_integrity_fails_when_hash_has_wrong_guid() {
+        let p = SivmPolicy {
+            require_bcd_integrity: true,
+            custom_uefi_json: REPLACE_JSON_WITH_BCD_WRONG_GUID.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("BootConfigurationDataHash"));
+    }
+
+    /// Replace-mode JSON where PK relies on the template (Default).
+    const REPLACE_JSON_PK_DEFAULT: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": { "type": "Default" },
+                "KEK": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "db": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "dbx": [{ "type": "sha256", "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="] }]
+            }
+        }
+    }
+}"#;
+
+    /// Replace-mode JSON where KEK relies on the template (Default).
+    const REPLACE_JSON_KEK_DEFAULT: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": { "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] },
+                "KEK": [{ "type": "Default" }],
+                "db": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "dbx": [{ "type": "sha256", "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="] }]
+            }
+        }
+    }
+}"#;
+
+    /// Replace-mode JSON where db relies on the template (Default).
+    const REPLACE_JSON_DB_DEFAULT: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": { "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] },
+                "KEK": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "db": [{ "type": "Default" }],
+                "dbx": [{ "type": "sha256", "value": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="] }]
+            }
+        }
+    }
+}"#;
+
+    /// Replace-mode JSON where dbx relies on the template (Default).
+    const REPLACE_JSON_DBX_DEFAULT: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": { "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] },
+                "KEK": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "db": [{ "type": "x509", "value": ["ZmFrZV9jZXJ0X2RhdGFfZm9yX3Rlc3Q="] }],
+                "dbx": [{ "type": "Default" }]
+            }
+        }
+    }
+}"#;
+
+    #[test]
+    fn enforcement_rejects_pk_default_when_secure_boot_vars_required() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: REPLACE_JSON_PK_DEFAULT.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("PK uses Default"));
+    }
+
+    #[test]
+    fn enforcement_rejects_kek_default_when_secure_boot_vars_required() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: REPLACE_JSON_KEK_DEFAULT.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("KEK uses Default"));
+    }
+
+    #[test]
+    fn enforcement_rejects_db_default_when_secure_boot_vars_required() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: REPLACE_JSON_DB_DEFAULT.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("db uses Default"));
+    }
+
+    #[test]
+    fn enforcement_rejects_dbx_default_when_secure_boot_vars_required() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: REPLACE_JSON_DBX_DEFAULT.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("dbx uses Default"));
+    }
+
+    /// JSON with no uefiSettings section.
+    const JSON_MISSING_UEFI_SETTINGS: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {}
+}"#;
+
+    /// Replace-mode JSON with an empty signatures object.
+    const JSON_EMPTY_SIGNATURES: &[u8] = br#"{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {}
+        }
+    }
+}"#;
+
+    #[test]
+    fn enforcement_rejects_missing_uefi_settings() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: JSON_MISSING_UEFI_SETTINGS.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("failed to parse"));
+    }
+
+    #[test]
+    fn enforcement_rejects_empty_signatures() {
+        let p = SivmPolicy {
+            require_secure_boot_vars: true,
+            custom_uefi_json: JSON_EMPTY_SIGNATURES.to_vec(),
+            ..Default::default()
+        };
+        let err = p.validate_secure_boot_policy_enforcement().unwrap_err();
+        assert!(err.to_string().contains("failed to parse"));
+    }
+}

@@ -48,6 +48,7 @@ use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
 use product_policy::ProductPolicy;
+use product_policy::UefiSecurityPolicy;
 use product_policy::encode_product_policy;
 use std::io::Read;
 use std::io::Seek;
@@ -137,6 +138,8 @@ fn validate_product_policy_for_build(policy: &ProductPolicy) {
                     !sivm.custom_uefi_json.is_empty(),
                     "product policy requires non-empty custom_uefi_json"
                 );
+                sivm.validate_secure_boot_policy_enforcement()
+                    .expect("product policy validations must pass");
             }
         }
         ProductPolicy::Cwcow(cwcow) => {
@@ -147,6 +150,9 @@ fn validate_product_policy_for_build(policy: &ProductPolicy) {
                     !cwcow.custom_uefi_json.is_empty(),
                     "product policy requires non-empty custom_uefi_json"
                 );
+                cwcow
+                    .validate_secure_boot_policy_enforcement()
+                    .expect("product policy validations must pass");
             }
         }
     }

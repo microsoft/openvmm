@@ -1801,6 +1801,12 @@ async fn new_underhill_vm(
             .context("failed to construct the processor topology")?
     };
 
+    #[cfg(feature = "product_policy")]
+    crate::measured_product_policy::enforce_ephemeral_vmgs(
+        measured_vtl2_info.measured_product_policy(),
+        dps.general.guest_state_lifetime,
+    )?;
+
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
     let mut vmgs = match (dps.general.guest_state_lifetime, servicing_state.vmgs) {
@@ -2563,39 +2569,51 @@ async fn new_underhill_vm(
             }
         };
 
-        // check if vmgs includes custom UEFI JSON
-        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
-            vmgs_client
-                .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
-                .context("failed to instantiate custom UEFI JSON store")?
-                .restore()
-                .await
-                .context("failed to get custom UEFI JSON data")?
+        #[cfg(feature = "product_policy")]
+        let policy_uefi_vars = crate::measured_product_policy::measured_uefi_nvram_state(
+            measured_vtl2_info.measured_product_policy(),
+            &base_vars,
+        )?;
+        #[cfg(not(feature = "product_policy"))]
+        let policy_uefi_vars: Option<CustomVars> = None;
+
+        let custom_uefi_vars = if let Some(vars) = policy_uefi_vars {
+            vars
         } else {
-            None
-        };
+            // check if vmgs includes custom UEFI JSON
+            let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+                vmgs_client
+                    .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
+                    .context("failed to instantiate custom UEFI JSON store")?
+                    .restore()
+                    .await
+                    .context("failed to get custom UEFI JSON data")?
+            } else {
+                None
+            };
 
-        // obtain the final custom uefi vars by applying the delta onto
-        // the base vars
-        let custom_uefi_vars = match custom_uefi_json_data {
-            Some(data) => {
-                let res = (|| -> Result<CustomVars, anyhow::Error> {
-                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                    Ok(base_vars.apply_delta(delta)?)
-                })();
+            // obtain the final custom uefi vars by applying the delta onto
+            // the base vars
+            match custom_uefi_json_data {
+                Some(data) => {
+                    let res = (|| -> Result<CustomVars, anyhow::Error> {
+                        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                        Ok(base_vars.apply_delta(delta)?)
+                    })();
 
-                match res {
-                    Ok(vars) => vars,
-                    Err(e) => {
-                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                        get_client
-                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                            .await;
-                        return Err(e).context("failed to load custom UEFI variables");
+                    match res {
+                        Ok(vars) => vars,
+                        Err(e) => {
+                            tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
+                            get_client
+                                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
+                                .await;
+                            return Err(e).context("failed to load custom UEFI variables");
+                        }
                     }
                 }
+                None => base_vars,
             }
-            None => base_vars,
         };
 
         let config = firmware_uefi_resources::UefiConfig {
