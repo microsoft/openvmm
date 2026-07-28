@@ -1441,7 +1441,7 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_intercept_unrecoverable_exception(true)
         .with_intercept_not_present(caps.intercept_not_present_available() && !isolated)
         .with_intercept_acceptance(isolated)
-        .with_intercept_enable_vtl_protection(isolated && !hardware_isolated)
+        .with_intercept_enable_vtl_protection(!hardware_isolated)
         .with_intercept_system_reset(caps.intercept_system_reset_available())
         .with_intercept_restore_partition_time(is_restore_partition_time_available());
 

@@ -2104,8 +2104,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return Err(HvError::InvalidParameter);
         }
 
-        assert!(self.partition.isolation.is_isolated());
-
         // Features currently supported by openhcl.
         let allowed_bits = HvRegisterVsmPartitionConfig::new()
             .with_enable_vtl_protection(true)
