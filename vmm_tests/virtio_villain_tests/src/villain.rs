@@ -27,8 +27,9 @@ pub struct VillainTest {
     /// virtio spec section the test references (`tests.tsv` column 4, e.g.
     /// `"2.6.5"`).
     pub spec_section: String,
-    /// virtio device id the test targets — the virtio-PCI device ID, i.e.
-    /// `0x1040` + device type (e.g. `0x1042` for virtio-blk, whose type is 2).
+    /// Virtio PCI device ID the test targets (derived from
+    /// `virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE` and
+    /// `virtio_spec::VirtioDeviceType`).
     pub device_id: u16,
     /// Test flags bitfield (`tests.tsv` column 6; see villain `tests/test.h`
     /// `TEST_FLAG_*`). Only [`TEST_FLAG_MMIO`] currently affects the harness.
@@ -258,48 +259,70 @@ pub enum VerdictScan {
     MarkerMissing,
 }
 
-/// Scan a captured serial console log for `name`'s verdict marker.
-///
-/// Villain prints one `[<TAG>] <name>` line per test. A test may share the log
-/// with unrelated boot output; we match the exact test name.
-pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
-    let mut saw_any_marker = false;
-    let mut villain_started = false;
-    for line in log.lines() {
+/// Incremental scanner for villain serial verdict markers.
+#[derive(Default)]
+pub struct VerdictScanner {
+    saw_any_marker: bool,
+    villain_started: bool,
+}
+
+impl VerdictScanner {
+    /// Scans one serial log line.
+    ///
+    /// Returns `Some` as soon as `name`'s verdict marker is found; otherwise
+    /// the caller should continue scanning and call [`Self::finish`] at EOF.
+    pub fn scan_line(&mut self, line: &str, name: &str) -> Option<VerdictScan> {
         let line = line.trim();
         // Markers look like "[PASS] blk.split.bad_desc". Find the closing
         // bracket and split into tag + remainder.
-        let Some(rest) = line.strip_prefix('[') else {
-            continue;
-        };
-        let Some((tag, remainder)) = rest.split_once(']') else {
-            continue;
-        };
+        let rest = line.strip_prefix('[')?;
+        let (tag, remainder) = rest.split_once(']')?;
         let Some(verdict) = Verdict::from_tag(tag) else {
             // Not a verdict tag. Villain's `[vv] ...` startup banner proves it
             // booted and began running, so even if it later wedges before this
             // test's verdict we can report `MarkerMissing` (started, no verdict)
             // rather than `NoMarkers` (never ran).
             if tag == "vv" {
-                villain_started = true;
+                self.villain_started = true;
             }
-            continue;
+            return None;
         };
-        saw_any_marker = true;
+        self.saw_any_marker = true;
         // The name is the first whitespace-delimited token after the tag.
         // Some markers carry a trailing reason, e.g.
         // "[SKIP] D0001 (no device 0x1063)", so match only the first token
         // rather than the whole remainder. Villain test names never contain
         // whitespace (see `tests.tsv`).
-        if remainder.split_whitespace().next() == Some(name) {
-            return VerdictScan::Found(verdict);
+        (remainder.split_whitespace().next() == Some(name)).then_some(VerdictScan::Found(verdict))
+    }
+
+    /// Returns the scan result once EOF is reached without finding `name`.
+    pub fn finish(self) -> VerdictScan {
+        if self.saw_any_marker || self.villain_started {
+            VerdictScan::MarkerMissing
+        } else {
+            VerdictScan::NoMarkers
         }
     }
-    if saw_any_marker || villain_started {
-        VerdictScan::MarkerMissing
-    } else {
-        VerdictScan::NoMarkers
+}
+
+/// Scan serial console log lines for `name`'s verdict marker.
+pub fn scan_verdict_lines<'a>(lines: impl IntoIterator<Item = &'a str>, name: &str) -> VerdictScan {
+    let mut scanner = VerdictScanner::default();
+    for line in lines {
+        if let Some(scan) = scanner.scan_line(line, name) {
+            return scan;
+        }
     }
+    scanner.finish()
+}
+
+/// Scan a captured serial console log for `name`'s verdict marker.
+///
+/// Villain prints one `[<TAG>] <name>` line per test. A test may share the log
+/// with unrelated boot output; we match the exact test name.
+pub fn scan_verdict(log: &str, name: &str) -> VerdictScan {
+    scan_verdict_lines(log.lines(), name)
 }
 
 /// Turn a scan result into a pass/fail outcome for one villain test.

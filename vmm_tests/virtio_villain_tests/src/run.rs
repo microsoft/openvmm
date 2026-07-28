@@ -4,9 +4,9 @@
 //! Runs a single villain test in one OpenVMM VM and reads its serial verdict.
 
 use crate::villain::VerdictScan;
-use crate::villain::scan_verdict;
 use anyhow::Context as _;
 use petri_artifacts_common::tags::MachineArch;
+use std::io::BufRead;
 use std::path::PathBuf;
 
 /// Guest kernel initcalls to blacklist so the in-guest virtio drivers don't
@@ -37,7 +37,7 @@ const INITCALL_BLACKLIST: &str = concat!(
 pub struct VmParams {
     /// Path to villain's `initramfs.cpio.gz` (bare PID-1 `init`).
     pub initramfs: PathBuf,
-    /// Guest architecture (host arch for Phase 1).
+    /// Guest architecture.
     pub arch: MachineArch,
     /// Guest RAM in bytes.
     pub mem_bytes: u64,
@@ -172,15 +172,23 @@ pub fn run_one(
         Ok(())
     })?;
 
-    let log = fs_err::read_to_string(&log_path)
-        .with_context(|| format!("failed to read serial log {}", log_path.display()))?;
+    let log = fs_err::File::open(&log_path)
+        .with_context(|| format!("failed to open serial log {}", log_path.display()))?;
+    let mut scanner = crate::villain::VerdictScanner::default();
+    for line in std::io::BufReader::new(log).lines() {
+        let line =
+            line.with_context(|| format!("failed to read serial log {}", log_path.display()))?;
+        if let Some(scan) = scanner.scan_line(&line, test_name) {
+            return Ok(scan);
+        }
+    }
 
     // Keep backing resources alive until here.
     drop(pmem_file);
     drop(fs_dir);
     drop(vsock_dir);
 
-    Ok(scan_verdict(&log, test_name))
+    Ok(scanner.finish())
 }
 
 /// Attach every virtio device villain can probe, plus the required cmdline.
