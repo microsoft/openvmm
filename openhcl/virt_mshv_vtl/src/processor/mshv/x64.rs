@@ -1259,15 +1259,21 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         //
         // For VTL 0, the alias map guards for read and write permissions, so only check VTL execute
         // permissions. Because VTL 2 will not restrict execute exclusively, only VTL 1 execute
-        // permissions need to be checked and therefore only check permissions if VTL 1 is allowed.
+        // permissions need to be checked and therefore only check permissions once VTL 1
+        // protections are enabled.
         //
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == virt_support_x86emu::emulate::TranslateMode::Execute
             && self.vtl == GuestVtl::Vtl0
-            && !matches!(
+            && matches!(
                 *self.vp.shared.guest_vsm.read(),
-                GuestVsmState::NotPlatformSupported,
+                GuestVsmState::Enabled {
+                    vtl1: VbsIsolatedVtl1State {
+                        enable_vtl_protection: true,
+                        ..
+                    },
+                }
             )
         {
             // Should always be called after translate gva with the tlb lock flag
