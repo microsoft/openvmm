@@ -444,7 +444,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_use_apic_msrs(!self.secure_avic)
             .with_long_spin_wait_count(!0)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-            .with_use_synthetic_cluster_ipi(true);
+            .with_use_synthetic_cluster_ipi(!self.secure_avic);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()
             .with_apic_overlay_assist_in_use(true)
