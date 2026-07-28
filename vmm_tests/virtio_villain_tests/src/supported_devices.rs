@@ -47,10 +47,7 @@
 //! Known *product* failures (real device-model bugs) are handled separately in
 //! [`crate::known_failures`]; both are OR'd together at trial construction.
 
-/// A virtio feature bit, as a mask.
-const fn feature_bit(n: u32) -> u64 {
-    1u64 << n
-}
+use std::sync::LazyLock;
 
 /// Transport-common feature bits OpenVMM's virtio transport offers for **every**
 /// device, on top of whatever the device model itself advertises. The transport
@@ -58,12 +55,17 @@ const fn feature_bit(n: u32) -> u64 {
 /// `vm/devices/virtio/virtio/src/transport/core.rs`, `with_version_1(true)` and
 /// `with_access_platform(true)`), so they must be included when deciding whether
 /// a required feature is offered.
-const COMMON_FEATURES: u64 = feature_bit(32) // VIRTIO_F_VERSION_1
-    | feature_bit(33); // VIRTIO_F_ACCESS_PLATFORM
+static COMMON_FEATURES: LazyLock<u64> = LazyLock::new(|| {
+    virtio_spec::VirtioDeviceFeatures::new()
+        .with_version_1(true)
+        .with_access_platform(true)
+        .into_bits()
+});
 
 /// The virtio capabilities the kitchen-sink VM exposes for one device.
 struct DeviceCaps {
-    /// Device id (`0x1040 + virtio_device_type`).
+    /// Virtio PCI device id, derived from [`virtio_spec::pci`] and
+    /// [`virtio_spec::VirtioDeviceType`].
     device_id: u16,
     /// Device-specific feature bits the model advertises via its `traits()`
     /// (the transport-common bits in [`COMMON_FEATURES`] are added by
@@ -77,7 +79,7 @@ impl DeviceCaps {
     /// The full set of feature bits negotiable on this device, i.e. the device's
     /// own bits plus the transport-common [`COMMON_FEATURES`].
     fn offered_features(&self) -> u64 {
-        self.device_features | COMMON_FEATURES
+        self.device_features | *COMMON_FEATURES
     }
 }
 
@@ -94,43 +96,76 @@ impl DeviceCaps {
 /// * vsock   `vm/devices/virtio/virtio_vsock/src/lib.rs` (`traits`)
 /// * fs      `vm/devices/virtio/virtiofs/src/virtio.rs` (`traits`)
 /// * pmem    `vm/devices/virtio/virtio_pmem/src/lib.rs` (`traits`)
-const DEVICE_CAPS: &[DeviceCaps] = &[
-    DeviceCaps {
-        device_id: 0x1041, // network
-        device_features: 0x0100_000C_3001_1823,
-        num_queues: 2,
-    },
-    DeviceCaps {
-        device_id: 0x1042, // block
-        device_features: 0x0000_0004_3000_2644,
-        num_queues: 1,
-    },
-    DeviceCaps {
-        device_id: 0x1043, // console
-        device_features: 0x0000_0004_3000_0001,
-        num_queues: 2,
-    },
-    DeviceCaps {
-        device_id: 0x1044, // entropy (rng)
-        device_features: 0x0000_0004_3000_0000,
-        num_queues: 1,
-    },
-    DeviceCaps {
-        device_id: 0x1053, // vsock (socket)
-        device_features: 0x0000_0000_0000_0005,
-        num_queues: 3,
-    },
-    DeviceCaps {
-        device_id: 0x105a, // fs (virtio-fs)
-        device_features: 0x0000_0004_3000_0000,
-        num_queues: 3,
-    },
-    DeviceCaps {
-        device_id: 0x105b, // pmem
-        device_features: 0x0000_0004_3000_0000,
-        num_queues: 1,
-    },
-];
+static DEVICE_CAPS: LazyLock<[DeviceCaps; 7]> = LazyLock::new(|| {
+    use virtio_spec::VirtioDeviceFeatures;
+    use virtio_spec::VirtioDeviceType;
+    use virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
+
+    let ring_features = || {
+        VirtioDeviceFeatures::new()
+            .with_ring_indirect_desc(true)
+            .with_ring_event_idx(true)
+            .with_ring_packed(true)
+    };
+    let device_id = |device_type: VirtioDeviceType| VIRTIO_PCI_DEVICE_ID_BASE + device_type.0;
+
+    [
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::NET),
+            device_features: ring_features()
+                .with_in_order(true)
+                .with_device_specific_low(0x0001_1823)
+                // VIRTIO_NET_F_HOST_USO, overall bit 56.
+                .with_device_specific_high(1 << 5)
+                .into_bits(),
+            num_queues: 2,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::BLK),
+            device_features: ring_features()
+                .with_device_specific_low(
+                    virtio_spec::blk::VIRTIO_BLK_F_SEG_MAX
+                        | virtio_spec::blk::VIRTIO_BLK_F_BLK_SIZE
+                        | virtio_spec::blk::VIRTIO_BLK_F_FLUSH
+                        | virtio_spec::blk::VIRTIO_BLK_F_TOPOLOGY
+                        | virtio_spec::blk::VIRTIO_BLK_F_DISCARD,
+                )
+                .into_bits(),
+            num_queues: 1,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::CONSOLE),
+            device_features: ring_features()
+                // VIRTIO_CONSOLE_F_SIZE.
+                .with_device_specific_low(1 << 0)
+                .into_bits(),
+            num_queues: 2,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::RNG),
+            device_features: ring_features().into_bits(),
+            num_queues: 1,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::VSOCK),
+            device_features: VirtioDeviceFeatures::new()
+                // VIRTIO_VSOCK_F_STREAM and VIRTIO_VSOCK_F_SEQPACKET.
+                .with_device_specific_low((1 << 0) | (1 << 2))
+                .into_bits(),
+            num_queues: 3,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::FS),
+            device_features: ring_features().into_bits(),
+            num_queues: 3,
+        },
+        DeviceCaps {
+            device_id: device_id(VirtioDeviceType::PMEM),
+            device_features: ring_features().into_bits(),
+            num_queues: 1,
+        },
+    ]
+});
 
 /// The capabilities for `device_id`, if the kitchen-sink VM attaches it.
 fn device_caps(device_id: u16) -> Option<&'static DeviceCaps> {
@@ -390,9 +425,11 @@ const FORCE_IGNORE: &[Exception] = &[
                  VIRTIO_F_ACCESS_PLATFORM; the kitchen-sink VM attaches no \
                  vIOMMU. TODO(villain): gate on a vIOMMU capability.",
     },
-    // --- Virtio admin virtqueue: self-SKIP when the admin-queue registers /
-    // feature are absent. OpenVMM does not implement the admin virtqueue.
-    // TODO(villain): record required_features / an admin-vq capability.
+    // --- PCI transport admin virtqueue: these probe the modern PCI common
+    // config admin queue (common_length >= 0x48 / VIRTIO_F_ADMIN_VQ) and
+    // self-SKIP when that PCI transport support is absent. OpenVMM does not
+    // implement the admin virtqueue. TODO(villain): record required_features /
+    // an admin-vq capability.
     Exception {
         name: "PCI0076",
         reason: "self-SKIPs when the PCI common-config admin-queue registers are \
@@ -582,7 +619,7 @@ mod tests {
 
     #[test]
     fn attached_devices_have_caps_and_are_not_skipped() {
-        for caps in DEVICE_CAPS {
+        for caps in DEVICE_CAPS.iter() {
             // A no-requirement test on an attached device must run.
             assert!(
                 expected_skip("X0000", caps.device_id, false, 0, 0).is_none(),
@@ -596,9 +633,31 @@ mod tests {
     fn common_features_are_always_offered() {
         // VERSION_1 (32) and ACCESS_PLATFORM (33) are offered for every device
         // even though the models don't list them (the transport adds them).
-        for caps in DEVICE_CAPS {
-            assert_eq!(caps.offered_features() & COMMON_FEATURES, COMMON_FEATURES);
+        for caps in DEVICE_CAPS.iter() {
+            assert_eq!(caps.offered_features() & *COMMON_FEATURES, *COMMON_FEATURES);
         }
+    }
+
+    #[test]
+    fn device_caps_anchor_values_match_virtio_spec() {
+        let net = device_caps(
+            virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE + virtio_spec::VirtioDeviceType::NET.0,
+        )
+        .unwrap();
+        let block = device_caps(
+            virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE + virtio_spec::VirtioDeviceType::BLK.0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            net.device_id,
+            virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE + virtio_spec::VirtioDeviceType::NET.0
+        );
+        assert_eq!(
+            block.device_id,
+            virtio_spec::pci::VIRTIO_PCI_DEVICE_ID_BASE + virtio_spec::VirtioDeviceType::BLK.0
+        );
+        assert!(virtio_spec::VirtioDeviceFeatures::from_bits(net.offered_features()).version_1());
     }
 
     #[test]
@@ -621,7 +680,10 @@ mod tests {
     #[test]
     fn missing_feature_is_expected_to_skip() {
         // Require a bit block doesn't offer (VIRTIO_NET_F_RSS-ish high bit).
-        assert!(expected_skip("X", 0x1042, false, feature_bit(60), 0).is_some());
+        let missing_feature = virtio_spec::VirtioDeviceFeatures::new()
+            .with_device_specific_high(1 << 9)
+            .into_bits();
+        assert!(expected_skip("X", 0x1042, false, missing_feature, 0).is_some());
     }
 
     #[test]
@@ -634,7 +696,10 @@ mod tests {
     fn force_run_overrides_missing_feature() {
         // N0161 declares RSC_EXT (bit 61), which net doesn't offer, yet it must
         // still run (it passes vacuously).
-        assert!(expected_skip("N0161", 0x1041, false, feature_bit(61), 0).is_none());
+        let rsc_ext = virtio_spec::VirtioDeviceFeatures::new()
+            .with_device_specific_high(1 << 10)
+            .into_bits();
+        assert!(expected_skip("N0161", 0x1041, false, rsc_ext, 0).is_none());
     }
 
     #[test]

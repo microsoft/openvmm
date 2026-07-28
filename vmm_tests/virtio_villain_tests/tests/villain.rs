@@ -23,13 +23,12 @@
 //! that OpenVMM is known to fail ([`known_failures`]) are marked *ignored*, so
 //! CI skips them but they can still be run locally with `--run-ignored`.
 //!
-//! x86_64/KVM. The villain `initramfs.cpio.gz` and `tests.tsv` are resolved
-//! from the `openvmm-deps` release artifact via petri's known-paths resolver
-//! (staged into `VMM_TESTS_CONTENT_DIR` by flowey), the same way the guest
-//! kernel (the existing OpenVMM linux-direct test `vmlinux`) is. For local
-//! development against a custom villain build, `--villain-initramfs` /
-//! `--villain-tsv` (or the `VILLAIN_INITRAMFS` / `VILLAIN_TSV` env vars)
-//! override the resolved artifact.
+//! The villain `initramfs.cpio.gz` and `tests.tsv` are resolved from the
+//! `openvmm-deps` release artifact via petri's known-paths resolver (staged
+//! into `VMM_TESTS_CONTENT_DIR` by flowey), the same way the guest kernel (the
+//! existing OpenVMM linux-direct test `vmlinux`) is. For local development
+//! against a custom villain build, the `VILLAIN_INITRAMFS` and `VILLAIN_TSV`
+//! environment variables override the resolved artifacts.
 //!
 //! [virtio-villain]: https://github.com/weltling/virtio-villain
 
@@ -38,7 +37,6 @@ mod run {
 }
 
 use anyhow::Context as _;
-use clap::Parser;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
 use petri_artifacts_common::tags::MachineArch;
@@ -47,39 +45,9 @@ use virtio_villain_tests::known_failures;
 use virtio_villain_tests::supported_devices;
 use virtio_villain_tests::villain;
 
-#[derive(Parser)]
-#[command(
-    name = "virtio_villain_tests",
-    about = "Run virtio-villain against OpenVMM"
-)]
-struct Cli {
-    /// Override the villain `initramfs.cpio.gz` with a local path (for
-    /// developing against a custom villain build). Falls back to the
-    /// `VILLAIN_INITRAMFS` environment variable; if neither is set, the
-    /// initramfs is resolved from the staged `openvmm-deps` artifact.
-    #[arg(long)]
-    villain_initramfs: Option<PathBuf>,
-
-    /// Override villain's `tests.tsv` (from `init --list-tsv`) with a local
-    /// path. Falls back to the `VILLAIN_TSV` environment variable; if neither
-    /// is set, the tsv is resolved from the staged `openvmm-deps` artifact.
-    #[arg(long)]
-    villain_tsv: Option<PathBuf>,
-
-    /// Base directory for per-test petri logs. Defaults to `TEST_OUTPUT_PATH`
-    /// (the same env var the petri known-paths resolver honors, so CI can point
-    /// all runners at one publishable directory) if set, else
-    /// `vmm_test_results/virtio_villain`.
-    #[arg(long)]
-    log_dir: Option<PathBuf>,
-
-    /// Guest RAM in MiB.
-    #[arg(long, default_value_t = 512)]
-    mem_mb: u64,
-
-    #[command(flatten)]
-    inner: libtest_mimic::Arguments,
-}
+/// 512 MiB is enough for the linux-direct kernel plus the villain initramfs and
+/// keeps the many one-VM-per-test trials lightweight.
+const VILLAIN_MEM_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Two-pass artifact resolution (the petri-tool / burette pattern): resolve the
 /// reused OpenVMM linux-direct kernel for the host architecture.
@@ -91,18 +59,6 @@ fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
         MachineArch::host(),
         false,
     );
-}
-
-fn resolve_artifacts() -> anyhow::Result<petri::TestArtifacts> {
-    let resolver =
-        petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
-    let mut requirements = petri::TestArtifactRequirements::new();
-    register_artifacts(&petri::ArtifactResolver::collector(&mut requirements));
-    let artifacts = requirements
-        .resolve(&resolver)
-        .context("failed to resolve test artifacts")?;
-    register_artifacts(&petri::ArtifactResolver::resolver(&artifacts));
-    Ok(artifacts)
 }
 
 /// Require the host-architecture villain initramfs artifact.
@@ -132,8 +88,8 @@ fn require_villain_tsv(resolver: &petri::ArtifactResolver<'_>) -> petri::Resolve
 }
 
 /// Resolve a single villain artifact path via petri's known-paths resolver
-/// (staged under `VMM_TESTS_CONTENT_DIR`). Used for the initramfs and the tsv,
-/// each of which can be overridden by a CLI flag / env var for local dev.
+/// (staged under `VMM_TESTS_CONTENT_DIR`). Used for the tsv when it is not
+/// overridden by an env var; this does not initialize tracing.
 fn resolve_villain_file(
     pick: impl Fn(&petri::ArtifactResolver<'_>) -> petri::ResolvedArtifact,
 ) -> anyhow::Result<PathBuf> {
@@ -149,34 +105,33 @@ fn resolve_villain_file(
         .to_path_buf())
 }
 
-/// Sanitize a villain test name into a filesystem-safe directory component.
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn resolve_trial_artifacts(name: &str) -> anyhow::Result<(petri::TestArtifacts, PathBuf)> {
+    let resolver =
+        petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new(
+            name,
+        );
+    let mut requirements = petri::TestArtifactRequirements::new();
+    register_artifacts(&petri::ArtifactResolver::collector(&mut requirements));
+    require_villain_initrd(&petri::ArtifactResolver::collector(&mut requirements));
+    requirements.require(
+        petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY,
+        petri::RemoteAccess::LocalOnly,
+        false,
+    );
+    let artifacts = requirements
+        .resolve(&resolver)
+        .context("failed to resolve test artifacts")?;
+    let resolver = petri::ArtifactResolver::resolver(&artifacts);
+    register_artifacts(&resolver);
+    let initrd = require_villain_initrd(&resolver).get().to_path_buf();
+    Ok((artifacts, initrd))
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut cli = Cli::parse();
+    let mut args = libtest_mimic::Arguments::from_args();
 
-    // Local-dev overrides: a custom villain build's initramfs / tsv can be
-    // pointed at explicitly (CLI flag, else env var). When unset, the files are
-    // resolved from the staged `openvmm-deps` artifact via petri's known-paths
-    // resolver.
-    let initramfs_override = cli
-        .villain_initramfs
-        .clone()
-        .or_else(|| std::env::var_os("VILLAIN_INITRAMFS").map(PathBuf::from));
-    let tsv_override = cli
-        .villain_tsv
-        .clone()
-        .or_else(|| std::env::var_os("VILLAIN_TSV").map(PathBuf::from));
+    let initramfs_override = std::env::var_os("VILLAIN_INITRAMFS").map(PathBuf::from);
+    let tsv_override = std::env::var_os("VILLAIN_TSV").map(PathBuf::from);
 
     // The test list comes from the tsv, which is needed for both `--list` and
     // running. Prefer the override; otherwise resolve it from the artifact.
@@ -186,54 +141,10 @@ fn main() -> anyhow::Result<()> {
             .context("failed to resolve villain tests.tsv")?,
     };
     let tests = villain::parse_tsv(&tsv)?;
-
-    // Resolve the base log dir: explicit `--log-dir`, else `TEST_OUTPUT_PATH`
-    // (petri convention, so CI publishes all runners' logs uniformly), else a
-    // repo-relative default.
-    let log_dir = cli
-        .log_dir
-        .clone()
-        .or_else(|| std::env::var_os("TEST_OUTPUT_PATH").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("vmm_test_results/virtio_villain"));
-
-    // Listing (used by nextest for discovery) must emit *only* the libtest
-    // `<name>: test` lines on stdout — so skip tracing init (which prints an
-    // `[[ATTACHMENT]]` line), the log dir, and VM artifact/initramfs resolution.
-    // Those are only needed when we actually run VMs.
-    let (artifacts, initramfs, _base_logger) = if cli.inner.list {
-        (None, PathBuf::new(), None)
-    } else {
-        // Install the global tracing subscriber once, rooted at the base log
-        // dir. Per-test log sources (each with their own serial `linux.log`)
-        // are created below via `petri::new_log_source`.
-        fs_err::create_dir_all(&log_dir)?;
-        let base_logger =
-            petri::try_init_tracing(&log_dir, tracing::level_filters::LevelFilter::INFO)
-                .context("failed to initialize tracing")?;
-        let initramfs = match initramfs_override {
-            Some(initramfs) => initramfs,
-            None => resolve_villain_file(require_villain_initrd)
-                .context("failed to resolve villain initramfs")?,
-        };
-        (Some(resolve_artifacts()?), initramfs, Some(base_logger))
-    };
-
-    let params = run::VmParams {
-        initramfs,
-        arch: MachineArch::host(),
-        mem_bytes: cli
-            .mem_mb
-            .checked_mul(1024 * 1024)
-            .with_context(|| format!("--mem-mb value {} is too large", cli.mem_mb))?,
-    };
-
-    let base_log_dir = log_dir.clone();
     let trials: Vec<Trial> = tests
         .into_iter()
         .map(|test| {
-            let params = params.clone();
-            let artifacts = artifacts.clone();
-            let base_log_dir = base_log_dir.clone();
+            let initramfs_override = initramfs_override.clone();
             let name = test.name.clone();
             let desc = test.desc.clone();
             let version = test.version.clone();
@@ -261,10 +172,15 @@ fn main() -> anyhow::Result<()> {
             }
             let ignored = expected_skip.is_some() || known_failures::lookup(&name).is_some();
             Trial::test(test.name.clone(), move || -> Result<(), Failed> {
-                let artifacts = artifacts
-                    .as_ref()
-                    .context("artifacts were not resolved (internal error)")
-                    .map_err(|e| Failed::from(format!("{e:#}")))?;
+                let (artifacts, initrd) =
+                    resolve_trial_artifacts(&name).map_err(|e| Failed::from(format!("{e:#}")))?;
+                let output_dir =
+                    artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+                let logger =
+                    petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::INFO)
+                        .context("failed to initialize tracing")
+                        .map_err(|e| Failed::from(format!("{e:#}")))?;
+                logger.log_test_start(&name);
                 tracing::info!(
                     name,
                     desc,
@@ -277,22 +193,19 @@ fn main() -> anyhow::Result<()> {
                     mmio,
                     "running villain test"
                 );
-                let test_dir = base_log_dir.join(sanitize(&name));
-                fs_err::create_dir_all(&test_dir).map_err(|e| Failed::from(format!("{e:#}")))?;
-                let log_source = petri::new_log_source(&test_dir)
-                    .context("failed to create per-test log source")
-                    .map_err(|e| Failed::from(format!("{e:#}")))?;
-                // Record the start marker up front so a test that dies without
-                // reporting (e.g. a VM hang killed by timeout) is distinguishable
-                // from one that never began.
-                log_source.log_test_start(&name);
-                let result = run::run_one(&params, artifacts, &log_source, &name, mmio)
+                let initramfs = initramfs_override.clone().unwrap_or_else(|| initrd.clone());
+                let params = run::VmParams {
+                    initramfs,
+                    arch: MachineArch::host(),
+                    mem_bytes: VILLAIN_MEM_BYTES,
+                };
+                let result = run::run_one(&params, &artifacts, &logger, &name, mmio)
                     .and_then(villain::evaluate);
                 // Write the petri.passed/petri.failed marker (and log the
                 // outcome to petri.jsonl) so the logview uploader counts this
                 // test. villain tests are never "unstable" — known failures are
                 // skipped via the ignored flag instead.
-                log_source.log_test_result(&result, false);
+                logger.log_test_result(&result, false);
                 result.map_err(|e| Failed::from(format!("{e:#}")))
             })
             .with_ignored_flag(ignored)
@@ -300,10 +213,12 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     // These VMs are heavy; run them one at a time in-process. Under nextest,
-    // each test runs in its own process regardless.
-    if cli.inner.test_threads.is_none() {
-        cli.inner.test_threads = Some(1);
+    // each selected test runs in its own process. Running this binary directly
+    // with multiple non-ignored trials is not supported because petri tracing is
+    // process-global and can only be initialized once.
+    if args.test_threads.is_none() {
+        args.test_threads = Some(1);
     }
 
-    libtest_mimic::run(&cli.inner, trials).exit();
+    libtest_mimic::run(&args, trials).exit();
 }

@@ -9901,7 +9901,6 @@ name = "virtio_villain_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "clap",
  "disk_backend_resources",
  "fs-err",
  "libtest-mimic",
@@ -9918,6 +9917,7 @@ dependencies = [
  "tracing",
  "unix_socket",
  "virtio_resources",
+ "virtio_spec",
  "vm_resource",
 ]
 

@@ -25,9 +25,9 @@ net_backend_resources.workspace = true
 serial_core.workspace = true
 vm_resource.workspace = true
 pal_async.workspace = true
+virtio_spec.workspace = true
 
 anyhow.workspace = true
-clap = { workspace = true, features = ["derive"] }
 fs-err.workspace = true
 libtest-mimic.workspace = true
 tempfile.workspace = true
