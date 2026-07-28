@@ -294,6 +294,21 @@ message NvmeNamespace {
 message VfioDevice {
     // Host PCI address (BDF), e.g. "0000:01:00.0".
     string host_pci_address = 1;
+    // BARs whose initial addresses are pinned. Omitted BARs are assigned by
+    // the guest normally.
+    repeated VfioBarAddress bar_addresses = 2;
+}
+
+// Initial address configuration for one VFIO device BAR.
+message VfioBarAddress {
+    // BAR index, from 0 through 5.
+    uint32 bar_index = 1;
+    oneof source {
+        // Use the physical BAR address reported by the host.
+        google.protobuf.Empty host = 2;
+        // Use an explicit host physical address.
+        uint64 fixed = 3;
+    }
 }
 
 //
@@ -370,6 +385,16 @@ message NumaDistance {
 message PcieTopologyConfig {
     // The PCIe root complexes in the VM.
     repeated PcieRootComplex root_complexes = 1;
+    // Devices that act as initiators for device-only NUMA nodes.
+    repeated PcieGenericInitiator generic_initiators = 2;
+}
+
+// Associates the device behind a PCIe port with a NUMA proximity domain.
+message PcieGenericInitiator {
+    // Port directly upstream of the initiator device.
+    string port_name = 1;
+    // NUMA node for which the device is an initiator.
+    uint32 node = 2;
 }
 
 // A PCIe root complex.
@@ -411,6 +436,8 @@ message PciePort {
     // Device/function (`device << 3 | function`) to place this port at on its
     // bus. Absent => lowest available devfn.
     optional uint32 devfn = 4;
+    // ACS capability bits exposed by this port. Absent => default capabilities.
+    optional uint32 acs_capabilities_supported = 5;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own

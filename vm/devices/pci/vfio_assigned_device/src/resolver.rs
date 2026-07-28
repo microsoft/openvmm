@@ -64,7 +64,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
         let VfioDeviceHandle {
             pci_id,
             group,
-            bar_pt,
+            bar_addresses,
         } = resource;
 
         // The legacy VFIO group/type1 path can only do identity DMA, so only a
@@ -100,7 +100,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.register_mmio,
             input.dma_target.msi_target(),
             memory_mapper,
-            bar_pt,
+            bar_addresses,
         )
         .await?;
 
@@ -156,7 +156,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             cdev,
             iommufd,
             iommu_id,
-            bar_pt,
+            bar_addresses,
         } = resource;
 
         // The cdev/iommufd path currently attaches devices to an identity
@@ -197,7 +197,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             input.register_mmio,
             input.dma_target.msi_target(),
             memory_mapper,
-            bar_pt,
+            bar_addresses,
         )
         .await?;
 

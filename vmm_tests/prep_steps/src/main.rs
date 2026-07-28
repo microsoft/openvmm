@@ -41,15 +41,17 @@ async fn async_main(driver: &pal_async::DefaultDriver) -> anyhow::Result<()> {
         "" | "standard" => {
             let name = "prep_steps";
             let (logger, artifacts, source_disk) = build(name)?;
+            logger.log_test_start(name);
             let r = run(driver, name, &logger, artifacts, source_disk).await;
-            logger.log_test_result(name, &r, false);
+            logger.log_test_result(&r, false);
             r
         }
         "no-vmbus" => {
             let name = "prep_steps_no_vmbus";
             let (logger, artifacts, source_disk, virtio_win) = build_no_vmbus(name)?;
+            logger.log_test_start(name);
             let r = run_no_vmbus(driver, name, &logger, artifacts, source_disk, virtio_win).await;
-            logger.log_test_result(name, &r, false);
+            logger.log_test_result(&r, false);
             r
         }
         other => anyhow::bail!("unknown prep step: {other:?} (expected 'standard' or 'no-vmbus')"),

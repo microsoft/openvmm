@@ -107,6 +107,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(target_os = "linux")]
     vhost_user_frontend::resolver::VhostUserFrontendResolver,
     virtio_vsock::resolver::VirtioVsockResolver,
+    #[cfg(target_os = "linux")]
+    virtio_vsock::resolver::VirtioVsockVhostResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,

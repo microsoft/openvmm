@@ -1059,7 +1059,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })
@@ -1086,7 +1086,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })
@@ -1204,7 +1204,7 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if opt.uefi {
+    if opt.uefi && opt.igvm.is_none() && !opt.pcat {
         let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1865,6 +1865,20 @@ async fn vm_config_from_command_line(
                 listener,
             }
             .into_resource(),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(guest_cid) = opt.virtio_vsock_vhost_cid {
+        let vhost = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/vhost-vsock")
+            .context("failed to open /dev/vhost-vsock")?
+            .into();
+        add_virtio_device(
+            VirtioBusCli::Auto,
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
         );
     }
 

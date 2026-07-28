@@ -288,6 +288,12 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
+        let prepare_vhost_vsock = incubator_profile.is_none()
+            && matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Linux
+            )
+            && matches!(target.architecture, target_lexicon::Architecture::X86_64);
         let (extra_env, nextest_working_dir, nextest_config_file) = if let Some(profile_name) =
             incubator_profile
         {
@@ -368,6 +374,7 @@ impl SimpleFlowNode for Node {
             extra_env,
             pre_run_deps,
             hugetlb_2mb_overcommit_pages,
+            prepare_vhost_vsock,
             results: v,
         });
 
@@ -389,6 +396,36 @@ impl SimpleFlowNode for Node {
         // to create a dependency on the VMM tests having actually run.
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
+        // A failing VMM test dumps its entire captured stdout -- guest serial
+        // console, OpenHCL kmsg, pipette, and petri tracing -- into the job
+        // log, which makes it impractical to tell at a glance which tests
+        // actually failed. Emit a scannable summary alongside it.
+        let summarized = {
+            let is_github = matches!(ctx.backend(), FlowBackend::Github);
+            let test_log_path = test_log_path.clone();
+            let log_artifact_name = format!("{junit_test_label}-logs");
+            ctx.emit_rust_step("summarize failing vmm tests", |ctx| {
+                let test_log_path = test_log_path.claim(ctx);
+                move |rt| {
+                    let log_dir = rt.read(test_log_path);
+                    // Summarizing is ancillary to the test run. If it fails,
+                    // warn rather than propagate: this step is ordered before
+                    // the one that reports test failures, so returning an
+                    // error here would replace "encountered test failures"
+                    // with an unrelated error and hide what actually broke.
+                    match failure_summary::collect_failed_tests(&log_dir) {
+                        Ok(failures) => failure_summary::report_failed_tests(
+                            &failures,
+                            is_github,
+                            &log_artifact_name,
+                        ),
+                        Err(err) => failure_summary::warn_summary_unavailable(is_github, &err),
+                    }
+                    Ok(())
+                }
+            })
+        };
+
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
@@ -400,6 +437,7 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
             reported_results.claim(ctx);
+            summarized.claim(ctx);
             if let Some(rpc_server_stopped) = rpc_server_stopped {
                 rpc_server_stopped.claim(ctx);
             }
@@ -423,5 +461,693 @@ impl SimpleFlowNode for Node {
         });
 
         Ok(())
+    }
+}
+
+/// Summarizes failing VMM tests by scanning the per-test output directories
+/// that petri writes during a run.
+///
+/// Nextest reports which tests failed, but for VMM tests it also replays each
+/// failing test's entire captured stdout -- guest serial console, OpenHCL
+/// kmsg, pipette, and petri tracing -- which routinely buries the list of
+/// failures under megabytes of log. This module produces a compact,
+/// linkable report to sit alongside that output.
+mod failure_summary {
+    use flowey::node::prelude::fs_err;
+    use std::collections::VecDeque;
+    use std::io::BufRead;
+    use std::io::BufReader;
+    use std::io::Read;
+    use std::path::Path;
+
+    /// Maximum number of log lines to show inline per failing test. The tail
+    /// is kept, since the entries immediately preceding a failure are almost
+    /// always the relevant ones.
+    const MAX_EXCERPT_LINES: usize = 20;
+
+    /// Maximum length of a failure reason shown in a summary table cell.
+    const MAX_REASON_CHARS: usize = 300;
+
+    /// Base URL of the petri log viewer.
+    const LOG_VIEWER_BASE_URL: &str = "https://openvmm.dev/test-results";
+
+    /// How a test finished, for tests that did not pass.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Outcome {
+        Failed,
+        FailedUnstable,
+        /// Started but never recorded a result: the test process was killed or
+        /// crashed before it could report.
+        Incomplete,
+    }
+
+    impl Outcome {
+        /// Short description used in the job log and the summary table.
+        fn describe(self) -> &'static str {
+            match self {
+                Outcome::Failed => "failed",
+                Outcome::FailedUnstable => "failed (unstable)",
+                Outcome::Incomplete => "did not complete",
+            }
+        }
+    }
+
+    /// A failing test discovered by scanning the petri log directory.
+    pub struct FailedTest {
+        /// Full test name, e.g. `x86_64::openhcl_linux_direct_boot`.
+        name: String,
+        /// Name of the test's directory within the log directory.
+        dir_name: String,
+        /// How the test finished.
+        outcome: Outcome,
+        /// The error petri recorded, if it got as far as recording one.
+        error: Option<String>,
+        /// ERROR / WARN entries from the tail of `petri.jsonl`.
+        excerpt: Vec<String>,
+    }
+
+    /// Scans `log_dir` for the per-test marker files petri writes, returning
+    /// everything that did not pass, sorted by test name.
+    pub fn collect_failed_tests(log_dir: &Path) -> anyhow::Result<Vec<FailedTest>> {
+        let mut failures = Vec::new();
+        if !log_dir.exists() {
+            return Ok(failures);
+        }
+
+        for entry in fs_err::read_dir(log_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let dir = entry.path();
+            let started = dir.join("petri.test");
+            if dir.join("petri.passed").exists() {
+                continue;
+            }
+
+            // The error is the marker's contents; an absent marker means petri
+            // never got to write one.
+            let (outcome, error) = if let Ok(err) = fs_err::read_to_string(dir.join("petri.failed"))
+            {
+                (Outcome::Failed, Some(err))
+            } else if let Ok(err) = fs_err::read_to_string(dir.join("petri.failed_unstable")) {
+                (Outcome::FailedUnstable, Some(err))
+            } else if started.exists() {
+                (Outcome::Incomplete, None)
+            } else {
+                // Not a petri test directory.
+                continue;
+            };
+
+            let dir_name = entry.file_name().to_string_lossy().into_owned();
+            // petri records the test's real name up front; fall back to
+            // undoing the directory-name mangling if it isn't there.
+            let name = fs_err::read_to_string(&started)
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| dir_name.replace("__", "::"));
+
+            let excerpt = fs_err::File::open(dir.join("petri.jsonl"))
+                .map(excerpt_from_petri_jsonl)
+                .unwrap_or_default();
+
+            failures.push(FailedTest {
+                name,
+                dir_name,
+                outcome,
+                error: error.map(|e| one_line(&e)).filter(|e| !e.is_empty()),
+                excerpt,
+            });
+        }
+
+        failures.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(failures)
+    }
+
+    /// Collapses whitespace and truncates, so that a multi-line error can be
+    /// used in a summary table cell or a single-line workflow command.
+    fn one_line(s: &str) -> String {
+        let mut collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.chars().count() > MAX_REASON_CHARS {
+            collapsed = collapsed
+                .chars()
+                .take(MAX_REASON_CHARS)
+                .collect::<String>()
+                .trim_end()
+                .to_owned();
+            collapsed.push('…');
+        }
+        collapsed
+    }
+
+    /// Extracts the trailing ERROR / WARN entries from a `petri.jsonl` stream.
+    ///
+    /// The log is streamed rather than read into memory: a buggy test can
+    /// produce a log of essentially unbounded size, and only the last handful
+    /// of entries are ever shown. Malformed lines are skipped rather than
+    /// treated as errors; this is best-effort reporting layered on top of an
+    /// already-failing test run.
+    fn excerpt_from_petri_jsonl(reader: impl Read) -> Vec<String> {
+        let mut excerpt = VecDeque::with_capacity(MAX_EXCERPT_LINES);
+        for line in BufReader::new(reader).lines() {
+            // Stop on a read or encoding error rather than risk spinning on a
+            // reader that keeps failing.
+            let Ok(line) = line else { break };
+
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let severity = entry.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+            if !matches!(severity, "ERROR" | "WARN") {
+                continue;
+            }
+            let source = entry.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let message = entry.get("message").and_then(|v| v.as_str()).unwrap_or("");
+
+            if excerpt.len() == MAX_EXCERPT_LINES {
+                excerpt.pop_front();
+            }
+            excerpt.push_back(format!("[{severity:>5}] [{source:>10}] {message}"));
+        }
+        excerpt.into()
+    }
+
+    /// Builds a deep link into the petri log viewer for a failing test.
+    ///
+    /// Returns `None` when the run ID is unknown (i.e. outside of GitHub
+    /// Actions), since the viewer is keyed on it.
+    fn log_viewer_url(
+        run_id: Option<&str>,
+        log_artifact_name: &str,
+        test: &FailedTest,
+    ) -> Option<String> {
+        let run_id = run_id?;
+        Some(format!(
+            "{LOG_VIEWER_BASE_URL}/#/runs/{run_id}/{}/{}",
+            percent_encode(log_artifact_name),
+            percent_encode(&test.dir_name),
+        ))
+    }
+
+    /// Renders the per-failure detail written to the job log.
+    ///
+    /// On GitHub the detail is wrapped in workflow-command groups so that it
+    /// collapses by default and the list of failures stays scannable.
+    fn render_job_log(
+        failures: &[FailedTest],
+        is_github: bool,
+        run_id: Option<&str>,
+        log_artifact_name: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::new();
+        for test in failures {
+            let label = match test.outcome {
+                Outcome::Failed => "FAIL",
+                Outcome::FailedUnstable => "FAIL (unstable)",
+                Outcome::Incomplete => "INCOMPLETE",
+            };
+            if is_github {
+                let _ = writeln!(out, "::group::{label} {}", test.name);
+            } else {
+                let _ = writeln!(out, "--- {label} {} ---", test.name);
+            }
+
+            if let Some(error) = &test.error {
+                let _ = writeln!(out, "  error: {error}");
+            }
+
+            if test.excerpt.is_empty() {
+                let _ = writeln!(out, "  (no ERROR or WARN entries found in petri.jsonl)");
+            } else {
+                for line in &test.excerpt {
+                    let _ = writeln!(out, "  {line}");
+                }
+            }
+
+            if let Some(url) = log_viewer_url(run_id, log_artifact_name, test) {
+                let _ = writeln!(out, "  full logs: {url}");
+            }
+
+            if is_github {
+                let _ = writeln!(out, "::endgroup::");
+            }
+        }
+        out
+    }
+
+    /// Renders the markdown table appended to the GitHub Actions job summary.
+    fn render_job_summary(
+        failures: &[FailedTest],
+        run_id: Option<&str>,
+        log_artifact_name: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::new();
+        let _ = writeln!(out, "### Failed VMM tests: {log_artifact_name}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Test | Result | Reason | Logs |");
+        let _ = writeln!(out, "| --- | --- | --- | --- |");
+        for test in failures {
+            let logs = match log_viewer_url(run_id, log_artifact_name, test) {
+                Some(url) => format!("[view]({url})"),
+                None => format!("`{log_artifact_name}` artifact"),
+            };
+            // Escape pipes so a reason containing one can't break the table.
+            let reason = match &test.error {
+                Some(error) => error.replace('|', "\\|"),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {reason} | {logs} |",
+                test.name,
+                test.outcome.describe(),
+            );
+        }
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Logs become available once the whole workflow run has completed."
+        );
+        out
+    }
+
+    /// Writes the failure report to the job log and, on GitHub, to the job
+    /// summary.
+    pub fn report_failed_tests(failures: &[FailedTest], is_github: bool, log_artifact_name: &str) {
+        if failures.is_empty() {
+            return;
+        }
+
+        // The log viewer is fed by a separate workflow that uploads the test
+        // log artifacts once the whole run completes, so these links only
+        // become live after the run finishes.
+        let run_id = std::env::var("GITHUB_RUN_ID").ok();
+        print!(
+            "{}",
+            render_job_log(failures, is_github, run_id.as_deref(), log_artifact_name)
+        );
+
+        let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") else {
+            return;
+        };
+        let summary = render_job_summary(failures, run_id.as_deref(), log_artifact_name);
+        // Other steps may have already appended to the summary file.
+        let write_summary = || -> std::io::Result<()> {
+            let mut file = fs_err::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&summary_path)?;
+            std::io::Write::write_all(&mut file, summary.as_bytes())
+        };
+        if let Err(err) = write_summary() {
+            log::warn!("failed to write job summary: {err}");
+        }
+    }
+
+    /// Renders the workflow command warning that the summary is missing.
+    fn render_summary_warning(message: &str) -> String {
+        // Workflow commands are terminated by a newline, so the message has to
+        // be collapsed onto one line.
+        format!("::warning title=vmm test summary::{}\n", one_line(message))
+    }
+
+    /// Reports that the failure summary could not be produced.
+    ///
+    /// Callers deliberately do not fail the job over this: the summary exists
+    /// to explain a test failure, so replacing that failure with an error
+    /// about the summary itself would defeat the purpose. Warn instead, and on
+    /// GitHub surface it on the run summary page so that an absent table is
+    /// noticed rather than silently ignored.
+    pub fn warn_summary_unavailable(is_github: bool, err: &anyhow::Error) {
+        let message = format!("failed to summarize failing vmm tests: {err:#}");
+        log::warn!("{message}");
+        if is_github {
+            print!("{}", render_summary_warning(&message));
+        }
+    }
+
+    /// Percent-encodes anything that isn't unreserved in a URL path segment.
+    fn percent_encode(s: &str) -> String {
+        let mut encoded = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    encoded.push(b as char)
+                }
+                _ => encoded.push_str(&format!("%{b:02X}")),
+            }
+        }
+        encoded
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::path::PathBuf;
+
+        /// Builds a `FailedTest` with an excerpt, for the rendering tests.
+        fn failed_test(name: &str, outcome: Outcome, excerpt: &[&str]) -> FailedTest {
+            FailedTest {
+                name: name.to_owned(),
+                dir_name: name.replace("::", "__"),
+                outcome,
+                error: None,
+                excerpt: excerpt.iter().map(|s| (*s).to_owned()).collect(),
+            }
+        }
+
+        /// Writes a test output directory of the shape petri produces.
+        ///
+        /// `markers` are `(filename, contents)` pairs, mirroring the
+        /// `petri.test` start marker and the result marker petri writes.
+        fn write_test_dir(root: &Path, dir_name: &str, markers: &[(&str, &str)], jsonl: &str) {
+            let dir = root.join(dir_name);
+            fs_err::create_dir_all(&dir).unwrap();
+            for (marker_name, contents) in markers {
+                fs_err::write(dir.join(marker_name), contents).unwrap();
+            }
+            if !jsonl.is_empty() {
+                fs_err::write(dir.join("petri.jsonl"), jsonl).unwrap();
+            }
+        }
+
+        fn entry(severity: &str, source: &str, message: &str) -> String {
+            format!(
+                r#"{{"timestamp":"2026-07-27T00:00:00Z","source":"{source}","severity":"{severity}","message":"{message}"}}"#
+            )
+        }
+
+        #[test]
+        fn excerpt_keeps_only_error_and_warn() {
+            let jsonl = [
+                entry("INFO", "petri", "booting"),
+                entry("WARN", "serial", "something odd"),
+                entry("DEBUG", "petri", "noise"),
+                entry("ERROR", "petri", "test failed"),
+            ]
+            .join("\n");
+
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
+
+            assert_eq!(
+                excerpt,
+                vec![
+                    "[ WARN] [    serial] something odd".to_owned(),
+                    "[ERROR] [     petri] test failed".to_owned(),
+                ]
+            );
+        }
+
+        #[test]
+        fn excerpt_skips_malformed_lines() {
+            let jsonl = format!(
+                "not json\n{}\n\n{{\"unterminated\":\n",
+                entry("ERROR", "petri", "kept")
+            );
+
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
+
+            assert_eq!(excerpt, vec!["[ERROR] [     petri] kept".to_owned()]);
+        }
+
+        #[test]
+        fn excerpt_is_truncated_to_the_tail() {
+            let jsonl = (0..MAX_EXCERPT_LINES + 5)
+                .map(|i| entry("ERROR", "petri", &format!("line {i}")))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
+
+            assert_eq!(excerpt.len(), MAX_EXCERPT_LINES);
+            // The oldest entries are dropped, not the newest.
+            assert!(excerpt.first().unwrap().ends_with("line 5"));
+            assert!(
+                excerpt
+                    .last()
+                    .unwrap()
+                    .ends_with(&format!("line {}", MAX_EXCERPT_LINES + 4))
+            );
+        }
+
+        #[test]
+        fn excerpt_of_a_large_log_keeps_only_the_tail() {
+            // Far more entries than can be excerpted, to exercise the bounded
+            // ring buffer over a log that is never held in memory whole.
+            let mut jsonl = String::new();
+            for i in 0..50_000 {
+                jsonl.push_str(&entry("ERROR", "petri", &format!("boom {i}")));
+                jsonl.push('\n');
+            }
+
+            let excerpt = excerpt_from_petri_jsonl(jsonl.as_bytes());
+
+            assert_eq!(excerpt.len(), MAX_EXCERPT_LINES);
+            assert!(
+                excerpt
+                    .first()
+                    .unwrap()
+                    .ends_with(&format!("boom {}", 50_000 - MAX_EXCERPT_LINES))
+            );
+            assert!(excerpt.last().unwrap().ends_with("boom 49999"));
+        }
+
+        #[test]
+        fn excerpt_of_empty_input_is_empty() {
+            assert!(excerpt_from_petri_jsonl(b"".as_slice()).is_empty());
+        }
+
+        #[test]
+        fn collect_finds_failed_and_unstable_but_not_passed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            write_test_dir(
+                root,
+                "x86_64__zzz_failed",
+                &[
+                    ("petri.test", "x86_64::zzz_failed"),
+                    ("petri.failed", "guest did not boot"),
+                ],
+                &entry("ERROR", "petri", "boom"),
+            );
+            write_test_dir(
+                root,
+                "x86_64__aaa_unstable",
+                &[
+                    ("petri.test", "x86_64::aaa_unstable"),
+                    ("petri.failed_unstable", "flaked"),
+                ],
+                "",
+            );
+            write_test_dir(
+                root,
+                "x86_64__passed",
+                &[("petri.test", "x86_64::passed"), ("petri.passed", "")],
+                "",
+            );
+
+            let failures = collect_failed_tests(root).unwrap();
+
+            // Sorted by test name, so the unstable one comes first.
+            let names: Vec<_> = failures.iter().map(|f| f.name.as_str()).collect();
+            assert_eq!(names, ["x86_64::aaa_unstable", "x86_64::zzz_failed"]);
+            assert!(failures[0].outcome == Outcome::FailedUnstable);
+            assert_eq!(failures[0].error.as_deref(), Some("flaked"));
+            assert!(failures[0].excerpt.is_empty());
+            assert!(failures[1].outcome == Outcome::Failed);
+            assert_eq!(failures[1].error.as_deref(), Some("guest did not boot"));
+            assert_eq!(failures[1].excerpt, ["[ERROR] [     petri] boom"]);
+            assert_eq!(failures[1].dir_name, "x86_64__zzz_failed");
+        }
+
+        #[test]
+        fn collect_reports_a_started_test_with_no_result_as_incomplete() {
+            let tmp = tempfile::tempdir().unwrap();
+            // A test killed by a timeout, or one that crashed hard enough to
+            // skip unwinding, never writes a result marker.
+            write_test_dir(
+                tmp.path(),
+                "x86_64__hung",
+                &[("petri.test", "x86_64::hung")],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].name, "x86_64::hung");
+            assert!(failures[0].outcome == Outcome::Incomplete);
+            assert!(failures[0].error.is_none());
+        }
+
+        #[test]
+        fn collect_collapses_multiline_errors() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(
+                tmp.path(),
+                "x86_64__boot",
+                &[(
+                    "petri.failed",
+                    "test panicked: assertion failed\n  left: []\n right: [1]\n",
+                )],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            assert_eq!(
+                failures[0].error.as_deref(),
+                Some("test panicked: assertion failed left: [] right: [1]")
+            );
+        }
+
+        #[test]
+        fn collect_truncates_a_very_long_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(
+                tmp.path(),
+                "x86_64__boot",
+                &[("petri.failed", &"x".repeat(MAX_REASON_CHARS * 2))],
+                "",
+            );
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            let error = failures[0].error.as_deref().unwrap();
+            assert_eq!(error.chars().count(), MAX_REASON_CHARS + 1);
+            assert!(error.ends_with('…'));
+        }
+
+        #[test]
+        fn collect_falls_back_to_dir_name_without_a_start_marker() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_test_dir(tmp.path(), "x86_64__boot", &[("petri.failed", "")], "");
+
+            let failures = collect_failed_tests(tmp.path()).unwrap();
+
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].name, "x86_64::boot");
+            assert!(failures[0].error.is_none());
+        }
+
+        #[test]
+        fn collect_ignores_loose_files_and_missing_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            fs_err::write(tmp.path().join("junit.xml"), "<testsuites/>").unwrap();
+
+            assert!(collect_failed_tests(tmp.path()).unwrap().is_empty());
+            assert!(
+                collect_failed_tests(&PathBuf::from("this/does/not/exist"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn job_log_folds_detail_on_github() {
+            let failures = [failed_test(
+                "x86_64::boot",
+                Outcome::Failed,
+                &["[ERROR] boom"],
+            )];
+
+            let rendered = render_job_log(&failures, true, Some("123"), "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "::group::FAIL x86_64::boot\n\
+                 \x20 [ERROR] boom\n\
+                 \x20 full logs: https://openvmm.dev/test-results/#/runs/123/x64-linux-vmm-tests-logs/x86_64__boot\n\
+                 ::endgroup::\n"
+            );
+        }
+
+        #[test]
+        fn job_log_omits_group_commands_off_github() {
+            let failures = [failed_test("x86_64::boot", Outcome::FailedUnstable, &[])];
+
+            let rendered = render_job_log(&failures, false, None, "x64-linux-vmm-tests-logs");
+
+            assert_eq!(
+                rendered,
+                "--- FAIL (unstable) x86_64::boot ---\n\
+                 \x20 (no ERROR or WARN entries found in petri.jsonl)\n"
+            );
+            // Without a run ID there is nothing to link to.
+            assert!(!rendered.contains("full logs"));
+        }
+
+        #[test]
+        fn job_summary_links_each_failure() {
+            let failures = [
+                failed_test("x86_64::boot", Outcome::Failed, &[]),
+                failed_test("x86_64::flaky", Outcome::FailedUnstable, &[]),
+            ];
+
+            let rendered = render_job_summary(&failures, Some("42"), "x64-linux-vmm-tests-logs");
+
+            assert!(rendered.contains("### Failed VMM tests: x64-linux-vmm-tests-logs"));
+            assert!(rendered.contains(
+                "| `x86_64::boot` | failed |  | [view](https://openvmm.dev/test-results/#/runs/42/x64-linux-vmm-tests-logs/x86_64__boot) |"
+            ));
+            assert!(rendered.contains("| `x86_64::flaky` | failed (unstable) |"));
+        }
+
+        #[test]
+        fn job_summary_shows_the_failure_reason() {
+            let mut test = failed_test("x86_64::boot", Outcome::Failed, &[]);
+            // A reason containing a pipe must not break the table.
+            test.error = Some("guest panicked | oops".to_owned());
+
+            let rendered = render_job_summary(&[test], None, "x64-linux-vmm-tests-logs");
+
+            assert!(rendered.contains("| guest panicked \\| oops |"));
+        }
+
+        #[test]
+        fn job_summary_falls_back_to_artifact_without_run_id() {
+            let failures = [failed_test("x86_64::boot", Outcome::Failed, &[])];
+
+            let rendered = render_job_summary(&failures, None, "x64-linux-vmm-tests-logs");
+
+            assert!(
+                rendered.contains(
+                    "| `x86_64::boot` | failed |  | `x64-linux-vmm-tests-logs` artifact |"
+                )
+            );
+        }
+
+        #[test]
+        fn summary_warning_is_a_single_workflow_command() {
+            // A multi-line error must not break the workflow command, which is
+            // terminated by the first newline.
+            let rendered = render_summary_warning("broke:\n  because\n  reasons");
+
+            assert_eq!(
+                rendered,
+                "::warning title=vmm test summary::broke: because reasons\n"
+            );
+            assert_eq!(rendered.lines().count(), 1);
+        }
+
+        #[test]
+        fn percent_encoding_escapes_unsafe_characters() {
+            // Ordinary test and artifact names pass through untouched.
+            assert_eq!(percent_encode("x86_64__boot"), "x86_64__boot");
+            assert_eq!(
+                percent_encode("x64-linux-vmm-tests-logs"),
+                "x64-linux-vmm-tests-logs"
+            );
+            // Parameterized test names can contain characters that would
+            // otherwise break the URL.
+            assert_eq!(percent_encode("boot[vbs]"), "boot%5Bvbs%5D");
+            assert_eq!(percent_encode("a/b?c#d"), "a%2Fb%3Fc%23d");
+        }
     }
 }

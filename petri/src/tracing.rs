@@ -131,31 +131,43 @@ impl PetriLogSource {
         println!("[[ATTACHMENT|{}]]", path.display());
     }
 
+    /// Records that a test with the given name is running in this directory.
+    ///
+    /// This is written up front, before the test body runs, so that tooling
+    /// can identify the test even if the process never gets as far as
+    /// [`Self::log_test_result`] -- because it was killed by a timeout, or
+    /// crashed hard enough to skip unwinding. A directory with this file but
+    /// no result marker is a test that died without reporting.
+    pub fn log_test_start(&self, name: &str) {
+        fs_err::write(self.0.root_path.join("petri.test"), name).unwrap();
+    }
+
     /// Traces and logs the result of a test run in the format expected by our tooling.
-    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>, unstable: bool) {
-        let result_path = match &r {
+    pub fn log_test_result(&self, r: &anyhow::Result<()>, unstable: bool) {
+        let (result_path, contents) = match &r {
             Ok(()) => {
                 tracing::info!("test passed");
-                "petri.passed"
+                ("petri.passed", String::new())
             }
             Err(err) if unstable => {
                 tracing::warn!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "unstable test failed"
                 );
-                "petri.failed_unstable"
+                ("petri.failed_unstable", format!("{err:#}"))
             }
             Err(err) => {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "test failed"
                 );
-                "petri.failed"
+                ("petri.failed", format!("{err:#}"))
             }
         };
         // Write a file to the output directory to indicate whether the test
-        // passed, for easy scanning via tools.
-        fs_err::write(self.0.root_path.join(result_path), name).unwrap();
+        // passed, for easy scanning via tools. For a failure the file holds
+        // the error, so that tooling can report why without parsing the log.
+        fs_err::write(self.0.root_path.join(result_path), contents).unwrap();
     }
 
     /// Returns the output directory for log files.
