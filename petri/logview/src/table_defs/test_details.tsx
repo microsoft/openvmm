@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ColumnDef } from '@tanstack/react-table';
-import { TestRunInfo } from '../data_defs';
+import { TestRunInfo, parseRunKey } from '../data_defs';
 import { Link } from 'react-router-dom';
 import '../styles/common.css';
 
@@ -83,14 +83,18 @@ export const createColumns = (testName?: string): ColumnDef<TestRunInfo>[] => {
             enableSorting: true,
             cell: (info) => {
                 const runNumber = info.getValue() as string;
+                const { runId, attempt } = parseRunKey(runNumber);
+                const href = attempt
+                    ? `https://github.com/microsoft/openvmm/actions/runs/${runId}/attempts/${attempt}`
+                    : `https://github.com/microsoft/openvmm/actions/runs/${runId}`;
                 return (
                     <a
-                        href={`https://github.com/microsoft/openvmm/actions/runs/${runNumber}`}
+                        href={href}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="common-table-link"
                     >
-                        {runNumber}
+                        {runId}
                     </a>
                 );
             },
