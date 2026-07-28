@@ -2536,24 +2536,28 @@ async fn new_underhill_vm(
 
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
+        use firmware_uefi_resources::UefiSecureBootTemplate;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        // map the GET's template enum onto the hardcoded secureboot template type
-        let template_arch = if cfg!(guest_arch = "x86_64") {
-            hyperv_secure_boot_templates::UefiTemplateArch::X64
-        } else if cfg!(guest_arch = "aarch64") {
-            hyperv_secure_boot_templates::UefiTemplateArch::Aarch64
-        } else {
-            anyhow::bail!("no secure boot template for current guest_arch")
-        };
-        let base_template = match dps.general.secure_boot_template {
+        #[cfg(guest_arch = "x86_64")]
+        let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => Some(
-                hyperv_secure_boot_templates::microsoft_windows(template_arch),
-            ),
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => Some(
-                hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch),
-            ),
+            SecureBootTemplateType::MicrosoftWindows => {
+                Some(UefiSecureBootTemplate::MicrosoftWindowsX64)
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                Some(UefiSecureBootTemplate::MicrosoftUefiCaX64)
+            }
+        };
+        #[cfg(guest_arch = "aarch64")]
+        let base_template = match &dps.general.secure_boot_template {
+            SecureBootTemplateType::None => None,
+            SecureBootTemplateType::MicrosoftWindows => {
+                Some(UefiSecureBootTemplate::MicrosoftWindowsAarch64)
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                Some(UefiSecureBootTemplate::MicrosoftUefiCaAarch64)
+            }
         };
 
         // check if vmgs includes custom UEFI JSON

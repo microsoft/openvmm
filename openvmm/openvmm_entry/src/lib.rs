@@ -1180,19 +1180,24 @@ async fn vm_config_from_command_line(
     }
 
     let (base_template, custom_template_delta) = {
-        // Load the selected base template, if any.
-        let template_arch = match arch {
-            MachineArch::X86_64 => hyperv_secure_boot_templates::UefiTemplateArch::X64,
-            MachineArch::Aarch64 => hyperv_secure_boot_templates::UefiTemplateArch::Aarch64,
-        };
-        let base_template = opt.secure_boot_template.map(|template| match template {
-            SecureBootTemplateCli::Windows => {
-                hyperv_secure_boot_templates::microsoft_windows(template_arch)
-            }
-            SecureBootTemplateCli::UefiCa => {
-                hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch)
-            }
-        });
+        use firmware_uefi_resources::UefiSecureBootTemplate;
+
+        let base_template = opt
+            .secure_boot_template
+            .map(|template| match (template, arch) {
+                (SecureBootTemplateCli::Windows, MachineArch::X86_64) => {
+                    UefiSecureBootTemplate::MicrosoftWindowsX64
+                }
+                (SecureBootTemplateCli::Windows, MachineArch::Aarch64) => {
+                    UefiSecureBootTemplate::MicrosoftWindowsAarch64
+                }
+                (SecureBootTemplateCli::UefiCa, MachineArch::X86_64) => {
+                    UefiSecureBootTemplate::MicrosoftUefiCaX64
+                }
+                (SecureBootTemplateCli::UefiCa, MachineArch::Aarch64) => {
+                    UefiSecureBootTemplate::MicrosoftUefiCaAarch64
+                }
+            });
 
         // TODO: fallback to VMGS read if no command line flag was given
 

@@ -17,9 +17,9 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
-use firmware_uefi_custom_vars::BaseTemplateVars;
 use firmware_uefi_custom_vars::FinalVars;
 use firmware_uefi_custom_vars::delta::UefiVarsDelta;
+use firmware_uefi_resources::UefiSecureBootTemplate;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -77,7 +77,7 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        base_template: Option<BaseTemplateVars>,
+        base_template: Option<UefiSecureBootTemplate>,
         custom_template_delta: Option<UefiVarsDelta>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
@@ -110,7 +110,7 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        base_template: Option<BaseTemplateVars>,
+        base_template: Option<UefiSecureBootTemplate>,
         custom_template_delta: Option<UefiVarsDelta>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
@@ -123,8 +123,9 @@ impl NvramServices {
             return Ok(());
         }
 
+        let base_template_vars = base_template.map(|template| template.load());
         let final_vars =
-            FinalVars::resolve(base_template, custom_template_delta).map_err(|err| {
+            FinalVars::resolve(base_template_vars, custom_template_delta).map_err(|err| {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
                     "failed to apply custom UEFI template delta"

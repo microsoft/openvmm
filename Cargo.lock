@@ -2123,6 +2123,7 @@ dependencies = [
  "chipset_resources",
  "firmware_uefi_custom_vars",
  "hcl_compat_uefi_nvram_resources",
+ "hyperv_secure_boot_templates",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -3604,6 +3605,7 @@ version = "0.0.0"
 dependencies = [
  "firmware_uefi_custom_vars",
  "hyperv_uefi_custom_vars_json",
+ "mesh_protobuf",
  "serde_json",
 ]
 
@@ -5723,7 +5725,6 @@ dependencies = [
  "getrandom 0.4.2",
  "guid",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
  "hyperv_uefi_custom_vars_json",
  "ide_resources",
  "input_core",
@@ -6341,7 +6342,6 @@ dependencies = [
  "guid",
  "hvdef",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
  "hyperv_uefi_custom_vars_json",
  "ide_resources",
  "image",
@@ -8821,7 +8821,6 @@ dependencies = [
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
  "hyperv_uefi_custom_vars_json",
  "ide",
  "ide_resources",

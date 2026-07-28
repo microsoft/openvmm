@@ -392,21 +392,28 @@ impl PetriVmConfigOpenVmm {
         // Configure the UEFI helper device on the chipset for Firmware::Uefi.
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
+            use firmware_uefi_resources::UefiSecureBootTemplate;
+
             let uefi_cfg = firmware.uefi_config();
-            let template_arch = match arch {
-                MachineArch::X86_64 => hyperv_secure_boot_templates::UefiTemplateArch::X64,
-                MachineArch::Aarch64 => hyperv_secure_boot_templates::UefiTemplateArch::Aarch64,
-            };
-            let base_template = uefi_cfg
-                .and_then(|c| c.secure_boot_template)
-                .map(|template| match template {
-                    SecureBootTemplate::MicrosoftWindows => {
-                        hyperv_secure_boot_templates::microsoft_windows(template_arch)
-                    }
-                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
-                        hyperv_secure_boot_templates::microsoft_uefi_ca(template_arch)
-                    }
-                });
+            let base_template =
+                uefi_cfg
+                    .and_then(|c| c.secure_boot_template)
+                    .map(|template| match (template, arch) {
+                        (SecureBootTemplate::MicrosoftWindows, MachineArch::X86_64) => {
+                            UefiSecureBootTemplate::MicrosoftWindowsX64
+                        }
+                        (SecureBootTemplate::MicrosoftWindows, MachineArch::Aarch64) => {
+                            UefiSecureBootTemplate::MicrosoftWindowsAarch64
+                        }
+                        (
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                            MachineArch::X86_64,
+                        ) => UefiSecureBootTemplate::MicrosoftUefiCaX64,
+                        (
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                            MachineArch::Aarch64,
+                        ) => UefiSecureBootTemplate::MicrosoftUefiCaAarch64,
+                    });
             let custom_template_delta = uefi_cfg
                 .and_then(|c| c.custom_uefi_json.as_deref())
                 .map(hyperv_uefi_custom_vars_json::load_delta_from_json)

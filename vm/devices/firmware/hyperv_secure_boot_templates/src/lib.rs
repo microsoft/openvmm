@@ -12,24 +12,26 @@
 //! linker.
 
 use firmware_uefi_custom_vars::BaseTemplateVars;
+use mesh_protobuf::Protobuf;
 
-#[derive(Clone, Copy, Debug)]
-pub enum UefiTemplateArch {
-    X64,
-    Aarch64,
+/// A concrete built-in UEFI Secure Boot template.
+#[derive(Clone, Copy, Debug, Protobuf)]
+pub enum UefiSecureBootTemplate {
+    MicrosoftWindowsX64,
+    MicrosoftWindowsAarch64,
+    MicrosoftUefiCaX64,
+    MicrosoftUefiCaAarch64,
 }
 
-pub fn microsoft_windows(arch: UefiTemplateArch) -> BaseTemplateVars {
-    match arch {
-        UefiTemplateArch::X64 => x64::microsoft_windows(),
-        UefiTemplateArch::Aarch64 => aarch64::microsoft_windows(),
-    }
-}
-
-pub fn microsoft_uefi_ca(arch: UefiTemplateArch) -> BaseTemplateVars {
-    match arch {
-        UefiTemplateArch::X64 => x64::microsoft_uefi_ca(),
-        UefiTemplateArch::Aarch64 => aarch64::microsoft_uefi_ca(),
+impl UefiSecureBootTemplate {
+    /// Load the selected built-in template.
+    pub fn load(self) -> BaseTemplateVars {
+        match self {
+            Self::MicrosoftWindowsX64 => x64::microsoft_windows(),
+            Self::MicrosoftWindowsAarch64 => aarch64::microsoft_windows(),
+            Self::MicrosoftUefiCaX64 => x64::microsoft_uefi_ca(),
+            Self::MicrosoftUefiCaAarch64 => aarch64::microsoft_uefi_ca(),
+        }
     }
 }
 
