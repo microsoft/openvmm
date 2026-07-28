@@ -564,10 +564,8 @@ struct VpInitState {
     gicr_range: Range<u64>,
 }
 
-// Arm A-profile Architecture Registers, DDI 0601 (2026-06):
-// ID_AA64PFR0_EL1.{GIC,EL2,EL3,SVE}, ID_AA64PFR1_EL1.SME,
-// ID_AA64DFR0_EL1.PMUVer, ID_AA64MMFR0_EL1.PARange, and
-// ID_AA64MMFR2_EL1.{CnP,NV}.
+// Arm A-profile Architecture Registers, DDI 0601 (2026-06), defines these
+// feature fields and their encodings.
 const ID_AA64PFR0_EL1_GIC_CPUIF: u64 = 1 << 24;
 const ID_AA64PFR0_EL1_GIC: u64 = 0xf << 24;
 const ID_AA64MMFR0_EL1_PARANGE: u64 = 0xf;
@@ -631,6 +629,12 @@ impl IdRegisters {
 }
 
 /// Derives the guest CPU model from HVF's host capability baseline.
+///
+/// Arm DDI 0601 (2026-06) defines `ID_AA64PFR0_EL1.GIC=0b0001` as the
+/// GICv3/v4 system-register interface and `ID_AA64MMFR0_EL1.PARange=0b0001`
+/// as a 36-bit physical address range. The default HVF VM does not enable EL2,
+/// and this backend does not preserve PMU, SVE, SME, NV, CnP, or EL3 state, so
+/// those fields are hidden rather than exposing unusable host capabilities.
 fn id_register_policy(host: IdRegisters) -> IdRegisters {
     IdRegisters {
         pfr0: (host.pfr0
@@ -651,7 +655,7 @@ mod id_register_tests {
     use super::*;
 
     #[test]
-    fn policy_changes_only_virtualized_id_fields() {
+    fn policy_preserves_unowned_fields_and_hides_unvirtualized_features() {
         let host = IdRegisters {
             pfr0: u64::MAX,
             pfr1: u64::MAX,
@@ -678,7 +682,7 @@ mod id_register_tests {
     }
 
     #[test]
-    fn policy_adds_required_virtual_features() {
+    fn policy_advertises_gicv3_and_36_bit_ipa() {
         let guest = id_register_policy(IdRegisters {
             pfr0: 0,
             pfr1: 0,
@@ -874,6 +878,12 @@ impl Drop for HvfVcpu {
 
 const MAX_VTIMER_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Converts an architected counter comparison into a bounded host wait.
+///
+/// Arm DDI 0601 (2026-06), `CNTVCT_EL0` and `CNTV_CVAL_EL0`, defines the
+/// virtual timer against the monotonically increasing 64-bit system counter.
+/// The one-day cap is host scheduling policy; the architectural deadline is
+/// recomputed whenever the bounded wait expires.
 fn vtimer_wait_duration(counter: u64, compare: u64, frequency: NonZeroU64) -> Option<Duration> {
     if compare <= counter {
         return None;
@@ -895,7 +905,7 @@ mod vtimer_tests {
     use super::*;
 
     #[test]
-    fn deadline_conversion_handles_expired_and_future_values() {
+    fn counter_comparison_distinguishes_expired_and_future_deadlines() {
         let frequency = NonZeroU64::new(10).unwrap();
 
         assert_eq!(vtimer_wait_duration(10, 10, frequency), None);
@@ -907,7 +917,7 @@ mod vtimer_tests {
     }
 
     #[test]
-    fn deadline_conversion_uses_unsigned_counter_ordering() {
+    fn counter_comparison_uses_architected_unsigned_ordering() {
         let frequency = NonZeroU64::new(1).unwrap();
 
         assert_eq!(
@@ -931,26 +941,37 @@ fn read_cntfrq() -> u64 {
     freq
 }
 
-fn reg_is_xzr(reg: u8) -> bool {
-    reg == 31
+/// Decodes `ESR_EL2.ISS.Rt` for a trapped system-register instruction.
+///
+/// Arm DDI 0601 (2026-06), `ESR_EL2` System instruction traps, assigns
+/// `Rt=31` to XZR. A read targeting XZR discards the result, while a write
+/// sourcing XZR supplies zero.
+fn system_register_operand(rt: u8) -> Option<u8> {
+    (rt != 31).then_some(rt)
 }
 
+/// Returns whether a trapped WF* instruction is WFI.
+///
+/// Arm DDI 0601 (2026-06), `ESR_EL2.ISS.TI`, encodes WFI, WFE, WFIT, and WFET
+/// as `0b00` through `0b11`. Only WFI enters this backend's interrupt wait;
+/// the others return until event and timed-wait semantics are implemented.
 fn trapped_wfx_is_wfi(iss: u32) -> bool {
     iss & 0b11 == 0
 }
 
 #[cfg(test)]
 mod trap_tests {
-    use super::{reg_is_xzr, trapped_wfx_is_wfi};
+    use super::{system_register_operand, trapped_wfx_is_wfi};
 
     #[test]
-    fn register_31_is_xzr() {
-        assert!((0..=30).all(|reg| !reg_is_xzr(reg)));
-        assert!(reg_is_xzr(31));
+    fn system_register_rt_31_decodes_as_xzr() {
+        assert_eq!(system_register_operand(0), Some(0));
+        assert_eq!(system_register_operand(30), Some(30));
+        assert_eq!(system_register_operand(31), None);
     }
 
     #[test]
-    fn only_wfi_enters_interrupt_park() {
+    fn esr_ti_distinguishes_wfi_from_other_wait_instructions() {
         assert!(trapped_wfx_is_wfi(0b00));
         assert!(!trapped_wfx_is_wfi(0b01));
         assert!(!trapped_wfx_is_wfi(0b10));
@@ -959,6 +980,11 @@ mod trap_tests {
 }
 
 impl HvfProcessor<'_> {
+    /// Reflects the physical and virtual Arm system-counter bases.
+    ///
+    /// Apple's `hv_vcpu.h` defines the virtual count as
+    /// `CNTVCT_EL0 = mach_absolute_time() - vtimer_offset`; the physical count
+    /// uses the unshifted host counter.
     fn read_counter_sysreg(&self, reg: SystemReg) -> Result<Option<u64>, HvfError> {
         let value = match reg {
             SystemReg::CNTPCT_EL0 => {
@@ -997,6 +1023,12 @@ impl HvfProcessor<'_> {
             });
     }
 
+    /// Computes the host deadline for an enabled, unmasked virtual timer.
+    ///
+    /// Arm DDI 0601 (2026-06), `CNTV_CTL_EL0.{ENABLE,IMASK,ISTATUS}` and
+    /// `CNTV_CVAL_EL0`, defines when the level output is asserted. HVF reports
+    /// that output only while the vCPU runs, so a VP parked after WFI must first
+    /// wait until the same architected compare value, then re-enter HVF.
     fn vtimer_deadline(&self) -> anyhow::Result<Option<VmTime>> {
         const ENABLE: u64 = 1 << 0;
         const IMASK: u64 = 1 << 1;
@@ -1232,6 +1264,10 @@ impl<'p> Processor for HvfProcessor<'p> {
                     }
 
                     if self.wfi {
+                        // A pending interrupt clears WFI above. Otherwise, arm
+                        // the architected virtual-timer deadline and park on the
+                        // existing VP waker. Timer expiry re-enters HVF; the
+                        // subsequent VTIMER_ACTIVATED exit raises the level PPI.
                         if let Some(deadline) = self
                             .vtimer_deadline()
                             .map_err(|err| dev.fatal_error(err.into()))?
@@ -1311,10 +1347,10 @@ impl<'p> Processor for HvfProcessor<'p> {
                             let reg = iss.srt();
 
                             if iss.wnr() {
-                                let data = if reg_is_xzr(reg) {
-                                    0
-                                } else {
-                                    self.vcpu.gp(reg)
+                                let data = match reg {
+                                    0..=30 => self.vcpu.gp(reg),
+                                    31 => 0,
+                                    _ => unreachable!(),
                                 }
                                 .to_ne_bytes();
                                 if !self
@@ -1329,7 +1365,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     )
                                     .await;
                                 }
-                            } else if !reg_is_xzr(reg) {
+                            } else if reg != 31 {
                                 let mut data = [0; 8];
                                 if !self
                                     .partition
@@ -1375,15 +1411,12 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     );
                                     0
                                 };
-                                if !reg_is_xzr(iss.rt()) {
-                                    self.vcpu.set_gp(iss.rt(), value);
+                                if let Some(rt) = system_register_operand(iss.rt()) {
+                                    self.vcpu.set_gp(rt, value);
                                 }
                             } else {
-                                let value = if reg_is_xzr(iss.rt()) {
-                                    0
-                                } else {
-                                    self.vcpu.gp(iss.rt())
-                                };
+                                let value = system_register_operand(iss.rt())
+                                    .map_or(0, |rt| self.vcpu.gp(rt));
                                 if !self.partition.gicd.write_sysreg(
                                     &mut self.gicr,
                                     reg,
