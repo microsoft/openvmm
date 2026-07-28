@@ -50,11 +50,11 @@ fn is_dns_raw_apis_supported() -> bool {
 struct RawCallbackContext {
     slab_key: usize,
     request: DnsRequestInternal,
-    pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
+    pending_requests: Arc<Mutex<Slab<Arc<DNS_QUERY_RAW_CANCEL>>>>,
 }
 
 pub struct WindowsDnsResolverBackend {
-    pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
+    pending_requests: Arc<Mutex<Slab<Arc<DNS_QUERY_RAW_CANCEL>>>>,
 }
 
 impl WindowsDnsResolverBackend {
@@ -106,7 +106,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
         let pending_count;
         {
             let mut pending_reqs = self.pending_requests.lock();
-            slab_key = pending_reqs.insert(DNS_QUERY_RAW_CANCEL::default());
+            slab_key = pending_reqs.insert(Arc::new(DNS_QUERY_RAW_CANCEL::default()));
             pending_count = pending_reqs.len();
         }
 
@@ -164,14 +164,12 @@ impl DnsBackend for WindowsDnsResolverBackend {
             {
                 let mut pending = self.pending_requests.lock();
                 if let Some(v) = pending.get_mut(slab_key) {
-                    *v = cancel_handle;
+                    *v = Arc::new(cancel_handle);
                 }
             }
         } else {
             // Remove placeholder since callback won't fire on error
-            {
-                self.pending_requests.lock().remove(slab_key);
-            }
+            self.pending_requests.lock().remove(slab_key);
             tracelimit::warn_ratelimited!(
                 query_id,
                 src = %request.flow.src,
@@ -192,13 +190,16 @@ impl DnsBackend for WindowsDnsResolverBackend {
 
 impl WindowsDnsResolverBackend {
     fn cancel_all(&mut self) {
-        // Cancel all pending requests without holding the lock needed by the
-        // completion callback.
-        let mut pending = { std::mem::take(&mut *self.pending_requests.lock()) };
+        let pending: Vec<_> = self
+            .pending_requests
+            .lock()
+            .iter()
+            .map(|(_, cancel_handle)| cancel_handle.clone())
+            .collect();
 
-        for cancel_handle in pending.drain() {
+        for cancel_handle in pending {
             // SAFETY: We're calling DnsCancelQueryRaw with a valid cancel handle.
-            let result = unsafe { api::DnsCancelQueryRaw(&cancel_handle) };
+            let result = unsafe { api::DnsCancelQueryRaw(cancel_handle.as_ref()) };
             if result != NO_ERROR as i32 {
                 tracelimit::warn_ratelimited!(
                     "Failed to cancel DNS request: error code {}",
@@ -264,9 +265,7 @@ unsafe extern "system" fn dns_query_raw_callback(
     // SAFETY: The context pointer was created by us in query() and is valid.
     let context = unsafe { Box::from_raw(query_context.cast::<RawCallbackContext>().cast_mut()) };
 
-    {
-        let _ = context.pending_requests.lock().try_remove(context.slab_key);
-    }
+    let _ = context.pending_requests.lock().remove(context.slab_key);
 
     tracing::trace!(
         query_id = context.request.query_id,
