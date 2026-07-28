@@ -3772,6 +3772,8 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
+        #[cfg(feature = "product_policy")]
+        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
 
@@ -3788,6 +3790,9 @@ async fn new_underhill_vm(
         #[cfg(feature = "mem-profile-tracing")]
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
+
+    #[cfg(feature = "product_policy")]
+    crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)
 }

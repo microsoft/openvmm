@@ -512,6 +512,7 @@ mod x86 {
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
+    use memory_range::MemoryRange;
     use thiserror::Error;
     use virt::LateMapVtl0MemoryPolicy;
     use virt::VpHaltReason;
@@ -713,11 +714,58 @@ mod x86 {
             if !access.AccessInfo.GpaUnmapped() && should_populate {
                 // This is a mapped GPA that wasn't mapped in the SLAT. Tell the
                 // kernel to populate the SLAT.
+                //
+                // By default only the faulting page is populated. For VTL0 RAM
+                // faults, ask the memory backing's fault resolver whether the
+                // range can be widened to a soft large page (2 MB). The resolver
+                // only knows RAM-region granularity, so `is_uniform_ram`
+                // confirms the widened range holds no per-page exceptions (the
+                // monitor page, a VTL-protected page, or an unaccepted page)
+                // before it is mapped as one, since those are only tracked here.
+                let mut populate = whp::abi::WHV_MEMORY_RANGE_ENTRY {
+                    GuestAddress: access.Gpa,
+                    SizeInBytes: 1,
+                };
+
+                if self.state.active_vtl == Vtl::Vtl0 {
+                    if let Some(resolver) = self.vp.partition.fault_resolver.as_ref() {
+                        let page = access.Gpa & !(hvdef::HV_PAGE_SIZE - 1);
+                        let fault = MemoryRange::new(page..page + hvdef::HV_PAGE_SIZE);
+                        let write =
+                            access.AccessInfo.AccessType() == whp::abi::WHvMemoryAccessWrite;
+                        match resolver.resolve(fault, write) {
+                            Ok(resolved) if resolved.len() > fault.len() => {
+                                // The resolver widened to a soft large page but
+                                // only knows RAM-region granularity, so confirm
+                                // the whole widened range is uniform RAM here (no
+                                // monitor page, VTL protection, or unaccepted page
+                                // hidden inside) before mapping it as one.
+                                let GpaBackingType::Ram { writable } = backing_type else {
+                                    unreachable!("should_populate implies Ram")
+                                };
+                                if self.vp.partition.is_uniform_ram(
+                                    self.state.active_vtl,
+                                    resolved,
+                                    writable,
+                                ) {
+                                    populate.GuestAddress = resolved.start();
+                                    populate.SizeInBytes = resolved.len();
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                tracelimit::warn_ratelimited!(
+                                    gpa = access.Gpa,
+                                    error = ?err,
+                                    "memory fault resolver failed; populating single page"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 match self.current_vtlp().whp.populate_ranges(
-                    &[whp::abi::WHV_MEMORY_RANGE_ENTRY {
-                        GuestAddress: access.Gpa,
-                        SizeInBytes: 1,
-                    }],
+                    &[populate],
                     access.AccessInfo.AccessType(),
                     Default::default(),
                 ) {
@@ -726,7 +774,7 @@ mod x86 {
                         return Ok(());
                     }
                     Err(err) => {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             gpa = access.Gpa,
                             access = ?access.AccessInfo.AccessType(),
                             error = &err as &dyn std::error::Error,

@@ -675,6 +675,7 @@ struct Sender<'a, T> {
 
 impl<T: Client> Sender<'_, T> {
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
+        let payload_len = payload.as_ref().map_or(0, |p| p.len());
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.state.params.client_mac);
@@ -683,7 +684,7 @@ impl<T: Client> Sender<'_, T> {
             self.ft.dst.ip().into(),
             self.ft.src.ip().into(),
             IpProtocol::Tcp,
-            tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
+            tcp.header_len() + payload_len,
             64,
         );
         // Set the ethernet type based on IP version
@@ -714,7 +715,7 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
-        // Checksum is filled by `fill_checksum` below, after the payload is copied in.
+        // Checksums are computed explicitly below, so skip smoltcp's pass.
         tcp.emit(
             &mut tcp_packet,
             &dst_ip_addr,
@@ -722,18 +723,58 @@ impl<T: Client> Sender<'_, T> {
             &ChecksumCapabilities::ignored(),
         );
 
-        // Copy payload into TCP packet
-        if let Some(payload) = &payload {
-            payload.copy_to_slice(tcp_packet.payload_mut());
-        }
-        tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
-        let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {
             SocketAddr::V4(_) => ChecksumState::TCP4,
             SocketAddr::V6(_) => ChecksumState::TCP6,
         };
+        let n = ETHERNET_HEADER_LEN + ip_total_len;
 
-        self.client.recv(&buffer[..n], &checksum_state);
+        let payload = match payload {
+            Some(p) if p.len() != 0 => p,
+            _ => {
+                tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+                let buffer = &self.state.buffer;
+                self.client.recv(&buffer[..n], &checksum_state);
+                return;
+            }
+        };
+
+        // Zero-copy payload path: leave the TCP window bytes in place and hand
+        // the header and (up to two) payload slices to the client as
+        // discontiguous segments, avoiding a copy of the payload into the
+        // header buffer. The TCP checksum must be recomputed across those
+        // segments because the payload was never linearized here.
+        let (a, b) = payload.as_slices();
+        let tcp_header_len = tcp_packet.header_len() as usize;
+        tcp_packet.set_checksum(0);
+        // The TCP header length is a multiple of 4, so the header and `a` are
+        // 16-bit aligned; `b` shifts by a byte only when `a` has odd length, in
+        // which case its partial checksum is byte-swapped.
+        let checksum = !checksum::combine(&[
+            checksum::pseudo_header(
+                &src_ip_addr,
+                &dst_ip_addr,
+                IpProtocol::Tcp,
+                (tcp_header_len + payload_len) as u32,
+            ),
+            checksum::data(&tcp_packet.as_ref()[..tcp_header_len]),
+            checksum::data(a),
+            if a.len() % 2 == 0 {
+                checksum::data(b)
+            } else {
+                checksum::data(b).swap_bytes()
+            },
+        ]);
+        tcp_packet.set_checksum(checksum);
+
+        let header_len = n - payload_len;
+        let buffer = &self.state.buffer;
+        let header = &buffer[..header_len];
+        if b.is_empty() {
+            self.client.recv_segments(&[header, a], &checksum_state);
+        } else {
+            self.client.recv_segments(&[header, a, b], &checksum_state);
+        }
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
@@ -1846,6 +1887,78 @@ fn trace_tcp_packet(ft: &FourTuple, tcp: &TcpRepr<'_>, payload_len: usize, label
         payload_len,
         "tcp packet",
     );
+}
+
+// RFC 1071 primitives vendored from smoltcp (0BSD); replace with a `use` of
+// smoltcp::wire::checksum once smoltcp-rs/smoltcp#1172 exposes it.
+mod checksum {
+    use smoltcp::wire::IpAddress;
+    use smoltcp::wire::IpProtocol;
+
+    const fn propagate_carries(word: u32) -> u16 {
+        let sum = (word >> 16) + (word & 0xffff);
+        ((sum >> 16) as u16) + (sum as u16)
+    }
+
+    pub fn data(mut data: &[u8]) -> u16 {
+        let mut accum: u32 = 0;
+        const CHUNK_SIZE: usize = 32;
+        while data.len() >= CHUNK_SIZE {
+            let mut d = &data[..CHUNK_SIZE];
+            while d.len() >= 2 {
+                accum = accum.wrapping_add(u16::from_be_bytes([d[0], d[1]]) as u32);
+                d = &d[2..];
+            }
+            data = &data[CHUNK_SIZE..];
+        }
+        while data.len() >= 2 {
+            accum = accum.wrapping_add(u16::from_be_bytes([data[0], data[1]]) as u32);
+            data = &data[2..];
+        }
+        if let Some(&value) = data.first() {
+            accum = accum.wrapping_add((value as u32) << 8);
+        }
+        propagate_carries(accum)
+    }
+
+    pub fn combine(checksums: &[u16]) -> u16 {
+        let mut accum: u32 = 0;
+        for &word in checksums {
+            accum = accum.wrapping_add(word as u32);
+        }
+        propagate_carries(accum)
+    }
+
+    pub fn pseudo_header(
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        next_header: IpProtocol,
+        length: u32,
+    ) -> u16 {
+        match (src_addr, dst_addr) {
+            (IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
+                let mut proto_len = [0u8; 4];
+                proto_len[1] = next_header.into();
+                proto_len[2..4].copy_from_slice(&(length as u16).to_be_bytes());
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&proto_len),
+                ])
+            }
+            (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
+                let mut len_proto = [0u8; 8];
+                len_proto[0..4].copy_from_slice(&length.to_be_bytes());
+                len_proto[7] = next_header.into();
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&len_proto),
+                ])
+            }
+            _ => unreachable!("mismatched IP address families"),
+        }
+    }
 }
 
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {

@@ -12,6 +12,7 @@ use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
+use crate::mapping_manager::MemoryPolicy;
 use crate::mapping_manager::VaMapper;
 use crate::mapping_manager::VaMapperError;
 use crate::partition_mapper::PartitionMapper;
@@ -47,7 +48,7 @@ pub struct GuestMemoryManager {
     #[inspect(flatten)]
     region_manager: RegionManager,
 
-    #[inspect(skip)]
+    #[inspect(flatten)]
     va_mapper: Arc<VaMapper>,
 
     #[inspect(skip)]
@@ -55,6 +56,10 @@ pub struct GuestMemoryManager {
 
     vtl0_alias_map_offset: Option<u64>,
     pin_mappings: bool,
+    /// Whether the partition delivers guest-memory-access faults to the VMM,
+    /// enabling on-demand fault resolution via [`VaMapper`]. Recorded here for
+    /// lazy-commit gating.
+    supports_memory_fault_resolution: bool,
 }
 
 /// A single RAM backing allocation — one memfd or anonymous region.
@@ -146,17 +151,11 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
-    /// THP requires private memory mode.
-    #[error("transparent huge pages requires private memory mode")]
-    ThpWithoutPrivateMemory,
-    /// THP is only supported on Linux.
-    #[error("transparent huge pages is only supported on Linux")]
-    ThpUnsupportedPlatform,
     /// Hugepage size is too large.
     #[error("hugepage size {0} is too large")]
     HugepageSizeTooLarge(MemorySize),
-    /// Hugepages are only supported on Linux.
-    #[error("hugepages are only supported on Linux")]
+    /// Hugepages are only supported on Linux and Windows.
+    #[error("hugepages are only supported on Linux and Windows")]
     HugepagesUnsupportedPlatform,
     /// Host NUMA node binding is only supported on Linux and Windows.
     #[error("host NUMA node binding is only supported on Linux and Windows")]
@@ -246,7 +245,13 @@ impl RamBackingRequest {
         self
     }
 
-    /// Enable Transparent Huge Pages (requires `private_memory`, Linux only).
+    /// Enable Transparent Huge Pages for guest RAM (Linux only, best-effort).
+    ///
+    /// Applies to both shared (memfd) and private (anonymous) backings. The
+    /// kernel treats `madvise(MADV_HUGEPAGE)` as advisory and may accept it
+    /// without allocating huge pages. Advice failures are logged but do not
+    /// fail the build. This has no effect on non-Linux hosts or explicit
+    /// hugetlb (`hugepages`) backings, which are already huge.
     pub fn transparent_hugepages(mut self, enable: bool) -> Self {
         self.transparent_hugepages = enable;
         self
@@ -268,7 +273,8 @@ impl RamBackingRequest {
     }
 
     /// Bind this backing's memory to a specific host NUMA node
-    /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
+    /// (Linux: `mbind(MPOL_BIND)`, Windows: `CreateFileMappingNuma` for
+    /// large-page sections and `MemExtendedParameterNumaNode` otherwise).
     ///
     /// Only supported on Linux and Windows; returns
     /// [`MemoryBuildError::HostNumaNodeUnsupportedPlatform`] at build time on
@@ -341,6 +347,7 @@ pub struct GuestMemoryBuilder {
     vtl0_alias_map: Option<u64>,
     pin_mappings: bool,
     x86_legacy_support: bool,
+    supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
 }
 
@@ -351,6 +358,7 @@ impl GuestMemoryBuilder {
             vtl0_alias_map: None,
             pin_mappings: false,
             x86_legacy_support: false,
+            supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
         }
     }
@@ -388,6 +396,14 @@ impl GuestMemoryBuilder {
         self
     }
 
+    /// Records whether the partition delivers guest-memory-access faults to the
+    /// VMM, enabling on-demand fault resolution (soft large pages, lazy commit)
+    /// via [`GuestMemoryManager::memory_fault_resolver`].
+    pub fn supports_memory_fault_resolution(mut self, enable: bool) -> Self {
+        self.supports_memory_fault_resolution = enable;
+        self
+    }
+
     /// Adds a RAM backing request. Call once per backing (one per NUMA node,
     /// or once for a non-NUMA VM).
     pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
@@ -412,25 +428,20 @@ impl GuestMemoryBuilder {
             if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
             }
-            if req.transparent_hugepages {
-                if !req.private_memory {
-                    return Err(MemoryBuildError::ThpWithoutPrivateMemory);
-                }
-                if !cfg!(target_os = "linux") {
-                    return Err(MemoryBuildError::ThpUnsupportedPlatform);
-                }
-            }
             if req.host_numa_node.is_some()
                 && cfg!(not(any(target_os = "linux", target_os = "windows")))
             {
                 return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
             }
             if req.hugepages {
-                if !cfg!(target_os = "linux") {
+                if !cfg!(any(target_os = "linux", target_os = "windows")) {
                     return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
                 }
                 if req.private_memory {
                     return Err(MemoryBuildError::HugepagesWithPrivateMemory);
+                }
+                if req.existing_mappable.is_some() {
+                    return Err(MemoryBuildError::HugepagesWithExistingBacking);
                 }
                 if self.x86_legacy_support {
                     return Err(MemoryBuildError::HugepagesWithLegacy);
@@ -465,15 +476,13 @@ impl GuestMemoryBuilder {
             max
         };
 
-        // Allocate per-backing memory and collect private ranges.
+        // Allocate per-backing memory.
         let num_backings = backing_requests.len();
         let mut backings = Vec::with_capacity(num_backings);
-        let mut private_ranges = Vec::new();
         for (i, req) in backing_requests.into_iter().enumerate() {
             let size: u64 = req.ranges.iter().map(|r| r.len()).sum();
 
             if req.private_memory {
-                private_ranges.extend_from_slice(&req.ranges);
                 backings.push(RamBacking {
                     mappable: None,
                     ranges: req.ranges,
@@ -500,10 +509,18 @@ impl GuestMemoryBuilder {
                     let hugepage_size =
                         validate_hugepage_size(req.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
                     validate_hugepage_ram_alignment(size, &req.ranges, hugepage_size as u64)?;
+                    // TODO: on Windows, when this large-page (SEC_LARGE_PAGES)
+                    // section is later mapped into the guest VA, we should
+                    // really map it with MEM_LARGE_PAGES so the view itself
+                    // uses large pages. Released versions of Windows don't
+                    // support MEM_LARGE_PAGES together with the placeholder
+                    // reservations that sparse_mmap relies on, so we leave it
+                    // out for now.
                     sparse_mmap::alloc_shared_memory_hugetlb(
                         backing_size,
                         &name,
                         Some(hugepage_size),
+                        req.host_numa_node,
                     )
                     .map_err(|error| MemoryBuildError::HugepageAllocationFailed {
                         size: MemorySize(size),
@@ -522,8 +539,17 @@ impl GuestMemoryBuilder {
             backings.push(RamBacking {
                 mappable: Some(mappable),
                 ranges: req.ranges,
-                prefetch: req.prefetch,
-                transparent_hugepages: false,
+                // On Windows, hugepage (SEC_LARGE_PAGES) backing only yields 2 MB
+                // SLAT entries when the SLAT is populated in >= 512-page batches;
+                // lazy per-page demand faults produce 4 KB entries. Prefetching
+                // populates each region up front in large contiguous batches, so
+                // force it on for hugepage-backed RAM. (Linux hugetlb faults the
+                // whole large page on first touch, so this is not needed there.)
+                prefetch: req.prefetch || (cfg!(windows) && req.hugepages),
+                // Transparent huge pages are advisory and best-effort; they
+                // apply to shmem (memfd) mappings on Linux. Explicit hugetlb
+                // backings are already huge, so suppress THP there.
+                transparent_hugepages: req.transparent_hugepages && !req.hugepages,
                 host_numa_node: req.host_numa_node,
             });
         }
@@ -542,14 +568,16 @@ impl GuestMemoryBuilder {
             None
         };
 
-        let mapping_manager =
-            MappingManager::new(&spawner, max_addr, private_ranges, max_hugepage_size);
-
-        let va_mapper = mapping_manager
-            .client()
-            .new_mapper(true)
-            .await
-            .map_err(MemoryBuildError::VaMapper)?;
+        // The primary mapper is created as part of `MappingManager::new`: it is
+        // the loader's target and the partition's fault resolver.
+        let (mapping_manager, va_mapper) = MappingManager::new(
+            &spawner,
+            max_addr,
+            max_hugepage_size,
+            self.supports_memory_fault_resolution,
+        )
+        .await
+        .map_err(MemoryBuildError::VaMapper)?;
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
@@ -601,16 +629,18 @@ impl GuestMemoryBuilder {
                             mappable: mappable.clone(),
                             file_offset,
                         },
-                        None => MappingBacking::Private {
-                            transparent_hugepages: backing.transparent_hugepages,
-                        },
+                        None => MappingBacking::Private,
                     };
                     region
                         .add_mapping(
                             MemoryRange::new(0..sub_range.len()),
                             backing_kind,
                             true,
-                            backing.host_numa_node,
+                            MemoryPolicy {
+                                numa_node: backing.host_numa_node,
+                                transparent_hugepages: backing.transparent_hugepages,
+                                prefetch: backing.prefetch,
+                            },
                         )
                         .await
                         .map_err(|error| MemoryBuildError::RamMapping {
@@ -622,7 +652,7 @@ impl GuestMemoryBuilder {
                         .map(MapParams {
                             writable: true,
                             executable: true,
-                            prefetch: backing.prefetch && backing.mappable.is_some(),
+                            prefetch: backing.prefetch,
                         })
                         .await
                         .map_err(|error| MemoryBuildError::RamRegionEnable {
@@ -648,6 +678,7 @@ impl GuestMemoryBuilder {
             va_mapper,
             vtl0_alias_map_offset,
             pin_mappings: self.pin_mappings,
+            supports_memory_fault_resolution: self.supports_memory_fault_resolution,
         };
         Ok(gm)
     }
@@ -704,6 +735,17 @@ impl GuestMemoryManager {
         GuestMemoryClient {
             mapping_manager: self.mapping_manager.client().clone(),
         }
+    }
+
+    /// Returns a resolver that prepares guest-memory backing on demand in
+    /// response to partition memory-access faults (soft large pages, lazy
+    /// commit).
+    ///
+    /// Intended for backends that report
+    /// [`virt::ProtoPartition::supports_memory_fault_resolution`]; supply the
+    /// returned resolver via [`virt::PartitionConfig::fault_resolver`].
+    pub fn memory_fault_resolver(&self) -> Arc<dyn virt::ResolveMemoryFault> {
+        self.va_mapper.clone()
     }
 
     /// Returns an object to map device memory into the VM.
@@ -870,6 +912,7 @@ impl RamVisibilityControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::async_test;
     use std::error::Error as _;
 
     /// Build a GuestMemoryManager with the given backing range groups,
@@ -891,6 +934,24 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    #[async_test]
+    async fn test_hugepages_with_existing_backing_rejected() {
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let mappable = sparse_mmap::alloc_shared_memory(SIZE as usize, "test").unwrap();
+        let backing = RamBackingRequest::new(vec![MemoryRange::new(0..SIZE)])
+            .hugepages(None)
+            .existing_mappable(mappable.into());
+        let err = GuestMemoryBuilder::new()
+            .add_backing(backing)
+            .build(SIZE)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MemoryBuildError::HugepagesWithExistingBacking
+        ));
     }
 
     #[test]
@@ -1085,5 +1146,68 @@ mod tests {
             gm.read_at(4 * page, &mut buf).unwrap();
             assert_eq!(buf, pattern_b);
         });
+    }
+
+    /// Builds a manager with a single THP-enabled shared RAM backing and
+    /// returns a [`GuestMemory`] over the **primary** mapper. Soft large pages
+    /// (the Windows deferred-protect scheme that maps guest RAM read-only until
+    /// the first write) apply only to the primary mapper, so locking behavior
+    /// must be exercised through it rather than through
+    /// [`GuestMemoryClient::guest_memory`], which hands out a secondary mapper.
+    async fn build_thp_primary_memory(size: u64) -> (GuestMemoryManager, GuestMemory) {
+        let mgr = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..size)]).transparent_hugepages(true),
+            )
+            .build(size)
+            .await
+            .unwrap();
+        let primary = GuestMemory::new("test-primary", mgr.va_mapper.clone());
+        (mgr, primary)
+    }
+
+    /// Locking guest RAM for write must make it writable through the returned
+    /// raw pointer, even when the backing is only lazily made writable on the
+    /// first write (Windows soft large pages map primary-mapper guest RAM
+    /// read-only until then). The write here goes through the locked pointer
+    /// directly, bypassing the fault-handling `write_*` path, so if the lock
+    /// had only faulted the page in for read the store would access-violate.
+    /// This is the regression guard for read-only-locking a page that is then
+    /// written via zero-copy DMA.
+    #[async_test]
+    async fn test_lock_for_write_makes_page_writable() {
+        use std::sync::atomic::Ordering;
+
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
+
+        let locked = gm
+            .lock_gpns(guestmem::AccessType::Write, false, &[0])
+            .unwrap();
+        // Store directly through the locked pointer (not via `write_at`, which
+        // would fault the page in on its own).
+        locked.pages()[0][0].store(0xAB, Ordering::SeqCst);
+        locked.pages()[0][1].store(0xCD, Ordering::SeqCst);
+        drop(locked);
+
+        // The stores must be visible through a normal read.
+        assert_eq!(gm.read_plain::<u8>(0).unwrap(), 0xAB);
+        assert_eq!(gm.read_plain::<u8>(1).unwrap(), 0xCD);
+    }
+
+    /// A read-only lock succeeds and reads back the freshly zeroed page without
+    /// forcing the page writable.
+    #[async_test]
+    async fn test_lock_for_read_succeeds() {
+        use std::sync::atomic::Ordering;
+
+        const SIZE: u64 = 2 * 1024 * 1024;
+        let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
+
+        let locked = gm
+            .lock_gpns(guestmem::AccessType::Read, false, &[0])
+            .unwrap();
+        assert_eq!(locked.pages()[0][0].load(Ordering::SeqCst), 0);
+        drop(locked);
     }
 }

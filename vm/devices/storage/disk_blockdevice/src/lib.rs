@@ -523,12 +523,16 @@ impl DiskIo for BlockDevice {
 
         let mut bounce_buffer = None;
         let locked;
-        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        // Memory behind an emulated IOMMU cannot be locked for zero-copy IO, so
+        // fall back to bounce buffering in that case.
+        let should_bounce = self.always_bounce
+            || !buffers.is_aligned(self.sector_size() as usize)
+            || !buffers.guest_memory().supports_locking();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(true)?;
             locked.io_vecs()
         } else {
-            tracing::trace!("double buffering IO");
+            tracing::trace!("bounce buffering IO");
 
             bounce_buffer
                 .insert(self.acquire_bounce_buffer(buffers.len()).await)
@@ -581,12 +585,16 @@ impl DiskIo for BlockDevice {
 
         let mut bounce_buffer;
         let locked;
-        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        // Memory behind an emulated IOMMU cannot be locked for zero-copy IO, so
+        // fall back to bounce buffering in that case.
+        let should_bounce = self.always_bounce
+            || !buffers.is_aligned(self.sector_size() as usize)
+            || !buffers.guest_memory().supports_locking();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(false)?;
             locked.io_vecs()
         } else {
-            tracing::trace!("double buffering IO");
+            tracing::trace!("bounce buffering IO");
             bounce_buffer = self.acquire_bounce_buffer(buffers.len()).await;
             buffers.reader().read(bounce_buffer.as_mut_bytes())?;
             bounce_buffer.io_vecs()

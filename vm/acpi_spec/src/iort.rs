@@ -19,6 +19,7 @@ pub const IORT_NODE_OFFSET: u32 = size_of::<crate::Header>() as u32 + size_of::<
 pub const IORT_NODE_TYPE_ITS_GROUP: u8 = 0x00;
 pub const IORT_NODE_TYPE_PCI_ROOT_COMPLEX: u8 = 0x02;
 pub const IORT_NODE_TYPE_SMMUV3: u8 = 0x04;
+pub const IORT_NODE_TYPE_RMR: u8 = 0x06;
 
 pub const IORT_PCI_ROOT_COMPLEX_REVISION: u8 = 3;
 pub const IORT_ITS_GROUP_REVISION: u8 = 1;
@@ -301,3 +302,90 @@ impl IortSmmuV3 {
 }
 
 const_assert_eq!(size_of::<IortSmmuV3>(), 68);
+
+// --- RMR (Reserved Memory Range) node (IORT spec DEN0049E §E.5) ---
+
+pub const IORT_RMR_REVISION: u8 = 3;
+
+/// RMR flags: access privilege hint. When set, the OS may map the region
+/// with elevated privileges (e.g., supervisor mode).
+pub const IORT_RMR_ACCESS_PRIVILEGE: u32 = 1 << 0;
+/// RMR flags: remap permitted. When clear, the region MUST be identity-
+/// mapped (IOVA == physical address).
+pub const IORT_RMR_REMAP_PERMITTED: u32 = 1 << 1;
+
+/// RMR node header. Followed by `rmr_count` [`IortRmrDescriptor`] entries,
+/// then `mapping_count` [`IortIdMapping`] entries.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct IortRmr {
+    pub header: IortNodeHeader,
+    pub flags: u32_ne,
+    pub rmr_count: u32_ne,
+    pub rmr_offset: u32_ne,
+}
+
+impl IortRmr {
+    /// Create an RMR node with the given number of RMR descriptors and
+    /// ID mappings. The `length` field includes space for the trailing
+    /// descriptors and mappings, which must be appended separately.
+    pub fn new(identifier: u32, flags: u32, rmr_count: u32, mapping_count: u32) -> Self {
+        let mut header = IortNodeHeader::new::<Self>(
+            IORT_NODE_TYPE_RMR,
+            IORT_RMR_REVISION,
+            identifier,
+            mapping_count,
+        );
+        // Total node size: fixed header + ID mappings + RMR descriptors.
+        // Accumulate in `usize` and convert to the on-wire `u16` `length`
+        // field via `try_into`, so an oversized node fails loudly instead of
+        // silently wrapping to a too-small length.
+        let total = size_of::<Self>()
+            + mapping_count as usize * size_of::<IortIdMapping>()
+            + rmr_count as usize * size_of::<IortRmrDescriptor>();
+        header.length = u16::try_from(total)
+            .expect("IORT RMR node length exceeds u16")
+            .into();
+        // mapping_offset is immediately after the fixed header.
+        if mapping_count > 0 {
+            header.mapping_offset = (size_of::<Self>() as u32).into();
+        }
+        // rmr_offset comes after the ID mappings. Bounded by `total` (already
+        // checked to fit `u16`), so the `u32` accumulation cannot overflow.
+        let rmr_offset = if rmr_count > 0 {
+            u32::try_from(size_of::<Self>() + mapping_count as usize * size_of::<IortIdMapping>())
+                .expect("IORT RMR descriptor offset exceeds u32")
+        } else {
+            0
+        };
+        Self {
+            header,
+            flags: flags.into(),
+            rmr_count: rmr_count.into(),
+            rmr_offset: rmr_offset.into(),
+        }
+    }
+}
+
+const_assert_eq!(size_of::<IortRmr>(), 28);
+
+/// RMR memory range descriptor.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct IortRmrDescriptor {
+    pub base_address: u64_ne,
+    pub length: u64_ne,
+    pub reserved: u32_ne,
+}
+
+impl IortRmrDescriptor {
+    pub fn new(base_address: u64, length: u64) -> Self {
+        Self {
+            base_address: base_address.into(),
+            length: length.into(),
+            reserved: 0.into(),
+        }
+    }
+}
+
+const_assert_eq!(size_of::<IortRmrDescriptor>(), 20);

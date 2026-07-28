@@ -781,6 +781,7 @@ pub(crate) mod x86 {
     use crate::WhpPartitionInner;
     use hvdef::HV_PAGE_SIZE;
     use hvdef::Vtl;
+    use memory_range::MemoryRange;
 
     /// Different backing types for a given GPA.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -822,11 +823,67 @@ pub(crate) mod x86 {
                 self.vtlp(vtl).gpa_backing_type(gpa)
             }
         }
+
+        /// Returns whether all of `range` is backed uniformly as RAM (writable
+        /// per `writable`) with no per-page exceptions inside it — no monitor
+        /// page, no higher-VTL page protections, and (on isolated partitions) no
+        /// unaccepted pages. Used to decide whether a fault can be resolved by
+        /// mapping the whole range as one soft large page instead of 4 KB.
+        ///
+        /// This answers the question with a couple of range lookups rather than
+        /// probing every page, since the backing is stored as ranges.
+        pub(crate) fn is_uniform_ram(&self, vtl: Vtl, range: MemoryRange, writable: bool) -> bool {
+            // The monitor page is a single RAM page mapped read-only so that
+            // writes keep trapping; never fold it into a large page.
+            if self
+                .monitor_page
+                .gpa()
+                .is_some_and(|gpa| range.contains_addr(gpa))
+            {
+                return false;
+            }
+
+            // A higher VTL can protect individual pages within VTL0 RAM.
+            if vtl == Vtl::Vtl0 {
+                if let Some(emu) = self.vtl2_emulation.as_ref() {
+                    let (start, end) = (range.start_4k_gpn(), range.end_4k_gpn());
+                    if emu
+                        .protected_pages
+                        .read()
+                        .iter()
+                        .any(|(pages, _)| *pages.start() < end && start <= *pages.end())
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            self.vtlp(vtl).is_uniform_ram(range, writable)
+        }
     }
 
     impl VtlPartition {
         pub fn in_deferred_range(&self, gpa: u64) -> bool {
             self.mapper.in_deferred_range(gpa)
+        }
+
+        /// Returns whether all of `range` is covered by a single mapped range
+        /// with the required writability and no page-acceptance requirement. See
+        /// [`WhpPartitionInner::is_uniform_ram`].
+        fn is_uniform_ram(&self, range: MemoryRange, writable: bool) -> bool {
+            // Isolated partitions accept pages individually, so uniformity can't
+            // be assumed across a large page; fall back to per-page population.
+            if self.mapper.page_acceptance_supported() {
+                return false;
+            }
+
+            // The whole range must sit within one mapped range with the required
+            // writability. Adjacent same-writability ranges that happen not to be
+            // merged conservatively fail this and fall back to 4 KB.
+            self.ranges
+                .read()
+                .iter()
+                .any(|r| r.writable == writable && r.range.contains(&range))
         }
 
         fn gpa_backing_type(&self, gpa: u64) -> GpaBackingType {

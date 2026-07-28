@@ -18,6 +18,22 @@ pub const IGVM_ATTESTATION_REPORT_SIZE_MAX: usize = 0x4a0;
 pub const IGVM_ATTEST_REQUEST_VERSION_1: u32 = 1;
 pub const IGVM_REQUEST_TYPE_AK_CERT: u32 = 2;
 
+/// `IgvmAttestReportType::SNP_VM_REPORT`. See
+/// `openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType`.
+pub const IGVM_REPORT_TYPE_SNP_VM_REPORT: u32 = 2;
+
+/// Byte offset of the hardware attestation report within the attestation
+/// request buffer, i.e. the size of the preceding [`IgvmAttestRequestHeader`].
+pub const ATTESTATION_REPORT_OFFSET: usize = size_of::<IgvmAttestRequestHeader>();
+
+/// Byte offset of `id_key_digest` within the SNP `ATTESTATION_REPORT`
+/// structure. See `x86defs::snp::SnpReport` and Table 22 of the "SEV Secure
+/// Nested Paging Firmware ABI Specification".
+pub const SNP_ID_KEY_DIGEST_OFFSET: usize = 224;
+
+/// Size in bytes of the SNP `id_key_digest` field (a SHA-384 digest).
+pub const SNP_ID_KEY_DIGEST_SIZE: usize = 48;
+
 #[repr(C)]
 #[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, Default)]
 pub struct IgvmAttestRequestHeader {

@@ -2,15 +2,13 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vbs_defs"
+name = "vmm_cli"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-bitfield-struct.workspace = true
-igvm_defs.workspace = true
-open_enum.workspace = true
-static_assertions.workspace = true
-zerocopy.workspace = true
+vmm_cli_derive.workspace = true
+anyhow.workspace = true
+
 [lints]
 workspace = true

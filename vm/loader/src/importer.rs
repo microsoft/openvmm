@@ -20,8 +20,6 @@ pub enum BootPageAcceptance {
     ExclusiveUnmeasured,
     /// The page contains hardware-specific VP context information.
     VpContext,
-    /// This page communicates error information to the host.
-    ErrorPage,
     /// This page communicates hardware-specific secret information and the page
     /// data is unmeasured.
     SecretsPage,
@@ -484,7 +482,7 @@ where
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         data: &[u8],
     ) -> anyhow::Result<()>;

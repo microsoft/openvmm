@@ -12,6 +12,7 @@
 #![expect(unsafe_code)]
 
 use super::X509Error;
+use super::X509PublicKey;
 use crate::mac::*;
 use der::Decode;
 use der::Encode;
@@ -41,8 +42,10 @@ fn err(e: crate::BackendError) -> X509Error {
     X509Error(e)
 }
 
-fn rsa_err(e: crate::BackendError) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(e)
+/// Extract the backend error from an [`X509Error`] produced by this backend,
+/// which always wraps a backend error.
+pub(crate) fn backend_err(e: X509Error) -> crate::BackendError {
+    e.0
 }
 
 fn der_err(e: der::Error, op: &'static str) -> X509Error {
@@ -55,10 +58,6 @@ fn rsa_der_err(e: der::Error, op: &'static str) -> crate::rsa::RsaError {
 
 fn null_err(op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Null(op))
-}
-
-fn rsa_null_err(op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Null(op))
 }
 
 /// A SecCertificate paired with the parsed ASN.1 view of the same DER
@@ -85,11 +84,11 @@ impl X509CertificateInner {
         })
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         // SAFETY: self.cert.0 is a valid SecCertificateRef.
         let key = unsafe { SecCertificateCopyKey(self.cert.0) };
         if key.is_null() {
-            return Err(rsa_null_err("SecCertificateCopyKey"));
+            return Err(null_err("SecCertificateCopyKey"));
         }
         let key = CfHandle(key);
         let mut error: CFErrorRef = ptr::null();
@@ -97,7 +96,7 @@ impl X509CertificateInner {
         let data = unsafe { SecKeyCopyExternalRepresentation(key.0, &mut error) };
         if data.is_null() {
             // SAFETY: error is null or a valid CFErrorRef.
-            return Err(rsa_err(unsafe {
+            return Err(err(unsafe {
                 sec_err(error, "SecKeyCopyExternalRepresentation")
             }));
         }
@@ -105,11 +104,13 @@ impl X509CertificateInner {
         // SAFETY: data.0 is a valid CFDataRef.
         let pkcs1_der = unsafe { cf_data_to_vec(data.0) };
         let pk = pkcs1::RsaPublicKey::from_der(&pkcs1_der)
-            .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
-        crate::rsa::RsaPublicKey::from_components(
+            .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
+        let rsa = crate::rsa::RsaPublicKey::from_components(
             pk.modulus.as_bytes(),
             pk.public_exponent.as_bytes(),
         )
+        .map_err(|crate::rsa::RsaError(e)| X509Error(e))?;
+        Ok(X509PublicKey::Rsa(rsa))
     }
 
     pub fn verify(
