@@ -11,7 +11,6 @@
 
 mod abi;
 mod hypercall;
-mod vp_actor;
 mod vp_state;
 
 use crate::hypercall::HvfHypercallHandler;
@@ -42,13 +41,14 @@ use std::convert::Infallible;
 use std::future::poll_fn;
 use std::num::NonZeroU64;
 use std::ops::Deref;
+use std::ops::Range;
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::task::Waker;
 use std::time::Duration;
 use thiserror::Error;
 use virt::BindProcessor;
@@ -181,20 +181,13 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 .config
                 .processor_topology
                 .vps_arch()
-                .map(|vp_info| {
-                    let power_state = if vp_info.base.vp_index.is_bsp() {
-                        VP_ON
-                    } else {
-                        VP_OFF
-                    };
-                    HvfVpInner {
-                        needs_yield: NeedsYield::new(),
-                        message_queues: hv1_emulator::message_queues::MessageQueues::new(),
-                        actor: vp_actor::VpActor::new(),
-                        vp_info,
-                        cpu_on: Default::default(),
-                        power_state: AtomicU8::new(power_state),
-                    }
+                .map(|vp_info| HvfVpInner {
+                    needs_yield: NeedsYield::new(),
+                    vcpu: (!0).into(),
+                    message_queues: hv1_emulator::message_queues::MessageQueues::new(),
+                    waker: Default::default(),
+                    vp_info,
+                    cpu_on: Default::default(),
                 })
                 .collect(),
             gicd,
@@ -203,8 +196,6 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             hv1,
             mappings: Default::default(),
             synic_ports: Default::default(),
-            id_registers: Default::default(),
-            partition_info_page: AtomicU64::new(0),
         });
 
         let mut vps = Vec::new();
@@ -225,6 +216,11 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                         .config
                         .vmtime
                         .access(format!("vp{}", vp.base.vp_index.index())),
+                    gicr_range: {
+                        // Guaranteed to be Some since we validated GICv3 above.
+                        let gicr = vp.gicr.unwrap();
+                        gicr..gicr + aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                    },
                 }),
             });
         }
@@ -326,7 +322,7 @@ impl virt::irqcon::ControlGic for HvfPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
         if let Some(vp) = self.gicd.set_pending(irq_id, high) {
             if let Some(vp) = self.vps.get(vp as usize) {
-                vp.notify();
+                vp.wake();
             }
         }
     }
@@ -343,7 +339,7 @@ impl virt::synic::Synic for HvfPartitionInner {
                 .message_queues
                 .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload))
             {
-                vp.notify();
+                vp.wake();
             }
         }
     }
@@ -394,9 +390,9 @@ impl GuestEventPort for HvfEventPort {
                         .hv1
                         .synic
                         .signal_event(vp, sint, flag, &mut |vector, _auto_eoi| {
-                            let newly_pending = partition.gicd.raise_ppi(vp, vector);
-                            if newly_pending {
-                                partition.vps[vp.index() as usize].notify();
+                            if partition.gicd.raise_ppi(vp, vector) {
+                                tracing::debug!(vector, "ppi from event");
+                                partition.vps[vp.index() as usize].wake();
                             }
                         });
             }
@@ -499,9 +495,6 @@ struct HvfPartitionInner {
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))")]
     mappings: Mutex<Vec<MemoryRange>>,
     synic_ports: virt::synic::SynicPortMap,
-    #[inspect(skip)]
-    id_registers: Mutex<Option<IdRegisters>>,
-    partition_info_page: AtomicU64,
 }
 
 #[derive(Inspect)]
@@ -524,20 +517,13 @@ struct HvfVpInner {
     #[inspect(skip)]
     needs_yield: NeedsYield,
     vp_info: Aarch64VpInfo,
+    #[inspect(skip)]
+    vcpu: AtomicU64,
     message_queues: hv1_emulator::message_queues::MessageQueues,
     #[inspect(skip)]
-    actor: vp_actor::VpActor,
+    waker: RwLock<Option<Waker>>,
     cpu_on: Mutex<Option<CpuOnState>>,
-    #[inspect(skip)]
-    power_state: AtomicU8,
 }
-
-const VP_OFF: u8 = 0;
-const VP_ON_PENDING: u8 = 1;
-const VP_ON: u8 = 2;
-const PSCI_AFFINITY_ON: i32 = 0;
-const PSCI_AFFINITY_OFF: i32 = 1;
-const PSCI_AFFINITY_ON_PENDING: i32 = 2;
 
 #[derive(Debug, Inspect)]
 struct CpuOnState {
@@ -547,12 +533,19 @@ struct CpuOnState {
 
 impl HvfVpInner {
     fn cancel_run(&self) {
-        self.actor.cancel_run();
+        let vcpu: u64 = self.vcpu.load(Ordering::SeqCst);
+        if vcpu != !0 {
+            // SAFETY: `&vcpu` points to a list of vcpu IDs of length 1.
+            if let Err(err) = unsafe { abi::hv_vcpus_exit(&vcpu, 1) }.chk() {
+                tracelimit::error_ratelimited!(?err, "failed to force HVF vCPU exit");
+            }
+        }
     }
 
-    /// Requests this vCPU to observe work that has already been published.
-    fn notify(&self) {
-        self.actor.notify();
+    fn wake(&self) {
+        if let Some(waker) = &*self.waker.read() {
+            waker.wake_by_ref();
+        }
     }
 }
 
@@ -567,13 +560,14 @@ struct VpInitState {
     gicr: gic::Redistributor,
     hv1: ProcessorSynic,
     vmtime: VmTimeAccess,
+    #[inspect(debug)]
+    gicr_range: Range<u64>,
 }
 
 // Arm A-profile Architecture Registers, DDI 0601 (2026-06):
 // ID_AA64PFR0_EL1.{GIC,EL2,EL3,SVE}, ID_AA64PFR1_EL1.SME,
 // ID_AA64DFR0_EL1.PMUVer, ID_AA64MMFR0_EL1.PARange, and
-// ID_AA64MMFR2_EL1.{CnP,NV}. These masks define one VM-wide virtual CPU model.
-/// GICv3/v4 system-register CPU interface.
+// ID_AA64MMFR2_EL1.{CnP,NV}.
 const ID_AA64PFR0_EL1_GIC_CPUIF: u64 = 1 << 24;
 const ID_AA64PFR0_EL1_GIC: u64 = 0xf << 24;
 const ID_AA64MMFR0_EL1_PARANGE: u64 = 0xf;
@@ -636,14 +630,7 @@ impl IdRegisters {
     }
 }
 
-/// Derives the VM-wide virtual CPU model from HVF's host capability baseline.
-///
-/// Arm DDI 0601 (2026-06) defines the fields above. OpenVMM advertises the
-/// software GIC system-register interface, hides EL2 because the default HVF
-/// configuration does not enable it, exposes the conservative 36-bit IPA
-/// subset of Apple's default VM, and hides host features whose state it
-/// cannot safely virtualize. PMU discovery remains hidden; [`PmuState`] is a
-/// compatibility shim for guests that access the cycle counter directly.
+/// Derives the guest CPU model from HVF's host capability baseline.
 fn id_register_policy(host: IdRegisters) -> IdRegisters {
     IdRegisters {
         pfr0: (host.pfr0
@@ -705,15 +692,6 @@ mod id_register_tests {
     }
 }
 
-/// Arm DDI 0601 (2026-06), `PMCR_EL0.E` (bit 0): cycle counter enable.
-const PMCR_EL0_E: u64 = 1 << 0;
-/// Arm DDI 0601 (2026-06), `PMCR_EL0.C` (bit 2): cycle counter reset.
-const PMCR_EL0_C: u64 = 1 << 2;
-/// Arm DDI 0601 (2026-06), `PMCR_EL0.LC` (bit 6): 64-bit cycle counter.
-const PMCR_EL0_LC: u64 = 1 << 6;
-/// Arm DDI 0601 (2026-06), `PMCNTENSET_EL0.C` (bit 31).
-const PMCNTEN_C: u32 = 1 << 31;
-
 impl BindProcessor for HvfProcessorBinder {
     type Processor<'a> = HvfProcessor<'a>;
     type Error = Error;
@@ -724,24 +702,12 @@ impl BindProcessor for HvfProcessorBinder {
         let state = self.state.take().unwrap();
         let inner = &self.partition.vps[self.vp_index.index() as usize];
 
-        let id_registers = {
-            let mut shared = self.partition.id_registers.lock();
-            match *shared {
-                Some(id_registers) => id_registers,
-                None => {
-                    let id_registers = id_register_policy(IdRegisters::read(&vcpu)?);
-                    *shared = Some(id_registers);
-                    id_registers
-                }
-            }
-        };
-        id_registers.install(&mut vcpu)?;
+        id_register_policy(IdRegisters::read(&vcpu)?).install(&mut vcpu)?;
         // Set the MPIDR.
         vcpu.set_sys_reg(abi::HvSysReg::MPIDR_EL1, inner.vp_info.mpidr.into())?;
 
-        // Record the live HVF vcpu id in the wake actor (enables the
-        // running-state `hv_vcpus_exit` wake).
-        inner.actor.set_vcpu(vcpu.vcpu);
+        // Store the vcpu index in the partition.
+        inner.vcpu.store(vcpu.vcpu, Ordering::Relaxed);
 
         let mut vp = HvfProcessor {
             partition: &self.partition,
@@ -752,7 +718,6 @@ impl BindProcessor for HvfProcessorBinder {
             gicr: state.gicr,
             hv1: state.hv1,
             vmtime: state.vmtime,
-            pmu: PmuState::default(),
         };
 
         // Set initial register state.
@@ -768,202 +733,6 @@ impl BindProcessor for HvfProcessorBinder {
     }
 }
 
-/// Compatibility model for guests that access the PMU cycle counter directly.
-///
-/// Arm DDI 0487M.c, Performance Monitors Extension, requires both
-/// `PMCR_EL0.E` and `PMCNTENSET_EL0.C` before `PMCCNTR_EL0` counts; writing
-/// `PMCR_EL0.C` resets it. The fixed rate is Hyper-V compatibility policy, not
-/// an architectural CPU-frequency claim.
-#[derive(Debug, Default, Inspect)]
-struct PmuState {
-    pmcr_enabled: bool,
-    /// Logical PMCCNTR_EL0 value captured at the last re-base point.
-    cycle_offset: u64,
-    /// VM time (100ns units) captured at the last re-base point.
-    cycle_base_100ns: u64,
-    /// PMCNTENSET_EL0/PMCNTENCLR_EL0 (cycle-counter bit 31 + event bits).
-    counter_enable: u32,
-    /// PMINTENSET_EL1/PMINTENCLR_EL1.
-    int_enable: u32,
-    /// PMUSERENR_EL0 (EL0 access controls).
-    userenr: u32,
-    /// PMCCFILTR_EL0.
-    ccfiltr: u32,
-    /// PMSELR_EL0 counter selector.
-    selr: u32,
-}
-
-impl PmuState {
-    /// Guests calibrate this steady synthetic rate against the architected timer.
-    const CYCLES_PER_100NS: u64 = 300;
-
-    fn counting(&self) -> bool {
-        self.pmcr_enabled && self.counter_enable & PMCNTEN_C != 0
-    }
-
-    fn pmccntr(&self, now_100ns: u64) -> u64 {
-        if self.counting() {
-            let elapsed = now_100ns.wrapping_sub(self.cycle_base_100ns);
-            self.cycle_offset
-                .wrapping_add(elapsed.wrapping_mul(Self::CYCLES_PER_100NS))
-        } else {
-            self.cycle_offset
-        }
-    }
-
-    fn rebase(&mut self, value: u64, now_100ns: u64) {
-        self.cycle_offset = value;
-        self.cycle_base_100ns = now_100ns;
-    }
-
-    fn read_sysreg(&self, reg: SystemReg, now_100ns: u64) -> Option<u64> {
-        let value = match reg {
-            SystemReg::PMCCNTR_EL0 => self.pmccntr(now_100ns),
-            SystemReg::PMCR_EL0 => PMCR_EL0_LC | if self.pmcr_enabled { PMCR_EL0_E } else { 0 },
-            SystemReg::PMCNTENSET_EL0 | SystemReg::PMCNTENCLR_EL0 => self.counter_enable.into(),
-            SystemReg::PMINTENSET_EL1 | SystemReg::PMINTENCLR_EL1 => self.int_enable.into(),
-            SystemReg::PMUSERENR_EL0 => self.userenr.into(),
-            SystemReg::PMCCFILTR_EL0 => self.ccfiltr.into(),
-            SystemReg::PMSELR_EL0 => self.selr.into(),
-            SystemReg::PMOVSSET_EL0 | SystemReg::PMOVSCLR_EL0 => 0,
-            SystemReg::PMCEID0_EL0 | SystemReg::PMCEID1_EL0 => 0,
-            _ => return None,
-        };
-        Some(value)
-    }
-
-    fn write_sysreg(&mut self, reg: SystemReg, value: u64, now_100ns: u64) -> bool {
-        match reg {
-            SystemReg::PMCR_EL0 => {
-                let cur = self.pmccntr(now_100ns);
-                self.pmcr_enabled = value & PMCR_EL0_E != 0;
-                self.rebase(cur, now_100ns);
-                if value & PMCR_EL0_C != 0 {
-                    self.rebase(0, now_100ns);
-                }
-            }
-            SystemReg::PMCCNTR_EL0 => self.rebase(value, now_100ns),
-            SystemReg::PMCNTENSET_EL0 | SystemReg::PMCNTENCLR_EL0 => {
-                let cur = self.pmccntr(now_100ns);
-                if reg == SystemReg::PMCNTENSET_EL0 {
-                    self.counter_enable |= value as u32;
-                } else {
-                    self.counter_enable &= !(value as u32);
-                }
-                self.rebase(cur, now_100ns);
-            }
-            SystemReg::PMINTENSET_EL1 => self.int_enable |= value as u32,
-            SystemReg::PMINTENCLR_EL1 => self.int_enable &= !(value as u32),
-            SystemReg::PMUSERENR_EL0 => self.userenr = value as u32,
-            SystemReg::PMCCFILTR_EL0 => self.ccfiltr = value as u32,
-            SystemReg::PMSELR_EL0 => self.selr = value as u32,
-            SystemReg::PMOVSSET_EL0 | SystemReg::PMOVSCLR_EL0 => {}
-            _ => return false,
-        }
-        true
-    }
-}
-
-#[cfg(test)]
-mod pmu_tests {
-    use super::*;
-
-    #[test]
-    fn cycle_counter_requires_both_enable_bits() {
-        let mut pmu = PmuState::default();
-
-        assert!(pmu.write_sysreg(SystemReg::PMCR_EL0, PMCR_EL0_E, 10));
-        assert_eq!(pmu.read_sysreg(SystemReg::PMCCNTR_EL0, 12), Some(0));
-
-        assert!(pmu.write_sysreg(SystemReg::PMCNTENSET_EL0, PMCNTEN_C.into(), 12));
-        assert_eq!(
-            pmu.read_sysreg(SystemReg::PMCCNTR_EL0, 14),
-            Some(2 * PmuState::CYCLES_PER_100NS)
-        );
-
-        assert!(pmu.write_sysreg(SystemReg::PMCNTENCLR_EL0, PMCNTEN_C.into(), 14));
-        assert_eq!(
-            pmu.read_sysreg(SystemReg::PMCCNTR_EL0, 20),
-            Some(2 * PmuState::CYCLES_PER_100NS)
-        );
-    }
-
-    #[test]
-    fn cycle_counter_reset_rebases_while_running() {
-        let mut pmu = PmuState::default();
-
-        assert!(pmu.write_sysreg(SystemReg::PMCNTENSET_EL0, PMCNTEN_C.into(), 10));
-        assert!(pmu.write_sysreg(SystemReg::PMCR_EL0, PMCR_EL0_E, 10));
-        assert!(pmu.write_sysreg(SystemReg::PMCR_EL0, PMCR_EL0_E | PMCR_EL0_C, 12));
-        assert_eq!(
-            pmu.read_sysreg(SystemReg::PMCCNTR_EL0, 13),
-            Some(PmuState::CYCLES_PER_100NS)
-        );
-    }
-
-    #[test]
-    fn pmu_reports_no_event_counters() {
-        let pmu = PmuState::default();
-
-        assert_eq!(pmu.read_sysreg(SystemReg::PMCEID0_EL0, 0), Some(0));
-        assert_eq!(pmu.read_sysreg(SystemReg::PMCEID1_EL0, 0), Some(0));
-        assert_eq!(pmu.read_sysreg(SystemReg::PMCR_EL0, 0), Some(PMCR_EL0_LC));
-    }
-}
-
-/// Arm DDI 0487M.c A64 register encodings: register 31 denotes XZR in the
-/// trapped load/store and system-register forms handled by this backend.
-fn reg_is_xzr(reg: u8) -> bool {
-    reg == 31
-}
-
-/// Arm DDI 0487M.c `ESR_ELx.ISS.TI`: zero identifies WFI. WFE/WFIT/WFET
-/// return immediately until this backend models their event/timeout semantics.
-fn trapped_wfx_is_wfi(iss: u32) -> bool {
-    iss & 0b11 == 0
-}
-
-#[cfg(test)]
-mod xzr_tests {
-    use super::reg_is_xzr;
-
-    #[test]
-    fn only_reg_31_is_xzr() {
-        for reg in 0..=30u8 {
-            assert!(!reg_is_xzr(reg), "reg {reg} must be a GP register, not XZR");
-        }
-        assert!(reg_is_xzr(31), "reg 31 must decode as XZR");
-    }
-}
-
-#[cfg(test)]
-mod wfx_tests {
-    use super::trapped_wfx_is_wfi;
-
-    #[test]
-    fn only_wfi_enters_interrupt_park() {
-        assert!(trapped_wfx_is_wfi(0b00));
-        assert!(!trapped_wfx_is_wfi(0b01));
-        assert!(!trapped_wfx_is_wfi(0b10));
-        assert!(!trapped_wfx_is_wfi(0b11));
-    }
-}
-
-/// Reads the counter frequency (`CNTFRQ_EL0`) in Hz — the tick rate shared by
-/// `CNTVCT_EL0` and the guest's virtual timer.
-fn read_cntfrq() -> u64 {
-    let freq: u64;
-    // SAFETY: CNTFRQ_EL0 is unprivileged-readable on AArch64 with no side effects.
-    unsafe {
-        core::arch::asm!(
-            "mrs {}, cntfrq_el0",
-            out(reg) freq,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    freq
-}
-
 #[derive(InspectMut)]
 pub struct HvfProcessor<'a> {
     #[inspect(skip)]
@@ -977,7 +746,6 @@ pub struct HvfProcessor<'a> {
     vcpu: HvfVcpu,
     wfi: bool,
     on: bool,
-    pmu: PmuState,
 }
 
 #[derive(Debug, Inspect)]
@@ -985,8 +753,6 @@ struct HvfVcpu {
     vcpu: u64,
     #[inspect(skip)]
     exit: ExitPtr,
-    #[inspect(skip)]
-    valid: bool,
 }
 
 #[derive(Debug)]
@@ -1011,17 +777,7 @@ impl HvfVcpu {
         Ok(Self {
             vcpu,
             exit: ExitPtr(exit),
-            valid: true,
         })
-    }
-
-    fn destroy(&mut self) -> Result<(), HvfError> {
-        if self.valid {
-            // SAFETY: this vCPU belongs to the current thread.
-            unsafe { abi::hv_vcpu_destroy(self.vcpu) }.chk()?;
-            self.valid = false;
-        }
-        Ok(())
     }
 
     fn cpsr(&self) -> Cpsr64 {
@@ -1109,7 +865,8 @@ impl HvfVcpu {
 
 impl Drop for HvfVcpu {
     fn drop(&mut self) {
-        if let Err(err) = self.destroy() {
+        // SAFETY: this vCPU belongs to the current thread.
+        if let Err(err) = unsafe { abi::hv_vcpu_destroy(self.vcpu) }.chk() {
             tracing::error!(?err, "failed to destroy HVF vCPU");
         }
     }
@@ -1117,13 +874,6 @@ impl Drop for HvfVcpu {
 
 const MAX_VTIMER_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Converts a generic-timer compare value to a bounded host wait. `None` means
-/// the unsigned counter has already reached the compare value.
-///
-/// Arm DDI 0487M.c, Generic Timer, and DDI 0601 (2026-06)
-/// `CNTVCT_EL0`/`CNTV_CVAL_EL0` define the unsigned counter comparison. The
-/// one-day bound is host scheduling policy; the architectural deadline is
-/// recomputed after each bounded wait.
 fn vtimer_wait_duration(counter: u64, compare: u64, frequency: NonZeroU64) -> Option<Duration> {
     if compare <= counter {
         return None;
@@ -1168,8 +918,47 @@ mod vtimer_tests {
     }
 }
 
+fn read_cntfrq() -> u64 {
+    let freq: u64;
+    // SAFETY: CNTFRQ_EL0 is unprivileged-readable and has no side effects.
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, cntfrq_el0",
+            out(reg) freq,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    freq
+}
+
+fn reg_is_xzr(reg: u8) -> bool {
+    reg == 31
+}
+
+fn trapped_wfx_is_wfi(iss: u32) -> bool {
+    iss & 0b11 == 0
+}
+
+#[cfg(test)]
+mod trap_tests {
+    use super::{reg_is_xzr, trapped_wfx_is_wfi};
+
+    #[test]
+    fn register_31_is_xzr() {
+        assert!((0..=30).all(|reg| !reg_is_xzr(reg)));
+        assert!(reg_is_xzr(31));
+    }
+
+    #[test]
+    fn only_wfi_enters_interrupt_park() {
+        assert!(trapped_wfx_is_wfi(0b00));
+        assert!(!trapped_wfx_is_wfi(0b01));
+        assert!(!trapped_wfx_is_wfi(0b10));
+        assert!(!trapped_wfx_is_wfi(0b11));
+    }
+}
+
 impl HvfProcessor<'_> {
-    /// Reflects Apple's physical/virtual counter basis for trapped reads.
     fn read_counter_sysreg(&self, reg: SystemReg) -> Result<Option<u64>, HvfError> {
         let value = match reg {
             SystemReg::CNTPCT_EL0 => {
@@ -1208,11 +997,6 @@ impl HvfProcessor<'_> {
             });
     }
 
-    /// Computes the virtual-timer deadline while the vCPU is parked outside HVF.
-    ///
-    /// Arm DDI 0601 (2026-06) defines `CNTV_CTL_EL0` ENABLE/IMASK/ISTATUS,
-    /// `CNTV_CVAL_EL0`, and `CNTFRQ_EL0`. Apple's `hv_vcpu.h` defines
-    /// `CNTVCT_EL0 = mach_absolute_time() - vtimer_offset`.
     fn vtimer_deadline(&self) -> anyhow::Result<Option<VmTime>> {
         const ENABLE: u64 = 1 << 0;
         const IMASK: u64 = 1 << 1;
@@ -1234,77 +1018,21 @@ impl HvfProcessor<'_> {
             .vcpu
             .sys_reg(abi::HvSysReg::CNTV_CVAL_EL0)
             .context("failed to read CNTV_CVAL_EL0")?;
-
-        let mut offset = 0u64;
-        // SAFETY: `offset` is a valid out-param.
+        let mut offset = 0;
+        // SAFETY: `offset` is a valid out parameter.
         unsafe { abi::hv_vcpu_get_vtimer_offset(self.vcpu.vcpu, &mut offset) }
             .chk()
             .context("failed to read the virtual timer offset")?;
         // SAFETY: no requirements.
         let guest_now = unsafe { abi::mach_absolute_time() }.wrapping_sub(offset);
-
-        let freq = NonZeroU64::new(read_cntfrq()).context("CNTFRQ_EL0 reported zero")?;
+        let frequency = NonZeroU64::new(read_cntfrq()).context("CNTFRQ_EL0 reported zero")?;
 
         Ok(Some(
-            vtimer_wait_duration(guest_now, cval, freq)
+            vtimer_wait_duration(guest_now, cval, frequency)
                 .map_or(now, |duration| now.wrapping_add(duration)),
         ))
     }
 
-    fn recreate_vcpu(&mut self) -> Result<(), Error> {
-        let id_registers = self
-            .partition
-            .id_registers
-            .lock()
-            .as_ref()
-            .copied()
-            .context("missing partition ID-register model")?;
-        let mpidr = self.inner.vp_info.mpidr;
-        let current_vcpu = &mut self.vcpu;
-        let vcpu = self.inner.actor.replace_vcpu(|| -> Result<_, Error> {
-            current_vcpu
-                .destroy()
-                .context("failed to destroy vCPU before recreation")?;
-
-            let mut vcpu = HvfVcpu::new()?;
-            id_registers.install(&mut vcpu)?;
-            vcpu.set_sys_reg(abi::HvSysReg::MPIDR_EL1, mpidr.into())?;
-            Ok((vcpu.vcpu, vcpu))
-        })?;
-        self.vcpu = vcpu;
-        Ok(())
-    }
-
-    fn set_reset_registers(&mut self, cpu_on: Option<CpuOnState>) -> Result<(), Error> {
-        let mut registers =
-            virt::aarch64::vp::Registers::at_reset(&self.partition.caps, &self.inner.vp_info);
-        if let Some(cpu_on) = cpu_on {
-            registers.pc = cpu_on.pc;
-            registers.x0 = cpu_on.x0;
-        }
-        let system_registers =
-            virt::aarch64::vp::SystemRegisters::at_reset(&self.partition.caps, &self.inner.vp_info);
-        let mut state = self.access_state(Vtl::Vtl0);
-        state.set_registers(&registers)?;
-        state.set_system_registers(&system_registers)?;
-        Ok(())
-    }
-
-    fn power_on(&mut self, cpu_on: CpuOnState) -> Result<(), Error> {
-        self.recreate_vcpu()?;
-        self.set_reset_registers(Some(cpu_on))?;
-        self.pmu = PmuState::default();
-        self.wfi = false;
-        self.on = true;
-        self.inner.power_state.store(VP_ON, Ordering::Release);
-        Ok(())
-    }
-
-    /// Handles the Arm SMC Calling Convention subset exposed to the guest.
-    ///
-    /// Arm DEN0028G EAC1 (SMCCC v1.6) defines the function-ID owner, width,
-    /// fast-call, argument, and result conventions. This backend advertises
-    /// SMCCC v1.1, the first revision containing VERSION and ARCH_FEATURES.
     fn handle_smccc(&mut self, fc: FastCall) {
         match SmcCall(fc.with_hint(false).with_smc64(false)) {
             SmcCall::SMCCC_VERSION => {
@@ -1325,10 +1053,6 @@ impl HvfProcessor<'_> {
         }
     }
 
-    /// Handles the implemented PSCI v1.0 power-state subset.
-    ///
-    /// Arm DEN0022F.b defines CPU_ON/OFF, AFFINITY_INFO, SYSTEM_OFF/RESET,
-    /// the ON/OFF/ON_PENDING states, and CPU_ON entry PC plus X0 context.
     fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason> {
         let mask = if fc.smc64() {
             u64::MAX
@@ -1361,55 +1085,25 @@ impl HvfProcessor<'_> {
                     u64::from(vp.vp_info.mpidr) & u64::from(MpidrEl1::AFFINITY_MASK) == target_cpu
                 }) {
                     let mut cpu_on = vp.cpu_on.lock();
-                    match vp.power_state.compare_exchange(
-                        VP_OFF,
-                        VP_ON_PENDING,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => {
-                            *cpu_on = Some(CpuOnState {
-                                pc: entry_point,
-                                x0: context_id,
-                            });
-                            drop(cpu_on);
-                            vp.notify();
-                            PsciError::SUCCESS.0
-                        }
-                        Err(VP_ON_PENDING) => PsciError::ON_PENDING.0,
-                        Err(VP_ON) => PsciError::ALREADY_ON.0,
-                        Err(_) => PsciError::INTERNAL_FAILURE.0,
+                    if cpu_on.is_some() {
+                        PsciError::ON_PENDING.0
+                    } else {
+                        // TODO check already on
+                        *cpu_on = Some(CpuOnState {
+                            pc: entry_point,
+                            x0: context_id,
+                        });
+                        drop(cpu_on);
+                        vp.wake();
+                        PsciError::SUCCESS.0
                     }
                 } else {
                     PsciError::INVALID_PARAMETERS.0
                 }
             }
-            SmcCall::CPU_OFF => {
-                self.on = false;
-                self.inner.power_state.store(VP_OFF, Ordering::Release);
-                PsciError::SUCCESS.0
-            }
-            SmcCall::AFFINITY_INFO => {
-                let target_cpu = self.vcpu.gp(1) & mask;
-                let lowest_affinity_level = self.vcpu.gp(2) & mask;
-                if lowest_affinity_level != 0 {
-                    PsciError::INVALID_PARAMETERS.0
-                } else if let Some(vp) = self.partition.vps.iter().find(|vp| {
-                    u64::from(vp.vp_info.mpidr) & u64::from(MpidrEl1::AFFINITY_MASK) == target_cpu
-                }) {
-                    match vp.power_state.load(Ordering::Acquire) {
-                        VP_OFF => PSCI_AFFINITY_OFF,
-                        VP_ON_PENDING => PSCI_AFFINITY_ON_PENDING,
-                        VP_ON => PSCI_AFFINITY_ON,
-                        _ => PsciError::INTERNAL_FAILURE.0,
-                    }
-                } else {
-                    PsciError::INVALID_PARAMETERS.0
-                }
-            }
-            SmcCall::SYSTEM_RESET => {
-                return Err(VpHaltReason::Reset);
-            }
+            SmcCall::CPU_OFF => PsciError::DENIED.0,
+            SmcCall::AFFINITY_INFO => PsciError::INVALID_PARAMETERS.0,
+            SmcCall::SYSTEM_RESET => return Err(VpHaltReason::Reset),
             SmcCall::SYSTEM_OFF => return Err(VpHaltReason::PowerOff),
             SmcCall::MIGRATE_INFO_TYPE => PsciError::NOT_SUPPORTED.0,
             call => {
@@ -1438,9 +1132,9 @@ impl HvfProcessor<'_> {
 
 impl Drop for HvfProcessor<'_> {
     fn drop(&mut self) {
-        if let Err(err) = self.inner.actor.remove_vcpu(|| self.vcpu.destroy()) {
-            tracing::error!(?err, "failed to remove HVF vCPU");
-        }
+        let mut waker = self.inner.waker.write();
+        let _waker = waker.take();
+        self.inner.vcpu.store(!0, Ordering::SeqCst);
     }
 }
 
@@ -1464,7 +1158,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
         let vp_index = self.inner.vp_info.base.vp_index;
-
+        let mut last_waker = None;
         loop {
             self.inner.needs_yield.maybe_yield().await;
 
@@ -1472,30 +1166,27 @@ impl<'p> Processor for HvfProcessor<'p> {
                 loop {
                     stop.check()?;
 
-                    // Capture notifications before scanning persistent work.
-                    let scan = self.inner.actor.begin_scan();
+                    if !last_waker
+                        .as_ref()
+                        .is_some_and(|waker| cx.waker().will_wake(waker))
+                    {
+                        last_waker = Some(cx.waker().clone());
+                        self.inner.waker.write().clone_from(&last_waker);
+                    }
 
                     if let Some(cpu_on) = self.inner.cpu_on.lock().take() {
                         if self.on {
-                            return Poll::Ready(Err(dev.fatal_error(
-                                anyhow::anyhow!("received PSCI CPU_ON for an online vCPU").into(),
-                            )));
+                            todo!("block this");
+                        } else {
+                            tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
+                            self.vcpu.set_gp(0, cpu_on.x0);
+                            self.vcpu.set_pc(cpu_on.pc);
+                            self.on = true;
                         }
-                        self.power_on(cpu_on)
-                            .map_err(|err| dev.fatal_error(err.into()))?;
                     }
 
                     if !self.on {
-                        // Secondary vCPU not yet powered on: park until a
-                        // PSCI CPU_ON publishes a start request and notifies us.
-                        match self
-                            .inner
-                            .actor
-                            .try_park(scan, cx.waker(), || self.inner.cpu_on.lock().is_none())
-                        {
-                            vp_actor::ParkDecision::Parked => return Poll::Pending,
-                            vp_actor::ParkDecision::Rescan => continue,
-                        }
+                        break Poll::Pending;
                     }
 
                     self.hv1
@@ -1536,15 +1227,11 @@ impl<'p> Processor for HvfProcessor<'p> {
                             )
                         }
                         .chk()
-                        .map_err(|err| dev.fatal_error(err.into()))?;
+                        .unwrap();
                         self.wfi = false;
                     }
 
                     if self.wfi {
-                        // Arm DDI 0487M.c defines a pending interrupt or expired
-                        // virtual timer as a WFI wake event. While this task is
-                        // parked outside `hv_vcpu_run`, register the architected
-                        // deadline with vmtime and the interrupt path with VpActor.
                         if let Some(deadline) = self
                             .vtimer_deadline()
                             .map_err(|err| dev.fatal_error(err.into()))?
@@ -1555,14 +1242,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             self.wfi = false;
                             continue;
                         }
-                        match self.inner.actor.try_park(scan, cx.waker(), || {
-                            !self.partition.gicd.irq_pending(&self.gicr)
-                        }) {
-                            vp_actor::ParkDecision::Parked => {
-                                return Poll::Pending;
-                            }
-                            vp_actor::ParkDecision::Rescan => continue,
-                        }
+                        return Poll::Pending;
                     }
 
                     break Poll::Ready(Result::<_, VpHaltReason>::Ok(()));
@@ -1575,15 +1255,12 @@ impl<'p> Processor for HvfProcessor<'p> {
                 .is_pending_or_active(self.partition.virt_timer_ppi)
             {
                 // SAFETY: no requirements.
-                unsafe { abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false).chk() }
-                    .map_err(|err| dev.fatal_error(err.into()))?;
+                unsafe {
+                    abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
+                        .chk()
+                        .unwrap();
+                }
             }
-
-            // A yield requested while CPU_ON/reset replaces the vCPU cannot
-            // cancel the temporarily unpublished identifier. Recheck the
-            // persistent yield latch after replacement; requests after this
-            // point use Apple's sticky `hv_vcpus_exit` on the new identifier.
-            self.inner.needs_yield.maybe_yield().await;
 
             // SAFETY: we are not concurrently accessing `exit`.
             unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
@@ -1619,7 +1296,18 @@ impl<'p> Processor for HvfProcessor<'p> {
                             let len = 1 << iss.sas();
                             let sign_extend = iss.sse();
 
-                            // SRT 31 encodes XZR, not SP.
+                            // Per "AArch64 System Register Descriptions/D23.2 General system control registers"
+                            // the SRT field is defined as
+                            //
+                            // > The register number of the Wt/Xt/Rt operand of the faulting
+                            // > instruction.
+                            //
+                            // In the A64 ISA TRM, Wt/Xt/Rt is used to designate the register number where the SP
+                            // register is not used whereas the addition of `|SP` tells that the SP register might
+                            // be used. Hence, the SRT field uses `0b11111` to encode `xzr`.
+                            //
+                            // Writing to `xzr` has no arch-observable effects, reading returns the all-zero's bit
+                            // pattern.
                             let reg = iss.srt();
 
                             if iss.wnr() {
@@ -1670,7 +1358,6 @@ impl<'p> Processor for HvfProcessor<'p> {
                         ExceptionClass::SYSTEM => {
                             let iss = IssSystem::from(exception.syndrome.iss());
                             let reg = iss.system_reg();
-                            let now = self.vmtime.now().as_100ns();
                             if iss.direction() {
                                 let value = if let Some(value) =
                                     self.partition.gicd.read_sysreg(&mut self.gicr, reg)
@@ -1681,22 +1368,13 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     .map_err(|err| dev.fatal_error(err.into()))?
                                 {
                                     value
-                                } else if let Some(value) = self.pmu.read_sysreg(reg, now) {
-                                    value
-                                } else if reg == SystemReg::OSLSR_EL1 {
-                                    // ARMv8 mandates the OS Lock; its reset value is
-                                    // OSLM=0b10 (bits[3,0]) ⇒ 0x8, OSLK=0 (unlocked).
-                                    // Report the lock as implemented and unlocked.
-                                    0x8
                                 } else {
                                     tracelimit::warn_ratelimited!(
                                         ?reg,
-                                        pc = self.vcpu.pc(),
                                         "returning zero for unknown system register"
                                     );
                                     0
                                 };
-                                // Reads targeting XZR still perform register side effects.
                                 if !reg_is_xzr(iss.rt()) {
                                     self.vcpu.set_gp(iss.rt(), value);
                                 }
@@ -1706,17 +1384,15 @@ impl<'p> Processor for HvfProcessor<'p> {
                                 } else {
                                     self.vcpu.gp(iss.rt())
                                 };
-                                let handled_by_gic = self.partition.gicd.write_sysreg(
+                                if !self.partition.gicd.write_sysreg(
                                     &mut self.gicr,
                                     reg,
                                     value,
-                                    |index| self.partition.vps[index].notify(),
-                                );
-                                if !handled_by_gic && !self.pmu.write_sysreg(reg, value, now) {
+                                    |index| self.partition.vps[index].wake(),
+                                ) {
                                     tracelimit::warn_ratelimited!(
                                         ?reg,
                                         value,
-                                        pc = self.vcpu.pc(),
                                         "ignoring write to unknown system register"
                                     );
                                 }

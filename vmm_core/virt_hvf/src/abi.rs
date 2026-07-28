@@ -81,14 +81,8 @@ unsafe extern "C" {
         exit: *mut *mut HvVcpuExit,
         config: *const (),
     ) -> HvfResult;
-    /// Apple `hv_vcpu.h`: destroys the current thread's vCPU and must be
-    /// called by that owning thread.
     pub fn hv_vcpu_destroy(vcpu: u64) -> HvfResult;
-    /// Apple `hv_vcpu.h`: blocks on the owning thread until a VM exit or
-    /// cancellation by [`hv_vcpus_exit`].
     pub fn hv_vcpu_run(vcpu: u64) -> HvfResult;
-    /// Apple `hv_vcpu.h`: forces an exit; when the vCPU is not running, its
-    /// next [`hv_vcpu_run`] returns without entering the guest.
     pub fn hv_vcpus_exit(vcpus: *const u64, vcpu_count: u32) -> HvfResult;
     pub fn hv_vcpu_get_reg(vcpu: u64, reg: HvReg, value: *mut u64) -> HvfResult;
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: HvReg, value: u64) -> HvfResult;
@@ -100,15 +94,13 @@ unsafe extern "C" {
         ty: HvInterruptType,
         pending: *mut bool,
     ) -> HvfResult;
-    /// Apple `hv_vcpu.h`: pending inputs are cleared when [`hv_vcpu_run`]
-    /// returns and must be supplied again before each run.
     pub fn hv_vcpu_set_pending_interrupt(
         vcpu: u64,
         ty: HvInterruptType,
         pending: bool,
     ) -> HvfResult;
-    /// Apple `hv_vcpu.h`: masks VTimer exits while the VMM represents the
-    /// level interrupt in its virtual interrupt controller.
+    #[expect(dead_code)]
+    pub fn hv_vcpu_get_vtimer_mask(vcpu: u64, vtimer_is_masked: *mut bool) -> HvfResult;
     pub fn hv_vcpu_set_vtimer_mask(vcpu: u64, vtimer_is_masked: bool) -> HvfResult;
     /// Apple `hv_vcpu.h`: reads the offset in
     /// `CNTVCT_EL0 = mach_absolute_time() - offset`.

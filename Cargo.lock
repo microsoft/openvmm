@@ -9389,7 +9389,6 @@ dependencies = [
  "hv1_hypercall",
  "hvdef",
  "inspect",
- "loom",
  "memory_range",
  "open_enum",
  "parking_lot",
