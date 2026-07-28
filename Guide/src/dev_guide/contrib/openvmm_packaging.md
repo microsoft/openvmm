@@ -36,6 +36,12 @@ needs the distribution build packages below, plus two environment overrides
 (`PROTOC` and `OPENSSL_NO_VENDOR`).
 ```
 
+OpenVMM's CI builds this configuration on every change and checks that the
+resulting binary links the distribution's OpenSSL, so a change that only works
+against `.packages/` is caught upstream rather than by a packager. The CI job is
+the executable form of this page: if the two descriptions ever disagree, the job
+is the one that is right.
+
 ## Toolchain
 
 The workspace declares a minimum supported Rust version (MSRV) in the root
