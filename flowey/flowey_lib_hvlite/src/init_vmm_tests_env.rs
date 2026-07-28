@@ -68,14 +68,12 @@ flowey_request! {
         pub disable_remote_artifacts: bool,
         /// Whether to reuse VHDs created with prep_steps
         pub reuse_prepped_vhds: bool,
-        /// Whether to resolve and stage the UEFI firmware (`mu_msvm`) and the
-        /// Windows `virtio-win` guest drivers into the content dir.
-        ///
-        /// The full vmm_tests suite needs both (UEFI guests, Windows guests), so
-        /// its callers set this true. Linux-direct-only callers such as the
-        /// virtio-villain runner never use either, so they set this false to
-        /// skip those downloads.
-        pub stage_uefi_and_virtio_win: bool,
+        /// Whether to resolve and stage the UEFI firmware (`mu_msvm`) into the
+        /// content dir.
+        pub stage_uefi: bool,
+        /// Whether to resolve and stage the Windows `virtio-win` guest drivers
+        /// into the content dir.
+        pub stage_virtio_win: bool,
         /// Whether to resolve and stage the virtio-villain guest artifact (the
         /// initramfs and `tests.tsv`) into the content dir.
         ///
@@ -125,7 +123,8 @@ impl SimpleFlowNode for Node {
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
-            stage_uefi_and_virtio_win,
+            stage_uefi,
+            stage_virtio_win,
             stage_virtio_villain,
         } = request;
 
@@ -155,11 +154,11 @@ impl SimpleFlowNode for Node {
                     })
                 });
 
-        let uefi = stage_uefi_and_virtio_win.then(|| {
+        let uefi = stage_uefi.then(|| {
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v })
         });
 
-        let virtio_win_dir = stage_uefi_and_virtio_win
+        let virtio_win_dir = stage_virtio_win
             .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
         let virtio_villain = stage_virtio_villain

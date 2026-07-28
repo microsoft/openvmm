@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Shared core for running the `virtio_villain_tests` nextest suite against a
-//! staged OpenVMM under KVM.
+//! staged OpenVMM.
 //!
 //! This is the villain analogue of [`crate::test_nextest_vmm_tests_archive`]:
 //! it owns everything both the local build-and-run job
@@ -20,8 +20,6 @@
 //! forwards them to the logview website.
 
 use crate::build_openvmm::OpenvmmOutput;
-use crate::common::CommonArch;
-use crate::common::CommonTriple;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
@@ -30,8 +28,8 @@ use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
-        /// Guest/host architecture to test. Phase 1 is Linux-only (KVM).
-        pub arch: CommonArch,
+        /// Target triple the virtio-villain tests are built for.
+        pub target: target_lexicon::Triple,
         /// The OpenVMM binary the villain crate launches (built from source by
         /// the local job, or resolved from an artifact by the consume job).
         pub openvmm: ReadVar<OpenvmmOutput>,
@@ -81,7 +79,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            arch,
+            target,
             openvmm,
             run_kind,
             nextest_profile,
@@ -94,13 +92,6 @@ impl SimpleFlowNode for Node {
             disable_remote_artifacts,
             done,
         } = request;
-
-        // Phase 1: Linux host only (villain drives OpenVMM under KVM).
-        let target = match arch {
-            CommonArch::X86_64 => CommonTriple::X86_64_LINUX_GNU,
-            CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_GNU,
-        }
-        .as_triple();
 
         // Stage OpenVMM, the linux-direct guest kernel, and the villain guest
         // artifact (initramfs + tests.tsv) into the content dir and get the env
@@ -135,7 +126,8 @@ impl SimpleFlowNode for Node {
             reuse_prepped_vhds: false,
             // Linux-direct only: skip the UEFI firmware and Windows virtio-win
             // driver downloads, which villain never uses.
-            stage_uefi_and_virtio_win: false,
+            stage_uefi: false,
+            stage_virtio_win: false,
             stage_virtio_villain: true,
         });
 

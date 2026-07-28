@@ -204,7 +204,7 @@ impl IntoPipeline for CheckinGatesCli {
             pipeline.new_typed_artifact("aarch64-linux-vmm-tests-archive");
 
         // virtio-villain nextest archive (built on the linux build machine,
-        // consumed by the KVM villain test job) + the OpenVMM binary it drives,
+        // consumed by the villain test job) + the OpenVMM binary it drives,
         // reused from the linux build job below.
         let (pub_villain_archive_linux_x86, use_villain_archive_linux_x86) =
             pipeline.new_typed_artifact("x64-linux-virtio-villain-tests-archive");
@@ -997,7 +997,7 @@ impl IntoPipeline for CheckinGatesCli {
                     });
 
                     // Also build the virtio-villain nextest archive on this
-                    // build machine so the KVM villain test job can consume it
+                    // build machine so the villain test job can consume it
                     // without a Rust toolchain.
                     let pub_villain_archive_linux_x86 =
                         pub_villain_archive_linux_x86.take().unwrap();
@@ -1787,7 +1787,7 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         // virtio-villain conformance suite: a separate, parallel per-PR job that
-        // drives OpenVMM under KVM against the guest-side villain test matrix.
+        // drives OpenVMM against the guest-side villain test matrix.
         //
         // It consumes the villain nextest archive + the OpenVMM binary built by
         // the linux build job above, so this test job needs no Rust toolchain
@@ -1831,7 +1831,7 @@ impl IntoPipeline for CheckinGatesCli {
                         nextest_villain_archive: ctx
                             .use_typed_artifact(&use_villain_archive_linux_x86),
                         openvmm: ctx.use_typed_artifact(&use_openvmm),
-                        arch: CommonArch::X86_64,
+                        target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
                         run_ignored: false,
                         artifact_dir: pub_villain_results.map(|x| ctx.publish_artifact(x)),
                         done: ctx.new_done_handle(),

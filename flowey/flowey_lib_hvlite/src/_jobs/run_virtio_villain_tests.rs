@@ -2,26 +2,8 @@
 // Licensed under the MIT License.
 
 //! Local job: build OpenVMM, build the `virtio_villain_tests` nextest suite
-//! from source, and run it against OpenVMM under KVM.
-//!
-//! This is the *local* (xflowey `virtio-villain-run`) runner: it builds
-//! everything from source on the developer's machine and runs it in one shot.
-//! CI instead splits the work — [`crate::build_nextest_virtio_villain_tests`]
-//! builds a nextest archive on a build machine and
-//! [`crate::_jobs::consume_and_test_nextest_virtio_villain_archive`] runs it on
-//! a KVM test machine that has no Rust toolchain.
-//!
-//! Both this job and the CI consume job funnel through the shared
-//! [`crate::test_virtio_villain`] node, which owns the staging, artifact
-//! resolution, nextest run, and result publishing. The only difference is
-//! expressed as the [`NextestRunKind`]: this job builds the suite from source
-//! ([`NextestRunKind::BuildAndRun`]).
-//!
-//! Known-failing villain tests are marked *ignored* by the harness, so they are
-//! skipped by default. Pass `run_ignored` to run them too (e.g. during fix
-//! development).
+//! from source, and run it against OpenVMM.
 
-use crate::common::CommonArch;
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
@@ -33,8 +15,8 @@ use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 
 flowey_request! {
     pub struct Params {
-        /// Guest/host architecture to test. Phase 1 is Linux-only (KVM).
-        pub arch: CommonArch,
+        /// Target triple to build and run the tests for.
+        pub target: CommonTriple,
         /// Also run known-failing (ignored) villain tests.
         pub run_ignored: bool,
         /// Optional nextest filter expression to run only a subset of tests.
@@ -61,7 +43,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
-            arch,
+            target,
             run_ignored,
             nextest_filter_expr,
             test_content_dir,
@@ -69,11 +51,7 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        // Phase 1: Linux host only (villain drives OpenVMM under KVM).
-        let target = match arch {
-            CommonArch::X86_64 => CommonTriple::X86_64_LINUX_GNU,
-            CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_GNU,
-        };
+        let target_triple = target.as_triple();
 
         let test_content_dir = test_content_dir.absolute()?;
 
@@ -91,7 +69,7 @@ impl SimpleFlowNode for Node {
         // Build env for the test binary compilation (native, so effectively a
         // no-op, but keeps cross-build parity with the vmm_tests runner).
         let build_env = ctx.reqv(|v| crate::init_cross_build::Request {
-            target: target.as_triple(),
+            target: target_triple.clone(),
             injected_env: v,
         });
 
@@ -101,13 +79,13 @@ impl SimpleFlowNode for Node {
             }),
             features: Default::default(),
             no_default_features: false,
-            target: target.as_triple(),
+            target: target_triple.clone(),
             profile: CargoBuildProfile::Debug,
             extra_env: build_env,
         };
 
         ctx.req(crate::test_virtio_villain::Request {
-            arch,
+            target: target_triple,
             openvmm,
             run_kind: NextestRunKind::BuildAndRun(build_params),
             nextest_profile,

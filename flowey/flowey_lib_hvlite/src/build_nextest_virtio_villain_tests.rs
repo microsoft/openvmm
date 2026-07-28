@@ -1,15 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build and archive the `virtio_villain_tests` nextest suite so it can be run
-//! on a separate machine that has no Rust build toolchain.
+//! Build and archive the `virtio_villain_tests` nextest suite.
 //!
 //! This is the virtio-villain analogue of [`crate::build_nextest_vmm_tests`]:
-//! it runs `cargo nextest archive` on a *build* machine (which has protoc, the
-//! musl sysroot, mesh's build deps, etc.) and emits a self-contained archive
-//! that [`crate::_jobs::consume_and_test_nextest_virtio_villain_archive`] later
-//! unpacks and runs on a KVM *test* machine. Keeping the build off the test
-//! machine is why we archive rather than build-and-run in one job.
+//! it emits a self-contained cargo-nextest archive for the
+//! `virtio_villain_tests` package.
 
 use crate::common::CommonProfile;
 use flowey::node::prelude::*;

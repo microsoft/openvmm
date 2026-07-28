@@ -107,7 +107,7 @@ pub struct VmmTestsRunCli {
     ///
     /// `vmm-tests` (the default) is the standard suite with automatic artifact
     /// discovery. `virtio-villain` is the guest virtio conformance /
-    /// fault-injection suite; it runs on the Linux/KVM host and ignores the
+    /// fault-injection suite; it runs on the Linux host and ignores the
     /// vmm_tests-specific options (`--target`, `--incubator`, VHD/kernel
     /// options), reusing only the shared options (`--dir`, `--filter`,
     /// `--ci-profile`, `--run-ignored`, `--verbose`, `--install-missing-deps`).
@@ -524,13 +524,18 @@ fn into_virtio_villain_pipeline(args: VirtioVillainArgs) -> anyhow::Result<Pipel
         install_missing_deps,
     } = args;
 
-    // Phase 1 is Linux-only (villain drives OpenVMM under KVM).
-    let arch = match (
+    let target = match (
         FlowArch::host(backend_hint),
         FlowPlatform::host(backend_hint),
     ) {
-        (FlowArch::X86_64, FlowPlatform::Linux(_)) => CommonArch::X86_64,
-        (FlowArch::Aarch64, FlowPlatform::Linux(_)) => CommonArch::Aarch64,
+        (FlowArch::X86_64, FlowPlatform::Linux(_)) => CommonTriple::Common {
+            arch: CommonArch::X86_64,
+            platform: CommonPlatform::LinuxGnu,
+        },
+        (FlowArch::Aarch64, FlowPlatform::Linux(_)) => CommonTriple::Common {
+            arch: CommonArch::Aarch64,
+            platform: CommonPlatform::LinuxGnu,
+        },
         _ => anyhow::bail!("the virtio-villain suite currently requires a Linux host"),
     };
 
@@ -575,7 +580,7 @@ fn into_virtio_villain_pipeline(args: VirtioVillainArgs) -> anyhow::Result<Pipel
         })
         .dep_on(
             |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
-                arch,
+                target,
                 run_ignored,
                 nextest_filter_expr,
                 test_content_dir,

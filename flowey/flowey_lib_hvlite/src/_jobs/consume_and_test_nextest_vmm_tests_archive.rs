@@ -265,7 +265,8 @@ impl SimpleFlowNode for Node {
             use_relative_paths: false,
             disable_remote_artifacts: true,
             reuse_prepped_vhds: false,
-            stage_uefi_and_virtio_win: true,
+            stage_uefi: true,
+            stage_virtio_win: true,
             stage_virtio_villain: false,
         });
 
