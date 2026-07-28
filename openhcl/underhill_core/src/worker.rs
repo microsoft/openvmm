@@ -2555,7 +2555,7 @@ async fn new_underhill_vm(
         };
 
         // check if vmgs includes custom UEFI JSON
-        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+        let custom_uefi_json = if let Some(vmgs_client) = vmgs_client.as_ref() {
             vmgs_client
                 .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
                 .context("failed to instantiate custom UEFI JSON store")?
@@ -2568,7 +2568,7 @@ async fn new_underhill_vm(
 
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
-            custom_uefi_json: custom_uefi_json_data,
+            custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
             use_mmio: cfg!(not(guest_arch = "x86_64")),
