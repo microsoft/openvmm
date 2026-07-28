@@ -58,7 +58,7 @@ const fn feature_bit(n: u32) -> u64 {
 /// `vm/devices/virtio/virtio/src/transport/core.rs`, `with_version_1(true)` and
 /// `with_access_platform(true)`), so they must be included when deciding whether
 /// a required feature is offered.
-const COMMON_FEATURES: u64 = feature_bit(32) // VIRTIO_F_VERSION_1
+pub const COMMON_FEATURES: u64 = feature_bit(32) // VIRTIO_F_VERSION_1
     | feature_bit(33); // VIRTIO_F_ACCESS_PLATFORM
 
 /// The virtio capabilities the kitchen-sink VM exposes for one device.
