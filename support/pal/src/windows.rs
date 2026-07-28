@@ -62,11 +62,17 @@ use windows_sys::Win32::Foundation::STATUS_PENDING;
 use windows_sys::Win32::Foundation::UNICODE_STRING;
 use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::SetFileCompletionNotificationModes;
+use windows_sys::Win32::Storage::FileSystem::WriteFile;
+use windows_sys::Win32::System::Console::GetStdHandle;
+use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Console::SetStdHandle;
+use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_CONTINUE_SEARCH;
+use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS;
 use windows_sys::Win32::System::Diagnostics::Debug::GetErrorMode;
 use windows_sys::Win32::System::Diagnostics::Debug::SEM_FAILCRITICALERRORS;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
+use windows_sys::Win32::System::Diagnostics::Debug::SetUnhandledExceptionFilter;
 use windows_sys::Win32::System::IO::CreateIoCompletionPort;
 use windows_sys::Win32::System::IO::GetQueuedCompletionStatusEx;
 use windows_sys::Win32::System::IO::OVERLAPPED;
@@ -1164,6 +1170,75 @@ pub fn disable_hard_error_dialog() {
     // SAFETY: This Win32 API has no safety requirements.
     unsafe {
         SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS);
+    }
+}
+
+/// Installs a top-level exception filter that describes an unhandled exception
+/// on stderr before the process dies.
+///
+/// Without this, an unhandled exception (an access violation, or an exception
+/// raised by any library in the process) terminates the process with no
+/// diagnostics whatsoever: the exit code, which is just the exception code, is
+/// the only evidence left behind. That is a very poor place to start an
+/// investigation from when the crash only reproduces occasionally under test.
+///
+/// The filter returns `EXCEPTION_CONTINUE_SEARCH`, so the process still dies
+/// exactly as it would have, with the same exit code, and any configured error
+/// reporting still runs.
+pub fn log_unhandled_exceptions() {
+    /// Formats into a fixed buffer, dropping anything that does not fit.
+    ///
+    /// The filter runs with the process in an arbitrary state, so it must not
+    /// allocate or take any lock that the faulting thread might already hold.
+    struct StackBuf {
+        buf: [u8; 512],
+        len: usize,
+    }
+
+    impl std::fmt::Write for StackBuf {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            let n = s.len().min(self.buf.len() - self.len);
+            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.len += n;
+            Ok(())
+        }
+    }
+
+    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        use std::fmt::Write;
+
+        // SAFETY: the OS passes a valid pointer to the exception state, which
+        // is live for the duration of the filter.
+        let record = unsafe { &*(*info).ExceptionRecord };
+        let mut out = StackBuf {
+            buf: [0; 512],
+            len: 0,
+        };
+        let _ = writeln!(
+            out,
+            "fatal exception {:#010x} at {:#018x} on thread {}, terminating",
+            record.ExceptionCode,
+            record.ExceptionAddress as usize,
+            // SAFETY: This Win32 API has no safety requirements.
+            unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+        );
+        // SAFETY: writing the initialized prefix of the buffer to stderr.
+        unsafe {
+            let mut written = 0;
+            WriteFile(
+                GetStdHandle(STD_ERROR_HANDLE),
+                out.buf.as_ptr(),
+                out.len as u32,
+                &mut written,
+                null_mut(),
+            );
+        }
+        EXCEPTION_CONTINUE_SEARCH
+    }
+
+    // SAFETY: This Win32 API has no safety requirements.
+    unsafe {
+        SetUnhandledExceptionFilter(Some(filter));
     }
 }
 

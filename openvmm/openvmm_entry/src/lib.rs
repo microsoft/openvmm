@@ -2465,7 +2465,10 @@ fn prepare_snapshot_restore(
 
 fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
-    pal::windows::disable_hard_error_dialog();
+    {
+        pal::windows::disable_hard_error_dialog();
+        pal::windows::log_unhandled_exceptions();
+    }
 
     tracing_init::enable_tracing()?;
 
