@@ -178,6 +178,12 @@ pub struct ConsommeConfig {
     /// IPv4 address assigned to the endpoint.
     #[inspect(display)]
     pub client_ip: Ipv4Address,
+    /// Initial client link-local IPv6 address, if known by the caller.
+    ///
+    /// Consomme may update this address after learning a different address
+    /// from guest NDP or IPv6 traffic.
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
+    pub initial_client_ip_ipv6: Option<Ipv6Address>,
     /// Client MAC address.
     #[inspect(display)]
     pub client_mac: EthernetAddress,
@@ -304,6 +310,7 @@ impl ConsommeConfig {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
             client_ip: Ipv4Address::new(10, 0, 0, 2),
+            initial_client_ip_ipv6: None,
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             prefix_len_ipv6: 64,
@@ -821,6 +828,7 @@ impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(config: ConsommeConfig, mut params: ConsommeParams) -> Self {
         let ipv6_enabled = Self::detect_ipv6_support(config.skip_ipv6_checks);
+        let initial_client_ip_ipv6 = config.initial_client_ip_ipv6;
         let dns =
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
@@ -847,7 +855,7 @@ impl Consomme {
                 },
                 runtime: ConsommePrimaryRuntime {
                     local_addr_map: local_addr_map::LocalAddrMap::new(),
-                    client_ip_ipv6: None,
+                    client_ip_ipv6: initial_client_ip_ipv6,
                     client_ip_ipv6_routable: None,
                 },
                 dns,
@@ -885,14 +893,6 @@ impl Consomme {
     /// Gets the immutable endpoint configuration.
     pub fn config(&self) -> &ConsommeConfig {
         &self.primary.config.immutable
-    }
-
-    /// Gets direct mutable access to the parameters.
-    ///
-    /// Runtime callers should use [`Consomme::update_params`] so dependent
-    /// state is reconciled after the update.
-    pub fn params_mut(&mut self) -> &mut ConsommeParams {
-        &mut self.primary.config.params
     }
 
     /// Updates parameters and reconciles dependent runtime state.

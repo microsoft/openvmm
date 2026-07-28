@@ -513,6 +513,20 @@ fn handle_ipv6_updates_link_local_from_traffic() {
 }
 
 #[test]
+fn new_seeds_initial_client_ipv6() {
+    let initial_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let mut config = ConsommeConfig::new();
+    config.initial_client_ip_ipv6 = Some(initial_address);
+
+    let consomme = Consomme::new(config, ConsommeParams::new().unwrap());
+
+    assert_eq!(
+        consomme.primary.runtime.client_ip_ipv6,
+        Some(initial_address)
+    );
+}
+
+#[test]
 fn update_params_preserves_runtime_state_for_unrelated_changes() {
     let mut config = ConsommeConfig::new();
     config.skip_ipv6_checks = true;

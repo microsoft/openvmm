@@ -907,6 +907,7 @@ mod tests {
         assert!(
             access
                 .inner
+                .shard
                 .udp
                 .listeners
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
@@ -1026,6 +1027,7 @@ mod tests {
         assert!(
             access
                 .inner
+                .shard
                 .udp
                 .listeners
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
