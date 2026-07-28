@@ -256,9 +256,12 @@ struct MshvPartitionInner {
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
     #[cfg(guest_arch = "x86_64")]
-    cpuid: virt::CpuidLeafSet,
-    #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
+    #[cfg(guest_arch = "x86_64")]
+    /// SNP launch progress, synchronized because loading and memory mapping use
+    /// shared partition references.
+    snp_launch_state: Mutex<arch::SnpLaunchState>,
+    isolation: virt::IsolationType,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
@@ -421,7 +424,7 @@ pub struct MshvProcessorBinder {
 struct MshvVpRunner<'a> {
     vcpufd: &'a VcpuFd,
     #[cfg(guest_arch = "x86_64")]
-    reg_page: *mut hvdef::HvX64RegisterPage,
+    reg_page: Option<*mut hvdef::HvX64RegisterPage>,
 }
 
 impl MshvVpRunner<'_> {
@@ -436,10 +439,13 @@ impl MshvVpRunner<'_> {
 
     #[cfg(guest_arch = "x86_64")]
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
+        let page = self
+            .reg_page
+            .expect("register page is unavailable for isolated VPs");
         // SAFETY: VP is stopped (returned from run()), so we have exclusive
-        // access. The raw pointer was obtained from the kernel's mmap of
-        // the register page and remains valid for the VP's lifetime.
-        unsafe { &mut *self.reg_page }
+        // access. The pointer is the kernel's VP register-page mapping and
+        // remains valid for the processor borrow.
+        unsafe { &mut *page }
     }
 }
 
@@ -659,6 +665,9 @@ enum ErrorInner {
     CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
     CreateVcpu(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("VP register page is unavailable")]
+    MissingRegisterPage,
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -670,6 +679,48 @@ enum ErrorInner {
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
     SetPartitionProperty(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP launch is already in progress")]
+    SnpLaunchInProgress,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP launch previously failed")]
+    SnpLaunchFailed,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("unsupported SNP initial page import type: {0:?}")]
+    UnsupportedSnpPageImportType(virt::InitialPageImportType),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("invalid SNP initial page range")]
+    InvalidSnpPageRange,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("missing SNP VMSA import")]
+    MissingSnpVmsa,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("multiple SNP VMSA imports")]
+    MultipleSnpVmsa,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("missing SNP CPUID import")]
+    MissingSnpCpuid,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("multiple SNP CPUID imports")]
+    MultipleSnpCpuid,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("too many SNP CPUID entries: {0}")]
+    TooManySnpCpuidEntries(usize),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to query SNP CPUID")]
+    SnpCpuid(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to write SNP CPUID page")]
+    SnpGuestMemory(#[source] guestmem::GuestMemoryError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to map SNP guest memory")]
+    SnpMapGuestMemory(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to import SNP pages")]
+    ImportIsolatedPages(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to complete SNP isolated import")]
+    CompleteIsolatedImport(#[source] KernelError),
     #[error("register access error")]
     Register(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]
@@ -693,9 +744,6 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("host does not support required cpu capabilities")]
-    Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[error("too many virtual processors: {0}")]
     TooManyVps(u32),
     #[cfg(guest_arch = "x86_64")]
@@ -793,7 +841,13 @@ impl PartitionAccessState for MshvPartition {
 
 #[derive(Debug, Default)]
 struct MshvMemoryRangeState {
-    ranges: Vec<Option<mshv_user_mem_region>>,
+    ranges: Vec<Option<MshvMemoryRange>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct MshvMemoryRange {
+    region: mshv_user_mem_region,
+    mapped: bool,
 }
 
 impl virt::PartitionMemoryMapper for MshvPartition {
@@ -813,6 +867,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         writable: bool,
         exec: bool,
     ) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "x86_64")]
+        let snp_launch_state =
+            (self.isolation == virt::IsolationType::Snp).then(|| self.snp_launch_state.lock());
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -820,7 +877,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         let mut slot_to_use = None;
         for (slot, range) in state.ranges.iter_mut().enumerate() {
             match range {
-                Some(range) if range.userspace_addr == data as u64 => {
+                Some(range) if range.region.userspace_addr == data as u64 => {
                     slot_to_use = Some(slot);
                     break;
                 }
@@ -857,8 +914,38 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             exec,
         )
         .entered();
-        self.vmfd.map_user_memory(mem_region)?;
-        state.ranges[slot_to_use] = Some(mem_region);
+        #[cfg(guest_arch = "x86_64")]
+        let mapped = match snp_launch_state.as_deref() {
+            Some(arch::SnpLaunchState::NotStarted) => {
+                // SNP mappings release host access, so record them now and
+                // flush them only after all loader writes and the secure
+                // transition.
+                false
+            }
+            Some(arch::SnpLaunchState::Started) => {
+                anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
+            }
+            Some(arch::SnpLaunchState::Finished) => {
+                self.vmfd.map_user_memory(mem_region)?;
+                true
+            }
+            Some(arch::SnpLaunchState::Failed) => {
+                anyhow::bail!("cannot add a memory mapping after SNP launch failed")
+            }
+            None => {
+                self.vmfd.map_user_memory(mem_region)?;
+                true
+            }
+        };
+        #[cfg(guest_arch = "aarch64")]
+        let mapped = {
+            self.vmfd.map_user_memory(mem_region)?;
+            true
+        };
+        state.ranges[slot_to_use] = Some(MshvMemoryRange {
+            region: mem_region,
+            mapped,
+        });
         Ok(())
     }
 
@@ -866,10 +953,22 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         let unmap_start = addr >> HV_PAGE_SHIFT;
         let unmap_end = (addr + size) >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
+        anyhow::ensure!(
+            state.ranges.iter().flatten().all(|range| {
+                let region_start = range.region.guest_pfn;
+                let region_end = region_start + (range.region.size >> HV_PAGE_SHIFT);
+                (unmap_start <= region_start && region_end <= unmap_end)
+                    || region_end <= unmap_start
+                    || unmap_end <= region_start
+            }),
+            "unmap range partially overlaps a tracked memory region"
+        );
+
         for entry in &mut state.ranges {
-            let Some(region) = entry.as_ref() else {
+            let Some(range) = entry.as_ref() else {
                 continue;
             };
+            let region = &range.region;
             let region_start = region.guest_pfn;
             let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
             if unmap_start <= region_start && region_end <= unmap_end {
@@ -880,13 +979,10 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
                     size = region.size,
                 )
                 .entered();
-                self.vmfd.unmap_user_memory(*region)?;
+                if range.mapped {
+                    self.vmfd.unmap_user_memory(*region)?;
+                }
                 *entry = None;
-            } else {
-                assert!(
-                    region_end <= unmap_start || unmap_end <= region_start,
-                    "unmap range partially overlaps a mapped region"
-                );
             }
         }
         Ok(())
