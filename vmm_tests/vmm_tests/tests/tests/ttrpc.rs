@@ -61,8 +61,11 @@ fn test_ttrpc_interface(
     let pipette = std::fs::read(pipette_path.get()).context("failed to read pipette")?;
     let pipette_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
         .context("failed to inject pipette into test initrd")?;
-    let mut pipette_initrd_file = tempfile::NamedTempFile::new()?;
-    pipette_initrd_file.write_all(&pipette_initrd)?;
+    let mut pipette_initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())
+        .context("failed to create initrd temp file")?;
+    pipette_initrd_file
+        .write_all(&pipette_initrd)
+        .context("failed to write initrd temp file")?;
 
     // The serial console device differs by architecture: x86 exposes a 16550
     // UART as `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
