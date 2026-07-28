@@ -26,17 +26,17 @@
 //! per test, the virtio feature bits (`required_features`) and virtqueue count
 //! (`min_queues`) it needs. A test is expected to skip when it targets a device
 //! we attach but asks for a feature we don't offer or more queues than we expose
-//! (see [`DeviceCaps`]). This is derived directly from the device models, so it
+//! (see `DeviceCaps`). This is derived directly from the device models, so it
 //! tracks reality as the models change.
 //!
 //! Villain's metadata is imperfect, so a small, explicit set of exceptions
 //! overrides the default rule. Every exception is a documented deviation with a
 //! `TODO` to follow up on *why* villain's metadata didn't match:
 //!
-//! * [`FORCE_RUN`] — the pre-check predicts a skip but the test actually **passes**
+//! * `FORCE_RUN` — the pre-check predicts a skip but the test actually **passes**
 //!   (its body only exercises the feature when negotiated, and passes vacuously
 //!   otherwise). These must keep running so a real regression surfaces.
-//! * [`FORCE_IGNORE`] — the pre-check predicts the test can run but it self-skips
+//! * `FORCE_IGNORE` — the pre-check predicts the test can run but it self-skips
 //!   at runtime because villain's `tests.tsv` *understates* the precondition
 //!   (e.g. a multiqueue test registered with `min_queues = 0`).
 //!
@@ -58,25 +58,25 @@ const fn feature_bit(n: u32) -> u64 {
 /// `vm/devices/virtio/virtio/src/transport/core.rs`, `with_version_1(true)` and
 /// `with_access_platform(true)`), so they must be included when deciding whether
 /// a required feature is offered.
-pub const COMMON_FEATURES: u64 = feature_bit(32) // VIRTIO_F_VERSION_1
+const COMMON_FEATURES: u64 = feature_bit(32) // VIRTIO_F_VERSION_1
     | feature_bit(33); // VIRTIO_F_ACCESS_PLATFORM
 
 /// The virtio capabilities the kitchen-sink VM exposes for one device.
-pub struct DeviceCaps {
+struct DeviceCaps {
     /// Device id (`0x1040 + virtio_device_type`).
-    pub device_id: u16,
+    device_id: u16,
     /// Device-specific feature bits the model advertises via its `traits()`
     /// (the transport-common bits in [`COMMON_FEATURES`] are added by
     /// [`DeviceCaps::offered_features`], not stored here).
     device_features: u64,
     /// Number of virtqueues the device exposes.
-    pub num_queues: u16,
+    num_queues: u16,
 }
 
 impl DeviceCaps {
     /// The full set of feature bits negotiable on this device, i.e. the device's
     /// own bits plus the transport-common [`COMMON_FEATURES`].
-    pub fn offered_features(&self) -> u64 {
+    fn offered_features(&self) -> u64 {
         self.device_features | COMMON_FEATURES
     }
 }
@@ -94,7 +94,7 @@ impl DeviceCaps {
 /// * vsock   `vm/devices/virtio/virtio_vsock/src/lib.rs` (`traits`)
 /// * fs      `vm/devices/virtio/virtiofs/src/virtio.rs` (`traits`)
 /// * pmem    `vm/devices/virtio/virtio_pmem/src/lib.rs` (`traits`)
-pub const DEVICE_CAPS: &[DeviceCaps] = &[
+const DEVICE_CAPS: &[DeviceCaps] = &[
     DeviceCaps {
         device_id: 0x1041, // network
         device_features: 0x0100_000C_3001_1823,
@@ -133,24 +133,24 @@ pub const DEVICE_CAPS: &[DeviceCaps] = &[
 ];
 
 /// The capabilities for `device_id`, if the kitchen-sink VM attaches it.
-pub fn device_caps(device_id: u16) -> Option<&'static DeviceCaps> {
+fn device_caps(device_id: u16) -> Option<&'static DeviceCaps> {
     DEVICE_CAPS.iter().find(|c| c.device_id == device_id)
 }
 
 /// A villain test whose metadata pre-check verdict we deliberately override,
 /// with the reason and a follow-up to reconcile villain's metadata.
-pub struct Exception {
+struct Exception {
     /// The villain test name (`tests.tsv` column 1 / `vv.test=<name>`).
-    pub name: &'static str,
+    name: &'static str,
     /// Why the pre-check is wrong for this test, and what to follow up on.
-    pub reason: &'static str,
+    reason: &'static str,
 }
 
 /// Tests the metadata pre-check predicts will skip, but which actually **pass**:
 /// their body only exercises the declared feature when it is negotiated and
 /// passes vacuously otherwise. They must keep running so a genuine regression
 /// (the test starting to fail) is caught rather than hidden behind `#[ignore]`.
-pub const FORCE_RUN: &[Exception] = &[Exception {
+const FORCE_RUN: &[Exception] = &[Exception {
     name: "N0161",
     reason: "tests.tsv declares VIRTIO_NET_F_RSC_EXT (bit 61), which OpenVMM's \
              net device does not offer, so the pre-check would ignore it. But \
@@ -164,7 +164,7 @@ pub const FORCE_RUN: &[Exception] = &[Exception {
 /// runtime because villain's `tests.tsv` understates the precondition they check
 /// for. Ignored with the specific reason; each carries a `TODO(villain)` to fix
 /// the upstream metadata so it can be dropped from this hand-list.
-pub const FORCE_IGNORE: &[Exception] = &[
+const FORCE_IGNORE: &[Exception] = &[
     // --- Multiqueue: self-SKIP unless the device exposes >= 2 (or 3) virtqueues,
     // but tests.tsv records min_queues = 0. OpenVMM's block exposes 1 request
     // queue and net exposes 2 (no control/RSS queues). TODO(villain): record the
@@ -505,8 +505,8 @@ fn find_exception(list: &'static [Exception], name: &str) -> Option<&'static Exc
 /// expect to actually run (and must not hide behind `#[ignore]`).
 ///
 /// The decision order is:
-/// 1. [`FORCE_RUN`] override — never ignore a test we know passes.
-/// 2. [`FORCE_IGNORE`] override — ignore tests whose runtime precondition
+/// 1. `FORCE_RUN` override — never ignore a test we know passes.
+/// 2. `FORCE_IGNORE` override — ignore tests whose runtime precondition
 ///    `tests.tsv` understates.
 /// 3. Device-agnostic PCI tests (`device_id == 0`, non-MMIO): villain's
 ///    `virtio_pci_find(0)` looks for a literal PCI device `0x0000`, which no
