@@ -1219,7 +1219,7 @@ async fn vm_config_from_command_line(
         }
     };
 
-    if opt.uefi {
+    if opt.uefi && opt.igvm.is_none() && !opt.pcat {
         let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
