@@ -104,6 +104,11 @@ impl<T: IoAccess> Serial<T> {
     /// Write a single byte to the serial port, blocking until the transmit
     /// holding register is empty.
     pub fn write_byte(&self, b: u8) {
+        let _guard = self.mutex.lock();
+        self.write_byte_unlocked(b);
+    }
+
+    fn write_byte_unlocked(&self, b: u8) {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
             while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {
@@ -142,9 +147,9 @@ impl<T: IoAccess> fmt::Write for Serial<T> {
         let _guard = self.mutex.lock();
         for &b in s.as_bytes() {
             if b == b'\n' {
-                self.write_byte(b'\r');
+                self.write_byte_unlocked(b'\r');
             }
-            self.write_byte(b);
+            self.write_byte_unlocked(b);
         }
         Ok(())
     }
