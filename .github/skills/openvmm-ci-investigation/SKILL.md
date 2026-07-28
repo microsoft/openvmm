@@ -23,8 +23,12 @@ python3 repo_support/investigate_ci.py 23017249697
 ```
 
 The script automatically:
-1. Resolves the PR to the correct CI run (prefers failed runs from the main
-   "OpenVMM PR" workflow)
+1. Resolves the PR to **every** failed CI run for its head commit. A commit
+   can have multiple workflows (e.g. "OpenVMM PR" and "OpenVMM Docs PR"),
+   and each failing one is investigated in turn — so don't assume a single
+   run covers everything. Only the newest run of each workflow is used, so
+   superseded runs are ignored; a `NOTE: <workflow> is still in_progress`
+   line means results are incomplete and more failures may appear later.
 2. Identifies failed jobs
 3. Downloads `*-unit-tests-junit-xml` artifacts and parses JUnit XML for
    unit test failures
@@ -39,6 +43,10 @@ Read the script's output to identify:
 - Which tests failed (unit tests and/or VMM tests)
 - Error messages and root causes
 - Whether it's a build/fmt/clippy failure vs. a test failure
+
+When more than one run failed, the output is split by `# RUN n of m` banners.
+Check **all** of them — a docs failure and a build failure are reported in
+separate runs.
 
 Then use the information to diagnose the issue and suggest fixes.
 
@@ -194,6 +202,11 @@ Test results are uploaded to Azure Blob Storage and viewable at:
 - **Formatting / house-rules**: The `quick check [fmt, clippy x64-linux]` job
   failed. No test artifacts will exist. Run `cargo xtask fmt --fix` locally
   and check the job log for the specific rule that failed.
+- **Docs failure**: A job in the separate "OpenVMM Docs PR" workflow failed —
+  either `build mdbook guide` (broken Guide markdown/links; mdbook logs
+  `[ERROR] (mdbook::...)`) or `build and check docs` (rustdoc warnings, which
+  are denied in CI). Reproduce with `cargo doc --no-deps -p <package>`.
+  No test artifacts will exist.
 - **TripleFault**: VM hit a fatal error during boot. Check `petri.jsonl` for
   Hyper-V Worker/Chipset errors. Often infrastructure-related, not caused by
   the PR's code changes.
