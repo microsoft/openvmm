@@ -18,7 +18,6 @@ pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
 use firmware_uefi_custom_vars::FinalVars;
-use firmware_uefi_custom_vars::delta::UefiVarsDelta;
 use firmware_uefi_resources::UefiSecureBootTemplate;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
@@ -42,6 +41,8 @@ pub enum NvramSetupError {
     BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
     #[error("failed to apply custom UEFI template variables")]
     ApplyCustomTemplate(#[source] firmware_uefi_custom_vars::ApplyDeltaError),
+    #[error("failed to load custom UEFI variable JSON")]
+    LoadCustomUefiJson(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
     InjectPreBootVar(
         Cow<'static, ucs2::Ucs2LeSlice>,
@@ -78,7 +79,7 @@ impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
         base_template: Option<UefiSecureBootTemplate>,
-        custom_template_delta: Option<UefiVarsDelta>,
+        custom_uefi_json: Option<Vec<u8>>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
         is_restoring: bool,
@@ -90,7 +91,7 @@ impl NvramServices {
 
         if !is_restoring {
             nvram
-                .inject_vars_on_first_boot(base_template, custom_template_delta)
+                .inject_vars_on_first_boot(base_template, custom_uefi_json)
                 .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
@@ -111,7 +112,7 @@ impl NvramServices {
     async fn inject_vars_on_first_boot(
         &mut self,
         base_template: Option<UefiSecureBootTemplate>,
-        custom_template_delta: Option<UefiVarsDelta>,
+        custom_uefi_json: Option<Vec<u8>>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -124,6 +125,16 @@ impl NvramServices {
         }
 
         let base_template_vars = base_template.map(|template| template.load());
+        let custom_template_delta = custom_uefi_json
+            .map(|json| hyperv_uefi_custom_vars_json::load_delta_from_json(&json))
+            .transpose()
+            .map_err(|err| {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to load custom UEFI variable delta"
+                );
+                NvramSetupError::LoadCustomUefiJson(err)
+            })?;
         let final_vars =
             FinalVars::resolve(base_template_vars, custom_template_delta).map_err(|err| {
                 tracing::error!(
@@ -416,8 +427,6 @@ impl NvramServices {
 mod tests {
     use super::*;
     use firmware_uefi_custom_vars::ApplyDeltaError;
-    use firmware_uefi_custom_vars::delta::SignaturesAppend;
-    use firmware_uefi_custom_vars::delta::SignaturesDelta;
     use pal_async::async_test;
     use ucs2::Ucs2LeSlice;
     use uefi_nvram_storage::EFI_TIME;
@@ -425,17 +434,17 @@ mod tests {
     use uefi_nvram_storage::in_memory::InMemoryNvram;
     use wchar::wchz;
 
-    fn invalid_delta() -> UefiVarsDelta {
-        UefiVarsDelta {
-            signatures: SignaturesDelta::Append(SignaturesAppend {
-                kek: None,
-                db: None,
-                dbx: None,
-                moklist: None,
-                moklistx: None,
-            }),
-            non_signature_vars: Vec::new(),
-        }
+    fn append_without_base_json() -> Vec<u8> {
+        br#"{
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Append",
+                    "signatures": {}
+                }
+            }
+        }"#
+        .to_vec()
     }
 
     fn nvram_services(storage: InMemoryNvram) -> NvramServices {
@@ -457,7 +466,7 @@ mod tests {
         let mut nvram = nvram_services(storage);
 
         nvram
-            .inject_vars_on_first_boot(None, Some(invalid_delta()))
+            .inject_vars_on_first_boot(None, Some(b"not json".to_vec()))
             .await
             .unwrap();
     }
@@ -468,11 +477,23 @@ mod tests {
 
         assert!(matches!(
             nvram
-                .inject_vars_on_first_boot(None, Some(invalid_delta()))
+                .inject_vars_on_first_boot(None, Some(append_without_base_json()))
                 .await,
             Err(NvramSetupError::ApplyCustomTemplate(
                 ApplyDeltaError::AppendWithoutBase
             ))
+        ));
+    }
+
+    #[async_test]
+    async fn malformed_json_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_vars_on_first_boot(None, Some(b"not json".to_vec()))
+                .await,
+            Err(NvramSetupError::LoadCustomUefiJson(_))
         ));
     }
 }

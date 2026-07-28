@@ -2537,28 +2537,26 @@ async fn new_underhill_vm(
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
         use firmware_uefi_resources::UefiSecureBootTemplate;
+        use firmware_uefi_resources::UefiTemplateArch;
+        use firmware_uefi_resources::UefiTemplateGuest;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        #[cfg(guest_arch = "x86_64")]
-        let base_template = match &dps.general.secure_boot_template {
-            SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => {
-                Some(UefiSecureBootTemplate::MicrosoftWindowsX64)
-            }
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                Some(UefiSecureBootTemplate::MicrosoftUefiCaX64)
-            }
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let base_template = match &dps.general.secure_boot_template {
-            SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => {
-                Some(UefiSecureBootTemplate::MicrosoftWindowsAarch64)
-            }
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                Some(UefiSecureBootTemplate::MicrosoftUefiCaAarch64)
-            }
-        };
+        let base_template = UefiSecureBootTemplate::pick(
+            match &dps.general.secure_boot_template {
+                SecureBootTemplateType::None => UefiTemplateGuest::None,
+                SecureBootTemplateType::MicrosoftWindows => UefiTemplateGuest::MicrosoftWindows,
+                SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                    UefiTemplateGuest::MicrosoftUefiCa
+                }
+            },
+            {
+                #[cfg(guest_arch = "x86_64")]
+                let arch = UefiTemplateArch::X64;
+                #[cfg(guest_arch = "aarch64")]
+                let arch = UefiTemplateArch::Aarch64;
+                arch
+            },
+        );
 
         // check if vmgs includes custom UEFI JSON
         let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
@@ -2572,28 +2570,9 @@ async fn new_underhill_vm(
             None
         };
 
-        let custom_template_delta = match custom_uefi_json_data {
-            Some(data) => {
-                let res = hyperv_uefi_custom_vars_json::load_delta_from_json(&data);
-
-                match res {
-                    Ok(delta) => Some(delta),
-                    Err(e) => {
-                        tracing::error!(
-                            CVM_ALLOWED,
-                            error = &e as &dyn std::error::Error,
-                            "failed to load custom UEFI variable delta"
-                        );
-                        return Err(e).context("failed to load custom UEFI variables");
-                    }
-                }
-            }
-            None => None,
-        };
-
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
-            custom_template_delta,
+            custom_uefi_json: custom_uefi_json_data,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
             use_mmio: cfg!(not(guest_arch = "x86_64")),

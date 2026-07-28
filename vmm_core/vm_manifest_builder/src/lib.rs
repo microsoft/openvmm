@@ -114,7 +114,7 @@ impl UefiManifest {
     pub fn new(
         arch: MachineArch,
         base_template: Option<UefiSecureBootTemplate>,
-        custom_template_delta: Option<firmware_uefi_custom_vars::delta::UefiVarsDelta>,
+        custom_uefi_json: Option<Vec<u8>>,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
         diagnostics_rate_limit: Option<u32>,
@@ -126,7 +126,7 @@ impl UefiManifest {
         Self {
             config: UefiConfig {
                 base_template,
-                custom_template_delta,
+                custom_uefi_json,
                 secure_boot,
                 initial_generation_id,
                 use_mmio: !matches!(arch, MachineArch::X86_64),

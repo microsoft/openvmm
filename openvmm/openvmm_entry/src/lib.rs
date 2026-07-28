@@ -1179,38 +1179,31 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let (base_template, custom_template_delta) = {
+    let (base_template, custom_uefi_json) = {
         use firmware_uefi_resources::UefiSecureBootTemplate;
+        use firmware_uefi_resources::UefiTemplateArch;
+        use firmware_uefi_resources::UefiTemplateGuest;
 
-        let base_template = opt
-            .secure_boot_template
-            .map(|template| match (template, arch) {
-                (SecureBootTemplateCli::Windows, MachineArch::X86_64) => {
-                    UefiSecureBootTemplate::MicrosoftWindowsX64
-                }
-                (SecureBootTemplateCli::Windows, MachineArch::Aarch64) => {
-                    UefiSecureBootTemplate::MicrosoftWindowsAarch64
-                }
-                (SecureBootTemplateCli::UefiCa, MachineArch::X86_64) => {
-                    UefiSecureBootTemplate::MicrosoftUefiCaX64
-                }
-                (SecureBootTemplateCli::UefiCa, MachineArch::Aarch64) => {
-                    UefiSecureBootTemplate::MicrosoftUefiCaAarch64
-                }
-            });
+        let base_template = UefiSecureBootTemplate::pick(
+            match opt.secure_boot_template {
+                None => UefiTemplateGuest::None,
+                Some(SecureBootTemplateCli::Windows) => UefiTemplateGuest::MicrosoftWindows,
+                Some(SecureBootTemplateCli::UefiCa) => UefiTemplateGuest::MicrosoftUefiCa,
+            },
+            match arch {
+                MachineArch::X86_64 => UefiTemplateArch::X64,
+                MachineArch::Aarch64 => UefiTemplateArch::Aarch64,
+            },
+        );
 
         // TODO: fallback to VMGS read if no command line flag was given
 
-        let custom_uefi_json_data = match &opt.custom_uefi_json {
+        let custom_uefi_json = match &opt.custom_uefi_json {
             Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
             None => None,
         };
 
-        let custom_template_delta = custom_uefi_json_data
-            .map(|data| hyperv_uefi_custom_vars_json::load_delta_from_json(&data))
-            .transpose()?;
-
-        (base_template, custom_template_delta)
+        (base_template, custom_uefi_json)
     };
 
     if opt.uefi {
@@ -1227,7 +1220,7 @@ async fn vm_config_from_command_line(
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             base_template,
-            custom_template_delta,
+            custom_uefi_json,
             opt.secure_boot,
             log_level,
             None,

@@ -2084,6 +2084,7 @@ dependencies = [
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
+ "hyperv_uefi_custom_vars_json",
  "inspect",
  "jiff",
  "local_clock",
@@ -2121,7 +2122,6 @@ name = "firmware_uefi_resources"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
- "firmware_uefi_custom_vars",
  "hcl_compat_uefi_nvram_resources",
  "hyperv_secure_boot_templates",
  "inspect",
@@ -5725,7 +5725,6 @@ dependencies = [
  "getrandom 0.4.2",
  "guid",
  "hyperv_ic_resources",
- "hyperv_uefi_custom_vars_json",
  "ide_resources",
  "input_core",
  "inspect",
@@ -6342,7 +6341,6 @@ dependencies = [
  "guid",
  "hvdef",
  "hyperv_ic_resources",
- "hyperv_uefi_custom_vars_json",
  "ide_resources",
  "image",
  "initrd_cpio",
@@ -8821,7 +8819,6 @@ dependencies = [
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
- "hyperv_uefi_custom_vars_json",
  "ide",
  "ide_resources",
  "igvm",
@@ -9902,7 +9899,6 @@ name = "vm_manifest_builder"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
  "getrandom 0.4.2",
  "input_core",
