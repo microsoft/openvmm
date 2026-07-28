@@ -231,7 +231,13 @@ enum ConsommeMessage {
 }
 
 impl ConsommeControl {
-    /// Binds a port to receive incoming packets.
+    /// Binds a host port to forward incoming packets to the guest, returning
+    /// the bound host port.
+    ///
+    /// Host-side forwarding is best-effort: if the host cannot bind the
+    /// requested address (e.g. `ip_addr` is a guest-local address the host
+    /// doesn't own), forwarding is skipped and the requested `host_port` is
+    /// returned so the guest's own bind can still proceed.
     pub async fn bind_port(
         &self,
         protocol: IpProtocol,
