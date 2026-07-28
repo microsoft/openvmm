@@ -239,8 +239,30 @@ impl ConsommeControl {
         host_port: u16,
         guest_port: u16,
     ) -> Result<u16, ConsommeMessageError> {
-        let socket = create_bound_socket(&protocol, ip_addr, host_port)
-            .map_err(|e| ConsommeMessageError::Bind(consomme::BindError::Io(e)))?;
+        let socket = match create_bound_socket(&protocol, ip_addr, host_port) {
+            Ok(socket) => socket,
+            // The guest bound an address the host doesn't own (e.g. a Docker
+            // bridge gateway), so the host mirror bind() fails with
+            // WSAEADDRNOTAVAIL. Forwarding is best-effort: skip it so the
+            // guest's own bind() still succeeds.
+            Err(e)
+                if ip_addr.is_some()
+                    && (e.kind() == std::io::ErrorKind::AddrNotAvailable
+                        || e.raw_os_error() == Some(10049)) =>
+            {
+                tracing::info!(
+                    ?protocol,
+                    ?ip_addr,
+                    host_port,
+                    guest_port,
+                    "host cannot bind guest-local address; skipping host port forward"
+                );
+                return Ok(host_port);
+            }
+            Err(e) => {
+                return Err(ConsommeMessageError::Bind(consomme::BindError::Io(e)));
+            }
+        };
         let host_addr = socket_addr(&socket).map_err(ConsommeMessageError::Bind)?;
         self.send
             .call(
