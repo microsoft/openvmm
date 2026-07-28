@@ -123,6 +123,14 @@ is self-contained. Append the generated `[source]` redirection to
 cargo build --release -p openvmm --offline
 ```
 
+```admonish note title="Vendoring covers the whole workspace"
+`cargo vendor` has no per-package scoping: it vendors every dependency in the
+workspace, not just the ones the `openvmm` binary needs. A measured run
+vendored 498 crates where the binary requires 254, and a large share of the
+resulting tree is Windows-only crates that a Linux package never compiles.
+Expect the vendored tree to be substantially larger than the build requires.
+```
+
 ## Runtime dependencies
 
 The resulting binary links a small, stable set of shared libraries. Confirm the
@@ -132,10 +140,11 @@ exact set for your build with `ldd`:
 - OpenSSL (`libssl`, `libcrypto`);
 - `libgcc_s`.
 
-Depending on the OpenSSL build, `libz` may also appear transitively. The bundled
-SQLite is linked statically and adds no runtime dependency. RPM automatic
-dependency generation derives these from the ELF `NEEDED` entries; the
-corresponding packages are typically `glibc`, `openssl-libs`, and `zlib`.
+Depending on the OpenSSL build, `libz` may also appear transitively; a measured
+Ubuntu build did not link it. The bundled SQLite is linked statically and adds
+no runtime dependency. RPM automatic dependency generation derives these from
+the ELF `NEEDED` entries, so confirm the set for your own build rather than
+copying a fixed list.
 
 ## Worked example: Azure Linux RPM
 
@@ -161,7 +170,6 @@ BuildRequires:  protobuf-compiler protobuf-devel
 
 Requires:       glibc
 Requires:       openssl-libs
-Requires:       zlib
 ```
 
 Build offline and install the single binary:
