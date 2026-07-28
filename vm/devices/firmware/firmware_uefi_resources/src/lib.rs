@@ -15,7 +15,6 @@
 pub use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
 pub use hyperv_secure_boot_templates::UefiSecureBootTemplate;
 pub use hyperv_secure_boot_templates::UefiTemplateArch;
-pub use hyperv_secure_boot_templates::UefiTemplateGuest;
 
 use chipset_resources::CmosRtcTimeSourceHandleKind;
 use inspect::Inspect;

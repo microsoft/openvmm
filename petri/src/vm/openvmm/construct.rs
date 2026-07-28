@@ -394,24 +394,22 @@ impl PetriVmConfigOpenVmm {
         if matches!(firmware, Firmware::Uefi { .. }) {
             use firmware_uefi_resources::UefiSecureBootTemplate;
             use firmware_uefi_resources::UefiTemplateArch;
-            use firmware_uefi_resources::UefiTemplateGuest;
 
             let uefi_cfg = firmware.uefi_config();
-            let base_template = UefiSecureBootTemplate::pick(
-                match uefi_cfg.and_then(|c| c.secure_boot_template) {
-                    None => UefiTemplateGuest::None,
-                    Some(SecureBootTemplate::MicrosoftWindows) => {
-                        UefiTemplateGuest::MicrosoftWindows
+            let template_arch = match arch {
+                MachineArch::X86_64 => UefiTemplateArch::X64,
+                MachineArch::Aarch64 => UefiTemplateArch::Aarch64,
+            };
+            let base_template = uefi_cfg
+                .and_then(|c| c.secure_boot_template)
+                .map(|template| match template {
+                    SecureBootTemplate::MicrosoftWindows => {
+                        UefiSecureBootTemplate::MicrosoftWindows(template_arch)
                     }
-                    Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority) => {
-                        UefiTemplateGuest::MicrosoftUefiCa
+                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
+                        UefiSecureBootTemplate::MicrosoftUefiCa(template_arch)
                     }
-                },
-                match arch {
-                    MachineArch::X86_64 => UefiTemplateArch::X64,
-                    MachineArch::Aarch64 => UefiTemplateArch::Aarch64,
-                },
-            );
+                });
             let custom_uefi_json = uefi_cfg.and_then(|c| c.custom_uefi_json.clone());
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg

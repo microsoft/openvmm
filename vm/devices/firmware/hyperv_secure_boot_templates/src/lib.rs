@@ -17,20 +17,11 @@ use mesh_protobuf::Protobuf;
 /// A concrete built-in UEFI Secure Boot template.
 #[derive(Clone, Copy, Debug, Protobuf)]
 pub enum UefiSecureBootTemplate {
-    MicrosoftWindowsX64,
-    MicrosoftWindowsAarch64,
-    MicrosoftUefiCaX64,
-    MicrosoftUefiCaAarch64,
+    MicrosoftWindows(UefiTemplateArch),
+    MicrosoftUefiCa(UefiTemplateArch),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum UefiTemplateGuest {
-    None,
-    MicrosoftWindows,
-    MicrosoftUefiCa,
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Protobuf)]
 pub enum UefiTemplateArch {
     X64,
     Aarch64,
@@ -40,73 +31,11 @@ impl UefiSecureBootTemplate {
     /// Load the selected built-in template.
     pub fn load(self) -> BaseTemplateVars {
         match self {
-            Self::MicrosoftWindowsX64 => x64::microsoft_windows(),
-            Self::MicrosoftWindowsAarch64 => aarch64::microsoft_windows(),
-            Self::MicrosoftUefiCaX64 => x64::microsoft_uefi_ca(),
-            Self::MicrosoftUefiCaAarch64 => aarch64::microsoft_uefi_ca(),
+            Self::MicrosoftWindows(UefiTemplateArch::X64) => x64::microsoft_windows(),
+            Self::MicrosoftWindows(UefiTemplateArch::Aarch64) => aarch64::microsoft_windows(),
+            Self::MicrosoftUefiCa(UefiTemplateArch::X64) => x64::microsoft_uefi_ca(),
+            Self::MicrosoftUefiCa(UefiTemplateArch::Aarch64) => aarch64::microsoft_uefi_ca(),
         }
-    }
-
-    /// Select a built-in template for a guest and architecture.
-    pub fn pick(guest: UefiTemplateGuest, arch: UefiTemplateArch) -> Option<Self> {
-        match (guest, arch) {
-            (UefiTemplateGuest::None, _) => None,
-            (UefiTemplateGuest::MicrosoftWindows, UefiTemplateArch::X64) => {
-                Some(Self::MicrosoftWindowsX64)
-            }
-            (UefiTemplateGuest::MicrosoftWindows, UefiTemplateArch::Aarch64) => {
-                Some(Self::MicrosoftWindowsAarch64)
-            }
-            (UefiTemplateGuest::MicrosoftUefiCa, UefiTemplateArch::X64) => {
-                Some(Self::MicrosoftUefiCaX64)
-            }
-            (UefiTemplateGuest::MicrosoftUefiCa, UefiTemplateArch::Aarch64) => {
-                Some(Self::MicrosoftUefiCaAarch64)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod picker_tests {
-    use super::UefiSecureBootTemplate;
-    use super::UefiTemplateArch;
-    use super::UefiTemplateGuest;
-
-    #[test]
-    fn picks_supported_templates() {
-        assert!(matches!(
-            UefiSecureBootTemplate::pick(
-                UefiTemplateGuest::MicrosoftWindows,
-                UefiTemplateArch::X64,
-            ),
-            Some(UefiSecureBootTemplate::MicrosoftWindowsX64)
-        ));
-        assert!(matches!(
-            UefiSecureBootTemplate::pick(
-                UefiTemplateGuest::MicrosoftWindows,
-                UefiTemplateArch::Aarch64,
-            ),
-            Some(UefiSecureBootTemplate::MicrosoftWindowsAarch64)
-        ));
-        assert!(matches!(
-            UefiSecureBootTemplate::pick(UefiTemplateGuest::MicrosoftUefiCa, UefiTemplateArch::X64,),
-            Some(UefiSecureBootTemplate::MicrosoftUefiCaX64)
-        ));
-        assert!(matches!(
-            UefiSecureBootTemplate::pick(
-                UefiTemplateGuest::MicrosoftUefiCa,
-                UefiTemplateArch::Aarch64,
-            ),
-            Some(UefiSecureBootTemplate::MicrosoftUefiCaAarch64)
-        ));
-    }
-
-    #[test]
-    fn no_guest_has_no_template() {
-        assert!(
-            UefiSecureBootTemplate::pick(UefiTemplateGuest::None, UefiTemplateArch::X64).is_none()
-        );
     }
 }
 

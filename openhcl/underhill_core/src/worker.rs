@@ -2538,25 +2538,21 @@ async fn new_underhill_vm(
         use crate::emuplat::uefi::*;
         use firmware_uefi_resources::UefiSecureBootTemplate;
         use firmware_uefi_resources::UefiTemplateArch;
-        use firmware_uefi_resources::UefiTemplateGuest;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        let base_template = UefiSecureBootTemplate::pick(
-            match &dps.general.secure_boot_template {
-                SecureBootTemplateType::None => UefiTemplateGuest::None,
-                SecureBootTemplateType::MicrosoftWindows => UefiTemplateGuest::MicrosoftWindows,
-                SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                    UefiTemplateGuest::MicrosoftUefiCa
-                }
-            },
-            {
-                #[cfg(guest_arch = "x86_64")]
-                let arch = UefiTemplateArch::X64;
-                #[cfg(guest_arch = "aarch64")]
-                let arch = UefiTemplateArch::Aarch64;
-                arch
-            },
-        );
+        #[cfg(guest_arch = "x86_64")]
+        let template_arch = UefiTemplateArch::X64;
+        #[cfg(guest_arch = "aarch64")]
+        let template_arch = UefiTemplateArch::Aarch64;
+        let base_template = match &dps.general.secure_boot_template {
+            SecureBootTemplateType::None => None,
+            SecureBootTemplateType::MicrosoftWindows => {
+                Some(UefiSecureBootTemplate::MicrosoftWindows(template_arch))
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                Some(UefiSecureBootTemplate::MicrosoftUefiCa(template_arch))
+            }
+        };
 
         // check if vmgs includes custom UEFI JSON
         let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
