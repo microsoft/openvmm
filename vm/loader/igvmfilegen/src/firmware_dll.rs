@@ -148,4 +148,3 @@ mod tests {
         assert!(!utf16le_eq(&[0x56, 0x00, 0x4d], "VM"));
     }
 }
-
