@@ -30,12 +30,18 @@ use mesh_process::Mesh;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
+#[cfg(target_os = "linux")]
+use pipette_client::PIPETTE_PORT;
 use pipette_client::PipetteClient;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
+#[cfg(target_os = "linux")]
+use vmsocket::VmAddress;
+#[cfg(target_os = "linux")]
+use vmsocket::VmSocket;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// A running VM that tests can interact with.
@@ -570,6 +576,15 @@ impl PetriVmInner {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        #[cfg(target_os = "linux")]
+        if let Some(guest_cid) = self.resources.properties.vhost_vsock_guest_cid {
+            assert!(
+                !set_high_vtl,
+                "kernel vhost-vsock pipette transport does not support VTL2"
+            );
+            return self.wait_for_agent_vhost_vsock(guest_cid).await;
+        }
+
         // Use TCP transport if configured (Windows no-vmbus guests).
         if let Some(port) = self.tcp_pipette_port {
             assert!(!set_high_vtl, "TCP pipette transport does not support VTL2");
@@ -641,6 +656,55 @@ impl PetriVmInner {
             self.cidata_mounted = true;
         }
 
+        Ok(client)
+    }
+
+    /// Connect to pipette directly through the host's AF_VSOCK namespace.
+    #[cfg(target_os = "linux")]
+    async fn wait_for_agent_vhost_vsock(
+        &mut self,
+        guest_cid: u32,
+    ) -> anyhow::Result<PipetteClient> {
+        tracing::info!(
+            guest_cid,
+            port = PIPETTE_PORT,
+            "connecting to pipette via kernel vhost-vsock"
+        );
+        let socket = loop {
+            let connect = async {
+                let socket = VmSocket::new().context("failed to create AF_VSOCK socket")?;
+                socket
+                    .set_connect_timeout(Duration::from_secs(5))
+                    .context("failed to set AF_VSOCK connect timeout")?;
+                let mut socket = PolledSocket::new(&self.resources.driver, socket)
+                    .context("failed to create polled AF_VSOCK socket")?
+                    .convert();
+                socket
+                    .connect(&VmAddress::vsock(guest_cid, PIPETTE_PORT).into())
+                    .await
+                    .context("failed to connect to guest AF_VSOCK listener")?;
+                Ok::<_, anyhow::Error>(socket)
+            };
+
+            match connect.await {
+                Ok(socket) => break socket,
+                Err(error) => {
+                    tracing::trace!(
+                        error = error.as_ref() as &dyn std::error::Error,
+                        "AF_VSOCK connect failed, guest not ready yet"
+                    );
+                }
+            }
+
+            pal_async::timer::PolledTimer::new(&self.resources.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        };
+        tracing::info!("AF_VSOCK connected, handshaking with pipette");
+        let client = PipetteClient::new(&self.resources.driver, socket, &self.resources.output_dir)
+            .await
+            .context("pipette AF_VSOCK handshake failed")?;
+        tracing::info!("completed pipette AF_VSOCK handshake");
         Ok(client)
     }
 

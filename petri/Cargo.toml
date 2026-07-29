@@ -96,6 +96,9 @@ vmsocket.workspace = true
 vmswitch.workspace = true
 windows-version.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+vmsocket.workspace = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hvdef.workspace = true
 safe_intrinsics.workspace = true

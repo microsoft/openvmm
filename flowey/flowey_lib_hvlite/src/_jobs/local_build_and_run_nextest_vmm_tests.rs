@@ -952,6 +952,7 @@ impl SimpleFlowNode for Node {
             extra_env,
             pre_run_deps: side_effects,
             hugetlb_2mb_overcommit_pages: None,
+            prepare_vhost_vsock: false,
             results: v,
         });
 
