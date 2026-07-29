@@ -687,9 +687,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == emulate::TranslateMode::Execute
             && self.vtl == GuestVtl::Vtl0
-            && !matches!(
+            && matches!(
                 *self.vp.shared.guest_vsm.read(),
-                GuestVsmState::NotPlatformSupported,
+                GuestVsmState::Enabled {
+                    vtl1: VbsIsolatedVtl1State {
+                        enable_vtl_protection: true,
+                        ..
+                    },
+                }
             )
         {
             // Should always be called after translate gva with the tlb lock flag
