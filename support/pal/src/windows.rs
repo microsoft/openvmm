@@ -44,6 +44,7 @@ use std::ptr::NonNull;
 use std::ptr::addr_of;
 use std::ptr::null_mut;
 use std::sync::Once;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -67,6 +68,7 @@ use windows_sys::Win32::System::Console::GetStdHandle;
 use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Console::SetStdHandle;
+use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_CONTINUE_SEARCH;
 use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS;
 use windows_sys::Win32::System::Diagnostics::Debug::GetErrorMode;
@@ -1186,16 +1188,81 @@ pub fn disable_hard_error_dialog() {
 /// exactly as it would have, with the same exit code, and any configured error
 /// reporting still runs.
 pub fn log_unhandled_exceptions() {
-    /// Formats into a fixed buffer, dropping anything that does not fit.
-    ///
-    /// The filter runs with the process in an arbitrary state, so it must not
-    /// allocate or take any lock that the faulting thread might already hold.
+    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        // SAFETY: the OS passes a valid pointer to the exception state, which
+        // is live for the duration of the filter.
+        let record = unsafe { &*(*info).ExceptionRecord };
+        report_exception(
+            "fatal exception",
+            record.ExceptionCode,
+            record.ExceptionAddress,
+        );
+        EXCEPTION_CONTINUE_SEARCH
+    }
+
+    // SAFETY: This Win32 API has no safety requirements.
+    unsafe {
+        SetUnhandledExceptionFilter(Some(filter));
+    }
+}
+
+/// Installs a vectored exception handler that reports exceptions whose code
+/// has a success severity.
+///
+/// [`log_unhandled_exceptions`] on its own leaves gaps, because Windows only
+/// consults the top-level filter for an exception that reaches the top of the
+/// handler chain, and even then skips it for a nested exception, when a debug
+/// port is present, and for a secure process. A vectored handler runs first,
+/// for every exception on every thread, so it covers those cases too.
+///
+/// Only success-severity codes are reported. Genuine exceptions --- access
+/// violations, C++ and Rust unwinds, debugger notifications --- all carry a
+/// higher severity, and access violations in particular are raised often enough
+/// on normal paths, such as probing guest memory, that reporting them would be
+/// both noisy and slow.
+pub fn log_unexpected_exceptions() {
+    /// Bounds the damage if something raises such an exception in a loop.
+    static REMAINING: AtomicU32 = AtomicU32::new(8);
+
+    unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+        // SAFETY: the OS passes a valid pointer to the exception state, which
+        // is live for the duration of the handler.
+        let record = unsafe { &*(*info).ExceptionRecord };
+        if (record.ExceptionCode as u32) >> 30 == 0
+            && REMAINING
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            report_exception(
+                "unexpected exception",
+                record.ExceptionCode,
+                record.ExceptionAddress,
+            );
+        }
+        EXCEPTION_CONTINUE_SEARCH
+    }
+
+    // SAFETY: This Win32 API has no safety requirements.
+    unsafe {
+        AddVectoredExceptionHandler(1, Some(handler));
+    }
+}
+
+/// Describes an exception on stderr.
+///
+/// This runs with the process in an arbitrary state, so it must not allocate or
+/// take any lock that the interrupted thread might already hold. That rules out
+/// both `tracing` and `std`'s stderr, so format into a fixed buffer and write it
+/// out directly, dropping anything that does not fit.
+fn report_exception(what: &str, code: i32, address: *const c_void) {
+    use std::fmt::Write;
+
     struct StackBuf {
         buf: [u8; 512],
         len: usize,
     }
 
-    impl std::fmt::Write for StackBuf {
+    impl Write for StackBuf {
         fn write_str(&mut self, s: &str) -> std::fmt::Result {
             let n = s.len().min(self.buf.len() - self.len);
             self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
@@ -1204,41 +1271,27 @@ pub fn log_unhandled_exceptions() {
         }
     }
 
-    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
-        use std::fmt::Write;
-
-        // SAFETY: the OS passes a valid pointer to the exception state, which
-        // is live for the duration of the filter.
-        let record = unsafe { &*(*info).ExceptionRecord };
-        let mut out = StackBuf {
-            buf: [0; 512],
-            len: 0,
-        };
-        let _ = writeln!(
-            out,
-            "fatal exception {:#010x} at {:#018x} on thread {}, terminating",
-            record.ExceptionCode,
-            record.ExceptionAddress as usize,
-            // SAFETY: This Win32 API has no safety requirements.
-            unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
-        );
-        // SAFETY: writing the initialized prefix of the buffer to stderr.
-        unsafe {
-            let mut written = 0;
-            WriteFile(
-                GetStdHandle(STD_ERROR_HANDLE),
-                out.buf.as_ptr(),
-                out.len as u32,
-                &mut written,
-                null_mut(),
-            );
-        }
-        EXCEPTION_CONTINUE_SEARCH
-    }
-
-    // SAFETY: This Win32 API has no safety requirements.
+    let mut out = StackBuf {
+        buf: [0; 512],
+        len: 0,
+    };
+    let _ = writeln!(
+        out,
+        "{what} {code:#010x} at {:#018x} on thread {}",
+        address as usize,
+        // SAFETY: This Win32 API has no safety requirements.
+        unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+    );
+    // SAFETY: writing the initialized prefix of the buffer to stderr.
     unsafe {
-        SetUnhandledExceptionFilter(Some(filter));
+        let mut written = 0;
+        WriteFile(
+            GetStdHandle(STD_ERROR_HANDLE),
+            out.buf.as_ptr(),
+            out.len as u32,
+            &mut written,
+            null_mut(),
+        );
     }
 }
 

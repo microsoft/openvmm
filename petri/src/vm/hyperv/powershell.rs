@@ -5,6 +5,7 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
+use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
@@ -25,6 +26,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::NamedTempFile;
+use tracing::Level;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1466,6 +1468,30 @@ pub struct WinEvent {
     pub properties: Vec<String>,
 }
 
+impl WinEvent {
+    /// Writes the event to `log_file`.
+    pub fn write_to(&self, log_file: &PetriLogFile) {
+        log_file.write_entry_fmt(
+            Some(self.time_created),
+            match self.level {
+                1 | 2 => Level::ERROR,
+                3 => Level::WARN,
+                5 => Level::TRACE,
+                _ => Level::INFO,
+            },
+            format_args!(
+                "[{}] {}: ({}, {}) {} ({})",
+                self.time_created,
+                self.provider_name,
+                self.level,
+                self.id,
+                self.message,
+                self.properties.join(",")
+            ),
+        );
+    }
+}
+
 /// Deserialize the `Properties` projection of a Windows event into a flat list
 /// of stringified values.
 fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -1589,6 +1615,9 @@ pub async fn run_get_winevent(
 
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
+const HYPERV_HYPERVISOR_TABLE: &str = "Microsoft-Windows-Hyper-V-Hypervisor-Admin";
+const APPLICATION_TABLE: &str = "Application";
+const SYSTEM_TABLE: &str = "System";
 
 macro_rules! define_winevents {
     (
@@ -1675,6 +1704,33 @@ define_winevents!(
         pub const MSVM_START_VTL0_REQUEST_ERROR: u32 = 18620;
     )
 );
+
+/// Get the host event log entries written since `start_time` that could
+/// explain a VMM process disappearing without leaving anything in its own
+/// logs, such as a fault report or a hypervisor error.
+pub async fn host_failure_events(start_time: &Timestamp) -> Vec<WinEvent> {
+    let mut events = Vec::new();
+    // Query each channel separately so that one missing or inaccessible
+    // channel does not suppress the rest.
+    for table in [
+        APPLICATION_TABLE,
+        SYSTEM_TABLE,
+        HYPERV_HYPERVISOR_TABLE,
+        HYPERV_WORKER_TABLE,
+        HYPERV_VMMS_TABLE,
+    ] {
+        match run_get_winevent(&[table], Some(start_time), None, &[]).await {
+            Ok(e) => events.extend(e),
+            Err(err) => tracing::warn!(
+                table,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read host event log"
+            ),
+        }
+    }
+    events.sort_by_key(|e| e.time_created);
+    events
+}
 
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(

@@ -143,6 +143,12 @@ impl Test {
         logger.log_test_start(&name);
         let mut post_test_hooks = Vec::new();
 
+        // A VMM process that is killed from outside itself leaves nothing in
+        // its own logs, so the host event log is the only record of why it
+        // died.
+        #[cfg(windows)]
+        post_test_hooks.push(collect_host_event_logs_hook(logger.clone()));
+
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
         // test, but the details won't end up in our per-test JSON log.
@@ -319,6 +325,26 @@ impl PetriPostTestHook {
     pub fn run(self, test_passed: bool) -> anyhow::Result<()> {
         (self.hook)(test_passed)
     }
+}
+
+/// Returns a hook that, if the test failed, writes the host event log entries
+/// from the test's execution window to `host_events.log`.
+#[cfg(windows)]
+fn collect_host_event_logs_hook(logger: PetriLogSource) -> PetriPostTestHook {
+    let start_time = jiff::Timestamp::now();
+    PetriPostTestHook::new("collect host event logs".into(), move |test_passed| {
+        if test_passed {
+            return Ok(());
+        }
+        let log_file = logger.log_file("host_events")?;
+        let events = futures::executor::block_on(
+            crate::vm::hyperv::powershell::host_failure_events(&start_time),
+        );
+        for event in events {
+            event.write_to(&log_file);
+        }
+        Ok(())
+    })
 }
 
 /// A test defined by an artifact resolver function and a run function.

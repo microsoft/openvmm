@@ -2468,6 +2468,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     {
         pal::windows::disable_hard_error_dialog();
         pal::windows::log_unhandled_exceptions();
+        pal::windows::log_unexpected_exceptions();
     }
 
     tracing_init::enable_tracing()?;
