@@ -25,6 +25,7 @@ use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmcore::reference_time::ReferenceTimeSource;
+use vmcore::save_restore::NoSavedState;
 use zerocopy::IntoBytes;
 
 const TIMESYNC_VERSIONS: &[hyperv_ic_protocol::Version] = &[proto::TIMESYNC_VERSION_4];
@@ -97,7 +98,7 @@ impl TimesyncIc {
 
 #[async_trait]
 impl SimpleVmbusDevice for TimesyncIc {
-    type SavedState = save_restore::state::SavedState;
+    type SavedState = NoSavedState;
     type Runner = TimesyncChannel;
 
     fn offer(&self) -> OfferParams {
@@ -249,91 +250,19 @@ impl TimesyncChannel {
     }
 }
 
-mod save_restore {
-    use super::*;
-
-    pub mod state {
-        use crate::common::SavedVersions;
-        use mesh::payload::Protobuf;
-        use vmcore::save_restore::SavedStateRoot;
-
-        #[derive(Protobuf, SavedStateRoot)]
-        #[mesh(package = "timesync_ic")]
-        pub struct SavedState {
-            #[mesh(1)]
-            pub versions: Option<SavedVersions>,
-            #[mesh(2)]
-            pub waiting_on_version: bool,
-            #[mesh(3)]
-            pub waiting_on_response: bool,
-            #[mesh(4)]
-            pub failed: bool,
-        }
+// Like Hyper-V, no state is saved or restored. On restore, the channel starts
+// over with version negotiation, which also causes a fresh time sync message to
+// be sent to the guest to account for time having stopped while saved.
+impl SaveRestoreSimpleVmbusDevice for TimesyncIc {
+    fn save_open(&mut self, _runner: &Self::Runner) -> Self::SavedState {
+        NoSavedState
     }
 
-    impl SaveRestoreSimpleVmbusDevice for TimesyncIc {
-        fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
-            let TimesyncChannel { pipe: _, state } = runner;
-            let (versions, waiting_on_version, waiting_on_response, failed) = match state {
-                ChannelState::Negotiate(state) => {
-                    let waiting_on_version = match state {
-                        NegotiateState::SendVersion | NegotiateState::Invalid => false,
-                        NegotiateState::WaitVersion => true,
-                    };
-                    (None, waiting_on_version, false, false)
-                }
-                ChannelState::Ready { versions, state } => {
-                    let waiting_on_response = match state {
-                        ReadyState::SleepUntilNextSample { next_sample: _ }
-                        | ReadyState::SendMessage { is_sync: _ } => false,
-                        ReadyState::WaitForResponse => true,
-                    };
-                    (Some((*versions).into()), false, waiting_on_response, false)
-                }
-                ChannelState::Failed => (None, false, false, true),
-            };
-            state::SavedState {
-                versions,
-                waiting_on_version,
-                waiting_on_response,
-                failed,
-            }
-        }
-
-        fn restore_open(
-            &mut self,
-            saved_state: Self::SavedState,
-            channel: RawAsyncChannel<GpadlRingMem>,
-        ) -> Result<Self::Runner, ChannelOpenError> {
-            let state::SavedState {
-                versions,
-                waiting_on_version,
-                waiting_on_response,
-                failed,
-            } = saved_state;
-            let state = if failed {
-                ChannelState::Failed
-            } else if let Some(versions) = versions {
-                // Time may have stopped while the VM was saved, so send a new
-                // sync message rather than resuming the sample timer. If a
-                // response was outstanding it must be consumed first.
-                let state = if waiting_on_response {
-                    ReadyState::WaitForResponse
-                } else {
-                    ReadyState::SendMessage { is_sync: true }
-                };
-                ChannelState::Ready {
-                    versions: versions.into(),
-                    state,
-                }
-            } else {
-                ChannelState::Negotiate(if waiting_on_version {
-                    NegotiateState::WaitVersion
-                } else {
-                    NegotiateState::SendVersion
-                })
-            };
-            TimesyncChannel::new(channel, Some(state))
-        }
+    fn restore_open(
+        &mut self,
+        NoSavedState: Self::SavedState,
+        channel: RawAsyncChannel<GpadlRingMem>,
+    ) -> Result<Self::Runner, ChannelOpenError> {
+        TimesyncChannel::new(channel, None)
     }
 }

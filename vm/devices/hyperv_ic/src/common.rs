@@ -49,58 +49,6 @@ pub(crate) struct Versions {
     pub message_version: Version,
 }
 
-/// Saved state representation of [`Versions`].
-#[derive(Copy, Clone, mesh::payload::Protobuf)]
-#[mesh(package = "hyperv_ic")]
-pub struct SavedVersions {
-    #[mesh(1)]
-    pub framework_major: u16,
-    #[mesh(2)]
-    pub framework_minor: u16,
-    #[mesh(3)]
-    pub message_major: u16,
-    #[mesh(4)]
-    pub message_minor: u16,
-}
-
-impl From<Versions> for SavedVersions {
-    fn from(versions: Versions) -> Self {
-        let Versions {
-            framework_version:
-                Version {
-                    major: framework_major,
-                    minor: framework_minor,
-                },
-            message_version:
-                Version {
-                    major: message_major,
-                    minor: message_minor,
-                },
-        } = versions;
-        Self {
-            framework_major,
-            framework_minor,
-            message_major,
-            message_minor,
-        }
-    }
-}
-
-impl From<SavedVersions> for Versions {
-    fn from(saved: SavedVersions) -> Self {
-        let SavedVersions {
-            framework_major,
-            framework_minor,
-            message_major,
-            message_minor,
-        } = saved;
-        Self {
-            framework_version: Version::new(framework_major, framework_minor),
-            message_version: Version::new(message_major, message_minor),
-        }
-    }
-}
-
 impl IcPipe {
     pub fn new(raw: RawAsyncChannel<GpadlRingMem>) -> Result<Self, std::io::Error> {
         let pipe = MessagePipe::new(raw)?;
@@ -146,23 +94,38 @@ impl IcPipe {
                 Ok(None)
             }
             NegotiateState::WaitVersion => {
-                let (_result, buf) = self.read_response().await?;
-                let (message, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
-                    .ok()
-                    .context("missing negotiate message")?;
-                if message.framework_version_count != 1 || message.message_version_count != 1 {
-                    anyhow::bail!("no supported versions");
-                }
-                let ([framework_version, message_version], _) =
-                    <[Version; 2]>::read_from_prefix(rest)
-                        .ok()
-                        .context("missing version table")?;
+                let versions = loop {
+                    let (message_type, _status, buf) = self.read_message().await?;
+                    // A response to a request issued before the channel was
+                    // reset (e.g. across save/restore) may still be in flight.
+                    // There is no one left to receive it, so drop it.
+                    if message_type != MessageType::VERSION_NEGOTIATION {
+                        tracelimit::warn_ratelimited!(
+                            ?message_type,
+                            "dropping unexpected message while negotiating versions"
+                        );
+                        continue;
+                    }
+                    let (message, rest) =
+                        hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
+                            .ok()
+                            .context("missing negotiate message")?;
+                    if message.framework_version_count != 1 || message.message_version_count != 1 {
+                        anyhow::bail!("no supported versions");
+                    }
+                    let ([framework_version, message_version], _) =
+                        <[Version; 2]>::read_from_prefix(rest)
+                            .ok()
+                            .context("missing version table")?;
+
+                    break Versions {
+                        framework_version,
+                        message_version,
+                    };
+                };
 
                 *state = NegotiateState::Invalid;
-                Ok(Some(Versions {
-                    framework_version,
-                    message_version,
-                }))
+                Ok(Some(versions))
             }
             NegotiateState::Invalid => {
                 unreachable!()
@@ -195,6 +158,11 @@ impl IcPipe {
     }
 
     pub async fn read_response(&mut self) -> anyhow::Result<(Status, &[u8])> {
+        let (_message_type, status, buf) = self.read_message().await?;
+        Ok((status, buf))
+    }
+
+    async fn read_message(&mut self) -> anyhow::Result<(MessageType, Status, &[u8])> {
         let n = self
             .pipe
             .recv(&mut self.buf)
@@ -213,6 +181,6 @@ impl IcPipe {
             .get(..header.message_size as usize)
             .context("missing message body")?;
 
-        Ok((header.status, rest))
+        Ok((header.message_type, header.status, rest))
     }
 }

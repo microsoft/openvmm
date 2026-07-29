@@ -38,6 +38,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmcore::save_restore::NoSavedState;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -88,14 +89,11 @@ enum ReadyState {
     Ready,
     SendingRequest(#[inspect(skip)] KvpRpc),
     WaitingResponse(#[inspect(skip)] KvpRpc),
-    /// A request was outstanding when the VM was saved. Its response must be
-    /// drained before another request can be issued.
-    DiscardResponse,
 }
 
 #[async_trait]
 impl SimpleVmbusDevice for KvpIc {
-    type SavedState = save_restore::state::SavedState;
+    type SavedState = NoSavedState;
     type Runner = KvpChannel;
 
     fn offer(&self) -> OfferParams {
@@ -407,10 +405,6 @@ impl KvpChannel {
                         KvpRpc::SetIpInfo(rpc) => rpc.handle_failable_sync(|_| r),
                     }
                 }
-                ReadyState::DiscardResponse => {
-                    self.pipe.read_response().await?;
-                    *state = ReadyState::Ready;
-                }
             },
             ChannelState::Failed => std::future::pending().await,
         }
@@ -418,98 +412,19 @@ impl KvpChannel {
     }
 }
 
-mod save_restore {
-    use super::*;
-
-    pub mod state {
-        use crate::common::SavedVersions;
-        use mesh::payload::Protobuf;
-        use vmcore::save_restore::SavedStateRoot;
-
-        #[derive(Protobuf, SavedStateRoot)]
-        #[mesh(package = "kvp_ic")]
-        pub struct SavedState {
-            #[mesh(1)]
-            pub versions: Option<SavedVersions>,
-            #[mesh(2)]
-            pub waiting_on_version: bool,
-            #[mesh(3)]
-            pub waiting_on_response: bool,
-            #[mesh(4)]
-            pub failed: bool,
-        }
+// Like Hyper-V, no state is saved or restored. On restore, the channel starts
+// over with version negotiation.
+impl SaveRestoreSimpleVmbusDevice for KvpIc {
+    fn save_open(&mut self, _runner: &Self::Runner) -> Self::SavedState {
+        NoSavedState
     }
 
-    impl SaveRestoreSimpleVmbusDevice for KvpIc {
-        fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
-            let KvpChannel { pipe: _, state } = runner;
-            let (versions, waiting_on_version, waiting_on_response, failed) = match state {
-                ChannelState::Negotiate(state) => {
-                    let waiting_on_version = match state {
-                        NegotiateState::SendVersion | NegotiateState::Invalid => false,
-                        NegotiateState::WaitVersion => true,
-                    };
-                    (None, waiting_on_version, false, false)
-                }
-                ChannelState::Ready {
-                    versions,
-                    clients: _,
-                    rpc_recv: _,
-                    state,
-                } => {
-                    // In-flight requests are not saved; the clients will observe
-                    // the failure and can retry. A request that has already been
-                    // sent to the guest still needs its response drained after
-                    // restore.
-                    let waiting_on_response = match state {
-                        ReadyState::Ready | ReadyState::SendingRequest(_) => false,
-                        ReadyState::WaitingResponse(_) | ReadyState::DiscardResponse => true,
-                    };
-                    (Some((*versions).into()), false, waiting_on_response, false)
-                }
-                ChannelState::Failed => (None, false, false, true),
-            };
-            state::SavedState {
-                versions,
-                waiting_on_version,
-                waiting_on_response,
-                failed,
-            }
-        }
-
-        fn restore_open(
-            &mut self,
-            saved_state: Self::SavedState,
-            channel: RawAsyncChannel<GpadlRingMem>,
-        ) -> Result<Self::Runner, ChannelOpenError> {
-            let state::SavedState {
-                versions,
-                waiting_on_version,
-                waiting_on_response,
-                failed,
-            } = saved_state;
-            let state = if failed {
-                ChannelState::Failed
-            } else if let Some(versions) = versions {
-                ChannelState::Ready {
-                    versions: versions.into(),
-                    clients: Vec::new(),
-                    rpc_recv: mesh::Receiver::new(),
-                    state: if waiting_on_response {
-                        ReadyState::DiscardResponse
-                    } else {
-                        ReadyState::Ready
-                    },
-                }
-            } else {
-                ChannelState::Negotiate(if waiting_on_version {
-                    NegotiateState::WaitVersion
-                } else {
-                    NegotiateState::SendVersion
-                })
-            };
-            KvpChannel::new(channel, Some(state))
-        }
+    fn restore_open(
+        &mut self,
+        NoSavedState: Self::SavedState,
+        channel: RawAsyncChannel<GpadlRingMem>,
+    ) -> Result<Self::Runner, ChannelOpenError> {
+        KvpChannel::new(channel, None)
     }
 }
 
