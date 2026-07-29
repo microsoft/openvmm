@@ -132,26 +132,13 @@ impl NvramServices {
                 hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
             })
             .transpose()
-            .map_err(NvramSetupError::LoadBaseTemplate)?
-            .map(Into::into);
+            .map_err(NvramSetupError::LoadBaseTemplate)?;
         let custom_template_delta = custom_uefi_json
             .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
             .transpose()
-            .map_err(|err| {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to load custom UEFI variable delta"
-                );
-                NvramSetupError::LoadCustomUefiJson(err)
-            })?;
-        let final_vars =
-            FinalVars::resolve(base_template_vars, custom_template_delta).map_err(|err| {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to apply custom UEFI template delta"
-                );
-                NvramSetupError::ApplyCustomTemplate(err)
-            })?;
+            .map_err(NvramSetupError::LoadCustomUefiJson)?;
+        let final_vars = FinalVars::resolve(base_template_vars, custom_template_delta)
+            .map_err(NvramSetupError::ApplyCustomTemplate)?;
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
 

@@ -32,7 +32,7 @@ pub enum JsonToTemplateError {
     CannotUseAppend,
 }
 
-/// Parse [`UefiVars`](firmware_uefi_custom_vars::UefiVars) from a
+/// Parse [`BaseTemplateVars`](firmware_uefi_custom_vars::BaseTemplateVars) from a
 /// _fully-defined_ template UEFI custom nvram variables JSON file.
 ///
 /// In this context, _fully-defined_ means that the JSON files cannot include
@@ -40,7 +40,7 @@ pub enum JsonToTemplateError {
 /// existing variables.
 pub fn parse_template_json(
     data: &[u8],
-) -> Result<firmware_uefi_custom_vars::UefiVars, ParseJsonError> {
+) -> Result<firmware_uefi_custom_vars::BaseTemplateVars, ParseJsonError> {
     use firmware_uefi_custom_vars::Signature;
     use firmware_uefi_custom_vars::Signatures;
     use firmware_uefi_custom_vars::UefiVars;
@@ -89,7 +89,8 @@ pub fn parse_template_json(
             },
         }),
         non_signature_vars,
-    })
+    }
+    .into())
 }
 
 /// Parse a [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta) from a user
