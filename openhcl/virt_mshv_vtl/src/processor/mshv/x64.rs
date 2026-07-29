@@ -934,8 +934,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             return Err(HvError::InvalidParameter);
         }
 
-        assert!(self.partition.isolation.is_isolated());
-
         let status = self
             .partition
             .vsm_status()
