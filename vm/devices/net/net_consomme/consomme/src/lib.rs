@@ -858,7 +858,7 @@ impl Consomme {
     }
 
     /// Allocates a virtual address within this endpoint's subnet and routes
-    ///
+    /// guest traffic sent to it to `destination` on the host.
     /// Returns `None` if the subnet's virtual address pool is exhausted.
     pub fn create_virtual_address(&mut self, destination: IpAddr) -> Option<IpAddr> {
         match destination {
