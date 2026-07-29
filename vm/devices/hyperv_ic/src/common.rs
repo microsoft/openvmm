@@ -49,6 +49,58 @@ pub(crate) struct Versions {
     pub message_version: Version,
 }
 
+/// Saved state representation of [`Versions`].
+#[derive(Copy, Clone, mesh::payload::Protobuf)]
+#[mesh(package = "hyperv_ic")]
+pub struct SavedVersions {
+    #[mesh(1)]
+    pub framework_major: u16,
+    #[mesh(2)]
+    pub framework_minor: u16,
+    #[mesh(3)]
+    pub message_major: u16,
+    #[mesh(4)]
+    pub message_minor: u16,
+}
+
+impl From<Versions> for SavedVersions {
+    fn from(versions: Versions) -> Self {
+        let Versions {
+            framework_version:
+                Version {
+                    major: framework_major,
+                    minor: framework_minor,
+                },
+            message_version:
+                Version {
+                    major: message_major,
+                    minor: message_minor,
+                },
+        } = versions;
+        Self {
+            framework_major,
+            framework_minor,
+            message_major,
+            message_minor,
+        }
+    }
+}
+
+impl From<SavedVersions> for Versions {
+    fn from(saved: SavedVersions) -> Self {
+        let SavedVersions {
+            framework_major,
+            framework_minor,
+            message_major,
+            message_minor,
+        } = saved;
+        Self {
+            framework_version: Version::new(framework_major, framework_minor),
+            message_version: Version::new(message_major, message_minor),
+        }
+    }
+}
+
 impl IcPipe {
     pub fn new(raw: RawAsyncChannel<GpadlRingMem>) -> Result<Self, std::io::Error> {
         let pipe = MessagePipe::new(raw)?;
