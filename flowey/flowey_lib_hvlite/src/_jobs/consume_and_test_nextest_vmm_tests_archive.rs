@@ -288,6 +288,12 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
+        let prepare_vhost_vsock = incubator_profile.is_none()
+            && matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Linux
+            )
+            && matches!(target.architecture, target_lexicon::Architecture::X86_64);
         let (extra_env, nextest_working_dir, nextest_config_file) = if let Some(profile_name) =
             incubator_profile
         {
@@ -368,6 +374,7 @@ impl SimpleFlowNode for Node {
             extra_env,
             pre_run_deps,
             hugetlb_2mb_overcommit_pages,
+            prepare_vhost_vsock,
             results: v,
         });
 

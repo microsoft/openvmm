@@ -90,11 +90,14 @@ use video_core::SharedFramebufferHandle;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::blk::VirtioBlkHandle;
 use virtio_resources::vsock::VirtioVsockHandle;
+#[cfg(target_os = "linux")]
+use virtio_resources::vsock::VirtioVsockVhostHandle;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
@@ -133,6 +136,10 @@ impl PetriVmConfigOpenVmm {
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
 
         let PetriVmResources { driver, log_source } = resources;
+        #[cfg(target_os = "linux")]
+        let vhost_vsock_guest_cid = properties.vhost_vsock_guest_cid;
+        #[cfg(not(target_os = "linux"))]
+        let vhost_vsock_guest_cid: Option<u32> = None;
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
@@ -471,15 +478,16 @@ impl PetriVmConfigOpenVmm {
             // - PCAT (Gen1) relies on x86 legacy support (the VGA hole and
             //   PAM registers), which toggles low RAM visibility in a way
             //   that requires shared, file-backed memory.
-            let private_incompatible = firmware.is_openhcl() || firmware.is_pcat();
+            let private_incompatible =
+                firmware.is_openhcl() || firmware.is_pcat() || vhost_vsock_guest_cid.is_some();
             let private_memory = match private_memory {
                 // An explicit request for private memory that the firmware
                 // cannot honor is an error, rather than a silent downgrade.
                 Some(true) if private_incompatible => {
                     anyhow::bail!(
                         "private guest memory was explicitly requested but is \
-                         not supported with this firmware (OpenHCL and \
-                         PCAT/Gen1 require shared memory)"
+                         not supported with this configuration (OpenHCL, \
+                         PCAT/Gen1, and kernel vhost-vsock require shared memory)"
                     );
                 }
                 Some(explicit) => explicit,
@@ -591,17 +599,32 @@ impl PetriVmConfigOpenVmm {
                 .map(|i| format!("s0rc0rp{i}"))
                 .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
                 .unwrap();
+            let resource: Resource<VirtioDeviceHandle> = match vhost_vsock_guest_cid {
+                #[cfg(target_os = "linux")]
+                Some(guest_cid) => {
+                    let vhost = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open("/dev/vhost-vsock")
+                        .context("failed to open /dev/vhost-vsock")?
+                        .into();
+                    // The kernel backend does not use the Unix relay. Clear it
+                    // so VmbusConfig below does not receive the listener.
+                    vsock_listener = None;
+                    VirtioVsockVhostHandle { vhost, guest_cid }.into_resource()
+                }
+                #[cfg(not(target_os = "linux"))]
+                Some(_) => unreachable!("kernel vhost-vsock is Linux-only"),
+                None => VirtioVsockHandle {
+                    guest_cid: 0x3,
+                    base_path: vsock_path_string.to_string(),
+                    listener: vsock_listener.take().unwrap(),
+                }
+                .into_resource(),
+            };
             pcie_devices.push(PcieDeviceConfig {
                 port_name: vsock_port,
-                resource: VirtioPciDeviceHandle(
-                    VirtioVsockHandle {
-                        guest_cid: 0x3,
-                        base_path: vsock_path_string.to_string(),
-                        listener: vsock_listener.take().unwrap(),
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         }
 

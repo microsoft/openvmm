@@ -1219,7 +1219,7 @@ async fn vm_config_from_command_line(
         }
     };
 
-    if opt.uefi {
+    if opt.uefi && opt.igvm.is_none() && !opt.pcat {
         let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1879,6 +1879,20 @@ async fn vm_config_from_command_line(
                 listener,
             }
             .into_resource(),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(guest_cid) = opt.virtio_vsock_vhost_cid {
+        let vhost = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/vhost-vsock")
+            .context("failed to open /dev/vhost-vsock")?
+            .into();
+        add_virtio_device(
+            VirtioBusCli::Auto,
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
         );
     }
 
