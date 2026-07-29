@@ -114,14 +114,36 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
     // Run a `powershell.exe -Command <command>` invocation in the guest.
     let pwsh = |command: &str| cmd!(shell, "powershell.exe").args(["-Command", command]);
 
-    // Create and start a small L2 VM to verify nested virtualization works.
-    // VMMS may still be initializing its WMI provider after the first boot
-    // with Hyper-V enabled, so retry New-VM a few times.
+    // The Hyper-V role only becomes active on this boot, and VMMS registers the
+    // WMI provider that `New-VM` talks to long after the guest is otherwise
+    // reachable over pipette. Wait for that
+    // provider explicitly so that a subsequent cmdlet failure is a real
+    // failure rather than a race against service startup.
     pwsh(
-        "$attempt = 0; while ($attempt -lt 10) { try { New-VM -Name TestL2 -MemoryStartupBytes 64MB -Generation 2 -NoVHD -ErrorAction Stop; break } catch { $attempt++; if ($attempt -ge 10) { throw }; Start-Sleep -Seconds 5 } }",
+        r#"
+            $deadline = (Get-Date).AddMinutes(5)
+            while ($true) {
+                $svc = (Get-Service vmms -ErrorAction SilentlyContinue).Status
+                $mgmt = $null
+                if ($svc -eq 'Running') {
+                    $mgmt = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemManagementService -ErrorAction SilentlyContinue
+                }
+                if ($mgmt) { exit 0 }
+                if ((Get-Date) -ge $deadline) {
+                    Write-Error "Hyper-V management stack not ready after 5 minutes (vmms status: '$svc')"
+                    exit 1
+                }
+                Start-Sleep -Seconds 2
+            }
+        "#,
     )
     .run()
     .await?;
+
+    // Create and start a small L2 VM to verify nested virtualization works.
+    pwsh("New-VM -Name TestL2 -MemoryStartupBytes 64MB -Generation 2 -NoVHD -ErrorAction Stop")
+        .run()
+        .await?;
     pwsh("Start-VM -Name TestL2").run().await?;
     let state = pwsh("(Get-VM -Name TestL2).State").read().await?;
     if !state.contains("Running") {
@@ -300,11 +322,9 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
     }
 
     // Create a Gen2 VM and assign the device to it.
-    pwsh(
-        "$attempt = 0; while ($attempt -lt 10) { try { New-VM -Name TestL2DDA -MemoryStartupBytes 512MB -Generation 2 -NoVHD -ErrorAction Stop; break } catch { $attempt++; if ($attempt -ge 10) { throw }; Start-Sleep -Seconds 5 } }",
-    )
-    .run()
-    .await?;
+    pwsh("New-VM -Name TestL2DDA -MemoryStartupBytes 512MB -Generation 2 -NoVHD -ErrorAction Stop")
+        .run()
+        .await?;
 
     // Set the automatic stop action to TurnOff to avoid save-state issues
     // with assigned devices.
