@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ColumnDef } from "@tanstack/react-table";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { RunData, parseRunKey } from "../data_defs";
 import "../styles/runs.css";
 
