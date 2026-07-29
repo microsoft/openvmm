@@ -10,6 +10,7 @@
 mod fd_passing;
 
 use anyhow::Context;
+use futures::AsyncBufReadExt;
 use futures::AsyncReadExt;
 use guid::Guid;
 use mesh::CancelContext;
@@ -851,20 +852,18 @@ const UEFI_BANNER: &str = "UEFI vendor =";
 /// of the VM.
 async fn log_serial(
     log_file: petri::PetriLogFile,
-    mut reader: impl futures::AsyncRead + Unpin,
+    reader: impl futures::AsyncRead + Unpin,
     marker: &str,
     marker_send: mesh::OneshotSender<()>,
 ) {
     let mut marker_send = Some(marker_send);
-    // Only the text before the marker needs to be retained, to spot a marker
-    // split across two reads.
-    let mut seen = String::new();
-    let mut pending = String::new();
-    let mut buf = [0u8; 256];
+    let marker = marker.as_bytes();
+    let mut reader = futures::io::BufReader::new(reader);
+    let mut line = Vec::new();
     loop {
-        let n = match reader.read(&mut buf).await {
+        match reader.read_until(b'\n', &mut line).await {
             Ok(0) => break,
-            Ok(n) => n,
+            Ok(_) => {}
             Err(err) => {
                 tracing::warn!(
                     error = &err as &dyn std::error::Error,
@@ -872,33 +871,16 @@ async fn log_serial(
                 );
                 break;
             }
-        };
-
-        let chunk = String::from_utf8_lossy(&buf[..n]);
-
-        // Log whole lines only, so that partial reads don't split log entries.
-        pending.push_str(&chunk);
-        while let Some(i) = pending.find('\n') {
-            let line: String = pending.drain(..=i).collect();
-            log_file.write_entry(line.trim_end());
         }
 
-        if let Some(send) = marker_send.take() {
-            seen.push_str(&chunk);
-            if seen.contains(marker) {
-                seen = String::new();
+        if line.windows(marker.len()).any(|window| window == marker) {
+            if let Some(send) = marker_send.take() {
                 send.send(());
-            } else {
-                // Keep just enough context to match a marker spanning reads.
-                let keep = seen.len().saturating_sub(marker.len() - 1);
-                seen.drain(..keep);
-                marker_send = Some(send);
             }
         }
-    }
 
-    if !pending.trim_end().is_empty() {
-        log_file.write_entry(pending.trim_end());
+        log_file.write_entry(String::from_utf8_lossy(&line).trim_end());
+        line.clear();
     }
 }
 
