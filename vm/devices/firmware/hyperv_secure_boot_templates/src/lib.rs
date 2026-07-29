@@ -11,31 +11,17 @@
 //! gates! Unused templates should be stripped from the final binary by the
 //! linker.
 
-use firmware_uefi_custom_vars::BaseTemplateVars;
 use mesh_protobuf::Protobuf;
 
-/// A concrete built-in UEFI Secure Boot template.
-#[derive(Clone, Copy, Debug, Protobuf)]
-pub enum UefiSecureBootTemplate {
-    MicrosoftWindows(UefiTemplateArch),
-    MicrosoftUefiCa(UefiTemplateArch),
-}
-
-#[derive(Clone, Copy, Debug, Protobuf)]
-pub enum UefiTemplateArch {
-    X64,
-    Aarch64,
-}
+/// A selected built-in UEFI Secure Boot template, deferred as raw JSON.
+#[derive(Clone, Debug, Protobuf)]
+#[mesh(transparent)]
+pub struct UefiSecureBootTemplate(Vec<u8>);
 
 impl UefiSecureBootTemplate {
-    /// Load the selected built-in template.
-    pub fn load(self) -> BaseTemplateVars {
-        match self {
-            Self::MicrosoftWindows(UefiTemplateArch::X64) => x64::microsoft_windows(),
-            Self::MicrosoftWindows(UefiTemplateArch::Aarch64) => aarch64::microsoft_windows(),
-            Self::MicrosoftUefiCa(UefiTemplateArch::X64) => x64::microsoft_uefi_ca(),
-            Self::MicrosoftUefiCa(UefiTemplateArch::Aarch64) => aarch64::microsoft_uefi_ca(),
-        }
+    /// Return the embedded template JSON.
+    pub fn as_json(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -44,7 +30,7 @@ macro_rules! include_templates {
         $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
-            pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplateVars {
+            pub fn $fn_name() -> crate::UefiSecureBootTemplate {
                 // DEVNOTE: in the future, it may be interesting to explore
                 // parsing the JSON at compile time, and then "baking" the
                 // parsed templates into the binary as a `const` value, instead
@@ -55,7 +41,7 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                hyperv_uefi_custom_vars_json::load_template_from_json(include_bytes!(concat!(env!("OUT_DIR"), "/", $path))).unwrap().into()
+                crate::UefiSecureBootTemplate(include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec())
             }
         )*
 
@@ -64,7 +50,9 @@ macro_rules! include_templates {
             $(
                 #[test]
                 fn $fn_name() {
-                    super::$fn_name();
+                    hyperv_uefi_custom_vars_json::load_template_from_json(
+                        super::$fn_name().as_json()
+                    ).unwrap();
                 }
             )*
         }

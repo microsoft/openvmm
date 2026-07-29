@@ -41,6 +41,8 @@ pub enum NvramSetupError {
     BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
     #[error("failed to apply custom UEFI template variables")]
     ApplyCustomTemplate(#[source] firmware_uefi_custom_vars::ApplyDeltaError),
+    #[error("failed to load built-in UEFI template")]
+    LoadBaseTemplate(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
     #[error("failed to load custom UEFI variable JSON")]
     LoadCustomUefiJson(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
@@ -124,7 +126,13 @@ impl NvramServices {
             return Ok(());
         }
 
-        let base_template_vars = base_template.map(|template| template.load());
+        let base_template_vars = base_template
+            .map(|template| {
+                hyperv_uefi_custom_vars_json::load_template_from_json(template.as_json())
+            })
+            .transpose()
+            .map_err(NvramSetupError::LoadBaseTemplate)?
+            .map(Into::into);
         let custom_template_delta = custom_uefi_json
             .map(|json| hyperv_uefi_custom_vars_json::load_delta_from_json(&json))
             .transpose()
@@ -495,6 +503,22 @@ mod tests {
                 .await,
             Err(NvramSetupError::LoadCustomUefiJson(_))
         ));
+    }
+
+    #[async_test]
+    async fn deferred_base_template_loads_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        nvram
+            .inject_vars_on_first_boot(
+                Some(firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (vendor, name) = uefi_specs::uefi::nvram::vars::PK();
+        assert!(nvram.services.get_variable_ucs2(vendor, name).await.is_ok());
     }
 }
 

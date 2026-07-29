@@ -3604,7 +3604,6 @@ dependencies = [
 name = "hyperv_secure_boot_templates"
 version = "0.0.0"
 dependencies = [
- "firmware_uefi_custom_vars",
  "hyperv_uefi_custom_vars_json",
  "mesh_protobuf",
  "serde_json",

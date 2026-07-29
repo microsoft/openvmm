@@ -2536,23 +2536,21 @@ async fn new_underhill_vm(
 
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
-        use firmware_uefi_resources::UefiSecureBootTemplate;
-        use firmware_uefi_resources::UefiTemplateArch;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        #[cfg(guest_arch = "x86_64")]
-        let template_arch = UefiTemplateArch::X64;
         #[cfg(guest_arch = "aarch64")]
-        let template_arch = UefiTemplateArch::Aarch64;
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
         compile_error!("no UEFI Secure Boot templates for this guest architecture");
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
-                Some(UefiSecureBootTemplate::MicrosoftWindows(template_arch))
+                Some(secure_boot_templates::microsoft_windows())
             }
             SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                Some(UefiSecureBootTemplate::MicrosoftUefiCa(template_arch))
+                Some(secure_boot_templates::microsoft_uefi_ca())
             }
         };
 

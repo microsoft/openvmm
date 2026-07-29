@@ -1180,18 +1180,13 @@ async fn vm_config_from_command_line(
     }
 
     let (base_template, custom_uefi_json) = {
-        use firmware_uefi_resources::UefiSecureBootTemplate;
-        use firmware_uefi_resources::UefiTemplateArch;
-
-        let template_arch = match arch {
-            MachineArch::X86_64 => UefiTemplateArch::X64,
-            MachineArch::Aarch64 => UefiTemplateArch::Aarch64,
-        };
+        #[cfg(guest_arch = "aarch64")]
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = opt.secure_boot_template.map(|template| match template {
-            SecureBootTemplateCli::Windows => {
-                UefiSecureBootTemplate::MicrosoftWindows(template_arch)
-            }
-            SecureBootTemplateCli::UefiCa => UefiSecureBootTemplate::MicrosoftUefiCa(template_arch),
+            SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
+            SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
         });
 
         // TODO: fallback to VMGS read if no command line flag was given

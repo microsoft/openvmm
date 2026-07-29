@@ -399,24 +399,29 @@ impl PetriVmConfigOpenVmm {
         // Configure the UEFI helper device on the chipset for Firmware::Uefi.
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
-            use firmware_uefi_resources::UefiSecureBootTemplate;
-            use firmware_uefi_resources::UefiTemplateArch;
+            use firmware_uefi_resources::aarch64_secure_boot_templates;
+            use firmware_uefi_resources::x64_secure_boot_templates;
 
             let uefi_cfg = firmware.uefi_config();
-            let template_arch = match arch {
-                MachineArch::X86_64 => UefiTemplateArch::X64,
-                MachineArch::Aarch64 => UefiTemplateArch::Aarch64,
-            };
-            let base_template = uefi_cfg
-                .and_then(|c| c.secure_boot_template)
-                .map(|template| match template {
-                    SecureBootTemplate::MicrosoftWindows => {
-                        UefiSecureBootTemplate::MicrosoftWindows(template_arch)
-                    }
-                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
-                        UefiSecureBootTemplate::MicrosoftUefiCa(template_arch)
-                    }
-                });
+            let base_template =
+                uefi_cfg
+                    .and_then(|c| c.secure_boot_template)
+                    .map(|template| match (arch, template) {
+                        (MachineArch::X86_64, SecureBootTemplate::MicrosoftWindows) => {
+                            x64_secure_boot_templates::microsoft_windows()
+                        }
+                        (
+                            MachineArch::X86_64,
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        ) => x64_secure_boot_templates::microsoft_uefi_ca(),
+                        (MachineArch::Aarch64, SecureBootTemplate::MicrosoftWindows) => {
+                            aarch64_secure_boot_templates::microsoft_windows()
+                        }
+                        (
+                            MachineArch::Aarch64,
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        ) => aarch64_secure_boot_templates::microsoft_uefi_ca(),
+                    });
             let custom_uefi_json = uefi_cfg.and_then(|c| c.custom_uefi_json.clone());
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
