@@ -38,6 +38,7 @@ use mshv_ioctls::VcpuFd;
 use pal::unix::pthread::Pthread;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use virt::Hv1;
 use virt::PartitionAccessState;
@@ -78,6 +79,110 @@ struct ImportIsolatedPagesHeader {
     page_type: u8,
     rsvd: [u8; 7],
     page_count: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct ModifyGpaHostAccessHeader {
+    flags: u8,
+    rsvd: [u8; 7],
+    page_count: u64,
+}
+
+const GHCB_RAX_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rax) / size_of::<u64>());
+const GHCB_SW_EXIT_CODE_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_exit_code) / size_of::<u64>() - 64);
+const GHCB_SW_EXIT_INFO1_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_exit_info1) / size_of::<u64>() - 64);
+const GHCB_SW_EXIT_INFO2_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_exit_info2) / size_of::<u64>() - 64);
+const GHCB_SW_SCRATCH_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_scratch) / size_of::<u64>() - 64);
+const GHCB_SHARED_BUFFER_OFFSET: u64 =
+    std::mem::offset_of!(x86defs::snp::GhcbPage, shared_buffer) as u64;
+
+fn set_ghcb_rax(ghcb: &mut x86defs::snp::GhcbPage, rax: u64) {
+    ghcb.save.rax = rax;
+    ghcb.save.valid_bitmap0 |= GHCB_RAX_VALID_BIT;
+}
+
+fn ghcb_rax_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
+    ghcb.save.valid_bitmap0 & GHCB_RAX_VALID_BIT != 0
+}
+
+fn ghcb_exit_fields_are_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
+    ghcb.save.valid_bitmap1 & (GHCB_SW_EXIT_CODE_VALID_BIT | GHCB_SW_EXIT_INFO1_VALID_BIT)
+        == GHCB_SW_EXIT_CODE_VALID_BIT | GHCB_SW_EXIT_INFO1_VALID_BIT
+}
+
+fn ghcb_mmio_fields_are_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
+    ghcb.save.valid_bitmap1 & (GHCB_SW_EXIT_INFO2_VALID_BIT | GHCB_SW_SCRATCH_VALID_BIT)
+        == GHCB_SW_EXIT_INFO2_VALID_BIT | GHCB_SW_SCRATCH_VALID_BIT
+}
+
+fn ghcb_exit_info2_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
+    ghcb.save.valid_bitmap1 & GHCB_SW_EXIT_INFO2_VALID_BIT != 0
+}
+
+fn snp_host_access_flags(visibility: u32) -> Option<u8> {
+    let acquire = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE;
+    let readable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE;
+    let writable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE;
+    match visibility {
+        0 => Some(0),
+        // The current MSHV kernel tests the readable flag when setting
+        // writable access, so a read-only request would become read-write.
+        1 => None,
+        3 => Some(acquire | readable | writable),
+        _ => None,
+    }
+}
+
+fn parse_snp_gpa_range(range: hvdef::hypercall::HvGpaRange) -> Result<(u64, u64), VpHaltReason> {
+    const PAGES_PER_2MB: u64 = 512;
+    const PAGES_PER_1GB: u64 = 512 * PAGES_PER_2MB;
+
+    let page = range.as_extended();
+    let unit_count = page
+        .additional_pages()
+        .checked_add(1)
+        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+    if !page.large_page() {
+        return Ok((page.gpa_page_number(), unit_count));
+    }
+
+    let page = range.as_extended_large_page();
+    let pages_per_unit = if page.page_size() {
+        PAGES_PER_1GB
+    } else {
+        PAGES_PER_2MB
+    };
+    if page.page_size() && !page.gpa_large_page_number().is_multiple_of(PAGES_PER_2MB) {
+        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+    }
+    let start_pfn = page
+        .gpa_large_page_number()
+        .checked_mul(PAGES_PER_2MB)
+        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+    let page_count = unit_count
+        .checked_mul(pages_per_unit)
+        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+    Ok((start_pfn, page_count))
+}
+
+fn sanitize_snp_cpuid(function: u32, index: u32, values: &mut [u32; 4]) {
+    if function == x86defs::cpuid::CpuidFunction::VersionAndFeatures.0 {
+        values[2] &= !(1 << 31);
+    }
+    if function == x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0 && index == 1 {
+        // TODO: Import a CPUID extended-state page and preserve supported XSS
+        // components. The normal SNP CPUID page does not contain the required
+        // component subleaves, so exposing this bitmap makes Linux consume
+        // missing entries as zero-offset user state.
+        values[2] = 0;
+        values[3] = 0;
+    }
 }
 
 impl virt::Hypervisor for LinuxMshv {
@@ -434,6 +539,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 partition: partition.inner.clone(),
                 vpindex: vp.vp_index,
                 vcpufd: None,
+                ghcb_page: None,
             })
             .collect();
 
@@ -446,6 +552,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+    use zerocopy::FromZeros;
 
     #[test]
     fn snp_partition_creation_uses_isolation_flags() {
@@ -588,6 +695,123 @@ mod tests {
             Err(Error(ErrorInner::InvalidSnpPageRange))
         ));
     }
+
+    #[test]
+    fn marks_ghcb_rax_valid() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+
+        assert!(!ghcb_rax_is_valid(&ghcb));
+        set_ghcb_rax(&mut ghcb, 0x1234_5678);
+
+        assert_eq!(ghcb.save.rax, 0x1234_5678);
+        assert!(ghcb_rax_is_valid(&ghcb));
+    }
+
+    #[test]
+    fn validates_ghcb_exit_fields() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+
+        assert!(!ghcb_exit_fields_are_valid(&ghcb));
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
+        assert!(!ghcb_exit_fields_are_valid(&ghcb));
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT;
+        assert!(ghcb_exit_fields_are_valid(&ghcb));
+    }
+
+    #[test]
+    fn validates_ghcb_mmio_fields() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+
+        assert!(!ghcb_mmio_fields_are_valid(&ghcb));
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO2_VALID_BIT;
+        assert!(!ghcb_mmio_fields_are_valid(&ghcb));
+        ghcb.save.valid_bitmap1 |= GHCB_SW_SCRATCH_VALID_BIT;
+        assert!(ghcb_mmio_fields_are_valid(&ghcb));
+    }
+
+    #[test]
+    fn validates_ghcb_exit_info2() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+
+        assert!(!ghcb_exit_info2_is_valid(&ghcb));
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO2_VALID_BIT;
+        assert!(ghcb_exit_info2_is_valid(&ghcb));
+    }
+
+    #[test]
+    fn builds_snp_host_access_flags() {
+        assert_eq!(snp_host_access_flags(0), Some(0));
+        assert_eq!(snp_host_access_flags(1), None);
+        assert_eq!(
+            snp_host_access_flags(3),
+            Some(
+                1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE
+                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE
+                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE
+            )
+        );
+        assert_eq!(snp_host_access_flags(2), None);
+    }
+
+    #[test]
+    fn parses_snp_gpa_ranges() {
+        let mut range = hvdef::hypercall::HvGpaRange(
+            hvdef::hypercall::HvGpaRangeExtended::new()
+                .with_additional_pages(2)
+                .with_gpa_page_number(0x1234)
+                .into_bits(),
+        );
+        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x1234, 3));
+
+        range = hvdef::hypercall::HvGpaRange(
+            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
+                .with_additional_pages(1)
+                .with_large_page(true)
+                .with_gpa_large_page_number(1)
+                .into_bits(),
+        );
+        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x200, 1024));
+
+        range = hvdef::hypercall::HvGpaRange(
+            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
+                .with_large_page(true)
+                .with_page_size(true)
+                .with_gpa_large_page_number(512)
+                .into_bits(),
+        );
+        assert_eq!(
+            parse_snp_gpa_range(range).unwrap(),
+            (512 * 512, 512 * 512)
+        );
+
+        range = hvdef::hypercall::HvGpaRange(
+            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
+                .with_large_page(true)
+                .with_page_size(true)
+                .with_gpa_large_page_number(1)
+                .into_bits(),
+        );
+        assert!(parse_snp_gpa_range(range).is_err());
+    }
+
+    #[test]
+    fn sanitizes_snp_cpuid() {
+        let mut values = [0, 0, 1 << 31, 0];
+        sanitize_snp_cpuid(
+            x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
+            0,
+            &mut values,
+        );
+        assert_eq!(values[2], 0);
+
+        let mut values = [0xb, 0x240, 0x1800, 1];
+        sanitize_snp_cpuid(
+            x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0,
+            1,
+            &mut values,
+        );
+        assert_eq!(values, [0xb, 0x240, 0, 0]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -708,9 +932,7 @@ impl MshvPartitionInner {
                 .bsp_vcpufd
                 .get_cpuid_values(leaf.eax_in, leaf.ecx_in, leaf.xfem_in, leaf.xss_in)
                 .map_err(|e| ErrorInner::SnpCpuid(e.into()))?;
-            if leaf.eax_in == x86defs::cpuid::CpuidFunction::VersionAndFeatures.0 {
-                values[2] &= !(1 << 31);
-            }
+            sanitize_snp_cpuid(leaf.eax_in, leaf.ecx_in, &mut values);
             leaf.eax_out = values[0];
             leaf.ebx_out = values[1];
             leaf.ecx_out = values[2];
@@ -972,6 +1194,25 @@ impl virt::irqcon::IoApicRouting for MshvPartitionInner {
 // Processor binding and run loop
 // ---------------------------------------------------------------------------
 
+fn map_ghcb_page(vcpufd: &VcpuFd) -> Result<crate::MshvGhcbPage, Error> {
+    // SAFETY: The VP fd owns a kernel GHCB state page at this documented mmap
+    // offset for encrypted VPs when the target kernel advertises support.
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            hvdef::HV_PAGE_SIZE as usize,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            vcpufd.as_raw_fd(),
+            i64::from(mshv_bindings::MSHV_VP_MMAP_OFFSET_GHCB) * libc::sysconf(libc::_SC_PAGE_SIZE),
+        )
+    };
+    if page == libc::MAP_FAILED {
+        return Err(ErrorInner::MapGhcbPage(std::io::Error::last_os_error()).into());
+    }
+    Ok(crate::MshvGhcbPage(page.cast()))
+}
+
 impl virt::BindProcessor for MshvProcessorBinder {
     type Processor<'a>
         = MshvProcessor<'a>
@@ -1011,6 +1252,14 @@ impl virt::BindProcessor for MshvProcessorBinder {
         let runner = MshvVpRunner {
             vcpufd,
             reg_page: reg_page_ptr,
+            ghcb_page: if self.partition.isolation == virt::IsolationType::Snp {
+                if self.ghcb_page.is_none() {
+                    self.ghcb_page = Some(map_ghcb_page(vcpufd)?);
+                }
+                self.ghcb_page.as_mut().map(|page| page.0)
+            } else {
+                None
+            },
         };
 
         let this = MshvProcessor {
@@ -1078,18 +1327,8 @@ impl MshvProcessor<'_> {
         exit: &HvMessage,
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
-        if self.partition.isolation == virt::IsolationType::Snp
-            && !matches!(
-                exit.header.typ,
-                HvMessageType::HvMessageTypeUnrecoverableException
-                    | HvMessageType::HvMessageTypeX64SevVmgexitIntercept
-            )
-        {
-            tracelimit::warn_ratelimited!(
-                exit_type = ?exit.header.typ,
-                "unexpected non-VMGEXIT message for SNP VP"
-            );
-            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        if self.partition.isolation == virt::IsolationType::Snp {
+            return self.handle_snp_exit(exit, dev).await;
         }
 
         match exit.header.typ {
@@ -1115,14 +1354,438 @@ impl MshvProcessor<'_> {
                 let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
                 dev.handle_eoi(msg.interrupt_vector);
             }
-            HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {
-                tracelimit::warn_ratelimited!("SNP VMGEXIT handling is not implemented");
-                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-            }
             exit_type => {
                 panic!("Unhandled vcpu exit code {exit_type:?}");
             }
         }
+        Ok(())
+    }
+
+    /// Dispatches SNP exits that can be handled without a VP register page.
+    async fn handle_snp_exit(
+        &mut self,
+        exit: &HvMessage,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        match exit.header.typ {
+            HvMessageType::HvMessageTypeUnrecoverableException => {
+                let info = exit.as_message::<hvdef::HvX64UnrecoverableExceptionMessage>();
+                tracelimit::warn_ratelimited!(
+                    rip = info.header.rip,
+                    "SNP VP reported an unrecoverable exception"
+                );
+                Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
+            }
+            HvMessageType::HvMessageTypeGpaAttributeIntercept => {
+                self.handle_snp_gpa_attribute_intercept(exit)
+            }
+            HvMessageType::HvMessageTypeSynicSintDeliverable => {
+                let info = exit.as_message::<hvdef::HvX64SynicSintDeliverableMessage>();
+                self.handle_sint_deliverable(info.deliverable_sints);
+                Ok(())
+            }
+            HvMessageType::HvMessageTypeX64ApicEoi => {
+                let info = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
+                dev.handle_eoi(info.interrupt_vector);
+                Ok(())
+            }
+            HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {
+                self.handle_sev_vmgexit_intercept(exit, dev).await
+            }
+            HvMessageType::HvMessageTypeUnacceptedGpa
+            | HvMessageType::HvMessageTypeUnmappedGpa
+            | HvMessageType::HvMessageTypeGpaIntercept => {
+                let info = exit.as_message::<hvdef::HvX64MemoryInterceptMessage>();
+                let instruction = info
+                    .instruction_bytes
+                    .get(..info.instruction_byte_count as usize);
+                tracelimit::warn_ratelimited!(
+                    gpa = info.guest_physical_address,
+                    gva = info.guest_virtual_address,
+                    rip = info.header.rip,
+                    access = ?info.header.intercept_access_type,
+                    instruction_count = info.instruction_byte_count,
+                    ?instruction,
+                    exit_type = ?exit.header.typ,
+                    "unexpected memory intercept for SNP VP"
+                );
+                Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
+            }
+            exit_type => {
+                tracelimit::warn_ratelimited!(
+                    ?exit_type,
+                    "unexpected non-VMGEXIT message for SNP VP"
+                );
+                Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
+            }
+        }
+    }
+
+    fn modify_gpa_host_access(&self, gpas: &[u64], flags: u8) -> Result<(), VpHaltReason> {
+        if gpas.is_empty() {
+            return Ok(());
+        }
+
+        let mut buf =
+            HeaderVec::<ModifyGpaHostAccessHeader, u64, 0>::new(ModifyGpaHostAccessHeader {
+                flags,
+                rsvd: [0; 7],
+                page_count: gpas.len() as u64,
+            });
+        buf.extend_tail_from_slice(gpas);
+        // SAFETY: The custom header matches `mshv_modify_gpa_host_access`
+        // followed by `page_count` contiguous GPA values. Despite the UAPI
+        // field name `guest_pfns`, the kernel converts each entry with
+        // `HVPFN_DOWN`, so the variable array contains byte GPAs.
+        let args = unsafe {
+            &*buf
+                .as_ptr()
+                .cast::<mshv_bindings::mshv_modify_gpa_host_access>()
+        };
+        self.partition
+            .vmfd
+            .modify_gpa_host_access(args)
+            .map_err(|err| {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    first_gpa = gpas[0],
+                    page_count = gpas.len(),
+                    flags,
+                    "failed to modify SNP GPA host access"
+                );
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })
+    }
+
+    fn handle_snp_gpa_attribute_intercept(&self, message: &HvMessage) -> Result<(), VpHaltReason> {
+        const BATCH_PAGES: usize = 256;
+        let info = message.as_message::<hvdef::HvX64GpaAttributeInterceptMessage>();
+        let range_count = info.flags.range_count() as usize;
+        let ranges = &info.ranges;
+        if range_count == 0 || range_count > ranges.len() {
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        let flags = snp_host_access_flags(info.flags.host_visibility())
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        if info.flags.adjust() || info.flags.memory_type() != 0 {
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        // TODO: Before revoking host access, block new GuestMemory accesses
+        // to these pages and drain concurrent accesses and locked ranges.
+        let mut gpas = Vec::with_capacity(BATCH_PAGES);
+        for range in &ranges[..range_count] {
+            let (start_pfn, page_count) = parse_snp_gpa_range(*range)?;
+            let end_pfn = start_pfn
+                .checked_add(page_count)
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+
+            for pfn in start_pfn..end_pfn {
+                gpas.push(
+                    pfn.checked_mul(hvdef::HV_PAGE_SIZE)
+                        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?,
+                );
+                if gpas.len() == BATCH_PAGES {
+                    self.modify_gpa_host_access(&gpas, flags)?;
+                    gpas.clear();
+                }
+            }
+        }
+        self.modify_gpa_host_access(&gpas, flags)
+    }
+
+    fn sev_set_reg(&self, name: HvX64RegisterName, value: u64) -> Result<(), VpHaltReason> {
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((name, value))])
+            .map_err(|err| {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    ?name,
+                    "failed to set SNP VP register"
+                );
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })
+    }
+
+    fn sev_get_reg(&self, name: HvX64RegisterName) -> Result<u64, VpHaltReason> {
+        let mut assoc = [HvRegisterAssoc::from((name, 0u64))];
+        self.runner
+            .vcpufd
+            .get_hvdef_regs(&mut assoc)
+            .map_err(|err| {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    ?name,
+                    "failed to get SNP VP register"
+                );
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })?;
+        Ok(assoc[0].value.as_u64())
+    }
+
+    async fn handle_sev_vmgexit_intercept(
+        &mut self,
+        message: &HvMessage,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        use mshv_bindings::snp::*;
+
+        let info = message.as_message::<hvdef::HvX64VmgexitInterceptMessage>();
+        let ghcb_op = (info.ghcb_msr & GHCB_INFO_MASK as u64) as u32;
+        let ghcb_data = info.ghcb_msr >> GHCB_INFO_BIT_WIDTH;
+        tracing::trace!(
+            ghcb_op,
+            ghcb_data,
+            ghcb_page_valid = info.flags.ghcb_page_valid(),
+            "SNP VMGEXIT"
+        );
+
+        match ghcb_op {
+            GHCB_INFO_SPECIAL_DBGPRINT => {}
+            GHCB_INFO_HYP_FEATURE_REQUEST if ghcb_data == 0 => {
+                let features = GHCB_HYP_FEATURE_SEV_SNP;
+                let response = GHCB_INFO_HYP_FEATURE_RESPONSE as u64
+                    | u64::from(features) << GHCB_INFO_BIT_WIDTH;
+                self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
+            }
+            GHCB_INFO_SEV_INFO_REQUEST => {
+                let values = self
+                    .runner
+                    .vcpufd
+                    .get_cpuid_values(0x8000_001f, 0, 0, 0)
+                    .map_err(|err| {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to query SNP CPUID leaf"
+                        );
+                        VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                    })?;
+                let c_bit = u64::from(values[1] & 0x3f);
+                let response = GHCB_INFO_SEV_INFO_RESPONSE as u64
+                    | u64::from(GHCB_PROTOCOL_VERSION_MAX) << 48
+                    | u64::from(GHCB_PROTOCOL_VERSION_MIN) << 32
+                    | c_bit << 24;
+                self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
+            }
+            GHCB_INFO_REGISTER_REQUEST => {
+                let previous = self.sev_get_reg(HvX64RegisterName::SevGhcbGpa)?;
+                let page_number = ghcb_data;
+                let ghcb_gpa = page_number << GHCB_INFO_BIT_WIDTH;
+                self.sev_set_reg(HvX64RegisterName::SevGhcbGpa, previous & !1)?;
+                self.sev_set_reg(HvX64RegisterName::SevGhcbGpa, ghcb_gpa | 1)?;
+                self.sev_set_reg(
+                    HvX64RegisterName::Ghcb,
+                    GHCB_INFO_REGISTER_RESPONSE as u64 | page_number << GHCB_INFO_BIT_WIDTH,
+                )?;
+            }
+            GHCB_INFO_SHUTDOWN_REQUEST => {
+                tracing::error!(ghcb_data, "SNP guest requested shutdown");
+                return Err(VpHaltReason::PowerOff);
+            }
+            GHCB_INFO_NORMAL => {
+                self.handle_sev_nae(info, ghcb_data, dev).await?;
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(
+                    ghcb_op,
+                    ghcb_data,
+                    "unsupported SNP GHCB MSR operation"
+                );
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handles GHCB page-protocol non-automatic exits forwarded by MSHV.
+    ///
+    /// The GHCB is guest-writable shared memory, so validate its fields against
+    /// the hypervisor-supplied intercept snapshot before using them.
+    async fn handle_sev_nae(
+        &mut self,
+        info: &hvdef::HvX64VmgexitInterceptMessage,
+        ghcb_pfn: u64,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        use mshv_bindings::snp::*;
+
+        if !info.flags.ghcb_page_valid()
+            || x86defs::snp::GhcbUsage(info.ghcb_page.ghcb_usage) != x86defs::snp::GhcbUsage::BASE
+            || !(GHCB_PROTOCOL_VERSION_MIN..=GHCB_PROTOCOL_VERSION_MAX)
+                .contains(&u32::from(info.ghcb_page.standard.ghcb_protocol_version))
+        {
+            tracelimit::warn_ratelimited!(
+                ghcb_page_valid = info.flags.ghcb_page_valid(),
+                ghcb_usage = info.ghcb_page.ghcb_usage,
+                "invalid SNP GHCB page"
+            );
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        let ghcb = self
+            .runner
+            .ghcb_page()
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        if !ghcb_exit_fields_are_valid(ghcb)
+            || ghcb.save.sw_exit_code != info.ghcb_page.standard.sw_exit_code
+            || ghcb.save.sw_exit_info1 != info.ghcb_page.standard.sw_exit_info1
+        {
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        let ghcb_gpa = ghcb_pfn
+            .checked_mul(hvdef::HV_PAGE_SIZE)
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        let registered = self.sev_get_reg(HvX64RegisterName::SevGhcbGpa)?;
+        if registered & 1 == 0 || registered & !0xfff != ghcb_gpa {
+            tracelimit::warn_ratelimited!(
+                ghcb_gpa,
+                registered,
+                "SNP VMGEXIT used an unregistered GHCB page"
+            );
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        match info.ghcb_page.standard.sw_exit_code {
+            exit_code if exit_code == u64::from(SVM_EXITCODE_IOIO_PROT) => {
+                let exit_info = u32::try_from(info.ghcb_page.standard.sw_exit_info1)
+                    .map_err(|_| VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if exit_info & ((1 << 1) | (1 << 2) | (1 << 3) | (0x7 << 13)) != 0 {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+                let len = match exit_info & 0x70 {
+                    0x10 => 1,
+                    0x20 => 2,
+                    0x40 => 4,
+                    _ => return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }),
+                };
+                let port = (exit_info >> 16) as u16;
+                let is_write = exit_info & 1 == 0;
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if is_write && !ghcb_rax_is_valid(ghcb) {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+                let mut rax = ghcb.save.rax;
+                virt_support_x86emu::emulate::emulate_io(
+                    self.vpindex,
+                    is_write,
+                    port,
+                    &mut rax,
+                    len,
+                    dev,
+                )
+                .await;
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if !is_write {
+                    set_ghcb_rax(ghcb, rax);
+                }
+                ghcb.save.sw_exit_info1 = 0;
+            }
+            exit_code
+                if exit_code == u64::from(SVM_EXITCODE_MMIO_READ)
+                    || exit_code == u64::from(SVM_EXITCODE_MMIO_WRITE) =>
+            {
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                let len = usize::try_from(info.ghcb_page.standard.sw_exit_info2)
+                    .ok()
+                    .filter(|len| matches!(len, 1 | 2 | 4 | 8))
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                let expected_scratch = ghcb_gpa
+                    .checked_add(GHCB_SHARED_BUFFER_OFFSET)
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if !ghcb_mmio_fields_are_valid(ghcb)
+                    || ghcb.save.sw_exit_info2 != info.ghcb_page.standard.sw_exit_info2
+                    || ghcb.save.sw_scratch != info.ghcb_page.standard.sw_scratch
+                    || info.ghcb_page.standard.sw_scratch != expected_scratch
+                {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+
+                let address = info.ghcb_page.standard.sw_exit_info1;
+                address
+                    .checked_add((len - 1) as u64)
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if exit_code == u64::from(SVM_EXITCODE_MMIO_READ) {
+                    let mut data = [0; 8];
+                    dev.read_mmio(self.vpindex, address, &mut data[..len]).await;
+                    let ghcb = self
+                        .runner
+                        .ghcb_page()
+                        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                    ghcb.shared_buffer[..len].copy_from_slice(&data[..len]);
+                    ghcb.save.sw_exit_info1 = 0;
+                } else {
+                    let mut data = [0; 8];
+                    data[..len].copy_from_slice(&ghcb.shared_buffer[..len]);
+                    dev.write_mmio(self.vpindex, address, &data[..len]).await;
+                    let ghcb = self
+                        .runner
+                        .ghcb_page()
+                        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                    ghcb.save.sw_exit_info1 = 0;
+                }
+            }
+            exit_code if exit_code == u64::from(SVM_EXITCODE_HV_DOORBELL_PAGE) => {
+                if info.ghcb_page.standard.sw_exit_info1 != u64::from(SVM_NAE_HV_DOORBELL_PAGE_SET)
+                {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                let doorbell_gpa = info.ghcb_page.standard.sw_exit_info2;
+                let doorbell_end = doorbell_gpa
+                    .checked_add(hvdef::HV_PAGE_SIZE)
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if !ghcb_exit_info2_is_valid(ghcb)
+                    || ghcb.save.sw_exit_info2 != doorbell_gpa
+                    || !doorbell_gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+                    || !self.partition.mem_layout.ram().iter().any(|range| {
+                        range
+                            .range
+                            .contains(&MemoryRange::new(doorbell_gpa..doorbell_end))
+                    })
+                {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+
+                // Userspace does not maintain SNP page-visibility state yet.
+                // Hyper-V validates that the GPA is suitable for use as a
+                // doorbell page; propagate a rejected register write as a
+                // fatal guest error.
+                self.sev_set_reg(HvX64RegisterName::SevDoorbellGpa, doorbell_gpa | 1)?;
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                ghcb.save.sw_exit_info1 = 0;
+            }
+            exit_code => {
+                tracelimit::warn_ratelimited!(
+                    exit_code,
+                    sw_exit_info1 = info.ghcb_page.standard.sw_exit_info1,
+                    sw_exit_info2 = info.ghcb_page.standard.sw_exit_info2,
+                    sw_scratch = info.ghcb_page.standard.sw_scratch,
+                    "unhandled SNP GHCB NAE"
+                );
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+        }
+
         Ok(())
     }
 
