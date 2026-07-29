@@ -2542,9 +2542,7 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         #[cfg(guest_arch = "x86_64")]
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
-        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
-        compile_error!("no UEFI Secure Boot templates for this guest architecture");
-        let base_template = match &dps.general.secure_boot_template {
+        let base_template_json = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
                 Some(secure_boot_templates::microsoft_windows())
@@ -2567,7 +2565,7 @@ async fn new_underhill_vm(
         };
 
         let config = firmware_uefi_resources::UefiConfig {
-            base_template,
+            base_template_json,
             custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,

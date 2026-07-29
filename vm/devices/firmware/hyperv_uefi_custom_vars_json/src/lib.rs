@@ -38,7 +38,7 @@ pub enum JsonToTemplateError {
 /// In this context, _fully-defined_ means that the JSON files cannot include
 /// any "fallback" entries, nor can it encode any "append" operations to
 /// existing variables.
-pub fn load_template_from_json(
+pub fn parse_template_json(
     data: &[u8],
 ) -> Result<firmware_uefi_custom_vars::UefiVars, ParseJsonError> {
     use firmware_uefi_custom_vars::Signature;

@@ -16,11 +16,11 @@ use mesh_protobuf::Protobuf;
 /// A selected built-in UEFI Secure Boot template, deferred as raw JSON.
 #[derive(Clone, Debug, Protobuf)]
 #[mesh(transparent)]
-pub struct UefiSecureBootTemplate(Vec<u8>);
+pub struct UefiSecureBootTemplateJson(Vec<u8>);
 
-impl UefiSecureBootTemplate {
-    /// Return the embedded template JSON.
-    pub fn as_json(&self) -> &[u8] {
+impl UefiSecureBootTemplateJson {
+    /// Return the embedded JSON bytes.
+    pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 }
@@ -30,7 +30,7 @@ macro_rules! include_templates {
         $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
-            pub fn $fn_name() -> crate::UefiSecureBootTemplate {
+            pub fn $fn_name() -> crate::UefiSecureBootTemplateJson {
                 // DEVNOTE: in the future, it may be interesting to explore
                 // parsing the JSON at compile time, and then "baking" the
                 // parsed templates into the binary as a `const` value, instead
@@ -41,7 +41,7 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                crate::UefiSecureBootTemplate(include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec())
+                crate::UefiSecureBootTemplateJson(include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec())
             }
         )*
 
@@ -50,8 +50,8 @@ macro_rules! include_templates {
             $(
                 #[test]
                 fn $fn_name() {
-                    hyperv_uefi_custom_vars_json::load_template_from_json(
-                        super::$fn_name().as_json()
+                    hyperv_uefi_custom_vars_json::parse_template_json(
+                        super::$fn_name().as_bytes()
                     ).unwrap();
                 }
             )*

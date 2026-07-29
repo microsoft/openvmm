@@ -43,7 +43,7 @@ use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiConfig;
 use firmware_uefi_resources::UefiDeviceHandle;
-use firmware_uefi_resources::UefiSecureBootTemplate;
+use firmware_uefi_resources::UefiSecureBootTemplateJson;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -113,7 +113,7 @@ impl UefiManifest {
     /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
     pub fn new(
         arch: MachineArch,
-        base_template: Option<UefiSecureBootTemplate>,
+        base_template_json: Option<UefiSecureBootTemplateJson>,
         custom_uefi_json: Option<Vec<u8>>,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
@@ -125,7 +125,7 @@ impl UefiManifest {
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
         Self {
             config: UefiConfig {
-                base_template,
+                base_template_json,
                 custom_uefi_json,
                 secure_boot,
                 initial_generation_id,

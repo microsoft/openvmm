@@ -18,7 +18,7 @@ pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
 use firmware_uefi_custom_vars::FinalVars;
-use firmware_uefi_resources::UefiSecureBootTemplate;
+use firmware_uefi_resources::UefiSecureBootTemplateJson;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -80,7 +80,7 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        base_template: Option<UefiSecureBootTemplate>,
+        base_template_json: Option<UefiSecureBootTemplateJson>,
         custom_uefi_json: Option<Vec<u8>>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
@@ -93,7 +93,7 @@ impl NvramServices {
 
         if !is_restoring {
             nvram
-                .inject_vars_on_first_boot(base_template, custom_uefi_json)
+                .inject_vars_on_first_boot(base_template_json, custom_uefi_json)
                 .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
@@ -113,7 +113,7 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        base_template: Option<UefiSecureBootTemplate>,
+        base_template_json: Option<UefiSecureBootTemplateJson>,
         custom_uefi_json: Option<Vec<u8>>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
@@ -126,9 +126,9 @@ impl NvramServices {
             return Ok(());
         }
 
-        let base_template_vars = base_template
-            .map(|template| {
-                hyperv_uefi_custom_vars_json::load_template_from_json(template.as_json())
+        let base_template_vars = base_template_json
+            .map(|template_json| {
+                hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
             })
             .transpose()
             .map_err(NvramSetupError::LoadBaseTemplate)?
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn deferred_base_template_loads_on_first_boot() {
+    async fn deferred_base_template_parses_on_first_boot() {
         let mut nvram = nvram_services(InMemoryNvram::new());
 
         nvram
