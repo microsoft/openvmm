@@ -56,6 +56,7 @@ pub struct KernelConfig<'a> {
     pub mem_layout: &'a MemoryLayout,
     pub isolation: Option<IsolationType>,
     pub snp_c_bit: Option<u8>,
+    pub snp_restricted_injection: bool,
 }
 
 // Bring-up hack for SNP Linux direct boot. Without a bootshim or firmware to
@@ -176,7 +177,13 @@ pub fn load_linux_x86(
 
     if cfg.isolation == Some(IsolationType::Snp) {
         loader
-            .finalize_snp_vmsa(caps, bsp)
+            .finalize_snp_vmsa(
+                caps,
+                bsp,
+                virt::x86::snp::SnpVmsaConfig {
+                    restricted_injection: cfg.snp_restricted_injection,
+                },
+            )
             .map_err(Error::SnpVmsa)?;
     }
 
