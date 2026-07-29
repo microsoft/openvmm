@@ -336,8 +336,9 @@ The tag starts the OpenVMM release workflow. The workflow:
 4. attests the archive and the checksum file;
 5. publishes a **draft** GitHub Release with generated notes.
 
-Assembly is reproducible, so the archive the first job proved buildable and the
-archive the second job publishes are byte-for-byte identical.
+Both jobs resolve the release identity from the same tag through the same code,
+and assembly is reproducible, so the archive the first job proved buildable and
+the archive the second job publishes are byte-for-byte identical.
 
 Once the binary phase begins, the workflow also builds Windows x64, Windows
 ARM64, Linux musl x64, and Linux musl ARM64, and creates a separate runtime and
