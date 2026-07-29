@@ -283,6 +283,17 @@ pub struct HwptInvalidateError {
 /// vIOMMU type: ARM SMMUv3.
 pub const IOMMU_VIOMMU_TYPE_ARM_SMMUV3: u32 = 1;
 
+/// Outcome of [`IommufdCtx::viommu_alloc`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ViommuAlloc {
+    /// The kernel-assigned vIOMMU object ID.
+    Allocated(u32),
+    /// The nesting parent's domain is not compatible with the device — most
+    /// commonly because it was allocated against a different physical IOMMU.
+    /// Try another parent, or allocate one against this device.
+    Incompatible,
+}
+
 #[repr(C)]
 struct IommuViommuAlloc {
     size: u32,
@@ -631,8 +642,16 @@ impl IommufdCtx {
     /// `dev_id` is a device bound to the physical IOMMU backing this vIOMMU.
     /// `hwpt_id` is the nesting parent HWPT to associate with.
     ///
-    /// Returns the kernel-assigned vIOMMU object ID.
-    pub fn viommu_alloc(&self, viommu_type: u32, dev_id: u32, hwpt_id: u32) -> anyhow::Result<u32> {
+    /// Returns [`ViommuAlloc::Incompatible`] when the kernel rejects the
+    /// pairing with `EINVAL`, which is how it reports that `hwpt_id`'s domain
+    /// belongs to a different physical IOMMU than `dev_id`. Callers probe
+    /// candidate parents with this and allocate a fresh one if none fit.
+    pub fn viommu_alloc(
+        &self,
+        viommu_type: u32,
+        dev_id: u32,
+        hwpt_id: u32,
+    ) -> anyhow::Result<ViommuAlloc> {
         let mut cmd = IommuViommuAlloc {
             size: size_of::<IommuViommuAlloc>() as u32,
             flags: 0,
@@ -645,11 +664,12 @@ impl IommufdCtx {
             data_uptr: 0,
         };
         // SAFETY: fd is valid, struct correctly constructed.
-        unsafe {
-            ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd)
-                .context("IOMMU_VIOMMU_ALLOC failed")?;
+        let r = unsafe { ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd) };
+        match r {
+            Ok(_) => Ok(ViommuAlloc::Allocated(cmd.out_viommu_id)),
+            Err(nix::errno::Errno::EINVAL) => Ok(ViommuAlloc::Incompatible),
+            Err(err) => Err(err).context("IOMMU_VIOMMU_ALLOC failed"),
         }
-        Ok(cmd.out_viommu_id)
     }
 
     /// Allocate a virtual device (vDevice) on a vIOMMU.

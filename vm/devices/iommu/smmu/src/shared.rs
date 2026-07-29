@@ -32,7 +32,6 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -259,6 +258,20 @@ struct AccelDeviceRegistration {
     translating_sid: Option<u32>,
 }
 
+/// Accelerated state for one emulated SMMU: the registered per-device stream
+/// backends and the host vIOMMU they all share.
+///
+/// These live under one lock because they are one unit. An invalidation batch
+/// is admitted (by StreamID) and forwarded to the sink under a single hold, so
+/// no rebind or teardown can interleave; and the sink is held exactly as long
+/// as `devices` is non-empty, so the host vIOMMU is destroyed with the last
+/// device behind this SMMU rather than lingering for the VM's lifetime.
+#[derive(Default)]
+struct AccelState {
+    devices: Vec<AccelDeviceRegistration>,
+    sink: Option<Arc<dyn AcceleratedInvalidationSink>>,
+}
+
 /// Exclusive access to the accelerated registration table.
 ///
 /// Held across an invalidation batch — from the StreamID check that admits the
@@ -266,14 +279,15 @@ struct AccelDeviceRegistration {
 /// concurrent StreamID rebind or device teardown can retire a vDevice the batch
 /// names. Both run under this same lock.
 pub(crate) struct AccelDevices<'a> {
-    devices: parking_lot::MutexGuard<'a, Vec<AccelDeviceRegistration>>,
+    accel: parking_lot::MutexGuard<'a, AccelState>,
 }
 
 impl AccelDevices<'_> {
     /// Whether `sid` is currently attached in translating (`S1_TRANS`) mode,
     /// and therefore has host state its SID-based invalidations can reach.
     pub(crate) fn is_translating(&self, sid: u32) -> bool {
-        self.devices
+        self.accel
+            .devices
             .iter()
             .any(|reg| reg.translating_sid == Some(sid))
     }
@@ -423,11 +437,10 @@ pub struct SmmuSharedState {
     /// How the advertised OAS is resolved against the host SMMU at
     /// device-attach time (see [`resolve_host_caps`](Self::resolve_host_caps)).
     oas_policy: crate::SmmuOasPolicy,
-    /// Accelerated stream registrations. This is shared because VFIO devices
-    /// can be added or removed while the chipset emulator is stopped.
-    accel_devices: Mutex<Vec<AccelDeviceRegistration>>,
-    /// Per-vIOMMU invalidation sink. The first registered sink wins.
-    invalidation_sink: OnceLock<Arc<dyn AcceleratedInvalidationSink>>,
+    /// Accelerated stream registrations and the host vIOMMU they share. This
+    /// is shared because VFIO devices can be added or removed while the
+    /// chipset emulator is stopped.
+    accel_state: Mutex<AccelState>,
     /// Host IOMMU context backing this accelerated vSMMU. A vSMMU has one
     /// vIOMMU and therefore cannot span independently managed IOAS contexts.
     accel_iommu_association: Mutex<AccelIommuAssociationState>,
@@ -557,8 +570,7 @@ impl SmmuSharedState {
             gerror_irq,
             accel,
             oas_policy,
-            accel_devices: Mutex::new(Vec::new()),
-            invalidation_sink: OnceLock::new(),
+            accel_state: Mutex::new(AccelState::default()),
             accel_iommu_association: Mutex::new(AccelIommuAssociationState::default()),
             next_accel_id: AtomicU64::new(0),
         })
@@ -934,7 +946,7 @@ impl SmmuSharedState {
         backend: Arc<dyn AcceleratedStreamBackend>,
     ) -> anyhow::Result<u64> {
         let id = self.next_accel_id.fetch_add(1, Ordering::Relaxed);
-        let mut devices = self.accel_devices.lock();
+        let mut accel = self.accel_state.lock();
         let mut reg = AccelDeviceRegistration {
             id,
             stream_id_base,
@@ -947,13 +959,14 @@ impl SmmuSharedState {
         // panicking: the device has not been attached yet, so it is still in
         // the host's blocking domain and its DMA is already stopped.
         Self::apply_config(&mut reg, StreamConfig::Abort)?;
-        devices.push(reg);
+        accel.devices.push(reg);
         Ok(id)
     }
 
     fn set_accel_requester_id(&self, id: u64, rid: u16) -> anyhow::Result<()> {
-        let mut devices = self.accel_devices.lock();
-        let reg = devices
+        let mut accel = self.accel_state.lock();
+        let reg = accel
+            .devices
             .iter_mut()
             .find(|reg| reg.id == id)
             .context("accelerated SMMU registration no longer exists")?;
@@ -973,8 +986,9 @@ impl SmmuSharedState {
     }
 
     fn clear_accel_requester_id(&self, id: u64) -> anyhow::Result<()> {
-        let mut devices = self.accel_devices.lock();
-        let reg = devices
+        let mut accel = self.accel_state.lock();
+        let reg = accel
+            .devices
             .iter_mut()
             .find(|reg| reg.id == id)
             .context("accelerated SMMU registration no longer exists")?;
@@ -986,18 +1000,30 @@ impl SmmuSharedState {
         Ok(())
     }
 
-    /// Removes registration `id` synchronously. The backend is dropped after
-    /// releasing the registry lock, so it cannot race an in-flight invalidation
-    /// batch, which holds that same lock until the host consumes it.
+    /// Removes registration `id` synchronously.
+    ///
+    /// The last registration to go takes the host vIOMMU with it: nothing is
+    /// left behind this SMMU to translate or invalidate for. The removed
+    /// backend and the vIOMMU are dropped after releasing the lock, in that
+    /// order, so neither can race an in-flight invalidation batch (which holds
+    /// the same lock until the host consumes it).
     pub fn unregister_accel_device(&self, id: u64) {
-        let reg = {
-            let mut devices = self.accel_devices.lock();
-            devices
+        let (reg, sink) = {
+            let mut accel = self.accel_state.lock();
+            let reg = accel
+                .devices
                 .iter()
                 .position(|reg| reg.id == id)
-                .map(|pos| devices.swap_remove(pos))
+                .map(|pos| accel.devices.swap_remove(pos));
+            let sink = accel
+                .devices
+                .is_empty()
+                .then(|| accel.sink.take())
+                .flatten();
+            (reg, sink)
         };
         drop(reg);
+        drop(sink);
     }
 
     /// Computes the SMMU's current policy for the given stream.
@@ -1071,12 +1097,15 @@ impl SmmuSharedState {
 
     /// Registers the per-vIOMMU invalidation sink for accelerated mode.
     ///
-    /// Called once per emulated SMMU when the first VFIO device behind it
-    /// binds. All devices behind a single emulated SMMU share one vIOMMU and
-    /// therefore one sink. Registration is synchronous and callable while the
-    /// emulator is stopped.
+    /// Called when the first VFIO device behind this SMMU binds. All devices
+    /// behind a single emulated SMMU share one vIOMMU and therefore one sink.
+    /// Registration is synchronous and callable while the emulator is stopped.
+    ///
+    /// This is the SMMU's only strong reference to the host vIOMMU, and it is
+    /// released when the last accelerated device unregisters, so a device
+    /// hot-plugged after that registers a freshly built vIOMMU's sink here.
     pub fn register_invalidation_sink(&self, sink: Arc<dyn AcceleratedInvalidationSink>) {
-        let _ = self.invalidation_sink.set(sink);
+        self.accel_state.lock().sink = Some(sink);
     }
 
     fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) -> anyhow::Result<()> {
@@ -1125,8 +1154,8 @@ impl SmmuSharedState {
     /// Recomputes and applies the current policy for one stream.
     pub(crate) fn apply_stream_config(&self, sid: u32) -> anyhow::Result<()> {
         let config = self.current_stream_config(sid);
-        let mut devices = self.accel_devices.lock();
-        let Some(reg) = devices.iter_mut().find(|reg| reg.sid == Some(sid)) else {
+        let mut accel = self.accel_state.lock();
+        let Some(reg) = accel.devices.iter_mut().find(|reg| reg.sid == Some(sid)) else {
             return Ok(());
         };
         Self::apply_config_or_abort(reg, config)
@@ -1141,9 +1170,9 @@ impl SmmuSharedState {
         &self,
         sids: std::ops::RangeInclusive<u64>,
     ) -> anyhow::Result<()> {
-        let mut devices = self.accel_devices.lock();
+        let mut accel = self.accel_state.lock();
         let mut first_error = None;
-        for reg in devices.iter_mut() {
+        for reg in accel.devices.iter_mut() {
             let Some(sid) = reg.sid.filter(|sid| sids.contains(&u64::from(*sid))) else {
                 continue;
             };
@@ -1172,8 +1201,8 @@ impl SmmuSharedState {
         policy: TranslationPolicy,
         transition: &'static str,
     ) {
-        let mut devices = self.accel_devices.lock();
-        for reg in devices.iter_mut() {
+        let mut accel = self.accel_state.lock();
+        for reg in accel.devices.iter_mut() {
             let Some(sid) = reg.sid else {
                 continue;
             };
@@ -1195,13 +1224,13 @@ impl SmmuSharedState {
     /// invalidation batch.
     pub(crate) fn lock_accel_devices(&self) -> AccelDevices<'_> {
         AccelDevices {
-            devices: self.accel_devices.lock(),
+            accel: self.accel_state.lock(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn accel_devices_locked(&self) -> bool {
-        self.accel_devices.try_lock().is_none()
+        self.accel_state.try_lock().is_none()
     }
 
     /// Forwards an accumulated invalidation batch to the per-vIOMMU sink.
@@ -1210,13 +1239,13 @@ impl SmmuSharedState {
     /// checks that admitted these entries and the host call that consumes them
     /// must not be split by a concurrent StreamID rebind, which would retire a
     /// vDevice the batch names and make the host reject an otherwise valid
-    /// command.
+    /// command. No sink means no accelerated devices, and so nothing to
+    /// invalidate.
     pub(crate) fn invalidate(
-        &self,
-        _devices: &AccelDevices<'_>,
+        devices: &AccelDevices<'_>,
         entries: &[[u64; 2]],
     ) -> Result<(), usize> {
-        match self.invalidation_sink.get() {
+        match &devices.accel.sink {
             Some(sink) => sink.invalidate(entries),
             None => Ok(()),
         }
