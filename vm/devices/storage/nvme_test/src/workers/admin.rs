@@ -847,7 +847,7 @@ impl AdminHandler {
                 } else {
                     // Valid but inactive namespace: return a zero-filled
                     // structure (the buffer is already zeroed).
-                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
+                    tracing::trace!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
@@ -859,7 +859,7 @@ impl AdminHandler {
                 } else {
                     // Valid but inactive namespace: return a zero-filled
                     // structure (the buffer is already zeroed).
-                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
+                    tracing::trace!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::SPECIFIC_CONTROLLER_IO_COMMAND_SET => {
