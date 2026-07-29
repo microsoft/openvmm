@@ -217,7 +217,14 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 .merge(&state.state.stats);
             }
 
-            resp.field("packet_filter", worker.channel.packet_filter);
+            resp.field("packet_filter", worker.channel.packet_filter)
+                .field(
+                    "packet_size",
+                    match worker.channel.packet_size {
+                        PacketSize::V1 => protocol::PACKET_SIZE_V1,
+                        PacketSize::V61 => protocol::PACKET_SIZE_V61,
+                    },
+                );
         }
 
         if let Some(queue_state) = &mut self.queue_state {
@@ -1504,6 +1511,14 @@ impl Nic {
             .clone();
         driver.retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
 
+        let packet_size = match &state {
+            WorkerState::Init(Some(init)) => init.version.into(),
+            WorkerState::Ready(ready) | WorkerState::WaitingForCoordinator(Some(ready)) => {
+                ready.buffers.version.into()
+            }
+            WorkerState::Init(None) | WorkerState::WaitingForCoordinator(None) => PacketSize::V1,
+        };
+
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
         let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
@@ -1521,7 +1536,7 @@ impl Nic {
                 adapter: self.adapter.clone(),
                 queue,
                 gpadl_map: self.resources.gpadl_map.clone(),
-                packet_size: PacketSize::V1,
+                packet_size,
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
@@ -2179,7 +2194,12 @@ fn parse_packet<'a, T: RingMem>(
                 let header: protocol::MessageHeader = reader
                     .read_plain()
                     .map_err(PacketError::Access)
-                    .inspect_err(|_| tracelimit::info_ratelimited!("parsing completion header"))?;
+                    .inspect_err(|_| {
+                        tracelimit::info_ratelimited!(
+                            tx_id = completion.transaction_id(),
+                            "parsing completion header"
+                        )
+                    })?;
                 match header.message_type {
                     protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE => {
                         PacketData::RndisPacketComplete(read_packet_data(&mut reader)?)
