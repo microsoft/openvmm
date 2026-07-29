@@ -523,6 +523,11 @@ impl virt::Processor for KvmProcessor<'_> {
                 } else {
                     // Run the VP.
                     if self.partition.caps.isolation == virt::IsolationType::Cca {
+                        if self.partition.cca_fatal.load(Ordering::Acquire) {
+                            return Err(
+                                dev.fatal_error(KvmRunVpError::CcaMemoryCleanupFailed.into())
+                            );
+                        }
                         match *self.partition.cca_launch_state.lock() {
                             crate::CcaLaunchState::Populated => {}
                             crate::CcaLaunchState::Failed => {
@@ -934,6 +939,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             kvm: self.vm,
             memory: Default::default(),
             cca_launch_state: Mutex::new(crate::CcaLaunchState::NotStarted),
+            cca_fatal: false.into(),
             shared_gpa_bit: (self.config.isolation == virt::IsolationType::Cca)
                 .then_some(1_u64 << (self.ipa_size - 1)),
             memory_backing_mode,

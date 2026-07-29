@@ -213,9 +213,35 @@ impl KvmPartitionInner {
                     0,
                 )?;
             }
+            #[cfg(guest_arch = "aarch64")]
+            if existing_range.private_state == Some(KvmGuestMemfdPrivateState::GuestMemfdDefault) {
+                let guest_memfd_offset = existing_range
+                    .guest_memfd_offset
+                    .ok_or(MemoryError::InvalidPrivateMemoryRange)?;
+                if let Err(err) = self.discard_stale_private_memory_backing(
+                    &[KvmMemoryRangeSegment {
+                        range: existing_range.range,
+                        host_addr: existing_range.host_addr,
+                        guest_memfd_offset,
+                    }],
+                    false,
+                    "CCA slot replacement",
+                ) {
+                    self.mark_cca_fatal();
+                    return Err(err.into());
+                }
+            }
             if existing_range.guest_memfd_offset.is_some() {
                 // SAFETY: clearing a slot removes the memory reference.
-                unsafe { self.clear_slot(slot_to_use, true)? };
+                if let Err(err) = unsafe { self.clear_slot(slot_to_use, true) } {
+                    #[cfg(guest_arch = "aarch64")]
+                    if existing_range.private_state
+                        == Some(KvmGuestMemfdPrivateState::GuestMemfdDefault)
+                    {
+                        self.mark_cca_fatal();
+                    }
+                    return Err(err.into());
+                }
                 state.ranges[slot_to_use] = None;
             }
         }
@@ -393,9 +419,10 @@ impl KvmPartitionInner {
     ///
     /// Guestmemfd memory slots have separate shared userspace and private
     /// guestmemfd backings. For a shared-to-private conversion, discard the
-    /// shared mapping with `MADV_DONTNEED`. For a private-to-shared conversion,
-    /// punch a hole in guestmemfd so private data cannot become visible after a
-    /// later conversion back to private.
+    /// shared backing with `MADV_REMOVE` (falling back to `MADV_DONTNEED` for
+    /// anonymous mappings). For a private-to-shared conversion, punch a hole in
+    /// guestmemfd so private data cannot become visible after a later conversion
+    /// back to private.
     pub(crate) fn discard_stale_private_memory_backing(
         &self,
         segments: &[KvmMemoryRangeSegment],
@@ -411,13 +438,24 @@ impl KvmPartitionInner {
                     isolation_name,
                     "discarding shared backing after private conversion"
                 );
-                let ret = unsafe {
+                let mut ret = unsafe {
                     libc::madvise(
                         segment.host_addr.cast(),
                         segment.range.len() as usize,
-                        libc::MADV_DONTNEED,
+                        libc::MADV_REMOVE,
                     )
                 };
+                if ret != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL)
+                {
+                    // MADV_REMOVE requires a shared file-backed mapping.
+                    ret = unsafe {
+                        libc::madvise(
+                            segment.host_addr.cast(),
+                            segment.range.len() as usize,
+                            libc::MADV_DONTNEED,
+                        )
+                    };
+                }
                 if ret != 0 {
                     return Err(MemoryError::DiscardSharedBacking(
                         std::io::Error::last_os_error(),
@@ -454,6 +492,12 @@ impl KvmPartitionInner {
         Ok(())
     }
 
+    /// Applies a KVM CCA memory-fault/RIPAS state transition.
+    ///
+    /// The kernel supplies a page-aligned range and indicates whether it must
+    /// become private. The range must remain within configured RAM. As with SNP
+    /// conversions, the old backing is discarded after KVM accepts the new
+    /// memory attribute so stale contents cannot reappear on a later transition.
     #[cfg(guest_arch = "aarch64")]
     pub(crate) fn handle_cca_ripas_change(
         &self,
@@ -479,21 +523,60 @@ impl KvmPartitionInner {
         let private = flags & kvm::KVM_MEMORY_EXIT_FLAG_PRIVATE_UAPI != 0;
         let range = MemoryRange::new(gpa..end);
         let state = self.memory.lock();
-        let segments =
-            guest_memfd_range_segments(range, &state.ranges).map_err(map_cca_conversion_error)?;
+        let segments = guest_memfd_range_intersections(range, &state.ranges)
+            .map_err(map_cca_conversion_error)?;
 
         tracing::debug!(gpa, size, flags, private, "KVM CCA RIPAS change");
-        self.discard_stale_private_memory_backing(&segments, private, "CCA")
-            .map_err(map_cca_conversion_error)?;
+        if let Err(err) = self.discard_stale_private_memory_backing(&segments, private, "CCA") {
+            self.mark_cca_fatal();
+            return Err(map_cca_conversion_error(err));
+        }
         Ok(())
     }
+}
+
+#[cfg(any(guest_arch = "aarch64", test))]
+fn guest_memfd_range_intersections(
+    range: MemoryRange,
+    slots: &[Option<KvmMemoryRange>],
+) -> Result<Vec<KvmMemoryRangeSegment>, MemoryError> {
+    let mut segments = guest_memfd_intersections(range, slots);
+    segments.sort_by_key(|segment| segment.range.start());
+    if segments
+        .windows(2)
+        .any(|segments| segments[0].range.end() > segments[1].range.start())
+    {
+        return Err(MemoryError::InvalidMapGpaRange);
+    }
+    Ok(segments)
 }
 
 pub(crate) fn guest_memfd_range_segments(
     range: MemoryRange,
     slots: &[Option<KvmMemoryRange>],
 ) -> Result<Vec<KvmMemoryRangeSegment>, MemoryError> {
-    let mut segments = slots
+    let mut segments = guest_memfd_intersections(range, slots);
+    segments.sort_by_key(|segment| segment.range.start());
+
+    let mut cursor = range.start();
+    for segment in &segments {
+        if segment.range.start() != cursor {
+            return Err(MemoryError::InvalidMapGpaRange);
+        }
+        cursor = segment.range.end();
+    }
+    if cursor != range.end() {
+        return Err(MemoryError::InvalidMapGpaRange);
+    }
+
+    Ok(segments)
+}
+
+fn guest_memfd_intersections(
+    range: MemoryRange,
+    slots: &[Option<KvmMemoryRange>],
+) -> Vec<KvmMemoryRangeSegment> {
+    slots
         .iter()
         .flatten()
         .filter_map(|slot| {
@@ -509,21 +592,7 @@ pub(crate) fn guest_memfd_range_segments(
                 }
             })
         })
-        .collect::<Vec<_>>();
-    segments.sort_by_key(|segment| segment.range.start());
-
-    let mut cursor = range.start();
-    for segment in &segments {
-        if segment.range.start() != cursor {
-            return Err(MemoryError::InvalidMapGpaRange);
-        }
-        cursor = segment.range.end();
-    }
-    if cursor != range.end() {
-        return Err(MemoryError::InvalidMapGpaRange);
-    }
-
-    Ok(segments)
+        .collect()
 }
 
 /// Resolves an imported range to a private guestmemfd slot and source HVA.
@@ -661,9 +730,46 @@ impl virt::PartitionMemoryMap for KvmPartitionInner {
                         0,
                     )?;
                 }
+                #[cfg(guest_arch = "aarch64")]
+                if kvm_range.private_state == Some(KvmGuestMemfdPrivateState::GuestMemfdDefault) {
+                    let guest_memfd_offset = kvm_range
+                        .guest_memfd_offset
+                        .ok_or(MemoryError::InvalidPrivateMemoryRange)?;
+                    if let Err(err) = self.discard_stale_private_memory_backing(
+                        &[KvmMemoryRangeSegment {
+                            range: kvm_range.range,
+                            host_addr: kvm_range.host_addr,
+                            guest_memfd_offset,
+                        }],
+                        false,
+                        "CCA slot unmap",
+                    ) {
+                        self.mark_cca_fatal();
+                        tracing::error!(
+                            error = &err as &dyn std::error::Error,
+                            "failed CCA slot backing cleanup; partition marked fatal"
+                        );
+                    }
+                }
                 // SAFETY: clearing a slot should always be safe since it removes
                 // and does not add memory references.
-                unsafe { self.clear_slot(slot, guest_memfd_backed)? };
+                // TODO: This error propagates to `PartitionMapper::unmap_region`,
+                // which currently panics because partition unmap is treated as
+                // infallible. Any recoverable policy must keep the slot's backing
+                // VA valid until the slot is cleared.
+                if let Err(err) = unsafe { self.clear_slot(slot, guest_memfd_backed) } {
+                    #[cfg(guest_arch = "aarch64")]
+                    if kvm_range.private_state == Some(KvmGuestMemfdPrivateState::GuestMemfdDefault)
+                    {
+                        self.mark_cca_fatal();
+                        tracing::error!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to clear CCA slot; partition marked fatal"
+                        );
+                        return Err(err.into());
+                    }
+                    return Err(err.into());
+                }
                 *entry = None;
             } else {
                 assert!(
@@ -881,6 +987,33 @@ mod tests {
     }
 
     #[test]
+    fn guest_memfd_intersections_allow_unbacked_ranges() {
+        let mut backing = vec![0u8; 0x1000];
+        let host_addr = backing.as_mut_ptr();
+        let slots = [Some(KvmMemoryRange {
+            host_addr,
+            range: range(0x2000, 0x3000),
+            guest_memfd_offset: Some(0x4000),
+            private_state: Some(test_private_state()),
+        })];
+
+        let segments = guest_memfd_range_intersections(range(0x1000, 0x4000), &slots).unwrap();
+        assert_eq!(
+            segments,
+            [KvmMemoryRangeSegment {
+                range: range(0x2000, 0x3000),
+                host_addr,
+                guest_memfd_offset: 0x4000,
+            }]
+        );
+        assert!(
+            guest_memfd_range_intersections(range(0x4000, 0x5000), &slots)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn guest_memfd_segments_reject_overlapping_slots() {
         let mut backing = vec![0u8; 0x4000];
         let host_addr = backing.as_mut_ptr();
@@ -902,6 +1035,10 @@ mod tests {
         assert!(matches!(
             guest_memfd_range_segments(range(0x1000, 0x4000), &slots),
             Err(MemoryError::InvalidMapGpaRange)
+        ));
+        assert!(matches!(
+            guest_memfd_range_intersections(range(0x1000, 0x4000), &slots),
+            Err(KvmError::InvalidMapGpaRange)
         ));
     }
 }

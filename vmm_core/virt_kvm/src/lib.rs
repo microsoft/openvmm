@@ -137,6 +137,8 @@ struct KvmPartitionInner {
     #[inspect(skip)]
     cca_launch_state: Mutex<CcaLaunchState>,
     #[cfg(guest_arch = "aarch64")]
+    cca_fatal: std::sync::atomic::AtomicBool,
+    #[cfg(guest_arch = "aarch64")]
     shared_gpa_bit: Option<u64>,
     memory: Mutex<KvmMemoryRangeState>,
     memory_backing_mode: KvmMemoryBackingMode,
@@ -207,6 +209,9 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "aarch64")]
     #[error("CCA initial page population failed")]
     CcaPopulationFailed,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("CCA partition is in a fatal memory-cleanup state")]
+    CcaMemoryCleanupFailed,
     #[error("unhandled system event type: {0:#x}")]
     UnhandledSystemEvent(u32),
     #[cfg(guest_arch = "x86_64")]
@@ -254,6 +259,14 @@ pub struct KvmProcessorBinder {
 }
 
 impl KvmPartitionInner {
+    #[cfg(guest_arch = "aarch64")]
+    fn mark_cca_fatal(&self) {
+        self.cca_fatal.store(true, Ordering::Release);
+        for vp in &self.vps {
+            self.kvm.vp(vp.vp_info().base.vp_index.index()).force_exit();
+        }
+    }
+
     #[cfg(guest_arch = "x86_64")]
     fn bsp(&self) -> &KvmVpInner {
         &self.vps[0]
