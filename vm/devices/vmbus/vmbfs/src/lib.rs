@@ -353,8 +353,13 @@ mod save_restore {
 
     impl SaveRestoreSimpleVmbusDevice for VmbfsDevice {
         fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
+            let Self::Runner {
+                state,
+                pipe: _,
+                buf: _,
+            } = runner;
             state::SavedState {
-                state: match runner.state {
+                state: match state {
                     State::VersionRequest => state::State::VersionRequest,
                     State::Ready => state::State::Ready,
                 },
@@ -366,8 +371,9 @@ mod save_restore {
             saved_state: Self::SavedState,
             channel: vmbus_channel::RawAsyncChannel<GpadlRingMem>,
         ) -> Result<Self::Runner, vmbus_channel::channel::ChannelOpenError> {
+            let Self::SavedState { state } = saved_state;
             Ok(VmbfsChannel {
-                state: match saved_state.state {
+                state: match state {
                     state::State::VersionRequest => State::VersionRequest,
                     state::State::Ready => State::Ready,
                 },
