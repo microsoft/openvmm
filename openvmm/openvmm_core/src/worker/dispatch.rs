@@ -2377,12 +2377,20 @@ impl InitializedVm {
                 ResolvedIommu::Smmu(resources) => resources,
                 _ => &[],
             };
+            let acpi_available = !matches!(
+                cfg.load_mode,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    ..
+                }
+            );
             smmu_wiring::setup_smmu(
                 &cfg.pcie_root_complexes,
                 resolved,
                 &mut pcie_host_bridges,
                 &chipset_builder,
                 &gm,
+                acpi_available,
             )?
         };
 

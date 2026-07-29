@@ -77,12 +77,16 @@ pub(super) struct SmmuDevicesResult {
 /// This is the single entry point for all SMMU setup in dispatch. It
 /// iterates root complex configs, creates one `SmmuDevice` per RC with
 /// `iommu: Some(Smmu)`, and wires up interrupts.
+///
+/// `acpi_available` gates accelerated SMMUs, which need IORT RMR nodes to
+/// reserve the host's MSI IOVA window in the guest.
 pub(super) fn setup_smmu(
     root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
     resolved_smmu_resources: &[ResolvedSmmuResources],
     pcie_host_bridges: &mut [PcieHostBridge],
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
+    acpi_available: bool,
 ) -> anyhow::Result<SmmuDevicesResult> {
     // Instantiate SMMU chipset devices.
     let mut shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>> =
@@ -101,6 +105,12 @@ pub(super) fn setup_smmu(
         });
 
     for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
+        anyhow::ensure!(
+            !accel || acpi_available,
+            "SMMU on root complex {}: accelerated translation requires ACPI",
+            rc.name
+        );
+
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);
