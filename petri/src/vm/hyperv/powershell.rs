@@ -1732,6 +1732,100 @@ pub async fn host_failure_events(start_time: &Timestamp) -> Vec<WinEvent> {
     events
 }
 
+/// A process running on the host, as reported by `Get-Process`.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct HostProcess {
+    /// Process name, without the file extension.
+    pub name: String,
+    /// Process ID.
+    pub id: u32,
+    /// Path to the executable, or `None` if it could not be read.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Company from the executable's version resource, if it has one.
+    #[serde(default)]
+    pub company: Option<String>,
+}
+
+/// A running service on the host, as reported by `Win32_Service`.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct HostService {
+    /// Service name.
+    pub name: String,
+    /// Human-readable service name.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Command line the service runs from.
+    #[serde(default)]
+    pub path_name: Option<String>,
+    /// Process hosting the service.
+    #[serde(default)]
+    pub process_id: u32,
+}
+
+/// Lists the processes running on the host.
+///
+/// A process terminated from outside itself runs none of its own handlers and
+/// leaves nothing in the event log, so when a VMM process disappears with an
+/// exit code it could not have produced, the only remaining lead is what else
+/// was running that could have killed it.
+pub async fn host_processes() -> anyhow::Result<Vec<HostProcess>> {
+    let output_var = ps::Variable::new("processes");
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet_to_var("Get-Process", &output_var)
+            .arg("ErrorAction", "SilentlyContinue")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .positional(ps::Array::new([
+                ps::Value::new("Name"),
+                ps::Value::new("Id"),
+                ps::Value::new("Path"),
+                ps::Value::new("Company"),
+            ]))
+            .next()
+            .cmdlet("ConvertTo-Json")
+            .arg("InputObject", ps::Array::new([&output_var]))
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get host processes")?;
+    serde_json::from_str(&output).context("parsing host processes")
+}
+
+/// Lists the running services on the host.
+///
+/// This complements [`host_processes`], since a service hosted in `svchost`
+/// is not identifiable from the process list alone.
+pub async fn host_services() -> anyhow::Result<Vec<HostService>> {
+    let output_var = ps::Variable::new("services");
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet_to_var("Get-CimInstance", &output_var)
+            .arg("ClassName", "Win32_Service")
+            .arg("Filter", "State = 'Running'")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .positional(ps::Array::new([
+                ps::Value::new("Name"),
+                ps::Value::new("DisplayName"),
+                ps::Value::new("PathName"),
+                ps::Value::new("ProcessId"),
+            ]))
+            .next()
+            .cmdlet("ConvertTo-Json")
+            .arg("InputObject", ps::Array::new([&output_var]))
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get host services")?;
+    serde_json::from_str(&output).context("parsing host services")
+}
+
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(
     vmid: Option<&Guid>,

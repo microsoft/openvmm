@@ -149,6 +149,11 @@ impl Test {
         #[cfg(windows)]
         post_test_hooks.push(collect_host_event_logs_hook(logger.clone()));
 
+        // ...and an external `TerminateProcess` does not even reach the event
+        // log, leaving what else was running as the only lead.
+        #[cfg(windows)]
+        post_test_hooks.push(collect_host_process_snapshot_hook(logger.clone()));
+
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
         // test, but the details won't end up in our per-test JSON log.
@@ -343,6 +348,53 @@ fn collect_host_event_logs_hook(logger: PetriLogSource) -> PetriPostTestHook {
         for event in events {
             event.write_to(&log_file);
         }
+        Ok(())
+    })
+}
+
+/// Returns a hook that, if the test failed, writes the processes and services
+/// running on the host to `host_processes.log`.
+///
+/// A process terminated by another process runs none of its own handlers and
+/// produces no event log entry, so nothing identifies the terminator. Recording
+/// what was running at least narrows it to a list of candidates.
+#[cfg(windows)]
+fn collect_host_process_snapshot_hook(logger: PetriLogSource) -> PetriPostTestHook {
+    PetriPostTestHook::new("collect host process snapshot".into(), move |test_passed| {
+        if test_passed {
+            return Ok(());
+        }
+        let log_file = logger.log_file("host_processes")?;
+        futures::executor::block_on(async {
+            match crate::vm::hyperv::powershell::host_processes().await {
+                Ok(processes) => {
+                    for p in processes {
+                        log_file.write_entry(format_args!(
+                            "process: {} pid={} company={:?} path={:?}",
+                            p.name, p.id, p.company, p.path
+                        ));
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to list host processes"
+                ),
+            }
+            match crate::vm::hyperv::powershell::host_services().await {
+                Ok(services) => {
+                    for s in services {
+                        log_file.write_entry(format_args!(
+                            "service: {} pid={} display={:?} path={:?}",
+                            s.name, s.process_id, s.display_name, s.path_name
+                        ));
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to list host services"
+                ),
+            }
+        });
         Ok(())
     })
 }

@@ -978,7 +978,16 @@ async fn wait_mesh_child(mut child: pal_async::windows::PolledProcess, name: &st
             tracing::info!(pid, name, "mesh child exited successfully");
         }
         Ok(code) => {
-            tracing::error!(pid, name, code, "mesh child abnormal exit");
+            // A mesh host only ever exits zero on its own, so a non-zero code
+            // came from outside it, and such codes are only recognizable in
+            // hex: an exception code, or a terminator's magic value.
+            tracing::error!(
+                pid,
+                name,
+                code,
+                code_hex = %format_args!("{code:#010x}"),
+                "mesh child abnormal exit"
+            );
         }
         Err(e) => {
             tracing::error!(
