@@ -47,15 +47,31 @@ fn is_dns_raw_apis_supported() -> bool {
         && api::is_supported::DnsQueryRawResultFree()
 }
 
+struct RawCancelHandle(UnsafeCell<DNS_QUERY_RAW_CANCEL>);
+
+impl RawCancelHandle {
+    fn new() -> Self {
+        Self(UnsafeCell::new(DNS_QUERY_RAW_CANCEL::default()))
+    }
+
+    fn get(&self) -> *mut DNS_QUERY_RAW_CANCEL {
+        self.0.get()
+    }
+}
+
+// SAFETY: Rust never reads or writes the cell after construction. The Windows
+// DNS API owns all access to it and supports cancellation from another thread.
+unsafe impl Sync for RawCancelHandle {}
+
 /// Context passed to the DNS query callback.
 struct RawCallbackContext {
     slab_key: usize,
     request: DnsRequestInternal,
-    pending_requests: Arc<Mutex<Slab<Box<UnsafeCell<DNS_QUERY_RAW_CANCEL>>>>>,
+    pending_requests: Arc<Mutex<Slab<Arc<RawCancelHandle>>>>,
 }
 
 pub struct WindowsDnsResolverBackend {
-    pending_requests: Arc<Mutex<Slab<Box<UnsafeCell<DNS_QUERY_RAW_CANCEL>>>>>,
+    pending_requests: Arc<Mutex<Slab<Arc<RawCancelHandle>>>>,
 }
 
 impl WindowsDnsResolverBackend {
@@ -107,13 +123,11 @@ impl DnsBackend for WindowsDnsResolverBackend {
         // slab entry while DnsQueryRaw is still running.
         let slab_key;
         let pending_count;
-        let new_cancel_handle;
+        let cancel_handle = Arc::new(RawCancelHandle::new());
         {
-            let cancel_handle = Box::new(UnsafeCell::new(DNS_QUERY_RAW_CANCEL::default()));
             let mut pending_reqs = self.pending_requests.lock();
-            slab_key = pending_reqs.insert(cancel_handle);
+            slab_key = pending_reqs.insert(cancel_handle.clone());
             pending_count = pending_reqs.len();
-            new_cancel_handle = pending_reqs[slab_key].get();
         }
 
         tracing::trace!(
@@ -160,9 +174,9 @@ impl DnsBackend for WindowsDnsResolverBackend {
         // SAFETY: We're calling the Windows DNS API with properly initialized structures.
         // The query buffer is valid for the duration of the call, and the callback context
         // will remain valid until the callback executes or we cancel the request.
-        // The new_cancel_handle has not been shared with another thread and so can not be modified
-        // while this call is in progress. Its location is stable because it is boxed.
-        let result = unsafe { api::DnsQueryRaw(&dns_request, new_cancel_handle) };
+        // Only the Windows DNS API accesses the cancel handle, and this local Arc keeps its
+        // stable heap allocation alive even if the callback removes the slab entry.
+        let result = unsafe { api::DnsQueryRaw(&dns_request, cancel_handle.get()) };
 
         if result != DNS_REQUEST_PENDING {
             // Remove the cancel handle since the callback won't fire on error.
@@ -187,12 +201,18 @@ impl DnsBackend for WindowsDnsResolverBackend {
 
 impl WindowsDnsResolverBackend {
     fn cancel_all(&mut self) {
-        let mut pending = std::mem::take(&mut *self.pending_requests.lock());
+        // Cancellation is asynchronous, so leave each owning reference in the
+        // slab until its callback removes it.
+        let pending: Vec<_> = self
+            .pending_requests
+            .lock()
+            .iter()
+            .map(|(_, cancel_handle)| cancel_handle.clone())
+            .collect();
 
-        for cancel_handle in pending.drain() {
+        for cancel_handle in pending {
             // SAFETY: We're calling DnsCancelQueryRaw with a valid cancel handle.
-            // The cancel handle is not being modified by any other thread while
-            // this call is in progress as we have exclusive ownership.
+            // The cancel handle remains allocated while this call is in progress.
             let result = unsafe { api::DnsCancelQueryRaw(cancel_handle.get()) };
             if result != NO_ERROR as i32 {
                 tracelimit::warn_ratelimited!(
@@ -259,7 +279,7 @@ unsafe extern "system" fn dns_query_raw_callback(
     // SAFETY: The context pointer was created by us in query() and is valid.
     let context = unsafe { Box::from_raw(query_context.cast::<RawCallbackContext>().cast_mut()) };
 
-    let _ = context.pending_requests.lock().remove(context.slab_key);
+    let _cancel_handle = context.pending_requests.lock().remove(context.slab_key);
 
     tracing::trace!(
         query_id = context.request.query_id,
