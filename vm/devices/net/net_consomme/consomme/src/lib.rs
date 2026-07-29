@@ -60,6 +60,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -854,6 +855,33 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.state.local_addr_map.clear();
+    }
+
+    /// Allocates a virtual address within this endpoint's subnet and routes
+    ///
+    /// Returns `None` if the subnet's virtual address pool is exhausted.
+    pub fn create_virtual_address(&mut self, destination: IpAddr) -> Option<IpAddr> {
+        match destination {
+            IpAddr::V4(destination) => {
+                let net_mask = self.state.params.net_mask;
+                let gateway_ip = self.state.params.gateway_ip;
+                let client_ip = self.state.params.client_ip;
+                let subnet_base = Ipv4Addr::from(u32::from(gateway_ip) & u32::from(net_mask));
+                self.state
+                    .local_addr_map
+                    .get_or_allocate_v4(destination, subnet_base, net_mask, gateway_ip, client_ip)
+                    .map(IpAddr::V4)
+            }
+            IpAddr::V6(destination) => {
+                let gateway_ll = self.state.params.gateway_link_local_ipv6;
+                let client_ll = self.state.params.client_ip_ipv6;
+                let client_routable = self.state.params.client_ip_ipv6_routable;
+                self.state
+                    .local_addr_map
+                    .get_or_allocate_v6(destination, gateway_ll, client_ll, client_routable)
+                    .map(IpAddr::V6)
+            }
+        }
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
