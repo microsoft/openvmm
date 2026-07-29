@@ -122,6 +122,8 @@
       - [VGA]()
     - [PCIe]()
       - [Overview](./reference/emulated/pcie/overview.md)
+    - [IOMMU]()
+      - [Arm SMMUv3](./reference/emulated/iommu/smmuv3.md)
 - [Device Backends]()
   - [Serial]()
   - [Graphics and Input]()
