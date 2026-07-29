@@ -125,6 +125,13 @@ the caller intended. Selecting the highest version could therefore make a
 checkout of an older tag report a newer version. Each release commit must have
 exactly one OpenVMM release tag. Pushed release tags are immutable.
 
+The release workflow enforces the tag format, because the version it parses
+becomes the archive name and the version recorded in `.openvmm-release.json`.
+It does not check commit topology or count the tags on a commit. Those rules
+are the releasing maintainer's responsibility, checked while selecting the
+release rather than by automation. Releases are published as drafts precisely
+so a mistake of this kind is caught before anything becomes public.
+
 ## Build identity
 
 OpenVMM resolves its displayed version from source identity:
@@ -284,9 +291,10 @@ Use a real checkout of the release tag or `openvmm-<VERSION>-source.tar.gz`.
 
 ## Normal release runbook
 
-Tag creation is the release decision. A successful workflow publishes
-automatically after building, packaging, checksumming, and attesting every
-asset. There is no separate manual approval or draft-review phase.
+Tag creation starts the release, but it does not complete it. The workflow
+publishes a **draft** GitHub Release, which a maintainer reviews and publishes
+by hand. Releasing is new enough that a human should look at the assembled
+release before it becomes public.
 
 ### 1. Select the release
 
@@ -317,30 +325,36 @@ git push origin "${tag}"
 
 Do not move, delete, or recreate a pushed release tag.
 
-### 3. Monitor automatic publication
+### 3. Monitor the workflow
 
 The tag starts the OpenVMM release workflow. The workflow:
 
-1. validates the tag and commit topology;
-2. creates the official source archive, including `.openvmm-release.json`;
+1. builds `openvmm` from the assembled source release in the configuration a
+   distribution packages it in, before publishing rather than after;
+2. assembles the official source archive, including `.openvmm-release.json`;
 3. creates `SHA256SUMS`;
-4. attests every archive and the checksum file;
-5. publishes a non-draft GitHub Release with generated notes.
+4. attests the archive and the checksum file;
+5. publishes a **draft** GitHub Release with generated notes.
+
+Assembly is reproducible, so the archive the first job proved buildable and the
+archive the second job publishes are byte-for-byte identical.
 
 Once the binary phase begins, the workflow also builds Windows x64, Windows
 ARM64, Linux musl x64, and Linux musl ARM64, and creates a separate runtime and
 symbol archive for each before checksumming and attesting.
 
-If a build, packaging, checksum, or attestation step fails, no public release
-is created. The same immutable tag may be rerun after a pipeline or
-infrastructure failure when no release was published.
+If a build, packaging, checksum, or attestation step fails, no release is
+created. The same immutable tag may be rerun after a pipeline or infrastructure
+failure. A rerun replaces the assets on the existing draft, which is one reason
+releases are drafted rather than published directly.
 
-If a public release already exists, the workflow refuses to replace its assets.
-Correct a bad published release with a new version rather than mutating it.
+If a release for the tag has already been published, the workflow refuses to
+replace its assets. Correct a bad published release with a new version rather
+than mutating it.
 
-### 4. Confirm the release
+### 4. Confirm the draft
 
-After the workflow succeeds, confirm that:
+Before publishing, confirm that:
 
 - the release page points to the intended tag and revision;
 - the official source archive is present;
@@ -372,6 +386,18 @@ gh attestation verify path/to/<ASSET> --repo microsoft/openvmm
 Once the binary phase begins, smoke-test runnable archives on compatible hosts
 where practical. At minimum, confirm that the executable starts and reports the
 expected version.
+
+### 5. Publish the release
+
+Publish the draft from the release page, or with the GitHub CLI:
+
+```bash
+gh release edit "openvmm-v${version}" --repo microsoft/openvmm --draft=false
+```
+
+Publishing is the point of no return. The workflow will refuse to replace the
+assets of a published release, so a mistake found after this point is corrected
+with a new version rather than by mutating what was published.
 
 ## Patch release runbook
 
