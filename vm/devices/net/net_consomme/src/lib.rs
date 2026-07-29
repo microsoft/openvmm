@@ -12,6 +12,8 @@ use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
+pub use consomme::StaticDnsRecordError;
+pub use consomme::StaticDnsRecordType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -194,6 +196,9 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// Error adding a static DNS record.
+    #[error("dns record error")]
+    DnsRecord(StaticDnsRecordError),
 }
 
 /// Callback to modify network state dynamically.
@@ -224,10 +229,20 @@ struct PortUnbindConfig {
     guest_port: u16,
 }
 
+struct AddDnsRecordConfig {
+    /// The type of record (currently only `A` is supported).
+    record_type: StaticDnsRecordType,
+    /// The query name in presentation form (e.g. `"example.com"`).
+    name: String,
+    /// The raw record data (for `A`, a 4-byte IPv4 address).
+    rdata: Vec<u8>,
+}
+
 enum ConsommeMessage {
     BindPort(Rpc<PortForwardConfig, Result<(), consomme::BindError>>),
     UnbindPort(Rpc<PortUnbindConfig, Result<(), consomme::BindError>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+    AddDnsRecord(Rpc<AddDnsRecordConfig, Result<(), StaticDnsRecordError>>),
 }
 
 impl ConsommeControl {
@@ -298,6 +313,28 @@ impl ConsommeControl {
             .call(ConsommeMessage::UpdateState, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
+    }
+
+    ///Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub async fn add_dns_record(
+        &self,
+        record_type: StaticDnsRecordType,
+        name: String,
+        rdata: Vec<u8>,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(
+                ConsommeMessage::AddDnsRecord,
+                AddDnsRecordConfig {
+                    record_type,
+                    name,
+                    rdata,
+                },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::DnsRecord)
     }
 }
 
@@ -617,6 +654,13 @@ fn process_message(
                 f(consomme.get_mut().params_mut());
                 consomme.get_mut().clear_local_addr_map();
                 consomme.update_dns_nameservers()
+            });
+        }
+        ConsommeMessage::AddDnsRecord(rpc) => {
+            rpc.handle_sync(|cfg| {
+                consomme
+                    .get_mut()
+                    .add_dns_record(cfg.record_type, &cfg.name, &cfg.rdata)
             });
         }
     }

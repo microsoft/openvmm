@@ -20,6 +20,7 @@ mod dhcpv6;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+mod dns_records;
 mod dns_resolver;
 mod icmp;
 mod local_addr_map;
@@ -40,6 +41,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
     max: 4 * 1024 * 1024,
 };
 
+pub use dns_records::StaticDnsRecordError;
+pub use dns_records::StaticDnsRecordType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -116,6 +119,8 @@ pub struct Consomme {
     udp: udp::Udp,
     icmp: icmp::Icmp,
     dns: Option<dns_resolver::DnsResolver>,
+    #[inspect(skip)]
+    static_dns: dns_records::StaticDnsRecords,
     host_has_ipv6: bool,
 }
 
@@ -834,6 +839,7 @@ impl Consomme {
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
+            static_dns: dns_records::StaticDnsRecords::default(),
             host_has_ipv6,
         }
     }
@@ -854,6 +860,17 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.state.local_addr_map.clear();
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub fn add_dns_record(
+        &mut self,
+        record_type: StaticDnsRecordType,
+        name: &str,
+        rdata: &[u8],
+    ) -> Result<(), StaticDnsRecordError> {
+        self.static_dns.add(record_type, name, rdata)
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.

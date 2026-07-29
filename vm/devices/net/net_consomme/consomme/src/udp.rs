@@ -594,18 +594,32 @@ impl<T: Client> Access<'_, T> {
         dst_addr: IpAddress,
         udp: &UdpPacket<&[u8]>,
     ) -> Result<bool, DropReason> {
+        let flow = DnsFlow {
+            src: SocketAddr::new(src_addr.into(), udp.src_port()),
+            dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
+            gateway_mac: self.inner.state.params.gateway_mac,
+            client_mac: frame.src_addr,
+            transport: crate::dns_resolver::DnsTransport::Udp,
+        };
+
+        // If the query matches a static DNS record, return that record directly.
+        if let Some(response_data) = self.inner.static_dns.build_response(udp.payload()) {
+            let response = DnsResponse {
+                flow,
+                response_data,
+            };
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send static DNS response");
+            }
+            return Ok(true);
+        }
+
         let Some(dns) = self.inner.dns.as_mut() else {
             return Ok(false);
         };
 
         let request = DnsRequest {
-            flow: DnsFlow {
-                src: SocketAddr::new(src_addr.into(), udp.src_port()),
-                dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
-                gateway_mac: self.inner.state.params.gateway_mac,
-                client_mac: frame.src_addr,
-                transport: crate::dns_resolver::DnsTransport::Udp,
-            },
+            flow,
             dns_query: udp.payload(),
         };
 
