@@ -6,7 +6,7 @@
 //!
 //! Depending on the type of JSON (template vs. user-defined custom vars), the
 //! corresponding Rust type will either be a
-//! [`UefiVars`](firmware_uefi_custom_vars::UefiVars) or a
+//! [`BaseTemplateVars`](firmware_uefi_custom_vars::BaseTemplateVars) or a
 //! [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta).
 
 #![expect(missing_docs)]

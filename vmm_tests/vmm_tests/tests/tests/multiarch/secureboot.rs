@@ -12,7 +12,6 @@ use petri::pipette::cmd;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
-use std::mem::size_of;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,7 +33,6 @@ const REPLACE_UEFI_VAR_VALUE: &[u8] = b"petri-uefi-replace";
 const APPENDED_DBX_SHA256: &[u8; 32] = b"petri-uefi-sha256-test-digest!!!";
 const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
-const EFIVARFS_ATTRIBUTES_SIZE: usize = size_of::<u32>();
 
 /// Helper function to create a VMGS file with a custom UEFI variable delta JSON file.
 async fn create_custom_uefi_vmgs(
@@ -100,8 +98,8 @@ async fn custom_uefi_append_non_signature_var<T: PetriVmmBackend>(
         .args([
             "dd",
             &format!("if={var_path}"),
-            "bs=1",
-            &format!("skip={EFIVARFS_ATTRIBUTES_SIZE}"),
+            "bs=4",
+            "skip=1",
             "status=none",
         ])
         .output()
@@ -148,8 +146,8 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
         .args([
             "dd",
             &format!("if={var_path}"),
-            "bs=1",
-            &format!("skip={EFIVARFS_ATTRIBUTES_SIZE}"),
+            "bs=4",
+            "skip=1",
             "status=none",
         ])
         .output()
@@ -203,8 +201,8 @@ async fn custom_uefi_append_sha256_dbx<T: PetriVmmBackend>(
         .args([
             "dd",
             &format!("if={dbx_path}"),
-            "bs=1",
-            &format!("skip={EFIVARFS_ATTRIBUTES_SIZE}"),
+            "bs=4",
+            "skip=1",
             "status=none",
         ])
         .output()
