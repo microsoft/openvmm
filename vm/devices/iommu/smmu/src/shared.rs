@@ -117,6 +117,9 @@ pub trait AcceleratedStreamBackend: Send + Sync {
 /// quadword pair; the host kernel parses the opcode and operands. Keeping the
 /// interface a plain `[u64; 2]` keeps this crate free of any host-IOMMU binding
 /// types.
+///
+/// The emulator calls this with the accelerated registration table locked, so an
+/// implementation must not re-enter [`SmmuSharedState`].
 pub trait AcceleratedInvalidationSink: Send + Sync {
     /// Forward `entries` to the host as one ordered batch, preserving program
     /// order.
@@ -153,9 +156,7 @@ pub enum StreamConfig {
         /// Canonical stage-1 STE double-words `[DW0, DW1]`: the guest STE
         /// reduced to the fields that are architecturally meaningful under this
         /// vSMMU's advertised capabilities, with every RES0/IGNORED field
-        /// zeroed (see `canonical_s1_ste_dwords`). A host nesting binding can
-        /// consume these as-is; no further masking is required, because the
-        /// canonical set is validated against the host at attach time.
+        /// zeroed (see `canonical_s1_ste_dwords`).
         ste_dwords: [u64; 2],
     },
 }
@@ -175,46 +176,53 @@ pub(crate) struct TranslationPolicy {
 
 /// Reduce a guest stage-1 STE to the double-words that are architecturally
 /// meaningful under this vSMMU's advertised capabilities, zeroing every field
-/// that is RES0 or IGNORED.
+/// that is RES0 or IGNORED and truncating `S1ContextPtr` to the OAS.
 ///
-/// This is **architectural canonicalization**, not host-ABI masking: which
-/// fields survive is a consequence of the SMMUv3 architecture plus the
-/// capabilities this emulator advertises, so it belongs to the emulator rather
-/// than any host binding. Under the current fixed capabilities the dropped
-/// fields are all RES0/IGNORED:
+/// This is **architectural canonicalization**: which fields survive is a
+/// consequence of the SMMUv3 architecture plus the capabilities this emulator
+/// advertises, so it belongs to the emulator rather than any host binding. The
+/// result is what a real SMMU with these IDR values would act on, so a consumer
+/// that programs hardware from it needs no further filtering.
 ///
-/// - `S2P=0` → all stage-2 fields (S2FWB, S2HWU) are RES0;
-/// - `ATTR_TYPES_OVR=0` → MTCFG, MemAttr, SHCFG, ALLOCCFG are RES0;
-/// - `ATTR_PERMS_OVR=0` → NSCFG, PRIVCFG, INSTCFG are RES0;
-/// - `HYP=0` → STRW is fixed to NS-EL1 (0);
+/// Under the current fixed capabilities the dropped fields are all RES0 or
+/// IGNORED (IHI 0070H.a §5.2, except where noted):
+///
+/// - `IDR0.S2P == 0` → all stage-2 fields (S2FWB, S2HWU) are RES0;
+/// - `IDR1.ATTR_TYPES_OVR == 0` → MTCFG, MemAttr, SHCFG, ALLOCCFG are RES0;
+/// - `IDR1.ATTR_PERMS_OVR == 0` → NSCFG, PRIVCFG, INSTCFG are RES0;
+/// - `IDR0.HYP == 0` → STRW is fixed to NS-EL1 (0);
+/// - `IDR0.ATS == 0` → EATS is IGNORED;
+/// - `IDR1.SSIDSIZE == 0` → S1CDMax is IGNORED, and S1Fmt and S1DSS are in turn
+///   IGNORED ("substreams unsupported"), leaving `S1ContextPtr` addressing
+///   exactly one CD;
 /// - unadvertised optional features (S1PIE, S1MPAM, CONT, DCP, DRE, PPAR, MEV)
 ///   are RES0/IGNORED; the SW bits have no hardware effect.
 ///
-/// Retained — DW0: V, Config, S1Fmt, S1ContextPtr, S1CDMax;
-/// DW1: S1DSS, S1CIR, S1COR, S1CSH, S1STALLD, EATS. Rebuilding the words through
-/// the typed field setters keeps the selection tied to the spec definitions.
+/// `S1ContextPtr` is truncated to the OAS because a real SMMU truncates the CD
+/// fetch address to the OAS (§3.4), so the pointer it acts on never contains
+/// bits above the advertised output address size.
+///
+/// Retained — DW0: V, Config, S1ContextPtr; DW1: S1CIR, S1COR, S1CSH, S1STALLD.
+/// Rebuilding the words through the typed field setters keeps the selection
+/// tied to the spec definitions.
 ///
 /// NOTE: if this emulator ever advertises one of the above features, the
 /// retained set must grow to match (and attach-time capability resolution must
 /// gate the new field against the host SMMU).
-fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste) -> [u64; 2] {
+fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste, oas_mask: u64) -> [u64; 2] {
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
 
     let dw0 = SteDw0::new()
         .with_v(ste.qw0.v())
         .with_config(ste.qw0.config())
-        .with_s1_fmt(ste.qw0.s1_fmt())
-        .with_s1_context_ptr(ste.qw0.s1_context_ptr())
-        .with_s1_cd_max(ste.qw0.s1_cd_max());
+        .with_s1_context_ptr((ste.s1_context_ptr() & oas_mask) >> 6);
 
     let dw1 = SteDw1::new()
-        .with_s1_dss(ste.qw1.s1_dss())
         .with_s1_cir(ste.qw1.s1_cir())
         .with_s1_cor(ste.qw1.s1_cor())
         .with_s1_csh(ste.qw1.s1_csh())
-        .with_s1stalld(ste.qw1.s1stalld())
-        .with_eats(ste.qw1.eats());
+        .with_s1stalld(ste.qw1.s1stalld());
 
     [dw0.into(), dw1.into()]
 }
@@ -251,10 +259,29 @@ struct AccelDeviceRegistration {
     translating_sid: Option<u32>,
 }
 
+/// Exclusive access to the accelerated registration table.
+///
+/// Held across an invalidation batch — from the StreamID check that admits the
+/// first entry through the host call that consumes the batch — so that no
+/// concurrent StreamID rebind or device teardown can retire a vDevice the batch
+/// names. Both run under this same lock.
+pub(crate) struct AccelDevices<'a> {
+    devices: parking_lot::MutexGuard<'a, Vec<AccelDeviceRegistration>>,
+}
+
+impl AccelDevices<'_> {
+    /// Whether `sid` is currently attached in translating (`S1_TRANS`) mode,
+    /// and therefore has host state its SID-based invalidations can reach.
+    pub(crate) fn is_translating(&self, sid: u32) -> bool {
+        self.devices
+            .iter()
+            .any(|reg| reg.translating_sid == Some(sid))
+    }
+}
+
 /// Handle tying an accelerated registration to the lifetime of the VFIO
 /// device that owns it. Dropping it synchronously unregisters the stream
-/// backend. An in-flight invalidation batch may keep the backend alive until
-/// that batch completes.
+/// backend.
 ///
 /// Held by the assigned PCI device (see the VFIO resolver); dropped when the
 /// device is removed or hot-unplugged. Holds a [`Weak`] reference so it never
@@ -916,6 +943,9 @@ impl SmmuSharedState {
             backend,
             translating_sid: None,
         };
+        // Unlike later transitions this can report failure rather than
+        // panicking: the device has not been attached yet, so it is still in
+        // the host's blocking domain and its DMA is already stopped.
         Self::apply_config(&mut reg, StreamConfig::Abort)?;
         devices.push(reg);
         Ok(id)
@@ -939,9 +969,7 @@ impl SmmuSharedState {
             reg.sid = Some(sid);
         }
         let config = self.current_stream_config(sid);
-        Self::apply_config(reg, config)?;
-        reg.policy_applied = true;
-        Ok(())
+        Self::apply_config_or_abort(reg, config)
     }
 
     fn clear_accel_requester_id(&self, id: u64) -> anyhow::Result<()> {
@@ -959,8 +987,8 @@ impl SmmuSharedState {
     }
 
     /// Removes registration `id` synchronously. The backend is dropped after
-    /// releasing the registry lock. An in-flight invalidation batch holds a
-    /// cloned `Arc` until its host invalidation completes.
+    /// releasing the registry lock, so it cannot race an in-flight invalidation
+    /// batch, which holds that same lock until the host consumes it.
     pub fn unregister_accel_device(&self, id: u64) {
         let reg = {
             let mut devices = self.accel_devices.lock();
@@ -1032,7 +1060,7 @@ impl SmmuSharedState {
             translate::SteAction::Bypass => StreamConfig::Bypass,
             translate::SteAction::S1Translate => StreamConfig::Translate {
                 sid,
-                ste_dwords: canonical_s1_ste_dwords(&ste),
+                ste_dwords: canonical_s1_ste_dwords(&ste, policy.oas_mask),
             },
             // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
             // config (0b110/0b111 on this stage-1-only SMMU) also aborts here —
@@ -1064,6 +1092,36 @@ impl SmmuSharedState {
         Ok(())
     }
 
+    /// Applies `config`, falling back to [`StreamConfig::Abort`] if the backend
+    /// rejects it, and returns the original error so the caller can report it.
+    ///
+    /// A rejected config leaves the device on its previous attachment, which
+    /// may still be translating through structures the guest is about to
+    /// reclaim, so the stream must be driven somewhere safe. Abort is the only
+    /// such destination; failing to reach it means DMA cannot be stopped at
+    /// all, and nothing in the architecture can express that.
+    fn apply_config_or_abort(
+        reg: &mut AccelDeviceRegistration,
+        config: StreamConfig,
+    ) -> anyhow::Result<()> {
+        let error = match Self::apply_config(reg, config) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+
+        if matches!(config, StreamConfig::Abort) {
+            panic!("smmu: cannot stop DMA for SID {:x?}: {error:#}", reg.sid);
+        }
+        Self::apply_config(reg, StreamConfig::Abort).unwrap_or_else(|abort_error| {
+            panic!(
+                "smmu: cannot stop DMA for SID {:x?} after {error:#}: {abort_error:#}",
+                reg.sid
+            )
+        });
+        reg.policy_applied = false;
+        Err(error)
+    }
+
     /// Recomputes and applies the current policy for one stream.
     pub(crate) fn apply_stream_config(&self, sid: u32) -> anyhow::Result<()> {
         let config = self.current_stream_config(sid);
@@ -1071,20 +1129,26 @@ impl SmmuSharedState {
         let Some(reg) = devices.iter_mut().find(|reg| reg.sid == Some(sid)) else {
             return Ok(());
         };
-        Self::apply_config(reg, config)
+        Self::apply_config_or_abort(reg, config)
     }
 
-    /// Recomputes and applies the current policy for every registered stream.
-    pub(crate) fn apply_all_stream_configs(&self) -> anyhow::Result<()> {
+    /// Recomputes and applies the current policy for every registered stream
+    /// whose StreamID falls within `sids`.
+    ///
+    /// Registrations that have not yet captured a RequesterID have no StreamID
+    /// and so fall in no range; they are already aborting and are skipped.
+    pub(crate) fn apply_stream_configs_in_range(
+        &self,
+        sids: std::ops::RangeInclusive<u64>,
+    ) -> anyhow::Result<()> {
         let mut devices = self.accel_devices.lock();
         let mut first_error = None;
         for reg in devices.iter_mut() {
-            let config = match reg.sid {
-                Some(sid) => self.current_stream_config(sid),
-                None => StreamConfig::Abort,
+            let Some(sid) = reg.sid.filter(|sid| sids.contains(&u64::from(*sid))) else {
+                continue;
             };
-            if let Err(error) = Self::apply_config(reg, config) {
-                reg.policy_applied = false;
+            let config = self.current_stream_config(sid);
+            if let Err(error) = Self::apply_config_or_abort(reg, config) {
                 first_error.get_or_insert(error);
             }
         }
@@ -1094,48 +1158,64 @@ impl SmmuSharedState {
         }
     }
 
-    /// Applies a proposed global policy and publishes it only after every
-    /// SID-bearing accelerated registration accepts the transition.
+    /// Applies a proposed global policy to every SID-bearing accelerated
+    /// registration, then publishes it.
     ///
-    /// The first failure stops the transition. Registrations without a SID
-    /// remain on Abort and are deliberately not called.
+    /// Always completes: SMMUv3 defines no config-plane error reporting, and a
+    /// register update must complete in finite time (§6.3.9), so a stream whose
+    /// policy the backend rejects is simply left aborting — indistinguishable
+    /// to the guest from a stream with an ILLEGAL STE. The guest's next
+    /// `CFGI_STE` for that SID retries it. Registrations without a SID remain
+    /// on Abort and are deliberately not called.
     pub(crate) fn transition_translation_policy(
         &self,
         policy: TranslationPolicy,
         transition: &'static str,
-    ) -> anyhow::Result<()> {
+    ) {
         let mut devices = self.accel_devices.lock();
         for reg in devices.iter_mut() {
             let Some(sid) = reg.sid else {
                 continue;
             };
             let config = self.stream_config_for_policy(policy, sid);
-            Self::apply_config(reg, config).with_context(|| {
-                format!(
-                    "{transition} failed for accelerated registration {}, SID {sid:#x}, policy {policy:?}, stream config {config:?}",
-                    reg.id
-                )
-            })?;
+            if let Err(error) = Self::apply_config_or_abort(reg, config) {
+                tracelimit::warn_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    transition,
+                    id = reg.id,
+                    sid,
+                    "smmu: stream left aborting after failed policy transition"
+                );
+            }
         }
         self.publish_translation_policy(policy);
-        Ok(())
     }
 
-    /// Pins the backend currently translating `sid` for the lifetime of an
+    /// Locks the accelerated registration table for the duration of an
     /// invalidation batch.
-    pub(crate) fn pin_translating_backend(
-        &self,
-        sid: u32,
-    ) -> Option<Arc<dyn AcceleratedStreamBackend>> {
-        self.accel_devices
-            .lock()
-            .iter()
-            .find(|reg| reg.translating_sid == Some(sid))
-            .map(|reg| reg.backend.clone())
+    pub(crate) fn lock_accel_devices(&self) -> AccelDevices<'_> {
+        AccelDevices {
+            devices: self.accel_devices.lock(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accel_devices_locked(&self) -> bool {
+        self.accel_devices.try_lock().is_none()
     }
 
     /// Forwards an accumulated invalidation batch to the per-vIOMMU sink.
-    pub(crate) fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
+    ///
+    /// Takes the registration guard rather than locking internally: the SID
+    /// checks that admitted these entries and the host call that consumes them
+    /// must not be split by a concurrent StreamID rebind, which would retire a
+    /// vDevice the batch names and make the host reject an otherwise valid
+    /// command.
+    pub(crate) fn invalidate(
+        &self,
+        _devices: &AccelDevices<'_>,
+        entries: &[[u64; 2]],
+    ) -> Result<(), usize> {
         match self.invalidation_sink.get() {
             Some(sink) => sink.invalidate(entries),
             None => Ok(()),
@@ -1550,7 +1630,7 @@ mod tests {
     use crate::spec::events::EventId;
     use crate::spec::pt::ApBits;
     use crate::spec::pt::PtDesc;
-    use crate::spec::ste::S1Fmt;
+
     use crate::spec::ste::STE_SIZE;
     use crate::spec::ste::Ste;
     use crate::spec::ste::SteConfig;
@@ -1586,59 +1666,56 @@ mod tests {
     fn transition_to_enabled(state: &SmmuSharedState) {
         let mut policy = state.translation_policy();
         policy.enabled = true;
-        state
-            .transition_translation_policy(policy, "test enable transition")
-            .expect("enable test SMMU");
+        state.transition_translation_policy(policy, "test enable transition");
     }
+
+    /// OAS mask for a 48-bit output address size.
+    const TEST_OAS_MASK: u64 = (1 << 48) - 1;
 
     #[test]
     fn test_canonical_s1_ste_dwords_preserves_allowed_fields() {
         // Set every field the canonical set retains, with distinct values.
-        let cd_addr: u64 = 0x3_FFFF_FFFF_F000;
+        let cd_addr: u64 = 0xFFFF_FFFF_F000;
         let qw0 = SteDw0::new()
             .with_v(true)
             .with_config(SteConfig::S1_TRANS.0)
-            .with_s1_fmt(S1Fmt::TWO_LEVEL_64K.0)
-            .with_s1_context_ptr(cd_addr >> 6)
-            .with_s1_cd_max(0x1f);
+            .with_s1_context_ptr(cd_addr >> 6);
         let qw1 = SteDw1::new()
-            .with_s1_dss(0x3)
             .with_s1_cir(0x3)
             .with_s1_cor(0x3)
             .with_s1_csh(0x3)
-            .with_s1stalld(true)
-            .with_eats(0x3);
+            .with_s1stalld(true);
         let ste = Ste {
             qw0,
             qw1,
             _qw2_7: [0; 6],
         };
 
-        let [out0, out1] = canonical_s1_ste_dwords(&ste);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
         // Retained fields survive untouched.
         assert_eq!(out0, u64::from(qw0));
         assert_eq!(out1, u64::from(qw1));
     }
 
     #[test]
-    fn test_canonical_s1_ste_dwords_drops_res0_fields() {
+    fn test_canonical_s1_ste_dwords_drops_ignored_fields() {
         // A fully-populated STE must be reduced to only the retained fields.
         let ste = Ste {
             qw0: SteDw0::from(u64::MAX),
             qw1: SteDw1::from(u64::MAX),
             _qw2_7: [u64::MAX; 6],
         };
-        let [out0, out1] = canonical_s1_ste_dwords(&ste);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
 
-        // DW0 retained: V[0] | Config[3:1] | S1Fmt[5:4] | S1ContextPtr[55:6] |
-        // S1CDMax[63:59]. The reserved bits [58:56] between S1ContextPtr and
-        // S1CDMax must be cleared (a real SMMU ignores them; the Linux nesting
-        // path rejects them with -EIO).
-        assert_eq!(out0, 0xf8ff_ffff_ffff_ffff);
-        // DW1 retained: S1DSS[1:0] | S1CIR[3:2] | S1COR[5:4] | S1CSH[7:6] |
-        // S1STALLD[27] | EATS[29:28]. Everything else (STRW, SHCFG, NSCFG,
-        // PRIVCFG, stage-2/override fields, ...) is RES0/IGNORED and cleared.
-        assert_eq!(out1, 0x3800_00ff);
+        // DW0 retains V[0] | Config[3:1] | S1ContextPtr[55:6], the pointer
+        // truncated to the 48-bit OAS. S1Fmt[5:4] and S1CDMax[63:59] are
+        // IGNORED with IDR1.SSIDSIZE == 0, as are the reserved bits [58:56].
+        assert_eq!(out0, 0x0000_ffff_ffff_ffcf);
+        // DW1 retains S1CIR[3:2] | S1COR[5:4] | S1CSH[7:6] | S1STALLD[27].
+        // S1DSS[1:0] is IGNORED with SSIDSIZE == 0 and EATS[29:28] with
+        // IDR0.ATS == 0; everything else (STRW, SHCFG, NSCFG, PRIVCFG,
+        // stage-2/override fields, ...) is RES0/IGNORED.
+        assert_eq!(out1, 0x0800_00fc);
     }
 
     /// A mock SignalMsi that records calls.
