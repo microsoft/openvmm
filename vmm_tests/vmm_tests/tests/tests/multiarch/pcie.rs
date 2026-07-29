@@ -930,6 +930,28 @@ async fn verify_ioapic_interrupt_remapping(
         "interrupt remapping dmesg lines"
     );
 
+    // `/dev/ttyS0` is the system console, and on a systemd guest there is a
+    // getty on it. `serial-getty@.service` is `Type=idle` with
+    // `TTYVHangup=yes`, so agetty is not actually exec'd until the boot job
+    // queue drains, and when it runs it vhangups the tty. A vhangup marks
+    // every open file for that tty as hung up, so a `write()` that is in
+    // flight fails with `EIO`. Pipette connects before the guest has finished
+    // booting, so the writes below can land in that window. Stop the getty
+    // first (this blocks until any pending start job is cancelled and any
+    // running agetty is reaped) so nothing else owns the tty while the test
+    // drives it.
+    let systemd = cmd!(sh, "test -d /run/systemd/system")
+        .ignore_status()
+        .output()
+        .await?
+        .status
+        .success();
+    if systemd {
+        cmd!(sh, "systemctl stop serial-getty@ttyS0.service")
+            .run()
+            .await?;
+    }
+
     let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
     tracing::info!(%interrupts, "/proc/interrupts");
 
@@ -944,9 +966,11 @@ async fn verify_ioapic_interrupt_remapping(
     );
 
     let count_before = sum_irq_count(serial_irq);
+    // `set -e` matters: a `for` loop's status is just its last iteration's, so
+    // without it a failed write anywhere but the final one is silently ignored.
     cmd!(
         sh,
-        "sh -c 'for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
+        "sh -c 'set -e; for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS0; done'"
     )
     .run()
     .await?;
