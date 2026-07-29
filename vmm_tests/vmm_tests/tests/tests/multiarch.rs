@@ -414,7 +414,7 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
 
 /// Configure Guest VSM and reboot the VM to verify it works.
 #[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
