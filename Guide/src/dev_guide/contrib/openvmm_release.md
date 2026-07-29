@@ -346,10 +346,10 @@ symbol archive for each before checksumming and attesting.
 If a build, packaging, checksum, or attestation step fails, no release is
 created, and the same immutable tag may be rerun.
 
-If a release already exists for the tag, the workflow leaves it alone and does
-nothing. To regenerate a draft, delete the draft release first and then rerun
-the workflow. A published release is never modified: correct a bad published
-release with a new version rather than mutating it.
+If a release already exists for the tag, the workflow fails rather than
+reporting success without doing anything. To regenerate a draft, delete it and
+rerun the workflow. A published release is never modified: correct a bad
+published release with a new version rather than mutating it.
 
 ### 4. Confirm the draft
 
