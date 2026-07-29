@@ -150,6 +150,10 @@ impl NvmeWorkers {
         if let EnableState::Resetting(recv) = &mut self.state {
             if recv.now_or_never().is_some() {
                 self.state = EnableState::Disabled;
+                // The shadow doorbell buffers the guest registered are only
+                // valid until this reset; the guest is free to reuse those
+                // pages now.
+                self.doorbells.write().reset();
                 true
             } else {
                 false
@@ -177,6 +181,7 @@ impl NvmeWorkers {
                 }
             }
         }
+        self.doorbells.write().reset();
     }
 }
 

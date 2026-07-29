@@ -233,6 +233,70 @@ async fn test_setup_sq_ring_with_shadow(driver: DefaultDriver) {
     assert_eq!(sq_evt_idx, new_sq_db);
 }
 
+/// A controller reset ends the lifetime of the shadow doorbell and event index
+/// buffers. If the controller keeps using them, it writes into pages the guest
+/// has since freed and reused, corrupting guest memory.
+#[async_test]
+async fn test_shadow_doorbells_dropped_on_controller_reset(driver: DefaultDriver) {
+    let cq_buf = PrpRange::new(vec![CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let sq_buf = PrpRange::new(vec![SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut backoff = Backoff::new(&driver);
+
+    let mut nvmec =
+        setup_shadow_doorbells(driver.clone(), &cq_buf, &sq_buf, &gm, &int_controller, None).await;
+
+    // Reset the controller by clearing CC.EN, and wait for CSTS.RDY to clear.
+    let mut dword = 0u32;
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    dword &= !1;
+    nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
+    let mut reset = false;
+    for _ in 0..5 {
+        nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
+        if !spec::Csts::from(dword).rdy() {
+            reset = true;
+            break;
+        }
+        backoff.back_off().await;
+    }
+    assert!(reset);
+
+    // Stand in for the guest freeing the buffers and handing the pages to
+    // something else.
+    const SENTINEL: u64 = 0x0123_4567_89ab_cdef;
+    gm.write_plain::<u64>(DOORBELL_BUFFER_BASE, &SENTINEL)
+        .unwrap();
+    gm.write_plain::<u64>(EVT_IDX_BUFFER_BASE, &SENTINEL)
+        .unwrap();
+
+    // Re-enable the controller, which rebuilds the admin queues.
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    dword |= 1;
+    nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
+    let mut ready = false;
+    for _ in 0..5 {
+        nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
+        if spec::Csts::from(dword).rdy() {
+            ready = true;
+            break;
+        }
+        backoff.back_off().await;
+    }
+    assert!(ready);
+
+    // Ring the admin submission queue doorbell without advancing it.
+    nvmec.write_bar0(0x1000, 0u32.as_bytes()).unwrap();
+    backoff.back_off().await;
+
+    assert_eq!(
+        gm.read_plain::<u64>(DOORBELL_BUFFER_BASE).unwrap(),
+        SENTINEL
+    );
+    assert_eq!(gm.read_plain::<u64>(EVT_IDX_BUFFER_BASE).unwrap(), SENTINEL);
+}
+
 #[async_test]
 async fn test_update_data_queues_with_shadow_doorbells(driver: DefaultDriver) {
     let cq_buf = PrpRange::new(vec![CQ_BASE], 0, PAGE_SIZE64).unwrap();

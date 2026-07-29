@@ -60,6 +60,19 @@ impl DoorbellMemory {
         Ok(())
     }
 
+    /// Drop any shadow doorbell registration and go back to controller-internal
+    /// doorbell storage.
+    ///
+    /// The shadow doorbell and event index buffers only live until the next
+    /// controller reset, after which the host must re-issue Doorbell Buffer
+    /// Config. Continuing to use them would read and write guest pages that the
+    /// guest has since freed and reused.
+    pub fn reset(&mut self) {
+        self.mem = GuestMemory::allocate(self.wakers.len() << DOORBELL_STRIDE_BITS);
+        self.offset = 0;
+        self.event_idx_offset = None;
+    }
+
     pub fn try_write(&self, db_id: u16, value: u32) -> Result<(), InvalidDoorbell> {
         if (db_id as usize) >= self.wakers.len() {
             return Err(InvalidDoorbell);
