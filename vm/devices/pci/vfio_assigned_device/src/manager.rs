@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::prelude::*;
 use std::sync::Arc;
+use std::sync::Weak;
+use vfio_sys::iommufd::ViommuAlloc;
 
 /// Implements [`membacking::DmaTarget`] for VFIO type1 IOMMU containers.
 ///
@@ -684,22 +686,18 @@ struct IoasManager {
     #[inspect(skip)]
     ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
     ioas_id: u32,
-    /// S2 parent HWPT for iommufd nested translation. Lazily allocated
-    /// on first device that requests nesting.
-    s2_parent_hwpt_id: Option<u32>,
-    /// Shared iommufd accel state (vIOMMU) per emulated SMMU. Each entry
-    /// owns an `Arc` to the SMMU's shared state and is matched by
-    /// [`Arc::ptr_eq`], so "same emulated SMMU" is decided by identity and the
-    /// SMMU cannot be freed (and its address reused) while it keys an entry.
-    /// All devices behind the same vSMMU share a single vIOMMU; the first
-    /// device to request nesting creates it. The serial actor loop is the
-    /// mutual exclusion — no lock needed. There is one entry per emulated
-    /// SMMU sharing this `--iommu` context (typically one).
+    /// Nesting parent (stage-2) HWPTs under this IOAS, one per physical IOMMU
+    /// in use. Weak, so a parent is destroyed once the last vIOMMU nesting on
+    /// it goes away.
     #[inspect(skip)]
-    accel_states: Vec<(
-        Arc<smmu::SmmuSharedState>,
-        Arc<crate::iommufd_nesting::SmmuAccelState>,
-    )>,
+    nesting_parents: Vec<Weak<crate::iommufd_nesting::NestingParent>>,
+    /// Cached per-vSMMU accel state (vIOMMU). All devices behind the same
+    /// vSMMU share one entry; the first device to request nesting creates it.
+    /// The serial actor loop is the mutual exclusion — no lock needed. There
+    /// is one entry per emulated SMMU sharing this `--iommu` context
+    /// (typically one).
+    #[inspect(skip)]
+    accel_states: Vec<AccelStateEntry>,
     /// Keeps the DMA mapper registered with the region manager.
     #[inspect(skip)]
     _dma_handle: membacking::DmaMapperHandle,
@@ -721,6 +719,18 @@ struct IoasManager {
 struct CdevDeviceEntry {
     id: u64,
     pci_id: String,
+}
+
+/// Cache entry mapping an emulated SMMU to its host vIOMMU.
+///
+/// Both halves are weak. A strong `vsmmu` would keep the emulated SMMU alive
+/// for the manager's lifetime; a strong `accel` would keep the vIOMMU and its
+/// HWPTs alive after the last device behind the vSMMU is removed. Holding both
+/// weakly makes the entry expire on its own, and lets a re-plugged device
+/// either reuse a still-live vIOMMU or build a fresh one.
+struct AccelStateEntry {
+    vsmmu: Weak<smmu::SmmuSharedState>,
+    accel: Weak<crate::iommufd_nesting::SmmuAccelState>,
 }
 
 impl IoasManager {
@@ -759,7 +769,7 @@ impl IoasManager {
             iommu_id,
             ctx,
             ioas_id,
-            s2_parent_hwpt_id: None,
+            nesting_parents: Vec::new(),
             accel_states: Vec::new(),
             _dma_handle: dma_handle,
             dmabuf_registry,
@@ -810,31 +820,6 @@ impl IoasManager {
         // HWPT by the IommufdStreamBackend. For non-nesting, attach to the
         // IOAS for identity DMA.
         let nesting = if let Some(vsmmu) = vsmmu {
-            // Lazily allocate the S2 parent HWPT (one per IOAS).
-            let s2_hwpt_id = match self.s2_parent_hwpt_id {
-                Some(id) => id,
-                None => {
-                    let id = self
-                        .ctx
-                        .hwpt_alloc(
-                            vfio_sys::iommufd::IOMMU_HWPT_ALLOC_NEST_PARENT,
-                            devid,
-                            self.ioas_id,
-                            vfio_sys::iommufd::IOMMU_HWPT_DATA_NONE,
-                            None,
-                        )
-                        .context("failed to allocate S2 parent HWPT for nesting")?;
-                    tracing::info!(
-                        iommu_id = self.iommu_id,
-                        ioas_id = self.ioas_id,
-                        s2_parent_hwpt_id = id,
-                        "allocated S2 parent HWPT for iommufd nesting"
-                    );
-                    self.s2_parent_hwpt_id = Some(id);
-                    id
-                }
-            };
-
             // Query the physical SMMU's capabilities backing this device.
             let host_caps = crate::iommufd_nesting::query_host_caps(&self.ctx, devid)
                 .context("failed to query host SMMU capabilities")?;
@@ -843,23 +828,32 @@ impl IoasManager {
             // first device behind the SMMU allocates it; the rest reuse it
             // (matched by Arc identity), so one emulated SMMU maps to one
             // iommufd vIOMMU.
-            let accel_state = if let Some((_, existing)) = self
-                .accel_states
-                .iter()
-                .find(|(s, _)| Arc::ptr_eq(s, &vsmmu))
-            {
-                existing.clone()
-            } else {
-                let state = Arc::new(
-                    crate::iommufd_nesting::SmmuAccelState::new(
-                        self.ctx.clone(),
-                        devid,
-                        s2_hwpt_id,
-                    )
-                    .context("failed to create SMMU accel state")?,
-                );
-                self.accel_states.push((vsmmu.clone(), state.clone()));
-                state
+            self.prune_accel_states();
+            let existing = self.accel_states.iter().find_map(|entry| {
+                let cached = entry.vsmmu.upgrade()?;
+                Arc::ptr_eq(&cached, &vsmmu)
+                    .then(|| entry.accel.upgrade())
+                    .flatten()
+            });
+            let accel_state = match existing {
+                Some(state) => state,
+                None => {
+                    let (parent, viommu_id) = self.select_nesting_parent(devid)?;
+                    let state = Arc::new(
+                        crate::iommufd_nesting::SmmuAccelState::new(
+                            self.ctx.clone(),
+                            devid,
+                            parent,
+                            viommu_id,
+                        )
+                        .context("failed to create SMMU accel state")?,
+                    );
+                    self.accel_states.push(AccelStateEntry {
+                        vsmmu: Arc::downgrade(&vsmmu),
+                        accel: Arc::downgrade(&state),
+                    });
+                    state
+                }
             };
 
             Some(NestingOutput {
@@ -902,6 +896,45 @@ impl IoasManager {
         })
     }
 
+    /// Picks a nesting parent for `dev_id`, reusing the first one the host
+    /// accepts and allocating a new one if none is compatible, and returns it
+    /// with the vIOMMU allocated on it.
+    ///
+    /// Mirrors QEMU's `iommufd_cdev_autodomains_get`: `EINVAL` means the
+    /// parent's domain belongs to a different physical IOMMU, so try the next
+    /// or build one from this device.
+    fn select_nesting_parent(
+        &mut self,
+        dev_id: u32,
+    ) -> anyhow::Result<(Arc<crate::iommufd_nesting::NestingParent>, u32)> {
+        for parent in self.nesting_parents.iter().filter_map(Weak::upgrade) {
+            if let ViommuAlloc::Allocated(viommu_id) = parent.alloc_viommu(dev_id)? {
+                return Ok((parent, viommu_id));
+            }
+        }
+
+        let parent = Arc::new(crate::iommufd_nesting::NestingParent::new(
+            self.ctx.clone(),
+            dev_id,
+            self.ioas_id,
+        )?);
+        let ViommuAlloc::Allocated(viommu_id) = parent.alloc_viommu(dev_id)? else {
+            // The parent was just built from this device's own IOMMU.
+            anyhow::bail!("host rejected a vIOMMU on a nesting parent allocated for this device");
+        };
+        self.nesting_parents.push(Arc::downgrade(&parent));
+        Ok((parent, viommu_id))
+    }
+
+    /// Drops cache entries whose emulated SMMU or vIOMMU has gone away, so the
+    /// table does not grow across device hot-plug cycles.
+    fn prune_accel_states(&mut self) {
+        self.accel_states
+            .retain(|entry| entry.vsmmu.strong_count() > 0 && entry.accel.strong_count() > 0);
+        self.nesting_parents
+            .retain(|parent| parent.strong_count() > 0);
+    }
+
     fn remove_device(&mut self, device_id: u64) {
         if let Some(pos) = self.devices.iter().position(|d| d.id == device_id) {
             let entry = self.devices.swap_remove(pos);
@@ -912,6 +945,7 @@ impl IoasManager {
                 "removing cdev device"
             );
         }
+        self.prune_accel_states();
     }
 }
 

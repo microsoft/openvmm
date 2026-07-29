@@ -918,9 +918,9 @@ impl SmmuDevice {
         accel_devices: &mut Option<crate::shared::AccelDevices<'_>>,
     ) -> Result<(), usize> {
         let result = match accel_devices.as_ref() {
-            Some(devices) if !self.invalidation_batch.is_empty() => self
-                .shared_state
-                .invalidate(devices, &self.invalidation_batch),
+            Some(devices) if !self.invalidation_batch.is_empty() => {
+                SmmuSharedState::invalidate(devices, &self.invalidation_batch)
+            }
             _ => Ok(()),
         };
         self.invalidation_batch.clear();
@@ -2929,6 +2929,53 @@ mod tests {
         // Device teardown drops the guard; no emulator turn is needed.
         drop(guard);
         assert!(dropped.load(Ordering::Relaxed));
+    }
+
+    /// The SMMU releases the host vIOMMU with the last accelerated device, so
+    /// its iommufd objects are not held for the SMMU's (i.e. the VM's)
+    /// lifetime. Invalidations after that are no-ops.
+    #[test]
+    fn test_last_unregister_releases_invalidation_sink() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        struct DropTrackingSink(Arc<AtomicBool>);
+
+        impl crate::shared::AcceleratedInvalidationSink for DropTrackingSink {
+            fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
+                Ok(())
+            }
+        }
+
+        impl Drop for DropTrackingSink {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let dev = make_accel_device();
+        let sink_dropped = Arc::new(AtomicBool::new(false));
+
+        let ids: Vec<u64> = (0..2)
+            .map(|_| {
+                dev.shared_state
+                    .register_accel_device(0, Arc::new(MockStreamBackend))
+                    .expect("register backend")
+            })
+            .collect();
+        dev.shared_state
+            .register_invalidation_sink(Arc::new(DropTrackingSink(sink_dropped.clone())));
+
+        // One device left: the vIOMMU is still needed.
+        dev.shared_state.unregister_accel_device(ids[0]);
+        assert!(!sink_dropped.load(Ordering::Relaxed));
+
+        dev.shared_state.unregister_accel_device(ids[1]);
+        assert!(sink_dropped.load(Ordering::Relaxed));
+
+        // With no sink, a batch is silently dropped rather than faulting.
+        let devices = dev.shared_state.lock_accel_devices();
+        assert!(SmmuSharedState::invalidate(&devices, &[[0, 0]]).is_ok());
     }
 
     /// The registration table stays locked for the duration of the host

@@ -42,6 +42,7 @@ use anyhow::Context as _;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use vfio_sys::iommufd::IommufdCtx;
+use vfio_sys::iommufd::ViommuAlloc;
 
 /// Query the physical SMMUv3's capabilities for a device bound to iommufd.
 ///
@@ -119,6 +120,63 @@ impl Drop for PendingIommufdObject<'_> {
     }
 }
 
+/// A nesting parent (stage-2) HWPT under an IOAS.
+///
+/// This is the hardware realization of its IOAS's GPA→HPA map — every
+/// `IOAS_MAP` is replayed into it — and the nesting parent of every vIOMMU
+/// built on top. The kernel allocates the underlying domain from the IOMMU
+/// driver of whichever device asked for it, so one parent serves only devices
+/// on that same physical IOMMU; a host with several IOMMU instances needs one
+/// parent each. Hence a set of these per IOAS rather than a single ID, matching
+/// QEMU's `VFIOIOASHwpt` list.
+///
+/// Refcounted by the [`SmmuAccelState`]s nesting on it, which are in turn
+/// refcounted by their devices, so the last device out destroys the chain.
+pub struct NestingParent {
+    ctx: Arc<IommufdCtx>,
+    hwpt_id: u32,
+}
+
+impl NestingParent {
+    /// Allocates a nesting parent for `ioas_id` from `dev_id`'s IOMMU.
+    pub fn new(ctx: Arc<IommufdCtx>, dev_id: u32, ioas_id: u32) -> anyhow::Result<Self> {
+        let hwpt_id = ctx
+            .hwpt_alloc(
+                vfio_sys::iommufd::IOMMU_HWPT_ALLOC_NEST_PARENT,
+                dev_id,
+                ioas_id,
+                vfio_sys::iommufd::IOMMU_HWPT_DATA_NONE,
+                None,
+            )
+            .context("failed to allocate S2 parent HWPT for nesting")?;
+        tracing::info!(ioas_id, hwpt_id, dev_id, "allocated nesting parent HWPT");
+        Ok(Self { ctx, hwpt_id })
+    }
+
+    /// Attempts to build a vIOMMU for `dev_id` nesting on this parent.
+    ///
+    /// Returns [`ViommuAlloc::Incompatible`] if this parent belongs to a
+    /// different physical IOMMU than `dev_id`.
+    pub fn alloc_viommu(&self, dev_id: u32) -> anyhow::Result<ViommuAlloc> {
+        self.ctx.viommu_alloc(
+            vfio_sys::iommufd::IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
+            dev_id,
+            self.hwpt_id,
+        )
+    }
+}
+
+impl Drop for NestingParent {
+    fn drop(&mut self) {
+        self.ctx.destroy(self.hwpt_id).unwrap_or_else(|e| {
+            panic!(
+                "smmu accel: failed to destroy nesting parent HWPT {:#x}: {e:#}",
+                self.hwpt_id
+            )
+        });
+    }
+}
+
 /// Per-SMMU iommufd objects for HW-accelerated nested translation.
 ///
 /// Created lazily on first VFIO device attachment for an accel-capable SMMU.
@@ -133,12 +191,10 @@ impl Drop for PendingIommufdObject<'_> {
 pub struct SmmuAccelState {
     /// The iommufd context (shared with IoasManager).
     ctx: Arc<IommufdCtx>,
+    /// Keeps the nesting parent alive for at least as long as this vIOMMU.
+    _parent: Arc<NestingParent>,
     /// Virtual IOMMU ID (one per emulated SMMU instance).
     viommu_id: u32,
-    /// S2 parent HWPT ID (nesting parent, linked to IOAS). Provides GPA→HPA
-    /// translation; it is the nesting parent of every nested HWPT below, and
-    /// is reached indirectly (via the bypass HWPT), not by direct attach.
-    s2_parent_hwpt_id: u32,
     /// Shared, persistent nested HWPT with an abort STE (`Config=0b000`).
     /// Devices in ABORT attach here (rather than detaching), staying vIOMMU
     /// members. One per vIOMMU.
@@ -150,25 +206,18 @@ pub struct SmmuAccelState {
 }
 
 impl SmmuAccelState {
-    /// Create per-SMMU iommufd objects.
+    /// Create per-SMMU iommufd objects on `viommu_id`, a vIOMMU the caller has
+    /// already allocated on `parent` via [`NestingParent::alloc_viommu`].
     ///
-    /// `dev_id` is any device bound to this IOMMU. The iommufd kernel
-    /// requires a device reference to determine which physical IOMMU
-    /// backs the vIOMMU.
-    ///
-    /// `s2_parent_hwpt_id` is the S2 parent HWPT, previously allocated
-    /// via `IOMMU_HWPT_ALLOC` with `NEST_PARENT`.
-    pub fn new(ctx: Arc<IommufdCtx>, dev_id: u32, s2_parent_hwpt_id: u32) -> anyhow::Result<Self> {
-        let viommu = PendingIommufdObject::new(
-            &ctx,
-            ctx.viommu_alloc(
-                vfio_sys::iommufd::IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
-                dev_id,
-                s2_parent_hwpt_id,
-            )
-            .context("failed to allocate vIOMMU for accel SMMU")?,
-            "vIOMMU",
-        );
+    /// Takes ownership of `viommu_id`: it is destroyed if this fails, and with
+    /// this state otherwise.
+    pub fn new(
+        ctx: Arc<IommufdCtx>,
+        dev_id: u32,
+        parent: Arc<NestingParent>,
+        viommu_id: u32,
+    ) -> anyhow::Result<Self> {
+        let viommu = PendingIommufdObject::new(&ctx, viommu_id, "vIOMMU");
 
         // Pre-allocate the persistent abort and bypass nested HWPTs under this
         // vIOMMU (matching QEMU). Every device is always attached to a nested
@@ -207,7 +256,7 @@ impl SmmuAccelState {
 
         tracing::info!(
             viommu_id = viommu.id(),
-            s2_parent_hwpt_id,
+            s2_parent_hwpt_id = parent.hwpt_id,
             abort_hwpt_id = abort_hwpt.id(),
             bypass_hwpt_id = bypass_hwpt.id(),
             "created SMMU accel state (vIOMMU)"
@@ -219,26 +268,29 @@ impl SmmuAccelState {
 
         Ok(Self {
             ctx,
+            _parent: parent,
             viommu_id,
-            s2_parent_hwpt_id,
             abort_hwpt_id,
             bypass_hwpt_id,
         })
     }
+}
 
-    /// Returns the vIOMMU ID.
-    pub fn viommu_id(&self) -> u32 {
-        self.viommu_id
-    }
-
-    /// Returns the S2 parent HWPT ID (used for BYPASS mode attachment).
-    pub fn s2_parent_hwpt_id(&self) -> u32 {
-        self.s2_parent_hwpt_id
-    }
-
-    /// Returns the iommufd context.
-    pub fn ctx(&self) -> &Arc<IommufdCtx> {
-        &self.ctx
+impl Drop for SmmuAccelState {
+    fn drop(&mut self) {
+        // Runs once the cache entry and every stream backend behind this vSMMU
+        // are gone, so each backend has already destroyed its own nested HWPT
+        // and vDevice. Children before the vIOMMU they nest under.
+        for (id, kind) in [
+            (self.bypass_hwpt_id, "bypass HWPT"),
+            (self.abort_hwpt_id, "abort HWPT"),
+            (self.viommu_id, "vIOMMU"),
+        ] {
+            self.ctx
+                .destroy(id)
+                .unwrap_or_else(|e| panic!("smmu accel: failed to destroy {kind} {id:#x}: {e:#}"));
+        }
+        tracing::info!(viommu_id = self.viommu_id, "destroyed SMMU accel state");
     }
 }
 
