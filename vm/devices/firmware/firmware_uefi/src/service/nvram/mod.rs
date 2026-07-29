@@ -17,8 +17,9 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
+use firmware_uefi_custom_vars::BaseTemplateJson;
 use firmware_uefi_custom_vars::FinalVars;
-use firmware_uefi_resources::UefiSecureBootTemplateJson;
+use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -80,8 +81,8 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        base_template_json: Option<UefiSecureBootTemplateJson>,
-        custom_uefi_json: Option<Vec<u8>>,
+        base_template_json: Option<BaseTemplateJson>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
         is_restoring: bool,
@@ -113,8 +114,8 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        base_template_json: Option<UefiSecureBootTemplateJson>,
-        custom_uefi_json: Option<Vec<u8>>,
+        base_template_json: Option<BaseTemplateJson>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -134,7 +135,7 @@ impl NvramServices {
             .map_err(NvramSetupError::LoadBaseTemplate)?
             .map(Into::into);
         let custom_template_delta = custom_uefi_json
-            .map(|json| hyperv_uefi_custom_vars_json::load_delta_from_json(&json))
+            .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
             .transpose()
             .map_err(|err| {
                 tracing::error!(
@@ -474,7 +475,7 @@ mod tests {
         let mut nvram = nvram_services(storage);
 
         nvram
-            .inject_vars_on_first_boot(None, Some(b"not json".to_vec()))
+            .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
             .await
             .unwrap();
     }
@@ -485,7 +486,7 @@ mod tests {
 
         assert!(matches!(
             nvram
-                .inject_vars_on_first_boot(None, Some(append_without_base_json()))
+                .inject_vars_on_first_boot(None, Some(append_without_base_json().into()))
                 .await,
             Err(NvramSetupError::ApplyCustomTemplate(
                 ApplyDeltaError::AppendWithoutBase
@@ -499,7 +500,7 @@ mod tests {
 
         assert!(matches!(
             nvram
-                .inject_vars_on_first_boot(None, Some(b"not json".to_vec()))
+                .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
                 .await,
             Err(NvramSetupError::LoadCustomUefiJson(_))
         ));

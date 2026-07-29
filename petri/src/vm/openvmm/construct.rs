@@ -422,7 +422,9 @@ impl PetriVmConfigOpenVmm {
                             SecureBootTemplate::MicrosoftUefiCertificateAuthority,
                         ) => aarch64_secure_boot_templates::microsoft_uefi_ca(),
                     });
-            let custom_uefi_json = uefi_cfg.and_then(|c| c.custom_uefi_json.clone());
+            let custom_uefi_json = uefi_cfg
+                .and_then(|c| c.custom_uefi_json.clone())
+                .map(Into::into);
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
                 .map(|c| c.efi_diagnostics_log_level)

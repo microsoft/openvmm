@@ -66,7 +66,7 @@ pub fn parse_template_json(
     let UefiVarsDelta {
         signatures,
         non_signature_vars,
-    } = load_delta_from_json(data)?;
+    } = parse_delta_json(data)?;
 
     Ok(UefiVars {
         signatures: Some(match signatures {
@@ -94,7 +94,7 @@ pub fn parse_template_json(
 
 /// Parse a [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta) from a user
 /// provided UEFI custom nvram variables JSON file.
-pub fn load_delta_from_json(
+pub fn parse_delta_json(
     data: &[u8],
 ) -> Result<firmware_uefi_custom_vars::delta::UefiVarsDelta, ParseJsonError> {
     // syntax validation

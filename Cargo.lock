@@ -2077,14 +2077,14 @@ dependencies = [
  "chipset_resources",
  "crypto",
  "der",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
+ "firmware_uefi_vars",
  "generation_id",
  "getrandom 0.4.2",
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
- "hyperv_uefi_custom_vars_json",
+ "hyperv_uefi_vars_json",
  "inspect",
  "jiff",
  "local_clock",
@@ -2108,20 +2108,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "firmware_uefi_custom_vars"
-version = "0.0.0"
-dependencies = [
- "guid",
- "mesh_protobuf",
- "thiserror 2.0.16",
- "uefi_specs",
-]
-
-[[package]]
 name = "firmware_uefi_resources"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
+ "firmware_uefi_vars",
  "hcl_compat_uefi_nvram_resources",
  "hyperv_secure_boot_templates",
  "inspect",
@@ -2130,6 +2121,16 @@ dependencies = [
  "uefi_specs",
  "vm_resource",
  "watchdog_core",
+]
+
+[[package]]
+name = "firmware_uefi_vars"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh_protobuf",
+ "thiserror 2.0.16",
+ "uefi_specs",
 ]
 
 [[package]]
@@ -3604,17 +3605,17 @@ dependencies = [
 name = "hyperv_secure_boot_templates"
 version = "0.0.0"
 dependencies = [
- "hyperv_uefi_custom_vars_json",
- "mesh_protobuf",
+ "firmware_uefi_vars",
+ "hyperv_uefi_vars_json",
  "serde_json",
 ]
 
 [[package]]
-name = "hyperv_uefi_custom_vars_json"
+name = "hyperv_uefi_vars_json"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
- "firmware_uefi_custom_vars",
+ "firmware_uefi_vars",
  "guid",
  "serde",
  "serde_helpers",

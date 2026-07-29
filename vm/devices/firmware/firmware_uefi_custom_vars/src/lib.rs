@@ -13,6 +13,42 @@ use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 
 pub mod delta;
 
+/// A complete base template deferred as raw JSON.
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct BaseTemplateJson(Vec<u8>);
+
+impl BaseTemplateJson {
+    /// Return the JSON bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for BaseTemplateJson {
+    fn from(json: Vec<u8>) -> Self {
+        Self(json)
+    }
+}
+
+/// A customer-provided UEFI variable delta deferred as raw JSON.
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct UefiVarsDeltaJson(Vec<u8>);
+
+impl UefiVarsDeltaJson {
+    /// Return the JSON bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for UefiVarsDeltaJson {
+    fn from(json: Vec<u8>) -> Self {
+        Self(json)
+    }
+}
+
 /// Collection of UEFI nvram variables that will be injected on first boot.
 #[derive(Debug, Default, Clone, Protobuf)]
 pub struct UefiVars {

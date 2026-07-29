@@ -2562,7 +2562,8 @@ async fn new_underhill_vm(
                 .context("failed to get custom UEFI JSON data")?
         } else {
             None
-        };
+        }
+        .map(Into::into);
 
         let config = firmware_uefi_resources::UefiConfig {
             base_template_json,

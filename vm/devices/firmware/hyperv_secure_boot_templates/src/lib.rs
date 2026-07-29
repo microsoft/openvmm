@@ -11,26 +11,12 @@
 //! gates! Unused templates should be stripped from the final binary by the
 //! linker.
 
-use mesh_protobuf::Protobuf;
-
-/// A selected built-in UEFI Secure Boot template, deferred as raw JSON.
-#[derive(Clone, Debug, Protobuf)]
-#[mesh(transparent)]
-pub struct UefiSecureBootTemplateJson(Vec<u8>);
-
-impl UefiSecureBootTemplateJson {
-    /// Return the embedded JSON bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
 macro_rules! include_templates {
     (
         $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
-            pub fn $fn_name() -> crate::UefiSecureBootTemplateJson {
+            pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplateJson {
                 // DEVNOTE: in the future, it may be interesting to explore
                 // parsing the JSON at compile time, and then "baking" the
                 // parsed templates into the binary as a `const` value, instead
@@ -41,7 +27,7 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                crate::UefiSecureBootTemplateJson(include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec())
+                include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec().into()
             }
         )*
 

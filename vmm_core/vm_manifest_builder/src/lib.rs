@@ -38,12 +38,13 @@ use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
+use firmware_uefi_resources::BaseTemplateJson;
 use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiConfig;
 use firmware_uefi_resources::UefiDeviceHandle;
-use firmware_uefi_resources::UefiSecureBootTemplateJson;
+use firmware_uefi_resources::UefiVarsDeltaJson;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -113,8 +114,8 @@ impl UefiManifest {
     /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
     pub fn new(
         arch: MachineArch,
-        base_template_json: Option<UefiSecureBootTemplateJson>,
-        custom_uefi_json: Option<Vec<u8>>,
+        base_template_json: Option<BaseTemplateJson>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
         diagnostics_rate_limit: Option<u32>,

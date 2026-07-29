@@ -1192,7 +1192,11 @@ async fn vm_config_from_command_line(
         // TODO: fallback to VMGS read if no command line flag was given
 
         let custom_uefi_json = match &opt.custom_uefi_json {
-            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
+            Some(file) => Some(
+                fs_err::read(file)
+                    .context("opening custom uefi json file")?
+                    .into(),
+            ),
             None => None,
         };
 
