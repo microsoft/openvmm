@@ -930,8 +930,23 @@ async fn verify_ioapic_interrupt_remapping(
         "interrupt remapping dmesg lines"
     );
 
-    let interrupts = cmd!(sh, "cat /proc/interrupts").read().await?;
-    tracing::info!(%interrupts, "/proc/interrupts");
+    // `/dev/ttyS1` is used rather than the console `/dev/ttyS0` so nothing else
+    // (kernel console, getty) owns the tty while the test drives it. The 8250
+    // driver only requests the port's IRQ while the port is open, so `ttyS1`
+    // has no `/proc/interrupts` line until then — both snapshots have to be
+    // taken from a shell that is holding the port open. `set -e` matters
+    // because a `for` loop's status is just its last iteration's, so without it
+    // a failed write anywhere but the final one is silently ignored.
+    const SNAPSHOT_SEPARATOR: &str = "===petri-after===";
+    let script = format!(
+        "set -e; exec 3>/dev/ttyS1; cat /proc/interrupts; echo {SNAPSHOT_SEPARATOR}; \
+         for i in $(seq 1 100); do echo ir-remap-test >&3; done; cat /proc/interrupts"
+    );
+    let snapshots = cmd!(sh, "sh -c {script}").read().await?;
+    let (interrupts, interrupts_after) = snapshots
+        .split_once(SNAPSHOT_SEPARATOR)
+        .context("serial IRQ snapshot separator missing")?;
+    tracing::info!(%interrupts, %interrupts_after, "/proc/interrupts");
 
     let serial_irq = interrupts
         .lines()
@@ -944,15 +959,6 @@ async fn verify_ioapic_interrupt_remapping(
     );
 
     let count_before = sum_irq_count(serial_irq);
-    // `set -e` matters: a `for` loop's status is just its last iteration's, so
-    // without it a failed write anywhere but the final one is silently ignored.
-    cmd!(
-        sh,
-        "sh -c 'set -e; for i in $(seq 1 100); do echo ir-remap-test > /dev/ttyS1; done'"
-    )
-    .run()
-    .await?;
-    let interrupts_after = cmd!(sh, "cat /proc/interrupts").read().await?;
     let serial_irq_after = interrupts_after
         .lines()
         .find(|l| l.contains("ttyS1"))
@@ -971,7 +977,7 @@ async fn verify_ioapic_interrupt_remapping(
 
 /// Sum the per-CPU interrupt counts from a `/proc/interrupts` line.
 ///
-/// A line looks like `" 4:   42    0   IR-IO-APIC   4-edge   ttyS1"`: the
+/// A line looks like `" 3:   42    0   IR-IO-APIC   3-edge   ttyS1"`: the
 /// leading token is the IRQ label and the trailing tokens are the chip and
 /// device name, so only the numeric per-CPU columns in between are summed.
 fn sum_irq_count(line: &str) -> u64 {
