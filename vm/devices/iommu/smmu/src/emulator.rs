@@ -7,6 +7,7 @@ use crate::shared::SmmuSharedState;
 use crate::shared::TranslationPolicy;
 use crate::spec::commands::CmdCfgiCd;
 use crate::spec::commands::CmdCfgiSte;
+use crate::spec::commands::CmdCfgiSteRange;
 use crate::spec::commands::CmdEntry;
 use crate::spec::commands::CmdOpcode;
 use crate::spec::commands::CmdSync;
@@ -191,12 +192,6 @@ pub struct SmmuDevice {
     #[inspect(skip)]
     invalidation_batch: Vec<[u64; 2]>,
 
-    // Backend references for SID-based commands in `invalidation_batch`.
-    // These pins keep host vDevices alive if the owning VFIO device is removed
-    // concurrently; they are dropped only after the host consumes the batch.
-    #[inspect(skip)]
-    invalidation_batch_pins: Vec<Arc<dyn crate::shared::AcceleratedStreamBackend>>,
-
     // Event queue base register (raw value for MMIO read/write).
     // EVTQ producer/consumer state lives in SmmuSharedState.
     #[inspect(hex)]
@@ -351,7 +346,6 @@ impl SmmuDevice {
             cmdq_cons: registers::CmdqCons::new(),
 
             invalidation_batch: Vec::new(),
-            invalidation_batch_pins: Vec::new(),
 
             evtq_base: 0,
 
@@ -459,10 +453,7 @@ impl SmmuDevice {
                     let mut policy = self.shared_state.translation_policy();
                     policy.enabled = requested.smmuen();
                     self.shared_state
-                        .transition_translation_policy(policy, "SMMUEN transition")
-                        .unwrap_or_else(|error| {
-                            panic!("smmu: failed to apply SMMUEN transition: {error:#}")
-                        });
+                        .transition_translation_policy(policy, "SMMUEN transition");
                 }
 
                 self.shared_state.set_evtq_enabled(requested.eventqen());
@@ -493,10 +484,7 @@ impl SmmuDevice {
                     let mut policy = self.shared_state.translation_policy();
                     policy.gbpa_abort = gbpa.abort();
                     self.shared_state
-                        .transition_translation_policy(policy, "GBPA transition")
-                        .unwrap_or_else(|error| {
-                            panic!("smmu: failed to apply GBPA transition: {error:#}")
-                        });
+                        .transition_translation_policy(policy, "GBPA transition");
                 }
                 self.gbpa = gbpa;
             }
@@ -707,6 +695,12 @@ impl SmmuDevice {
         // host rejects part of a flushed batch.
         let mut batch_start_cons = cons;
 
+        // Held from the StreamID check that admits the first batch entry until
+        // the host consumes the batch. Cloned out of `self` so the guard's
+        // borrow does not conflict with the `&mut self` calls in the loop.
+        let shared_state = self.shared_state.clone();
+        let mut accel_devices: Option<crate::shared::AccelDevices<'_>> = None;
+
         // Limit iterations to prevent infinite loops on malformed state.
         let mut iterations = 0u32;
 
@@ -736,7 +730,7 @@ impl SmmuDevice {
                     // host rejects part of that earlier batch, stop at its
                     // first unhandled command instead; advancing to the later
                     // unreadable entry would lose an invalidation.
-                    match self.flush_invalidation_batch() {
+                    match self.flush_invalidation_batch(&mut accel_devices) {
                         Err(failed_index) => {
                             cons = (batch_start_cons + failed_index as u32) & index_mask;
                             self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
@@ -779,22 +773,23 @@ impl SmmuDevice {
                 // CERROR_ILL. Because the guest writes the context descriptor
                 // (issuing CFGI_CD) before installing the translating STE
                 // (CFGI_STE), this also skips that first premature CFGI_CD.
-                // Mirrors QEMU's smmuv3_accel_issue_inv_cmd.
+                //
+                // The registration lock taken here is held until the batch is
+                // flushed, so the stream cannot stop translating between this
+                // check and the host call that consumes the command.
                 let sid_based = matches!(
                     opcode,
                     CmdOpcode::CFGI_CD | CmdOpcode::CFGI_CD_ALL | CmdOpcode::ATC_INV
                 );
-                let backend_pin = sid_based.then(|| {
-                    self.shared_state
-                        .pin_translating_backend(CmdCfgiCd::from(entry.qw0).sid())
-                });
-                if matches!(backend_pin, Some(None)) {
+                let devices =
+                    accel_devices.get_or_insert_with(|| shared_state.lock_accel_devices());
+                if sid_based && !devices.is_translating(CmdCfgiCd::from(entry.qw0).sid()) {
                     // Flush the pending batch first so its CMDQ indices stay
                     // contiguous (the partial-failure → CMDQ_CONS mapping
                     // assumes no gaps), then consume this command as a no-op.
-                    if let Err(failed_index) = self.flush_invalidation_batch() {
+                    if let Err(failed_index) = self.flush_invalidation_batch(&mut accel_devices) {
                         cons = (batch_start_cons + failed_index as u32) & index_mask;
-                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
+                        self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
                         break;
                     }
                     cons = (cons + 1) & index_mask;
@@ -802,9 +797,6 @@ impl SmmuDevice {
                 }
                 if self.invalidation_batch.is_empty() {
                     batch_start_cons = cons;
-                }
-                if let Some(Some(backend)) = backend_pin {
-                    self.invalidation_batch_pins.push(backend);
                 }
                 self.invalidation_batch.push([entry.qw0, entry.qw1]);
                 cons = (cons + 1) & index_mask;
@@ -816,7 +808,7 @@ impl SmmuDevice {
             // so `CMD_SYNC` keeps its "all prior commands complete" guarantee.
             // The host processes the array in order, so program order is
             // preserved. On partial failure, stop at the offending command.
-            if let Err(failed_index) = self.flush_invalidation_batch() {
+            if let Err(failed_index) = self.flush_invalidation_batch(&mut accel_devices) {
                 cons = (batch_start_cons + failed_index as u32) & index_mask;
                 self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
                 break;
@@ -825,6 +817,11 @@ impl SmmuDevice {
             match opcode {
                 // Configuration invalidation: CFGI_STE — re-drive the
                 // backend (if any) to the stream's current policy.
+                //
+                // SMMUv3 §4.3.1 gives this command no content-derived failure,
+                // so a backend that rejects the new STE is not a command error.
+                // The stream is left aborting instead, which is exactly what an
+                // ILLEGAL STE produces, and the guest's next CFGI_STE retries.
                 CmdOpcode::CFGI_STE => {
                     let cmd = CmdCfgiSte::from(entry.qw0);
                     // Emulated devices: no-op (no STE cache). Accelerated
@@ -833,27 +830,30 @@ impl SmmuDevice {
                         tracelimit::warn_ratelimited!(
                             error = &*e as &dyn std::error::Error,
                             sid = cmd.sid(),
-                            "smmu: failed to apply CFGI_STE"
+                            "smmu: stream left aborting after rejected CFGI_STE"
                         );
-                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
-                        break;
                     }
                 }
 
-                // CFGI_STE_RANGE: re-drive every registered backend.
+                // CFGI_STE_RANGE: re-drive every backend in the SID range.
                 CmdOpcode::CFGI_STE_RANGE => {
-                    // When Range=31 (CFGI_ALL), all backends get notified.
-                    // For other ranges, we'd need to iterate the SID range,
-                    // but Range=31 is the only value Linux uses at init.
-                    // For now, treat all ranges as broadcast to all backends.
-                    // Empty for emulated-only configurations (loop is a no-op).
-                    if let Err(e) = self.shared_state.apply_all_stream_configs() {
+                    // §4.3.2: the bottom Range+1 bits of the StreamID are
+                    // IGNORED, aligning the range to its size. Range=31
+                    // (CFGI_ALL) spans the full 2^32 StreamIDs, so compute in
+                    // u64 to keep the top of the range representable.
+                    let cmd = CmdCfgiSteRange::from(entry.qw0);
+                    let count = 1u64 << (CmdCfgiSteRange::range_from_entry(&entry) as u32 + 1);
+                    let start = u64::from(cmd.sid()) & !(count - 1);
+                    if let Err(e) = self
+                        .shared_state
+                        .apply_stream_configs_in_range(start..=start + count - 1)
+                    {
                         tracelimit::warn_ratelimited!(
                             error = &*e as &dyn std::error::Error,
-                            "smmu: failed to apply CFGI_STE_RANGE"
+                            start,
+                            count,
+                            "smmu: stream left aborting after rejected CFGI_STE_RANGE"
                         );
-                        self.set_cmdq_error(registers::CmdqError::CERROR_ABT);
-                        break;
                     }
                 }
 
@@ -894,7 +894,7 @@ impl SmmuDevice {
         // Flush any trailing forwardable commands (queue drained with no
         // following boundary command). Every error-break path above already
         // flushed the batch, so this only forwards a tail run on a clean drain.
-        if let Err(failed_index) = self.flush_invalidation_batch() {
+        if let Err(failed_index) = self.flush_invalidation_batch(&mut accel_devices) {
             cons = (batch_start_cons + failed_index as u32) & index_mask;
             self.set_cmdq_error(registers::CmdqError::CERROR_ILL);
         }
@@ -904,7 +904,7 @@ impl SmmuDevice {
     }
 
     /// Flushes the accumulated invalidation batch to the host sink as a single
-    /// `IOMMU_HWPT_INVALIDATE`.
+    /// `IOMMU_HWPT_INVALIDATE`, releasing the registration lock afterwards.
     ///
     /// Returns `Ok(())` on full success, an empty batch, or an emulated-only
     /// SMMU (no host sink), with the scratch buffer cleared. On a host failure
@@ -913,13 +913,18 @@ impl SmmuDevice {
     /// command. The sink owns mapping the host's reported handled-count to this
     /// index (including its unreliable corners), so this is always a valid
     /// offset within the batch.
-    fn flush_invalidation_batch(&mut self) -> Result<(), usize> {
-        if self.invalidation_batch.is_empty() {
-            return Ok(());
-        }
-        let result = self.shared_state.invalidate(&self.invalidation_batch);
+    fn flush_invalidation_batch(
+        &mut self,
+        accel_devices: &mut Option<crate::shared::AccelDevices<'_>>,
+    ) -> Result<(), usize> {
+        let result = match accel_devices.as_ref() {
+            Some(devices) if !self.invalidation_batch.is_empty() => self
+                .shared_state
+                .invalidate(devices, &self.invalidation_batch),
+            _ => Ok(()),
+        };
         self.invalidation_batch.clear();
-        self.invalidation_batch_pins.clear();
+        *accel_devices = None;
         result
     }
 
@@ -1030,7 +1035,6 @@ impl ChangeDeviceState for SmmuDevice {
 
             // Scratch batch buffer — transient; cleared on reset.
             invalidation_batch,
-            invalidation_batch_pins,
 
             // Event queue base register.
             evtq_base,
@@ -1053,9 +1057,7 @@ impl ChangeDeviceState for SmmuDevice {
             strtab_log2size: reset_strtab_base_cfg.log2size(),
             oas_mask,
         };
-        shared_state
-            .transition_translation_policy(reset_policy, "SMMU reset")
-            .unwrap_or_else(|error| panic!("smmu: failed to apply reset policy: {error:#}"));
+        shared_state.transition_translation_policy(reset_policy, "SMMU reset");
 
         *cr0 = reset_cr0;
         *cr0ack = reset_cr0;
@@ -1076,7 +1078,6 @@ impl ChangeDeviceState for SmmuDevice {
         *cmdq_cons = registers::CmdqCons::new();
 
         invalidation_batch.clear();
-        invalidation_batch_pins.clear();
 
         *evtq_base = 0;
 
@@ -1134,7 +1135,6 @@ impl SaveRestore for SmmuDevice {
             // Scratch batch buffer — transient, fully drained between CMDQ
             // processing passes, so there is nothing to save.
             invalidation_batch: _,
-            invalidation_batch_pins: _,
 
             // Event queue base register.
             evtq_base,
@@ -1204,8 +1204,7 @@ impl SaveRestore for SmmuDevice {
         restored_policy.strtab_base = registers::StrtabBase::from(strtab_base).addr();
         restored_policy.strtab_log2size = restored_strtab_base_cfg.log2size();
         self.shared_state
-            .transition_translation_policy(restored_policy, "SMMU restore")
-            .map_err(RestoreError::Other)?;
+            .transition_translation_policy(restored_policy, "SMMU restore");
 
         self.cr0 = restored_cr0;
         self.cr0ack = restored_cr0;
@@ -1812,9 +1811,16 @@ mod tests {
     fn transition_to_enabled(state: &SmmuSharedState) {
         let mut policy = state.translation_policy();
         policy.enabled = true;
-        state
-            .transition_translation_policy(policy, "test enable transition")
-            .expect("enable test SMMU");
+        state.transition_translation_policy(policy, "test enable transition");
+    }
+
+    /// Every StreamID, as `CMD_CFGI_ALL` (Range=31) covers.
+    const ALL_SIDS: RangeInclusive<u64> = 0..=u32::MAX as u64;
+
+    /// Whether `sid` is attached in translating mode, and so has its SID-based
+    /// invalidations forwarded.
+    fn is_translating(dev: &SmmuDevice, sid: u32) -> bool {
+        dev.shared_state.lock_accel_devices().is_translating(sid)
     }
 
     /// Create a device with real guest memory and a configured CMDQ.
@@ -2486,7 +2492,15 @@ mod tests {
             .set_requester_id(0x100)
             .expect_err("policy application must fail");
         assert_eq!(backend.take_stream_ids(), vec![Some(0x100)]);
-        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
+        // The rejected Bypass falls back to Abort rather than leaving the
+        // device on its previous attachment.
+        assert_eq!(
+            backend.take(),
+            vec![
+                crate::shared::StreamConfig::Bypass,
+                crate::shared::StreamConfig::Abort,
+            ]
+        );
 
         registration
             .set_requester_id(0x100)
@@ -2514,12 +2528,14 @@ mod tests {
 
         registration.clear_requester_id().expect("clear RID");
         assert_eq!(backend.take_stream_ids(), vec![None]);
-        assert!(dev.shared_state.pin_translating_backend(0x100).is_none());
+        assert!(!is_translating(&dev, 0x100));
 
+        // With no StreamID the registration falls in no range, so a re-drive
+        // skips it; `set_stream_id(None)` already left it aborting.
         dev.shared_state
-            .apply_all_stream_configs()
+            .apply_stream_configs_in_range(ALL_SIDS)
             .expect("re-drive without RID");
-        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+        assert!(backend.take().is_empty());
 
         registration.set_requester_id(0x200).expect("bind new RID");
         assert_eq!(backend.take_stream_ids(), vec![Some(0x200)]);
@@ -2539,9 +2555,11 @@ mod tests {
 
         transition_to_enabled(&dev.shared_state);
         dev.shared_state
-            .apply_all_stream_configs()
+            .apply_stream_configs_in_range(ALL_SIDS)
             .expect("apply enabled policy");
-        assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
+        // Still no StreamID, so nothing to re-drive; it stays on its
+        // registration-time abort.
+        assert!(backend.take().is_empty());
     }
 
     /// Shared policy re-drive applies every registered backend's current
@@ -2571,7 +2589,7 @@ mod tests {
         write_test_ste(&dev, sid, SteConfig::ABORT);
         transition_to_enabled(&dev.shared_state);
         dev.shared_state
-            .apply_all_stream_configs()
+            .apply_stream_configs_in_range(ALL_SIDS)
             .expect("apply all stream configs");
         assert_eq!(
             backend.take().last().copied(),
@@ -2619,9 +2637,15 @@ mod tests {
         assert!(backend.take().is_empty());
     }
 
+    /// A stream whose policy the backend rejects is left aborting; the
+    /// transition still reaches every later registration and still acks CR0.
     #[test]
-    fn test_smmuen_failure_stops_without_ack_or_secondary_policy() {
+    fn test_smmuen_failure_aborts_stream_and_continues() {
+        use crate::spec::ste::SteConfig;
+
         let mut dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
         let backends = [
             RecordingBackend::new(),
             RecordingBackend::new(),
@@ -2629,28 +2653,43 @@ mod tests {
         ];
         let mut registrations = Vec::new();
         for (index, backend) in backends.iter().enumerate() {
+            // Keep the SIDs inside the test stream table (512 entries).
+            let rid = 0x100 + (index as u16) * 0x20;
+            write_test_ste(&dev, u32::from(rid), SteConfig::BYPASS);
             let id = dev
                 .shared_state
                 .register_accel_device(0, backend.clone())
                 .expect("register backend");
             let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
-            registration
-                .set_requester_id(((index + 1) as u16) << 8)
-                .expect("bind RID");
+            registration.set_requester_id(rid).expect("bind RID");
             backend.take();
             registrations.push(registration);
         }
 
         backends[1].fail_next();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
-        }));
-        assert!(result.is_err());
+        write32(&mut dev, CR0, Cr0::new().with_smmuen(true).into());
+
+        // CR0ACK must track CR0: a register update completes in finite time and
+        // has no architectural reject path.
         assert!(Cr0::from(read32(&mut dev, CR0)).smmuen());
-        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
-        assert_eq!(backends[0].take(), vec![crate::shared::StreamConfig::Abort]);
-        assert_eq!(backends[1].take(), vec![crate::shared::StreamConfig::Abort]);
-        assert!(backends[2].take().is_empty());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
+        assert!(dev.shared_state.translation_policy().enabled);
+
+        assert_eq!(
+            backends[0].take(),
+            vec![crate::shared::StreamConfig::Bypass]
+        );
+        assert_eq!(
+            backends[1].take(),
+            vec![
+                crate::shared::StreamConfig::Bypass,
+                crate::shared::StreamConfig::Abort,
+            ]
+        );
+        assert_eq!(
+            backends[2].take(),
+            vec![crate::shared::StreamConfig::Bypass]
+        );
     }
 
     #[test]
@@ -2697,9 +2736,30 @@ mod tests {
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Abort]);
     }
 
+    /// Restore recomputes stream policy from guest memory, so a backend that
+    /// rejects a guest-authored STE must not fail the restore — otherwise the
+    /// guest could poison its own resume. The stream is left aborting instead.
     #[pal_async::async_test]
-    async fn test_restore_policy_failure_does_not_publish_state() {
+    async fn test_restore_survives_backend_failure() {
+        use crate::spec::ste::SteConfig;
+
         let mut dev = make_accel_device();
+        write64(
+            &mut dev,
+            STRTAB_BASE,
+            StrtabBase::new()
+                .with_addr_bits(TEST_STRTAB_GPA >> 6)
+                .into(),
+        );
+        write32(
+            &mut dev,
+            STRTAB_BASE_CFG,
+            StrtabBaseCfg::new()
+                .with_log2size(TEST_STRTAB_LOG2SIZE)
+                .into(),
+        );
+        write_test_ste(&dev, 0x100, SteConfig::BYPASS);
+
         let backend = RecordingBackend::new();
         let id = dev
             .shared_state
@@ -2715,17 +2775,25 @@ mod tests {
         backend.take();
 
         backend.fail_next();
-        assert!(matches!(dev.restore(saved), Err(RestoreError::Other(_))));
-        assert!(!Cr0::from(read32(&mut dev, CR0)).smmuen());
-        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
-        assert!(!dev.shared_state.translation_policy().enabled);
+        dev.restore(saved).expect("restore must not fail");
+        assert!(Cr0::from(read32(&mut dev, CR0)).smmuen());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).smmuen());
+        assert!(dev.shared_state.translation_policy().enabled);
+        assert_eq!(
+            backend.take(),
+            vec![
+                crate::shared::StreamConfig::Bypass,
+                crate::shared::StreamConfig::Abort,
+            ]
+        );
     }
 
-    /// A failed host policy replacement leaves the old attachment active, so
-    /// the SMMU preserves its forwarding state and reports a command abort
-    /// without consuming the failing CFGI_STE or following CMD_SYNC.
+    /// A rejected policy replacement leaves the stream aborting rather than on
+    /// its old translating attachment. `CMD_CFGI_STE` has no content-derived
+    /// failure (SMMUv3 §4.3.1), so it is still consumed and raises no CMDQ
+    /// error — the guest sees the same aborting stream an ILLEGAL STE gives it.
     #[test]
-    fn test_cfgi_failure_preserves_old_translation_state() {
+    fn test_cfgi_failure_aborts_stream() {
         use crate::spec::ste::SteConfig;
 
         let mut dev = make_cmdq_test_device();
@@ -2742,7 +2810,7 @@ mod tests {
             .expect("register translating backend");
         let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
         registration.set_requester_id(0x100).expect("bind RID");
-        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
+        assert!(is_translating(&dev, sid));
 
         write_test_ste(&dev, sid, SteConfig::BYPASS);
         backend.fail_next();
@@ -2762,12 +2830,13 @@ mod tests {
         write32(&mut dev, CMDQ_PROD, 2);
 
         let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
-        assert_eq!(cons.rd(), 0);
-        assert_eq!(cons.err(), CmdqError::CERROR_ABT.0);
-        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
+        assert_eq!(cons.rd(), 2);
+        assert_eq!(cons.err(), 0);
+        // No longer translating, so its SID-based invalidations stop forwarding.
+        assert!(!is_translating(&dev, sid));
         assert_eq!(
             backend.take().last().copied(),
-            Some(crate::shared::StreamConfig::Bypass)
+            Some(crate::shared::StreamConfig::Abort)
         );
     }
 
@@ -2824,12 +2893,12 @@ mod tests {
         let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
         registration.set_requester_id(0x100).expect("bind RID");
         // Device present, translating → its SID-based invalidations forward.
-        assert!(dev.shared_state.pin_translating_backend(sid).is_some());
+        assert!(is_translating(&dev, sid));
         assert!(!dropped.load(Ordering::Relaxed));
 
         // Unregister without touching the stopped emulator.
         dev.shared_state.unregister_accel_device(id);
-        assert!(dev.shared_state.pin_translating_backend(sid).is_none());
+        assert!(!is_translating(&dev, sid));
         assert!(
             dropped.load(Ordering::Relaxed),
             "backend should be torn down synchronously"
@@ -2862,33 +2931,26 @@ mod tests {
         assert!(dropped.load(Ordering::Relaxed));
     }
 
-    /// Synchronous removal during a host invalidation cannot destroy the
-    /// vDevice referenced by that in-flight batch. The emulator's batch pin
-    /// keeps the backend alive until the sink returns, then teardown completes
-    /// without another emulator turn.
+    /// The registration table stays locked for the duration of the host
+    /// invalidation, so a concurrent StreamID rebind or device teardown cannot
+    /// retire a vDevice the in-flight batch names.
     #[test]
-    fn test_invalidation_batch_pins_backend_during_unregister() {
+    fn test_invalidation_holds_registration_lock() {
         use crate::spec::ste::SteConfig;
         use std::sync::Weak;
         use std::sync::atomic::AtomicBool;
-        use std::sync::atomic::AtomicU64;
         use std::sync::atomic::Ordering;
 
-        struct UnregisteringSink {
+        struct LockObservingSink {
             shared: Weak<SmmuSharedState>,
-            registration_id: AtomicU64,
-            backend_dropped: Arc<AtomicBool>,
-            stayed_alive_during_invalidate: AtomicBool,
+            locked_during_invalidate: AtomicBool,
         }
 
-        impl crate::shared::AcceleratedInvalidationSink for UnregisteringSink {
+        impl crate::shared::AcceleratedInvalidationSink for LockObservingSink {
             fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
                 let shared = self.shared.upgrade().expect("SMMU shared state");
-                shared.unregister_accel_device(self.registration_id.load(Ordering::Relaxed));
-                self.stayed_alive_during_invalidate.store(
-                    !self.backend_dropped.load(Ordering::Relaxed),
-                    Ordering::Relaxed,
-                );
+                self.locked_during_invalidate
+                    .store(shared.accel_devices_locked(), Ordering::Relaxed);
                 Ok(())
             }
         }
@@ -2900,25 +2962,17 @@ mod tests {
 
         let sid = 0x100;
         write_test_ste(&dev, sid, SteConfig::S1_TRANS);
-        let dropped = Arc::new(AtomicBool::new(false));
         let id = dev
             .shared_state
-            .register_accel_device(
-                0,
-                Arc::new(DropTrackingBackend {
-                    dropped: dropped.clone(),
-                }),
-            )
+            .register_accel_device(0, Arc::new(MockStreamBackend))
             .expect("register translating backend");
         let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
         registration.set_requester_id(0x100).expect("bind RID");
         std::mem::forget(registration);
 
-        let sink = Arc::new(UnregisteringSink {
+        let sink = Arc::new(LockObservingSink {
             shared: Arc::downgrade(&dev.shared_state),
-            registration_id: AtomicU64::new(id),
-            backend_dropped: dropped.clone(),
-            stayed_alive_during_invalidate: AtomicBool::new(false),
+            locked_during_invalidate: AtomicBool::new(false),
         });
         dev.shared_state.register_invalidation_sink(sink.clone());
 
@@ -2926,9 +2980,73 @@ mod tests {
         write_cmdq_entry(&dev, 1, &sync_entry());
         write32(&mut dev, CMDQ_PROD, 2);
 
-        assert!(sink.stayed_alive_during_invalidate.load(Ordering::Relaxed));
-        assert!(dropped.load(Ordering::Relaxed));
-        assert!(dev.shared_state.pin_translating_backend(sid).is_none());
+        assert!(sink.locked_during_invalidate.load(Ordering::Relaxed));
+        // The lock is released once the batch is consumed.
+        assert!(!dev.shared_state.accel_devices_locked());
+    }
+
+    /// `CFGI_STE_RANGE` re-drives only the streams inside the aligned range it
+    /// names (SMMUv3 §4.3.2), leaving streams outside it untouched.
+    #[test]
+    fn test_cfgi_ste_range_honors_range() {
+        use crate::spec::ste::SteConfig;
+
+        let mut dev = make_cmdq_test_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        transition_to_enabled(&dev.shared_state);
+
+        // Two streams four StreamIDs apart, both currently on Bypass.
+        let backends = [RecordingBackend::new(), RecordingBackend::new()];
+        for (index, backend) in backends.iter().enumerate() {
+            let sid = 0x100 + (index as u32) * 4;
+            write_test_ste(&dev, sid, SteConfig::BYPASS);
+            let id = dev
+                .shared_state
+                .register_accel_device(0, backend.clone())
+                .expect("register backend");
+            let registration = crate::shared::AccelRegistration::new(&dev.shared_state, id);
+            registration.set_requester_id(sid as u16).expect("bind RID");
+            std::mem::forget(registration);
+            backend.take();
+        }
+
+        // Flip both STEs, then invalidate a Range=1 (2 StreamIDs, aligned to
+        // 0x100) span that covers only the first stream.
+        write_test_ste(&dev, 0x100, SteConfig::ABORT);
+        write_test_ste(&dev, 0x104, SteConfig::ABORT);
+        write_cmdq_entry(
+            &dev,
+            0,
+            &CmdEntry {
+                qw0: CmdCfgiSteRange::new()
+                    .with_opcode(CmdOpcode::CFGI_STE_RANGE.0)
+                    .with_sid(0x100)
+                    .into(),
+                qw1: 1,
+            },
+        );
+        write32(&mut dev, CMDQ_PROD, 1);
+
+        assert_eq!(backends[0].take(), vec![crate::shared::StreamConfig::Abort]);
+        assert!(backends[1].take().is_empty());
+
+        // Range=31 is CFGI_ALL and reaches both.
+        write_cmdq_entry(
+            &dev,
+            1,
+            &CmdEntry {
+                qw0: CmdCfgiSteRange::new()
+                    .with_opcode(CmdOpcode::CFGI_STE_RANGE.0)
+                    .with_sid(0x100)
+                    .into(),
+                qw1: 31,
+            },
+        );
+        write32(&mut dev, CMDQ_PROD, 2);
+
+        assert_eq!(backends[0].take(), vec![crate::shared::StreamConfig::Abort]);
+        assert_eq!(backends[1].take(), vec![crate::shared::StreamConfig::Abort]);
     }
 
     /// Build a SID-based `CFGI_CD`/`CFGI_CD_ALL` entry for `sid`.
