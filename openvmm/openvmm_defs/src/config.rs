@@ -126,6 +126,8 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
+        /// Enables restricted interrupt injection in the SNP VMSA.
+        snp_restricted_injection: bool,
         boot_mode: LinuxDirectBootMode,
     },
     Uefi {

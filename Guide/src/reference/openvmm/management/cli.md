@@ -88,6 +88,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
   hugetlb-backed memory. In addition to the minimal emulated chipset and serial
   console, optional devices are limited to virtio devices attached through
   PCIe.
+* `--snp-restricted-injection`: Enable restricted interrupt injection in the
+  loader-generated SNP VMSA. This bring-up option has no default and requires
+  `--hypervisor mshv --isolation snp` with Linux direct boot. Do not enable it
+  for the KVM SNP repro.
 * `--snp-disable-cpuid-offload`: Disable MSHV handling of SNP GHCB CPUID
   requests so they are forwarded to OpenVMM. The default is offloading enabled.
   This diagnostic option requires `--hypervisor mshv --isolation snp`.
