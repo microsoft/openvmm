@@ -12,6 +12,7 @@ use super::DnsFlow;
 use super::DnsRequest;
 use super::DnsResolver;
 use super::DnsResponse;
+use crate::dns_records::StaticDnsRecords;
 use mesh_channel_core::Receiver;
 use std::io::IoSliceMut;
 use std::task::Context;
@@ -93,9 +94,13 @@ impl DnsTcpHandler {
     ///
     /// Returns an error if the TCP framing is invalid or the query cannot be
     /// submitted, in which case the caller should reset the connection.
+    ///
+    /// `static_dns` is consulted first: a query that matches a static record
+    /// is answered locally without contacting the backend resolver.
     pub fn ingest<B: DnsBackend>(
         &mut self,
         data: &[&[u8]],
+        static_dns: &StaticDnsRecords,
         dns: &mut DnsResolver<B>,
     ) -> Result<usize, DnsTcpError> {
         // Don't accept data while a query is in-flight or a response is pending.
@@ -118,7 +123,7 @@ impl DnsTcpHandler {
                 pos += accept;
                 total_consumed += accept;
 
-                match self.try_submit(dns) {
+                match self.try_submit(static_dns, dns) {
                     Ok(true) => return Ok(total_consumed),
                     Ok(false) => {}
                     Err(e) => return Err(e),
@@ -138,13 +143,19 @@ impl DnsTcpHandler {
         (2 + msg_len).saturating_sub(self.buf.len())
     }
 
-    /// If a complete TCP-framed DNS message is in `buf`, submit it to the
-    /// resolver via [`DnsResolver::submit_tcp_query`].
+    /// If a complete TCP-framed DNS message is in `buf`, answer it.
     ///
-    /// Returns `Ok(true)` if the query was submitted, `Ok(false)` if the
-    /// message is still incomplete, or `Err` if the framing is invalid or
-    /// the query was rejected.
-    fn try_submit<B: DnsBackend>(&mut self, dns: &mut DnsResolver<B>) -> Result<bool, DnsTcpError> {
+    /// A query matching a static record is answered locally; otherwise it is
+    /// submitted to the resolver via [`DnsResolver::submit_tcp_query`].
+    ///
+    /// Returns `Ok(true)` if the query was answered or submitted, `Ok(false)`
+    /// if the message is still incomplete, or `Err` if the framing is invalid
+    /// or the query was rejected.
+    fn try_submit<B: DnsBackend>(
+        &mut self,
+        static_dns: &StaticDnsRecords,
+        dns: &mut DnsResolver<B>,
+    ) -> Result<bool, DnsTcpError> {
         if self.buf.len() < 2 {
             return Ok(false);
         }
@@ -154,6 +165,20 @@ impl DnsTcpHandler {
         }
         if self.buf.len() < 2 + msg_len {
             return Ok(false);
+        }
+
+        // If the query matches a static record, reply with the associated response.
+        if let Some(response) =
+            static_dns.build_response(&self.buf[2..2 + msg_len], u16::MAX as usize)
+        {
+            tracing::trace!(
+                msg_len,
+                src = %self.flow.src,
+                dst = %self.flow.dst,
+                "dns_tcp: query answered from static records",
+            );
+            self.frame_response(response);
+            return Ok(true);
         }
 
         // Submit the raw DNS query (without the TCP length prefix).
@@ -178,6 +203,20 @@ impl DnsTcpHandler {
         self.buf.clear();
         self.phase = Phase::InFlight;
         Ok(true)
+    }
+
+    /// Frame `payload` as a TCP DNS response (a 2-byte big-endian length prefix
+    /// followed by the payload) into `buf` and enter the responding phase.
+    fn frame_response(&mut self, payload: Vec<u8>) {
+        let payload_len = payload.len();
+        self.buf.clear();
+        self.buf
+            .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
+        self.buf
+            .extend_from_slice(&(payload_len as u16).to_be_bytes());
+        self.buf.extend(payload);
+        self.tx_offset = 0;
+        self.phase = Phase::Responding;
     }
 
     /// Poll for the next chunk of response data.
@@ -214,14 +253,7 @@ impl DnsTcpHandler {
                         return Poll::Ready(Err(DnsTcpError::ResponseTooLarge));
                     }
 
-                    self.buf.clear();
-                    self.buf
-                        .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
-                    self.buf
-                        .extend_from_slice(&(payload_len as u16).to_be_bytes());
-                    self.buf.extend(response.response_data);
-                    self.tx_offset = 0;
-                    self.phase = Phase::Responding;
+                    self.frame_response(response.response_data);
 
                     let n = self.drain_tx(bufs);
                     return Poll::Ready(Ok(n));
@@ -290,9 +322,11 @@ impl DnsTcpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns_records::build_query;
     use crate::dns_resolver::DnsBackend;
     use crate::dns_resolver::DnsRequest;
     use crate::dns_resolver::DnsResponse;
+    use smoltcp::wire::DnsQueryType;
     use std::sync::Arc;
 
     /// A test DNS backend that echoes the query back as the response.
@@ -347,7 +381,9 @@ mod tests {
         let query = sample_query();
         let msg = make_tcp_dns_message(&query);
 
-        let consumed = handler.ingest(&[&msg], &mut dns).unwrap();
+        let consumed = handler
+            .ingest(&[&msg], &StaticDnsRecords::default(), &mut dns)
+            .unwrap();
         assert_eq!(consumed, msg.len());
 
         let mut cx = Context::from_waker(std::task::Waker::noop());
@@ -376,7 +412,9 @@ mod tests {
         let msg = make_tcp_dns_message(&query);
 
         // Feed just the length prefix.
-        let consumed = handler.ingest(&[&msg[..2]], &mut dns).unwrap();
+        let consumed = handler
+            .ingest(&[&msg[..2]], &StaticDnsRecords::default(), &mut dns)
+            .unwrap();
         assert_eq!(consumed, 2);
 
         let mut cx = Context::from_waker(std::task::Waker::noop());
@@ -387,7 +425,9 @@ mod tests {
         ));
 
         // Feed the rest.
-        let consumed = handler.ingest(&[&msg[2..]], &mut dns).unwrap();
+        let consumed = handler
+            .ingest(&[&msg[2..]], &StaticDnsRecords::default(), &mut dns)
+            .unwrap();
         assert_eq!(consumed, msg.len() - 2);
 
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
@@ -411,7 +451,9 @@ mod tests {
         combined.extend(make_tcp_dns_message(&q2));
 
         // Only the first message should be consumed.
-        let consumed = handler.ingest(&[&combined], &mut dns).unwrap();
+        let consumed = handler
+            .ingest(&[&combined], &StaticDnsRecords::default(), &mut dns)
+            .unwrap();
         assert_eq!(consumed, make_tcp_dns_message(&q1).len());
 
         let mut cx = Context::from_waker(std::task::Waker::noop());
@@ -426,7 +468,9 @@ mod tests {
 
         // Now the second message can be ingested.
         let remaining = &combined[consumed..];
-        let consumed2 = handler.ingest(&[remaining], &mut dns).unwrap();
+        let consumed2 = handler
+            .ingest(&[remaining], &StaticDnsRecords::default(), &mut dns)
+            .unwrap();
         assert_eq!(consumed2, make_tcp_dns_message(&q2).len());
 
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
@@ -443,7 +487,11 @@ mod tests {
 
         let query = sample_query();
         handler
-            .ingest(&[&make_tcp_dns_message(&query)], &mut dns)
+            .ingest(
+                &[&make_tcp_dns_message(&query)],
+                &StaticDnsRecords::default(),
+                &mut dns,
+            )
             .unwrap();
 
         let mut cx = Context::from_waker(std::task::Waker::noop());
@@ -470,8 +518,80 @@ mod tests {
         // Length prefix says 4 bytes, which is too small for a DNS header.
         let bad_msg = [0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
         assert!(matches!(
-            handler.ingest(&[&bad_msg], &mut dns),
+            handler.ingest(&[&bad_msg], &StaticDnsRecords::default(), &mut dns),
             Err(DnsTcpError::InvalidMessageLength)
         ));
+    }
+
+    #[test]
+    fn static_record_answered_over_tcp() {
+        use crate::dns_records::StaticDnsRecordType;
+
+        let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
+        let mut handler = DnsTcpHandler::new(test_flow());
+
+        let mut static_dns = StaticDnsRecords::default();
+        static_dns
+            .add(StaticDnsRecordType::A, "static.example", &[10, 0, 0, 9])
+            .unwrap();
+
+        let query = build_query(0x4242, "static.example", DnsQueryType::A);
+        let msg = make_tcp_dns_message(&query);
+
+        let consumed = handler.ingest(&[&msg], &static_dns, &mut dns).unwrap();
+        assert_eq!(consumed, msg.len());
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut buf = vec![0u8; 256];
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
+            Poll::Ready(Ok(n)) => {
+                assert!(n > 0);
+                let resp_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                // Transaction ID preserved (first 2 bytes of the DNS message).
+                assert_eq!(&buf[2..4], &[0x42, 0x42]);
+                // QR bit set: this is a response.
+                assert_ne!(buf[4] & 0x80, 0);
+                // Exactly one answer.
+                assert_eq!(u16::from_be_bytes([buf[2 + 6], buf[2 + 7]]), 1);
+                // The A record RDATA appears in the response.
+                assert!(buf[2..2 + resp_len].windows(4).any(|w| w == [10, 0, 0, 9]));
+            }
+            other => panic!("expected static response, got {other:?}"),
+        }
+
+        // The query was answered locally, not submitted to the backend.
+        assert!(!handler.is_in_flight());
+    }
+
+    #[test]
+    fn static_miss_falls_through_to_resolver() {
+        use crate::dns_records::StaticDnsRecordType;
+
+        let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
+        let mut handler = DnsTcpHandler::new(test_flow());
+
+        let mut static_dns = StaticDnsRecords::default();
+        static_dns
+            .add(StaticDnsRecordType::A, "static.example", &[10, 0, 0, 9])
+            .unwrap();
+
+        // Query for a name with no matching static record.
+        let query = build_query(0x0001, "other.example", DnsQueryType::A);
+        let msg = make_tcp_dns_message(&query);
+
+        let consumed = handler.ingest(&[&msg], &static_dns, &mut dns).unwrap();
+        assert_eq!(consumed, msg.len());
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut buf = vec![0u8; 256];
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
+            Poll::Ready(Ok(n)) => {
+                assert!(n > 0);
+                let resp_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                // Echo backend returns the query bytes as the response.
+                assert_eq!(&buf[2..2 + resp_len], &query[..]);
+            }
+            other => panic!("expected resolver response, got {other:?}"),
+        }
     }
 }

@@ -246,38 +246,42 @@ fn build_a_response(
     response
 }
 
+/// Builds a DNS query for `name` with the given qtype, in wire format.
+///
+/// Uses smoltcp's [`DnsRepr`] emitter, which always encodes the `IN` class.
+/// Shared by the UDP (`dns_records`) and TCP (`dns_resolver::dns_tcp`) unit
+/// tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) fn build_query(id: u16, name: &str, qtype: DnsQueryType) -> Vec<u8> {
     use smoltcp::wire::DnsOpcode;
     use smoltcp::wire::DnsRepr;
 
-    /// Builds a DNS query for `name` with the given qtype.
-    ///
-    /// Uses smoltcp's [`DnsRepr`] emitter, which always encodes the `IN` class.
-    fn build_query(id: u16, name: &str, qtype: DnsQueryType) -> Vec<u8> {
-        // Encode the query name into DNS wire format (length-prefixed labels).
-        let mut name_wire = Vec::new();
-        for label in name.split('.').filter(|l| !l.is_empty()) {
-            name_wire.push(label.len() as u8);
-            name_wire.extend_from_slice(label.as_bytes());
-        }
-
-        name_wire.push(0);
-
-        let repr = DnsRepr {
-            transaction_id: id,
-            opcode: DnsOpcode::Query,
-            flags: DnsFlags::RECURSION_DESIRED,
-            question: DnsQuestion {
-                name: &name_wire,
-                type_: qtype,
-            },
-        };
-        let mut buffer = vec![0u8; repr.buffer_len()];
-        repr.emit(&mut DnsPacket::new_unchecked(&mut buffer[..]));
-        buffer
+    // Encode the query name into DNS wire format (length-prefixed labels).
+    let mut name_wire = Vec::new();
+    for label in name.split('.').filter(|l| !l.is_empty()) {
+        name_wire.push(label.len() as u8);
+        name_wire.extend_from_slice(label.as_bytes());
     }
+
+    name_wire.push(0);
+
+    let repr = DnsRepr {
+        transaction_id: id,
+        opcode: DnsOpcode::Query,
+        flags: DnsFlags::RECURSION_DESIRED,
+        question: DnsQuestion {
+            name: &name_wire,
+            type_: qtype,
+        },
+    };
+    let mut buffer = vec![0u8; repr.buffer_len()];
+    repr.emit(&mut DnsPacket::new_unchecked(&mut buffer[..]));
+    buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn add_and_match_a_record() {

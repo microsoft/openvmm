@@ -14,6 +14,7 @@ use crate::FourTuple;
 use crate::IpAddresses;
 use crate::IpVersion;
 use crate::PortForwardKey;
+use crate::dns_records::StaticDnsRecords;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
@@ -444,9 +445,13 @@ impl<T: Client> Access<'_, T> {
             };
             let keep = match &mut conn.backend {
                 TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
-                    Some(dns) => conn
-                        .inner
-                        .poll_dns_backend(cx, &mut sender, dns_handler, dns),
+                    Some(dns) => conn.inner.poll_dns_backend(
+                        cx,
+                        &mut sender,
+                        dns_handler,
+                        &self.inner.static_dns,
+                        dns,
+                    ),
                     None => {
                         tracing::warn!("DNS TCP connection without DNS resolver, dropping");
                         false
@@ -1000,6 +1005,7 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         dns_handler: &mut DnsTcpHandler,
+        static_dns: &StaticDnsRecords,
         dns: &mut DnsResolver,
     ) -> bool {
         // Propagate guest FIN before the tx path so that poll_read can
@@ -1015,8 +1021,25 @@ impl TcpConnectionInner {
             dns_handler.set_guest_fin();
         }
 
-        // tx path first: drain DNS responses into tx_buffer.
-        // This frees up backpressure so that ingest can make progress.
+        // rx path: feed guest data into the DNS handler for query extraction.
+        // Done before the tx path so that a query answered locally from static
+        // records  is drained into tx_buffer within the same poll.
+        let view = self.rx_buffer.view(0..self.rx_buffer.len());
+        let (a, b) = view.as_slices();
+        match dns_handler.ingest(&[a, b], static_dns, dns) {
+            Ok(consumed) if consumed > 0 => {
+                self.rx_buffer.consume(consumed);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // Invalid DNS TCP framing; reset the connection.
+                sender.rst(self.tx_send, Some(self.rx_seq));
+                self.stats.rsts_tx.increment();
+                return false;
+            }
+        }
+
+        // tx path: drain DNS responses into tx_buffer.
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
@@ -1045,22 +1068,6 @@ impl TcpConnectionInner {
                     return false;
                 }
                 Poll::Pending => break,
-            }
-        }
-
-        // rx path: feed guest data into the DNS handler for query extraction.
-        let view = self.rx_buffer.view(0..self.rx_buffer.len());
-        let (a, b) = view.as_slices();
-        match dns_handler.ingest(&[a, b], dns) {
-            Ok(consumed) if consumed > 0 => {
-                self.rx_buffer.consume(consumed);
-            }
-            Ok(_) => {}
-            Err(_) => {
-                // Invalid DNS TCP framing; reset the connection.
-                sender.rst(self.tx_send, Some(self.rx_seq));
-                self.stats.rsts_tx.increment();
-                return false;
             }
         }
 
