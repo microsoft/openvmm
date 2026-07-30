@@ -1163,13 +1163,13 @@ impl<'a> TestNicChannel<'a> {
         writer.write(packet).await.unwrap();
     }
 
-    pub async fn send_initialize_message(&mut self) {
+    pub async fn send_initialize_message_with_version(&mut self, version: Version) {
         let message = NvspMessage {
             header: protocol::MessageHeader {
                 message_type: protocol::MESSAGE_TYPE_INIT,
             },
             data: protocol::MessageInit {
-                protocol_version: Version::V5 as u32,
+                protocol_version: version as u32,
                 protocol_version2: Version::V6 as u32,
             },
             padding: &[],
@@ -1193,6 +1193,10 @@ impl<'a> TestNicChannel<'a> {
         })
         .await
         .expect("completion message");
+    }
+
+    pub async fn send_initialize_message(&mut self) {
+        self.send_initialize_message_with_version(Version::V5).await;
     }
 
     pub async fn send_ndis_config_message(
@@ -1346,7 +1350,17 @@ impl<'a> TestNicChannel<'a> {
         max_subchannels: usize,
         capabilities: protocol::NdisConfigCapabilities,
     ) {
-        self.send_initialize_message().await;
+        self.initialize_with_version(max_subchannels, capabilities, Version::V5)
+            .await;
+    }
+
+    pub async fn initialize_with_version(
+        &mut self,
+        max_subchannels: usize,
+        capabilities: protocol::NdisConfigCapabilities,
+        version: Version,
+    ) {
+        self.send_initialize_message_with_version(version).await;
         self.send_ndis_config_message(capabilities).await;
         self.send_ndis_version_message().await;
         self.send_receive_buffer_message(max_subchannels).await;
@@ -1746,6 +1760,40 @@ impl<'a> TestNicChannel<'a> {
         })
         .await;
         self.transaction_id += 1;
+    }
+
+    pub async fn allocate_subchannels(&mut self, count: u32) {
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+            },
+            data: protocol::Message5SubchannelRequest {
+                operation: protocol::SubchannelOperation::ALLOCATE,
+                num_sub_channels: count,
+            },
+            padding: &[],
+        };
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+        self.read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, count);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("subchannel allocation completion");
     }
 
     pub async fn connect_subchannel(&mut self, idx: u32) {
@@ -2204,6 +2252,50 @@ async fn send_initial_handshake(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel.send_initialize_message().await;
+}
+
+/// Starts up a VMBus channel, mimics negotiating a protocol version, then creates
+/// a subchannel.
+async fn test_new_subchannel_packet_size(
+    driver: DefaultDriver,
+    version: Version,
+    expected_packet_size: usize,
+) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize_with_version(1, protocol::NdisConfigCapabilities::new(), version)
+        .await;
+    channel.allocate_subchannels(1).await;
+    channel.connect_subchannel(1).await;
+
+    assert_eq!(
+        read_netvsp_counter(&channel.nic.channel, "queues/1/packet_size").await,
+        expected_packet_size as u64
+    );
+}
+
+#[async_test]
+async fn new_worker_without_negotiated_version_uses_v1_packet_size(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let channel = nic.connect_vmbus_channel().await;
+
+    assert_eq!(
+        read_netvsp_counter(&channel.nic.channel, "queues/0/packet_size").await,
+        protocol::PACKET_SIZE_V1 as u64
+    );
+}
+
+#[async_test]
+async fn new_worker_with_v5_uses_v1_packet_size(driver: DefaultDriver) {
+    test_new_subchannel_packet_size(driver, Version::V5, protocol::PACKET_SIZE_V1).await;
+}
+
+#[async_test]
+async fn new_worker_with_v61_uses_v61_packet_size(driver: DefaultDriver) {
+    test_new_subchannel_packet_size(driver, Version::V61, protocol::PACKET_SIZE_V61).await;
 }
 
 #[async_test]

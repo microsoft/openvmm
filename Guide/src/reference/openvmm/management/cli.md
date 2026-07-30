@@ -92,7 +92,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   controller. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx (Windows host only)
+  * A VHDX file with an extension of .vhdx
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
@@ -159,6 +159,17 @@ as well as the generated CLI help (via `cargo run -- --help`).
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
+* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using OpenVMM's
+  hybrid Unix-socket relay.
+* `--virtio-vsock-vhost-cid <CID>`: Add a virtio-vsock device backed by the
+  Linux kernel's `vhost_vsock` implementation. This makes the guest reachable
+  from host applications through `AF_VSOCK` at `CID`, which must be between 3
+  and 4294967294 (CIDs 0-2 are reserved for the hypervisor, loopback, and host,
+  respectively, and u32::MAX is the ANY wildcard). This option requires
+  `/dev/vhost-vsock`, the `vhost_vsock` kernel module, and shared file-backed
+  guest RAM (the default memory backing). It uses identity-mapped DMA and
+  does not support a non-identity virtual IOMMU. It conflicts with
+  `--virtio-vsock-path`.
 * `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
   vhost-user device backed by an external process over a Unix socket (Linux
   only). The backend process must already be listening on `SOCKET_PATH`.
@@ -418,7 +429,7 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
 # Pin BAR0 to its physical address for P2P DMA:
---vfio host=0000:01:00.0,port=rp0,bar0=pt
+--vfio host=0000:01:00.0,port=rp0,bar0=host
 ```
 
 ### SMMU (aarch64 only)

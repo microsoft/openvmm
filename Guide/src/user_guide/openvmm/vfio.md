@@ -118,9 +118,12 @@ The `--vfio` value is a comma-separated list of `key=value` pairs:
 - `host=<pci_bdf>` (required) — the PCI BDF of the VFIO device on the host (e.g., `0000:01:00.0`)
 - `port=<name>` (required) — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
 - `iommu=<id>` (optional) — reference to an `--iommu` context; see [Using iommufd (cdev path)](#using-iommufd-cdev-path) below
-- `bar0=pt` through `bar5=pt` (optional) — pin the specified BAR to its
+- `bar0=host` through `bar5=host` (optional) — pin the specified BAR to its
   physical host address (GPA = HPA); see [Peer-to-peer DMA](#peer-to-peer-dma)
   below
+- `bar0=0x<addr>` through `bar5=0x<addr>` (optional) — pin the specified BAR
+  to an explicit host physical address; use this for BARs synthesized by a
+  VFIO variant driver whose address is not reported through sysfs
 
 ```admonish tip
 You can assign multiple devices by adding more root ports and `--vfio` flags:
@@ -182,7 +185,7 @@ P2P DMA. This means the guest BAR addresses must be identity-mapped to
 the host BAR addresses (GPA = HPA), or P2P DMA will target the wrong
 location.
 
-To enable this, pin the relevant BARs with `bar<N>=pt` on each `--vfio`
+To enable this, pin the relevant BARs with `bar<N>=host` on each `--vfio`
 device and set `preserve_bars` on the root complex so the PCI resource
 allocator keeps pinned BARs at their physical addresses:
 
@@ -192,9 +195,19 @@ sudo openvmm \
     rc0,preserve_bars,low_mmio_base=0xc0000000,high_mmio_base=0x100000000 \
   --pcie-root-port rc0:rp0 \
   --pcie-root-port rc0:rp1 \
-  --vfio host=0000:01:00.0,port=rp0,bar0=pt \
-  --vfio host=0000:02:00.0,port=rp1,bar0=pt \
+  --vfio host=0000:01:00.0,port=rp0,bar0=host \
+  --vfio host=0000:02:00.0,port=rp1,bar0=host \
   ...
+```
+
+For a BAR synthesized by a VFIO variant driver, the host physical address may
+not appear in the device's sysfs resource table. In that case, provide the
+address directly with `bar<N>=0x<addr>`. For example, the `nvgrace-gpu` driver
+exposes CPU-coherent GPU memory as a synthetic 64-bit BAR4 whose physical base
+comes from the `nvidia,gpu-mem-base-pa` ACPI `_DSD` property:
+
+```bash
+  --vfio host=0008:06:00.0,port=rp0,bar0=host,bar2=host,bar4=0x110000000000
 ```
 
 The `low_mmio_base=` and `high_mmio_base=` options pin the MMIO apertures
