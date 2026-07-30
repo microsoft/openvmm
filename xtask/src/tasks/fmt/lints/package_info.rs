@@ -40,18 +40,18 @@ use toml_edit::Table;
 /// `vmgstool` publishes a versioned binary, and its release tag is built from
 /// the version in its manifest.
 ///
-/// `openvmm` and `openvmm_entry` carry the workspace version because OpenVMM is
+/// `openvmm_build_info` carries the workspace version because OpenVMM is
 /// released as a source archive that packagers build. The version has to travel
 /// inside the source, since a packager builds long after any pipeline that
 /// could have supplied it, and from a tree with no git history to recover it
-/// from. Both are read: `openvmm_entry` holds the command line parser, so its
-/// version is what `openvmm --version` reports, and `openvmm`'s build script
-/// stamps its version into the Windows VERSIONINFO resource.
+/// from. That crate turns it into what `openvmm --version` reports. `openvmm`
+/// carries it too, because its build script stamps the version into the Windows
+/// VERSIONINFO resource.
 ///
 /// If this list grows much past a handful, replace it with a
 /// `package.metadata.xtask.house-rules` opt-in, the way `excluded-from-workspace`
 /// below already works -- keeping the policy next to the crate it applies to.
-static VERSION_EXCEPTIONS: &[&str] = &["openvmm", "openvmm_entry", "vmgstool"];
+static VERSION_EXCEPTIONS: &[&str] = &["openvmm", "openvmm_build_info", "vmgstool"];
 
 pub struct PackageInfo;
 

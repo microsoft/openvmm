@@ -5635,6 +5635,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm_build_info"
+version = "0.1.0-dev"
+
+[[package]]
 name = "openvmm_core"
 version = "0.0.0"
 dependencies = [
@@ -5801,6 +5805,7 @@ dependencies = [
  "net_tap",
  "netvsp_resources",
  "nvme_resources",
+ "openvmm_build_info",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",

@@ -138,21 +138,6 @@ pub struct NumaDistanceCli {
     pub distance: u8,
 }
 
-/// Version reported by `--version`.
-///
-/// `OPENVMM_PKGVERSION` lets whoever builds the binary stamp their own build
-/// identity in, the way QEMU's `-Dpkgversion` and cloud-hypervisor's
-/// `CH_EXTRA_VERSION` do. Distributions use this so a bug report names the
-/// build it came from and not just the upstream version. It is read at compile
-/// time, so a build that does not set it reports the plain crate version. An
-/// empty value is treated as unset, since build systems routinely pass through
-/// an undefined variable as `""` and reporting an empty version is worse than
-/// ignoring the override.
-const VERSION: &str = match option_env!("OPENVMM_PKGVERSION") {
-    Some(v) if !v.is_empty() => v,
-    _ => env!("CARGO_PKG_VERSION"),
-};
-
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
@@ -161,7 +146,7 @@ const VERSION: &str = match option_env!("OPENVMM_PKGVERSION") {
 // `name` is set explicitly because the version and help output otherwise
 // report `CARGO_PKG_NAME`, which is the crate holding this parser
 // (`openvmm_entry`) rather than the binary a user actually invoked.
-#[command(name = "openvmm", version = VERSION)]
+#[command(name = "openvmm", version = openvmm_build_info::get().version())]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -3411,17 +3396,18 @@ mod tests {
     use std::path::Path;
     use test_with_tracing::test;
 
-    /// `--version` is only meaningful if `openvmm_entry` actually carries a
-    /// version. Cargo silently defaults a crate with no `version` to `0.0.0`,
-    /// and the house-rules lint that normally *strips* `version` merely permits
-    /// one here -- it cannot require it. So if the `version.workspace = true`
-    /// line were dropped from Cargo.toml, every build would keep succeeding and
-    /// the binary would quietly report `0.0.0`. This is the only thing that
-    /// would notice.
+    /// `--version` reports the resolved build identity rather than clap's
+    /// default, which would be the parser crate's own name and version.
     #[test]
-    fn version_is_not_the_cargo_default() {
-        assert_ne!(env!("CARGO_PKG_VERSION"), "0.0.0");
-        assert!(!VERSION.is_empty());
+    fn version_reports_build_info() {
+        let Err(error) = Options::try_parse_from(["openvmm", "--version"]) else {
+            panic!("--version unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("openvmm {}\n", openvmm_build_info::get().version())
+        );
     }
 
     #[test]

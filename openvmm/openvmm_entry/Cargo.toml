@@ -3,8 +3,6 @@
 
 [package]
 name = "openvmm_entry"
-version.workspace = true
-publish = false
 edition.workspace = true
 rust-version.workspace = true
 
@@ -20,6 +18,7 @@ chipset_device_worker_defs.workspace = true
 crypto.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
+openvmm_build_info.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
 memory_range.workspace = true

@@ -80,6 +80,8 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk_protocol" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
 
+openvmm_build_info = { path = "openvmm/openvmm_build_info" }
+
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
 flowey_core = { path = "flowey/flowey_core" }
