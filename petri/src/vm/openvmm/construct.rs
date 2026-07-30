@@ -368,25 +368,32 @@ impl PetriVmConfigOpenVmm {
         // Configure the UEFI helper device on the chipset for Firmware::Uefi.
         // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
         if matches!(firmware, Firmware::Uefi { .. }) {
+            use firmware_uefi_resources::aarch64_secure_boot_templates;
+            use firmware_uefi_resources::x64_secure_boot_templates;
+
             let uefi_cfg = firmware.uefi_config();
-            let custom_uefi_vars =
-                uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
-                    (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                        hyperv_secure_boot_templates::x64::microsoft_windows()
-                    }
-                    (
-                        MachineArch::X86_64,
-                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                    (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
-                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                    }
-                    (
-                        MachineArch::Aarch64,
-                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
-                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                    (_, None) => Default::default(),
-                });
+            let base_template_json =
+                uefi_cfg
+                    .and_then(|c| c.secure_boot_template)
+                    .map(|template| match (arch, template) {
+                        (MachineArch::X86_64, SecureBootTemplate::MicrosoftWindows) => {
+                            x64_secure_boot_templates::microsoft_windows()
+                        }
+                        (
+                            MachineArch::X86_64,
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        ) => x64_secure_boot_templates::microsoft_uefi_ca(),
+                        (MachineArch::Aarch64, SecureBootTemplate::MicrosoftWindows) => {
+                            aarch64_secure_boot_templates::microsoft_windows()
+                        }
+                        (
+                            MachineArch::Aarch64,
+                            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        ) => aarch64_secure_boot_templates::microsoft_uefi_ca(),
+                    });
+            let custom_uefi_json = uefi_cfg
+                .and_then(|c| c.custom_uefi_json.clone())
+                .map(Into::into);
             let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
             let log_level = match uefi_cfg
                 .map(|c| c.efi_diagnostics_log_level)
@@ -409,7 +416,8 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                custom_uefi_vars,
+                base_template_json,
+                custom_uefi_json,
                 secure_boot,
                 log_level,
                 diagnostics_rate_limit,
@@ -849,6 +857,7 @@ impl PetriVmConfigSetupCore<'_> {
                         UefiConfig {
                             secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
+                            custom_uefi_json: _,     // applied device-side via UefiManifest::new
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
@@ -1030,6 +1039,7 @@ impl PetriVmConfigSetupCore<'_> {
             UefiConfig {
                 secure_boot_enabled,
                 secure_boot_template,
+                custom_uefi_json: _, // OpenHCL reads this from VMGS CUSTOM_UEFI.
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,

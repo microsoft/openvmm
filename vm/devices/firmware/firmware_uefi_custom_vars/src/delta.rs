@@ -2,21 +2,22 @@
 // Licensed under the MIT License.
 
 //! Data types which define a "delta" operation on a
-//! [`CustomVars`](super::CustomVars) struct.
+//! [`UefiVars`](super::UefiVars) struct.
 
-use super::CustomVar;
 use super::Signature;
+use super::UefiVar;
+use mesh_protobuf::Protobuf;
 
-/// Collection of custom UEFI nvram variables.
-#[derive(Debug)]
-pub struct CustomVarsDelta {
+/// Changes to apply to a collection of UEFI nvram variables.
+#[derive(Debug, Clone, Protobuf)]
+pub struct UefiVarsDelta {
     /// Secure Boot signature vars
     pub signatures: SignaturesDelta,
-    /// Any additional custom vars
-    pub custom_vars: Vec<(String, CustomVar)>,
+    /// UEFI vars that are not Secure Boot signature vars
+    pub non_signature_vars: Vec<(String, UefiVar)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Protobuf)]
 pub enum SignaturesDelta {
     /// Vars should append onto underlying template
     Append(SignaturesAppend),
@@ -25,7 +26,7 @@ pub enum SignaturesDelta {
 }
 
 /// Append CANNOT be used with `pk`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Protobuf)]
 pub struct SignaturesAppend {
     pub kek: Option<Vec<Signature>>,
     pub db: Option<Vec<Signature>>,
@@ -34,9 +35,10 @@ pub struct SignaturesAppend {
     pub moklistx: Option<Vec<Signature>>,
 }
 
-/// Replace MUST include the base secure boot vars, and may optionally include
-/// the moklist vars.
-#[derive(Debug, Clone)]
+/// Replace the underlying template signatures, optionally using `Default` values
+/// from a base template. If no base template is provided, all required signature
+/// values must be specified explicitly.
+#[derive(Debug, Clone, Protobuf)]
 pub struct SignaturesReplace {
     pub pk: SignatureDelta,
     pub kek: SignatureDeltaVec,
@@ -46,7 +48,7 @@ pub struct SignaturesReplace {
     pub moklistx: Option<SignatureDeltaVec>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Protobuf)]
 pub enum SignatureDelta {
     Sig(Signature),
     /// "Default" will pull the value of the signature from the specified
@@ -56,7 +58,7 @@ pub enum SignatureDelta {
     Default,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Protobuf)]
 pub enum SignatureDeltaVec {
     Sigs(Vec<Signature>),
     /// "Default" will pull the value of the signature from the specified
