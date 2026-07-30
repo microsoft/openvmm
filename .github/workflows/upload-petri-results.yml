@@ -125,6 +125,54 @@ jobs:
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}
 
+      - name: Upload per-run test summary to Azure Blob Storage
+        run: |
+          # Compact per-run pass/fail summary for the log viewer, keyed on
+          # <run_id>_<run_attempt>.
+          run_key="${run_id}_${run_attempt}"
+
+          # One entry per test folder (has petri.jsonl); s=1 iff petri.passed
+          # exists. Matches the log viewer's parseRunDetails logic.
+          : > tests.jsonl
+          find results -name petri.jsonl | sort | while IFS= read -r jsonl; do
+            dir="$(dirname "$jsonl")"
+            name="${dir#results/}"
+            case "$name" in
+              */*) ;;
+              *) continue ;;
+            esac
+            if [ -f "$dir/petri.passed" ]; then
+              s=1
+            else
+              s=0
+            fi
+            jq -cn --arg n "$name" --argjson s "$s" '{n: $n, s: $s}' >> tests.jsonl
+          done
+
+          jq -s \
+            --arg run "$run_key" \
+            --argjson run_id "$run_id" \
+            --argjson attempt "$run_attempt" \
+            --arg branch "$SOURCE_BRANCH" \
+            --argjson passed "${PASS_COUNT:-0}" \
+            --argjson failed "${FAIL_COUNT:-0}" \
+            --argjson failed_unstable "${FAIL_UNSTABLE_COUNT:-0}" \
+            '{run: $run, run_id: $run_id, attempt: $attempt,
+              branch: $branch,
+              passed: $passed, failed: $failed, failed_unstable: $failed_unstable,
+              tests: .}' \
+            tests.jsonl > summary.json
+
+          az storage blob upload \
+            --blob-url "$BASE_URL/results/summaries/$run_key.json" \
+            --file summary.json \
+            --content-type "application/json" \
+            --overwrite true \
+            --auth-mode login
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
+
       - name: Upload to memory validation results to Azure Blob Storage
         run: |
           # ignore this job for builds that we don't run memory validation on to keep
