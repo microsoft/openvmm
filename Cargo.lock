@@ -4816,7 +4816,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=fd12dad4ce6c3b9037dbd31a6305385a8e13d384#fd12dad4ce6c3b9037dbd31a6305385a8e13d384"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=c5d763369ba0d75564c3df17ac8c9779faba90c4#c5d763369ba0d75564c3df17ac8c9779faba90c4"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -4825,7 +4825,6 @@ dependencies = [
  "postcard",
  "serde",
  "tracing",
- "walkdir",
 ]
 
 [[package]]
