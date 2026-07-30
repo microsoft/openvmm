@@ -175,8 +175,8 @@ mod json {
         pub kek: Vec<Signature>,
         #[serde(rename = "db")]
         pub db: Vec<Signature>,
-        #[serde(rename = "dbx")]
-        pub dbx: Option<Vec<Signature>>,
+        #[serde(default, rename = "dbx")]
+        pub dbx: Vec<Signature>,
         #[serde(rename = "MokList")]
         pub moklist: Option<Vec<Signature>>,
         #[serde(rename = "MokListX")]
@@ -401,7 +401,7 @@ mod convert {
                     pk: pk.into(),
                     kek: validate_default(json_to_delta_sig_vec(kek))?,
                     db: validate_default(json_to_delta_sig_vec(db))?,
-                    dbx: validate_default(json_to_delta_sig_vec(dbx.unwrap_or_default()))?,
+                    dbx: validate_default(json_to_delta_sig_vec(dbx))?,
                     moklist: moklist
                         .map(|sigs| validate_default(json_to_delta_sig_vec(sigs)))
                         .transpose()?,
@@ -720,6 +720,31 @@ mod test {
             signatures.dbx,
             firmware_uefi_custom_vars::delta::SignatureDeltaVec::Sigs(dbx) if dbx.is_empty()
         ));
+    }
+
+    #[test]
+    fn replace_with_null_dbx_is_invalid() {
+        let data = r#"
+        {
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": {
+                            "type": "x509",
+                            "value": ["Jw=="]
+                        },
+                        "KEK": [],
+                        "db": [],
+                        "dbx": null
+                    }
+                }
+            }
+        }
+        "#;
+
+        assert!(parse_delta_json(data.as_bytes()).is_err());
     }
 
     // BAD_DB is a semantic test that requires performing signature validation

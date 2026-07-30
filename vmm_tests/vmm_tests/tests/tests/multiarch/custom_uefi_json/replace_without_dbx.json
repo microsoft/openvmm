@@ -1,0 +1,22 @@
+{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": {
+                    "type": "x509",
+                    "value": ["Jw=="]
+                },
+                "KEK": [{
+                    "type": "x509",
+                    "value": ["Jw=="]
+                }],
+                "db": [{
+                    "type": "x509",
+                    "value": ["Jw=="]
+                }]
+            }
+        }
+    }
+}
