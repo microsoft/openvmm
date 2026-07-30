@@ -19,6 +19,7 @@ use fd_passing::FdRegistry;
 #[derive(Clone, Default)]
 struct FdRegistry {}
 
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -68,6 +69,7 @@ use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -101,6 +103,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -694,30 +697,9 @@ impl VmService {
         // passed in over the fd-passing protocol.
         let registry = self.registry.clone();
 
-        let load_mode = match req_config
-            .boot_config
-            .context("missing boot configuration")?
-        {
-            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
-                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd = if boot.initrd_path.is_empty() {
-                    None
-                } else {
-                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
-                };
-                LoadMode::Linux {
-                    kernel,
-                    initrd,
-                    cmdline: boot.kernel_cmdline,
-                    enable_serial: true,
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                }
-            }
-            vmservice::vm_config::BootConfig::Uefi(_) => {
-                anyhow::bail!("uefi not yet supported")
-            }
-        };
-
+        // Serial ports are set up before the boot configuration because UEFI
+        // needs to know whether any are present to decide whether to enable its
+        // serial console.
         let mut ports = [(); 4].map(|_| None);
         for port in req_config.serial_config.iter().flat_map(|c| &c.ports) {
             let pc = ports
@@ -728,17 +710,125 @@ impl VmService {
                 format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
+        let any_serial_configured = ports.iter().any(|port| port.is_some());
+        let com1_configured = ports[0].is_some();
 
         #[cfg(guest_arch = "aarch64")]
         let arch = vm_manifest_builder::MachineArch::Aarch64;
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
-        let chipset_builder = VmManifestBuilder::new(
-            vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            arch,
-        )
-        .with_serial(ports);
+        // The boot configuration also determines the base chipset, since the
+        // firmware and the device model have to agree on the platform.
+        let (load_mode, base_chipset_type, uefi_config) = match req_config
+            .boot_config
+            .take()
+            .context("missing boot configuration")?
+        {
+            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
+                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
+                (
+                    LoadMode::Linux {
+                        kernel,
+                        initrd,
+                        cmdline: boot.kernel_cmdline,
+                        enable_serial: true,
+                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    None,
+                )
+            }
+            vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                let firmware = File::open(&uefi.firmware_path).with_context(|| {
+                    format!("failed to open uefi firmware {}", uefi.firmware_path)
+                })?;
+                let initial_variables = uefi.initial_variables.unwrap_or_default();
+                let uefi_vars = match (arch, initial_variables.secure_boot_template()) {
+                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
+                        Default::default()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => {
+                        hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                    }
+                };
+                (
+                    LoadMode::Uefi {
+                        firmware,
+                        enable_serial: any_serial_configured,
+                        // Route the firmware console to COM1 when it is
+                        // available. The firmware's default console is the
+                        // video device, so without this the firmware and
+                        // anything it launches would have nowhere to write on a
+                        // VM with no graphics adapter.
+                        uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
+                        bios_guid: Guid::new_random(),
+                        enable_vmbus: true,
+                        // Everything below is fixed for now. The proto has no
+                        // way to express these yet; fields will be added as
+                        // callers need them.
+                        //
+                        // Note that memory protections match the CLI in
+                        // defaulting to off, since Linux currently fails to
+                        // boot with them enabled.
+                        enable_memory_protections: false,
+                        enable_debugging: false,
+                        disable_frontpage: false,
+                        enable_tpm: false,
+                        enable_battery: false,
+                        enable_vpci_boot: false,
+                        default_boot_always_attempt: false,
+                        force_dma_bounce: false,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                    Some((uefi_vars, uefi.secure_boot_enabled)),
+                )
+            }
+        };
+
+        let mut chipset_builder =
+            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if let Some((uefi_vars, secure_boot_enabled)) = uefi_config {
+            // The UEFI helper device backs the firmware's variable store and
+            // runtime services, so it is required for a UEFI boot. The store is
+            // ephemeral: with no VMGS file configured there is nowhere to
+            // persist boot entries or secure boot state across reboots.
+            chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
+                arch,
+                uefi_vars,
+                secure_boot_enabled,
+                firmware_uefi_resources::LogLevel::make_default(),
+                None,
+                EphemeralNonVolatileStoreHandle.into_resource(),
+                None,
+            ));
+        }
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()
@@ -836,7 +926,27 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
-            automatic_guest_reset: true,
+        };
+
+        let guest_power_actions = {
+            use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+            let requested = req_config.guest_power_actions.unwrap_or_default();
+            let defaults = GuestPowerActions::default();
+            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
+                Ok(match ProtoAction::from_i32(value) {
+                    Some(ProtoAction::Default) => default,
+                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                    None => bail!("unknown guest power action {value}"),
+                })
+            };
+            GuestPowerActions {
+                shutdown: action(requested.shutdown, defaults.shutdown)?,
+                reset: action(requested.reset, defaults.reset)?,
+                crash: action(requested.crash, defaults.crash)?,
+                watchdog: action(requested.watchdog, defaults.watchdog)?,
+            }
         };
 
         let mut scsi_rpc = None;
@@ -988,10 +1098,7 @@ impl VmService {
             processors,
             log_file: None,
             crash_dump_path: None,
-            // The ttrpc/grpc server never exits on a guest power event; it uses
-            // the historical defaults (none of which is Exit), so the
-            // ExitRequested event handled below is unreachable here.
-            guest_power_actions: GuestPowerActions::default(),
+            guest_power_actions,
         };
 
         // Spawn the controller task.
@@ -1112,9 +1219,9 @@ impl VmService {
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The server leaves the guest power actions at their defaults
-                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
-                // log rather than exiting the server out from under its clients.
+                // The protocol has no `exit` power action, so this should not
+                // occur in ttrpc/grpc mode; log rather than exiting the server
+                // out from under its clients.
                 tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {

@@ -5,9 +5,9 @@
 //! files.
 //!
 //! Depending on the type of JSON (template vs. user-defined custom vars), the
-//! correspond Rust type will either be a
-//! [`CustomVars`](firmware_uefi_custom_vars::CustomVars) or a
-//! [`CustomVarsDelta`](firmware_uefi_custom_vars::delta::CustomVarsDelta).
+//! corresponding Rust type will either be a
+//! [`BaseTemplateVars`](firmware_uefi_custom_vars::BaseTemplateVars) or a
+//! [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta).
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -32,22 +32,22 @@ pub enum JsonToTemplateError {
     CannotUseAppend,
 }
 
-/// Parse a [`CustomVars`](firmware_uefi_custom_vars::CustomVars) from a
+/// Parse [`BaseTemplateVars`](firmware_uefi_custom_vars::BaseTemplateVars) from a
 /// _fully-defined_ template UEFI custom nvram variables JSON file.
 ///
 /// In this context, _fully-defined_ means that the JSON files cannot include
 /// any "fallback" entries, nor can it encode any "append" operations to
 /// existing variables.
-pub fn load_template_from_json(
+pub fn parse_template_json(
     data: &[u8],
-) -> Result<firmware_uefi_custom_vars::CustomVars, ParseJsonError> {
-    use firmware_uefi_custom_vars::CustomVars;
+) -> Result<firmware_uefi_custom_vars::BaseTemplateVars, ParseJsonError> {
     use firmware_uefi_custom_vars::Signature;
     use firmware_uefi_custom_vars::Signatures;
-    use firmware_uefi_custom_vars::delta::CustomVarsDelta;
+    use firmware_uefi_custom_vars::UefiVars;
     use firmware_uefi_custom_vars::delta::SignatureDelta;
     use firmware_uefi_custom_vars::delta::SignatureDeltaVec;
     use firmware_uefi_custom_vars::delta::SignaturesDelta;
+    use firmware_uefi_custom_vars::delta::UefiVarsDelta;
 
     fn deny_default(sig: SignatureDelta) -> Result<Signature, JsonToTemplateError> {
         match sig {
@@ -63,14 +63,14 @@ pub fn load_template_from_json(
         }
     }
 
-    let CustomVarsDelta {
+    let UefiVarsDelta {
         signatures,
-        custom_vars,
-    } = load_delta_from_json(data)?;
+        non_signature_vars,
+    } = parse_delta_json(data)?;
 
-    Ok(CustomVars {
+    Ok(UefiVars {
         signatures: Some(match signatures {
-            SignaturesDelta::Append(_) => panic!("hardcoded templates cannot use append"),
+            SignaturesDelta::Append(_) => return Err(JsonToTemplateError::CannotUseAppend.into()),
             SignaturesDelta::Replace(signatures) => Signatures {
                 pk: deny_default(signatures.pk)?,
                 kek: deny_default_vec(signatures.kek)?,
@@ -88,15 +88,16 @@ pub fn load_template_from_json(
                     .unwrap_or_default(),
             },
         }),
-        custom_vars,
-    })
+        non_signature_vars,
+    }
+    .into())
 }
 
-/// Parse a [`CustomVarsDelta`](firmware_uefi_custom_vars::delta::CustomVarsDelta) from a user
+/// Parse a [`UefiVarsDelta`](firmware_uefi_custom_vars::delta::UefiVarsDelta) from a user
 /// provided UEFI custom nvram variables JSON file.
-pub fn load_delta_from_json(
+pub fn parse_delta_json(
     data: &[u8],
-) -> Result<firmware_uefi_custom_vars::delta::CustomVarsDelta, ParseJsonError> {
+) -> Result<firmware_uefi_custom_vars::delta::UefiVarsDelta, ParseJsonError> {
     // syntax validation
     let json: json::JsonRoot = serde_json::from_slice(data)?;
     // semantic validation
@@ -359,11 +360,11 @@ mod convert {
     }
 
     /// Convert the JSON-specific data types into the format agnostic
-    /// [`CustomVarsDelta`](delta::CustomVarsDelta) container.
+    /// [`UefiVarsDelta`](delta::UefiVarsDelta) container.
     pub(super) fn json_to_delta(
         json: json::JsonRoot,
-    ) -> Result<delta::CustomVarsDelta, JsonToDeltaError> {
-        let custom_vars: Vec<(String, base::CustomVar)> = json
+    ) -> Result<delta::UefiVarsDelta, JsonToDeltaError> {
+        let non_signature_vars: Vec<(String, base::UefiVar)> = json
             .properties
             .uefi_settings
             .custom_vars
@@ -378,7 +379,7 @@ mod convert {
                 dbx,
                 moklist,
                 moklistx,
-            }) => delta::CustomVarsDelta {
+            }) => delta::UefiVarsDelta {
                 signatures: delta::SignaturesDelta::Append(delta::SignaturesAppend {
                     kek: kek.map(json_to_base_sig_vec).transpose()?,
                     db: db.map(json_to_base_sig_vec).transpose()?,
@@ -386,7 +387,7 @@ mod convert {
                     moklist: moklist.map(json_to_base_sig_vec).transpose()?,
                     moklistx: moklistx.map(json_to_base_sig_vec).transpose()?,
                 }),
-                custom_vars,
+                non_signature_vars,
             },
             json::Signatures::Replace(json::SignaturesReplace {
                 pk,
@@ -395,7 +396,7 @@ mod convert {
                 dbx,
                 moklist,
                 moklistx,
-            }) => delta::CustomVarsDelta {
+            }) => delta::UefiVarsDelta {
                 signatures: delta::SignaturesDelta::Replace(delta::SignaturesReplace {
                     pk: pk.into(),
                     kek: validate_default(json_to_delta_sig_vec(kek))?,
@@ -408,16 +409,16 @@ mod convert {
                         .map(|sigs| validate_default(json_to_delta_sig_vec(sigs)))
                         .transpose()?,
                 }),
-                custom_vars,
+                non_signature_vars,
             },
         };
 
         Ok(ret)
     }
 
-    impl From<json::CustomVar> for base::CustomVar {
-        fn from(json_custom_var: json::CustomVar) -> base::CustomVar {
-            base::CustomVar {
+    impl From<json::CustomVar> for base::UefiVar {
+        fn from(json_custom_var: json::CustomVar) -> base::UefiVar {
+            base::UefiVar {
                 guid: json_custom_var.guid,
                 attr: json_custom_var.attr,
                 value: json_custom_var.value,

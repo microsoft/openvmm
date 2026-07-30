@@ -245,7 +245,12 @@ impl BlockDevice {
             DeviceMetadata::from_block_device(&file, major, minor)
                 .map_err(NewDeviceError::DeviceMetadata)?
         } else if metadata.file_type().is_file() {
-            DeviceMetadata::from_file(&metadata).map_err(NewDeviceError::DeviceMetadata)?
+            // Discard on a file is serviced via `fallocate(PUNCH_HOLE)`, issued
+            // asynchronously through io-uring. Only offer it when the file is
+            // writable and the ring supports the FALLOCATE opcode (Linux 5.6+).
+            let allow_discard = !read_only && driver.io_uring_probe(opcode::Fallocate::CODE);
+            DeviceMetadata::from_file(&file, &metadata, allow_discard)
+                .map_err(NewDeviceError::DeviceMetadata)?
         } else {
             return Err(NewDeviceError::InvalidFileType);
         };
@@ -343,6 +348,36 @@ impl BlockDevice {
     }
 }
 
+/// Probes whether the filesystem backing `file` supports hole punching via
+/// `fallocate(FALLOC_FL_PUNCH_HOLE)`, used to service guest discard/unmap.
+///
+/// This is non-destructive: it punches a one-byte hole at the end of the file
+/// with `FALLOC_FL_KEEP_SIZE`, so the file size and existing data are
+/// unchanged. Filesystems that support the operation return success;
+/// unsupported ones return `EOPNOTSUPP` (or `ENOSYS` on ancient kernels).
+fn probe_file_punch_hole(file: &fs::File, file_size: u64) -> bool {
+    // SAFETY: FFI call with a valid fd owned by `file`. Punching past the end
+    // of the file with `FALLOC_FL_KEEP_SIZE` touches no existing data.
+    let ret = unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            file_size as libc::off_t,
+            1,
+        )
+    };
+    if ret == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error();
+        tracing::debug!(
+            error = &err as &dyn std::error::Error,
+            "file does not support punch-hole discard; unmap will be a no-op"
+        );
+        false
+    }
+}
+
 struct DeviceMetadata {
     device_type: DeviceType,
     disk_size: u64,
@@ -422,16 +457,30 @@ impl DeviceMetadata {
         .validate()
     }
 
-    fn from_file(metadata: &fs::Metadata) -> anyhow::Result<Self> {
+    fn from_file(
+        file: &fs::File,
+        metadata: &fs::Metadata,
+        allow_discard: bool,
+    ) -> anyhow::Result<Self> {
         let logical_block_size = 512;
+        let physical_block_size = metadata.blksize() as u32;
+        // Advertise discard support only when the backing filesystem can
+        // actually punch holes. Use the filesystem block size as the optimal
+        // unmap granularity, since `fallocate(PUNCH_HOLE)` only deallocates
+        // whole blocks.
+        let discard_granularity = if allow_discard && probe_file_punch_hole(file, metadata.size()) {
+            physical_block_size
+        } else {
+            0
+        };
         Self {
             device_type: DeviceType::File {
                 sector_count: metadata.len() / logical_block_size as u64,
             },
             disk_size: metadata.size(),
             logical_block_size,
-            physical_block_size: metadata.blksize() as u32,
-            discard_granularity: 0,
+            physical_block_size,
+            discard_granularity,
             supports_pr: false,
             fua: false,
         }
@@ -654,41 +703,79 @@ impl DiskIo for BlockDevice {
         sector_count: u64,
         _block_level_only: bool,
     ) -> Result<(), DiskError> {
-        // Some backends (for example regular files opened through this path)
-        // cannot service BLKDISCARD. In that case, report success and treat
-        // unmap as a no-op.
+        // Reject out-of-range requests up front: `fallocate` silently succeeds
+        // past the end of the file, so the bounds cannot be inferred from its
+        // result (as they can for reads and writes).
+        if sector_offset
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        // When unmap is unsupported (e.g. a filesystem that cannot punch holes,
+        // or a block device that reports no discard granularity), report success
+        // and treat unmap as a no-op.
         if self.optimal_unmap_sectors == 0 {
             return Ok(());
         }
 
-        let file = self.file.clone();
         let file_offset = sector_offset << self.sector_shift;
         let length = sector_count << self.sector_shift;
-        tracing::debug!(file = ?file, file_offset, length, "unmap_async");
-        match unblock(move || ioctl::discard(&file, file_offset, length)).await {
-            Ok(()) => {}
-            Err(_) if sector_offset + sector_count > self.sector_count() => {
-                return Err(DiskError::IllegalBlock);
+
+        match self.device_type {
+            // Files can't service BLKDISCARD; punch a hole via io-uring instead,
+            // which deallocates the range and makes it read back as zero. Every
+            // error must be propagated: `unmap_behavior` reports
+            // `UnmapBehavior::Zeroes`, so the guest may skip zeroing this range
+            // itself. Swallowing a failure would leave stale, non-zero data
+            // while telling the guest it reads as zero.
+            DeviceType::File { .. } => {
+                // SAFETY: fallocate references no data buffers.
+                unsafe {
+                    self.driver.io_uring_submit(
+                        opcode::Fallocate::new(types::Fd(self.file.as_raw_fd()), length)
+                            .offset(file_offset)
+                            .mode(libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE)
+                            .build(),
+                    )
+                }
+                .await
+                .map_err(|err| self.map_io_error(err))?;
+                Ok(())
             }
-            Err(err)
-                if matches!(
-                    err.raw_os_error(),
-                    Some(libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS)
-                ) =>
-            {
-                tracing::debug!(
-                    error = &err as &dyn std::error::Error,
-                    "discard not supported; ignoring"
-                );
+            // Block devices discard via the BLKDISCARD ioctl on a blocking thread.
+            _ => {
+                let file = self.file.clone();
+                match unblock(move || ioctl::discard(&file, file_offset, length)).await {
+                    Ok(()) => Ok(()),
+                    // The device advertised discard support but can't actually
+                    // service the ioctl; treat unmap as a best-effort no-op.
+                    Err(err)
+                        if matches!(
+                            err.raw_os_error(),
+                            Some(libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS)
+                        ) =>
+                    {
+                        tracing::debug!(
+                            error = &err as &dyn std::error::Error,
+                            "discard not supported; ignoring"
+                        );
+                        Ok(())
+                    }
+                    Err(err) => Err(self.map_io_error(err)),
+                }
             }
-            Err(err) => return Err(self.map_io_error(err)),
         }
-        Ok(())
     }
 
     fn unmap_behavior(&self) -> UnmapBehavior {
         if self.optimal_unmap_sectors == 0 {
             UnmapBehavior::Ignored
+        } else if matches!(self.device_type, DeviceType::File { .. }) {
+            // `fallocate(PUNCH_HOLE)` deterministically zeroes the range: reads
+            // of a punched hole return zeroes.
+            UnmapBehavior::Zeroes
         } else {
             UnmapBehavior::Unspecified
         }
@@ -812,6 +899,7 @@ mod tests {
     use pal_uring::IoUringPool;
     use pal_uring::PoolClient;
     use scsi_buffers::OwnedRequestBuffers;
+    use test_with_tracing::test;
 
     fn is_buggy_kernel() -> bool {
         // 5.13 kernels seem to have a bug with io_uring where tests hang.
@@ -974,5 +1062,51 @@ mod tests {
             Err(DiskError::IllegalBlock) => {}
             r => panic!("unexpected result: {:?}", r),
         }
+    }
+
+    #[async_test]
+    async fn test_unmap_file_punch_hole() {
+        let disk = get_block_device_or_skip!();
+
+        // A writable file-backed device should advertise discard support via
+        // punch-hole and report that unmapped ranges read back as zero.
+        if disk.optimal_unmap_sectors() == 0 {
+            println!("Test case skipped (filesystem does not support punch hole)");
+            return;
+        }
+        assert_eq!(disk.unmap_behavior(), UnmapBehavior::Zeroes);
+
+        let gm = GuestMemory::allocate(0x2000);
+        gm.write_at(0, &vec![0xcdu8; 0x2000]).unwrap();
+
+        // Write two pages of non-zero data.
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, 0x2000, false).buffer(&gm),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        disk.sync_cache().await.unwrap();
+
+        // Unmap the first page and read both pages back.
+        disk.unmap(0, 0x1000 >> disk.sector_shift, false)
+            .await
+            .unwrap();
+
+        let read = OwnedRequestBuffers::linear(0, 0x2000, true);
+        disk.read_vectored(&read.buffer(&gm), 0).await.unwrap();
+
+        let mut buf = vec![0xffu8; 0x2000];
+        gm.read_at(0, &mut buf).unwrap();
+        // Punched range reads as zero; the untouched page keeps its data.
+        assert!(
+            buf[..0x1000].iter().all(|&b| b == 0),
+            "unmapped range not zeroed"
+        );
+        assert!(
+            buf[0x1000..].iter().all(|&b| b == 0xcd),
+            "second page corrupted"
+        );
     }
 }
