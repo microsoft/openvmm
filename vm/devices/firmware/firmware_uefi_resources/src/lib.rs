@@ -15,6 +15,7 @@
 pub use firmware_uefi_custom_vars::BaseTemplateJson;
 pub use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 pub use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
+pub use hyperv_secure_boot_templates::BASELINE_REVISION;
 pub use hyperv_secure_boot_templates::aarch64 as aarch64_secure_boot_templates;
 pub use hyperv_secure_boot_templates::x64 as x64_secure_boot_templates;
 

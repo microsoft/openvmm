@@ -11,6 +11,9 @@
 //! gates! Unused templates should be stripped from the final binary by the
 //! linker.
 
+/// Revision represented by the built-in Secure Boot templates.
+pub const BASELINE_REVISION: &str = "July 2026";
+
 macro_rules! include_templates {
     (
         $(($fn_name:ident, $path:literal),)*

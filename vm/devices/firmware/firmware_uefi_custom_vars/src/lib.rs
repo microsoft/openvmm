@@ -73,6 +73,13 @@ impl From<UefiVars> for BaseTemplateVars {
     }
 }
 
+impl BaseTemplateVars {
+    /// Return the Secure Boot signatures supplied by this template.
+    pub fn signatures(&self) -> Option<&Signatures> {
+        self.0.signatures.as_ref()
+    }
+}
+
 impl FinalVars {
     /// Resolve an optional base template and custom delta into final variables.
     pub fn resolve(

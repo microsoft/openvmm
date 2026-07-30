@@ -17,24 +17,52 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use firmware_uefi_custom_vars::BaseTemplateJson;
+use firmware_uefi_custom_vars::BaseTemplateVars;
 use firmware_uefi_custom_vars::FinalVars;
+use firmware_uefi_custom_vars::Signature;
 use firmware_uefi_custom_vars::UefiVarsDeltaJson;
+use firmware_uefi_resources::BASELINE_REVISION;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use thiserror::Error;
+use uefi_nvram_specvars::signature_list::ParseError as SignatureListParseError;
+use uefi_nvram_specvars::signature_list::ParseSignatureList;
+use uefi_nvram_specvars::signature_list::ParseSignatureLists;
 use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
+use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
+use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
+use uefi_specs::uefi::nvram::vars;
+use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
+use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
+use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 #[cfg(feature = "fuzzing")]
 pub mod spec_services;
 #[cfg(not(feature = "fuzzing"))]
 mod spec_services;
+
+const WIN_CERT_REVISION_2_0: u16 = 0x0200;
+
+/// A Secure Boot signature's type, owner, and payload used for set comparison.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SignatureValue {
+    X509(EFI_SIGNATURE_DATA, Vec<u8>),
+    Sha256(EFI_SIGNATURE_DATA, Vec<u8>),
+}
+
+/// Unique Secure Boot signatures contained in a variable or base template.
+type SignatureSet = BTreeSet<SignatureValue>;
 
 #[derive(Debug, Error)]
 pub enum NvramSetupError {
@@ -93,11 +121,30 @@ impl NvramServices {
         };
 
         if !is_restoring {
+            let base_template_vars = base_template_json
+                .map(|template_json| {
+                    hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
+                })
+                .transpose()
+                .map_err(NvramSetupError::LoadBaseTemplate)?;
+            let custom_uefi_config_present = custom_uefi_json
+                .as_ref()
+                .is_some_and(|json| !json.as_bytes().is_empty());
+
             nvram
-                .inject_vars_on_first_boot(base_template_json, custom_uefi_json)
+                .inject_vars_on_first_boot(base_template_vars.clone(), custom_uefi_json)
                 .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
+
+            if secure_boot_enabled {
+                nvram
+                    .report_secure_boot_configuration(
+                        base_template_vars.as_ref(),
+                        custom_uefi_config_present,
+                    )
+                    .await;
+            }
         }
 
         nvram.services.prepare_for_boot();
@@ -114,7 +161,7 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        base_template_json: Option<BaseTemplateJson>,
+        base_template_vars: Option<BaseTemplateVars>,
         custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
@@ -127,12 +174,6 @@ impl NvramServices {
             return Ok(());
         }
 
-        let base_template_vars = base_template_json
-            .map(|template_json| {
-                hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
-            })
-            .transpose()
-            .map_err(NvramSetupError::LoadBaseTemplate)?;
         let custom_template_delta = custom_uefi_json
             .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
             .transpose()
@@ -157,7 +198,7 @@ impl NvramServices {
             // pre-boot, which means it suffices to use a dummy header.
             let data = {
                 let mut v = Vec::new();
-                v.extend(uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
+                v.extend(EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
                 v.extend(data);
                 v
             };
@@ -187,6 +228,121 @@ impl NvramServices {
         self.inject_final_vars(final_vars).await?;
 
         Ok(())
+    }
+
+    async fn report_secure_boot_configuration(
+        &mut self,
+        base_template_vars: Option<&BaseTemplateVars>,
+        custom_uefi_config_present: bool,
+    ) {
+        // Get the baseline revision
+        let baseline_revision = if base_template_vars.is_some() {
+            BASELINE_REVISION
+        } else {
+            "none"
+        };
+
+        // Get the signatures from the base template
+        let Some(signatures) = base_template_vars.and_then(BaseTemplateVars::signatures) else {
+            return;
+        };
+
+        // Defines all the secure boot variables to evaluate against the base template
+        let variables = [
+            ("PK", vars::PK(), std::slice::from_ref(&signatures.pk)),
+            ("KEK", vars::KEK(), signatures.kek.as_slice()),
+            ("db", vars::DB(), signatures.db.as_slice()),
+            ("dbx", vars::DBX(), signatures.dbx.as_slice()),
+        ];
+
+        // Iterate over each secure boot variable and compare it against the base template
+        for (variable, (vendor, name), template_signatures) in variables {
+            let loaded_variable = match self.services.get_variable_ucs2(vendor, name).await {
+                Ok((_, data)) if !data.is_empty() => data,
+                Ok((_, data)) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        variable,
+                        loaded_variable_bytes = data.len(),
+                        "base secure boot template variable is missing in NVRAM"
+                    );
+                    continue;
+                }
+                Err((EfiStatus::NOT_FOUND, _)) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        variable,
+                        loaded_variable_bytes = 0,
+                        "base secure boot template variable is missing in NVRAM"
+                    );
+                    continue;
+                }
+                Err((status, error)) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        variable,
+                        ?status,
+                        ?error,
+                        "failed to load secure boot variable"
+                    );
+                    continue;
+                }
+            };
+
+            let loaded_variable_bytes = loaded_variable.len();
+            let loaded_signatures = match collect_signature_set(&loaded_variable) {
+                Ok(signatures) => signatures,
+                Err(error) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        variable,
+                        error = &error as &dyn std::error::Error,
+                        "failed to parse loaded secure boot variable"
+                    );
+                    continue;
+                }
+            };
+
+            let base_signatures = base_signature_set(template_signatures);
+            if base_signatures.is_empty() {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    variable,
+                    "base secure boot template variable contains no signatures"
+                );
+                continue;
+            }
+
+            let base_template_entries = base_signatures.len();
+            let loaded_entries = loaded_signatures.len();
+            let missing_entries = base_signatures.difference(&loaded_signatures).count();
+
+            if missing_entries == 0 {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    variable,
+                    baseline_revision,
+                    custom_uefi_config_present,
+                    base_template_entries,
+                    loaded_entries,
+                    missing_entries,
+                    loaded_variable_bytes,
+                    "base secure boot template variable is present"
+                );
+            } else {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    variable,
+                    baseline_revision = baseline_revision,
+                    custom_uefi_config_present,
+                    base_template_entries,
+                    loaded_entries,
+                    missing_entries,
+                    loaded_variable_bytes,
+                    "base secure boot template variable is missing"
+                );
+            }
+        }
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {
@@ -419,6 +575,88 @@ impl NvramServices {
     }
 }
 
+/// Convert typed base-template signatures into their injected signature identities.
+fn base_signature_set<'a>(signatures: impl IntoIterator<Item = &'a Signature>) -> SignatureSet {
+    use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
+
+    let header = EFI_SIGNATURE_DATA {
+        signature_owner: MSFT_SECURE_BOOT_PRODUCTION_GUID,
+    };
+    let mut values = SignatureSet::new();
+    for signature in signatures {
+        match signature {
+            Signature::X509(certs) => values.extend(
+                certs
+                    .iter()
+                    .map(|cert| SignatureValue::X509(header, cert.0.clone())),
+            ),
+            Signature::Sha256(digests) => values.extend(
+                digests
+                    .iter()
+                    .map(|digest| SignatureValue::Sha256(header, digest.0.to_vec())),
+            ),
+        }
+    }
+    values
+}
+
+/// Parse a serialized Secure Boot variable into unique signature identities.
+fn collect_signature_set(data: &[u8]) -> Result<SignatureSet, SignatureListParseError> {
+    let mut signatures = SignatureSet::new();
+
+    for list in ParseSignatureLists::new(signature_list_payload(data)) {
+        match list? {
+            ParseSignatureList::X509(certs) => {
+                for cert in certs {
+                    let cert = cert?;
+                    signatures.insert(SignatureValue::X509(
+                        cert.header,
+                        cert.data.0.as_ref().to_vec(),
+                    ));
+                }
+            }
+            ParseSignatureList::Sha256(digests) => {
+                for digest in digests {
+                    let digest = digest?;
+                    signatures.insert(SignatureValue::Sha256(
+                        digest.header,
+                        digest.data.0.as_ref().to_vec(),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(signatures)
+}
+
+/// Return the signature-list payload, skipping a valid authentication header.
+///
+/// Malformed or unrecognized headers are treated as part of the payload so the
+/// signature-list parser can report the underlying format error.
+fn signature_list_payload(data: &[u8]) -> &[u8] {
+    let Ok((auth, _)) = EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data) else {
+        return data;
+    };
+
+    if auth.auth_info.header.revision != WIN_CERT_REVISION_2_0
+        || auth.auth_info.header.certificate_type != WIN_CERT_TYPE_EFI_GUID
+        || auth.auth_info.cert_type != EFI_CERT_TYPE_PKCS7_GUID
+    {
+        return data;
+    }
+
+    let cert_len = auth.auth_info.header.length as usize;
+    if cert_len < size_of::<WIN_CERTIFICATE_UEFI_GUID>() {
+        return data;
+    }
+
+    let Some(auth_len) = size_of_val(&auth.timestamp).checked_add(cert_len) else {
+        return data;
+    };
+    data.get(auth_len..).unwrap_or(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,16 +734,16 @@ mod tests {
     #[async_test]
     async fn deferred_base_template_parses_on_first_boot() {
         let mut nvram = nvram_services(InMemoryNvram::new());
+        let base_template = firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows();
+        let base_template_vars =
+            hyperv_uefi_custom_vars_json::parse_template_json(base_template.as_bytes()).unwrap();
 
         nvram
-            .inject_vars_on_first_boot(
-                Some(firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows()),
-                None,
-            )
+            .inject_vars_on_first_boot(Some(base_template_vars), None)
             .await
             .unwrap();
 
-        let (vendor, name) = uefi_specs::uefi::nvram::vars::PK();
+        let (vendor, name) = vars::PK();
         assert!(nvram.services.get_variable_ucs2(vendor, name).await.is_ok());
     }
 }
