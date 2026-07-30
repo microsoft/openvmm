@@ -304,7 +304,7 @@ pub fn start_sidecar<'a>(
         per_cpu_state: &sidecar_params.initial_state,
     };
     log::info!(
-        "sidecar: linux command line: {}",
+        "sidecar: boot_cpus parameter: {}",
         config.kernel_command_line()
     );
     Some(config)
