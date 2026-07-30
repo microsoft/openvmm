@@ -71,6 +71,13 @@ pub fn parse_tsv(path: &Path) -> anyhow::Result<Vec<VillainTest>> {
             .next()
             .filter(|s| !s.is_empty())
             .with_context(|| format!("{}:{}: missing test name", path.display(), lineno + 1))?;
+        anyhow::ensure!(
+            name.bytes().all(|c| c.is_ascii_alphanumeric()),
+            "{}:{}: invalid test name {:?} (expected ASCII letters and digits)",
+            path.display(),
+            lineno + 1,
+            name,
+        );
         // Columns: name, desc, version, spec_section, device_id, flags,
         // required_features, min_queues. Parse strictly so a corrupt or
         // format-changed tests.tsv fails loudly rather than silently producing
@@ -439,15 +446,36 @@ mod tests {
         let p = dir.path().join("tests.tsv");
         std::fs::write(
             &p,
-            "blk.split.bad_desc\tvalidates descriptor\t1.2\t2.6.5\t0x1042\t0\t0x0000000000000000\t1\n",
+            "PCI0102\tvalidates descriptor\t1.2\t2.6.5\t0x1042\t0\t0x0000000000000000\t1\n",
         )
         .unwrap();
         let tests = parse_tsv(&p).unwrap();
         assert_eq!(tests.len(), 1);
-        assert_eq!(tests[0].name, "blk.split.bad_desc");
+        assert_eq!(tests[0].name, "PCI0102");
         assert_eq!(tests[0].device_id, 0x1042);
         assert_eq!(tests[0].flags, 0);
         assert!(!tests[0].is_mmio());
+    }
+
+    #[test]
+    fn parse_tsv_rejects_unsafe_test_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tests.tsv");
+        for name in [
+            "../escape",
+            "subdir/test",
+            r"subdir\test",
+            "blk.split.bad_desc",
+            "PCI_0102",
+            "PCI-0102",
+        ] {
+            std::fs::write(&p, format!("{name}\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\t1\n")).unwrap();
+            let err = parse_tsv(&p).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid test name"),
+                "unexpected error for {name:?}: {err:#}"
+            );
+        }
     }
 
     #[test]
@@ -471,7 +499,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // flags column present but not a decimal u8.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x0002\tnope\t0\t1\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\t0x0002\tnope\t0\t1\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("invalid flags"),
@@ -484,7 +512,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // device_id column present but not valid 0x-prefixed hex.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\tnope\t0\t0\t1\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\tnope\t0\t0\t1\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("invalid device_id"),
@@ -497,7 +525,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // Has name/desc/version/spec_section but the device_id column is missing.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("missing device_id"),
@@ -510,7 +538,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // name..flags present (6 cols) but required_features/min_queues absent.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\t0x1042\t0\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("missing required_features"),
@@ -523,7 +551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // min_queues column present but not a decimal integer.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\tnope\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\tnope\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("invalid min_queues"),
@@ -536,7 +564,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tests.tsv");
         // All 8 columns present plus an unexpected 9th column.
-        std::fs::write(&p, "t\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\t1\textra\n").unwrap();
+        std::fs::write(&p, "T0001\tdesc\t1.2\t2.6.5\t0x1042\t0\t0x0\t1\textra\n").unwrap();
         let err = parse_tsv(&p).unwrap_err();
         assert!(
             err.to_string().contains("unexpected trailing column"),
