@@ -94,7 +94,9 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// behind an accelerated (iommufd-nested) SMMU — forcing translating stage-1
 /// domains with `iommu.passthrough=0` so the nested-HWPT path is exercised —
 /// verifies it appears as a block device, then reads from it to exercise DMA
-/// and interrupts through the accelerated SMMU's nested HWPT.
+/// and interrupts through the accelerated SMMU's nested HWPT. Finally it
+/// function-level-resets the device and reads again, covering the StreamID
+/// retire-and-rebind path.
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
 /// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
@@ -238,6 +240,50 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         group_type == "DMA" || group_type == "DMA-FQ",
         "expected the assigned device to be in a translating SMMU domain \
          (DMA/DMA-FQ), got {group_type:?}: stage-1 translation is not in effect"
+    );
+
+    // Exercise the StreamID rebind path. A function-level reset clears the
+    // device's captured BDF, so the VMM retires its StreamID — destroying the
+    // host vDevice naming it and driving the stream to abort — and re-derives
+    // both from the routed config write that follows. Everything DMA depends
+    // on is rebuilt, so a read afterwards only succeeds if the new vDevice and
+    // nested HWPT were programmed correctly.
+    //
+    // Unbind the driver around the reset so it re-probes cleanly rather than
+    // being reset underneath.
+    let pci_sysfs = dev_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .context("assigned device has no parent PCI node")?;
+    let guest_bdf = pci_sysfs
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .context("could not derive the assigned device's guest BDF")?;
+
+    // Only FLR is routed through the VMM's function-reset path; the `pm` and
+    // `bus` fallbacks would make this test pass without exercising it.
+    let reset_methods = sh.read_file(format!("{pci_sysfs}/reset_method")).await?;
+    anyhow::ensure!(
+        reset_methods.split_whitespace().next() == Some("flr"),
+        "assigned device must prefer FLR to exercise the StreamID rebind path, \
+         got {reset_methods:?}"
+    );
+
+    let flr = format!(
+        "echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/unbind && \
+         echo 1 > {pci_sysfs}/reset && \
+         echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/bind"
+    );
+    cmd!(sh, "sh -c {flr}").run().await?;
+
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await
+        .context("read after FLR failed: the rebound StreamID does not translate")?;
+    tracing::info!(dd_output = %dd_output, "dd after FLR completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read after FLR, got: {dd_output}"
     );
 
     agent.power_off().await?;
