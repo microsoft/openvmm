@@ -268,7 +268,9 @@ pub struct HvfPartition {
 impl Drop for HvfPartitionInner {
     fn drop(&mut self) {
         // SAFETY: no safety requirements.
-        unsafe { abi::hv_vm_destroy() }.chk().unwrap();
+        if let Err(err) = unsafe { abi::hv_vm_destroy() }.chk() {
+            tracing::error!(?err, "failed to destroy HVF VM");
+        }
     }
 }
 
@@ -1179,7 +1181,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             )
                         }
                         .chk()
-                        .unwrap();
+                        .map_err(|err| dev.fatal_error(err.into()))?;
                         self.wfi = false;
                     }
 
@@ -1214,7 +1216,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
                         .chk()
-                        .unwrap();
+                        .map_err(|err| dev.fatal_error(err.into()))?;
                 }
             }
 
