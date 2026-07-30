@@ -18,10 +18,21 @@ fn main() {
         println!("cargo:rerun-if-env-changed=OPENVMM_PATCH");
         println!("cargo:rerun-if-env-changed=OPENVMM_REVISION");
 
+        // Default to the crate version so that the version Windows reports in
+        // the file properties and the one `openvmm --version` prints cannot
+        // disagree. The `OPENVMM_*` vars still win, which is how a build
+        // pipeline stamps its own build number in. There is no crate
+        // equivalent of the fourth component, so it stays 0 unless set.
         let parse_u16 = |s: String| s.parse::<u16>().unwrap_or(0);
-        let major = std::env::var("OPENVMM_MAJOR").map(parse_u16).unwrap_or(0);
-        let minor = std::env::var("OPENVMM_MINOR").map(parse_u16).unwrap_or(0);
-        let patch = std::env::var("OPENVMM_PATCH").map(parse_u16).unwrap_or(0);
+        let component = |var: &str, from_crate_version: &str| {
+            std::env::var(var)
+                .or_else(|_| std::env::var(from_crate_version))
+                .map(parse_u16)
+                .unwrap_or(0)
+        };
+        let major = component("OPENVMM_MAJOR", "CARGO_PKG_VERSION_MAJOR");
+        let minor = component("OPENVMM_MINOR", "CARGO_PKG_VERSION_MINOR");
+        let patch = component("OPENVMM_PATCH", "CARGO_PKG_VERSION_PATCH");
         let revision = std::env::var("OPENVMM_REVISION")
             .map(parse_u16)
             .unwrap_or(0);

@@ -5625,7 +5625,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -5760,7 +5760,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_entry"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",

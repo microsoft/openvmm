@@ -69,6 +69,14 @@ exclude = [
 [workspace.package]
 rust-version = "1.95"
 edition = "2024"
+# The canonical OpenVMM version, and the source of truth for the version a
+# release is cut at. Bump this, then tag; a release tag must match it.
+#
+# The `-dev` suffix marks a tree that is working towards the next release
+# rather than sitting at one, so a build from `main` cannot be mistaken for a
+# released binary. Releasing drops the suffix; the following commit restores it
+# on the next version.
+version = "0.1.0-dev"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
