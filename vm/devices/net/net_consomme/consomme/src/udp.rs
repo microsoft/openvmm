@@ -602,7 +602,6 @@ impl<T: Client> Access<'_, T> {
             transport: crate::dns_resolver::DnsTransport::Udp,
         };
 
-
         // Limit static DNS response sizes to the MTU.
         let ip_header_len = if matches!(dst_addr, IpAddress::Ipv4(_)) {
             IPV4_HEADER_LEN
