@@ -674,14 +674,14 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 },
             )| {
                 (
-                    format!("\"{vsid}\""),
+                    vsid,
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(target_vtl as u32)),
                         (
                             "Drives",
                             ps::Value::new(ps::HashTable::new(drives.into_iter().map(
                                 |(lun, HyperVDrive { disk, is_dvd })| {
-                                    (lun.to_string(), {
+                                    (lun, {
                                         let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
                                         if let Some(disk) = disk {
                                             drive.push(("DiskPath", ps::Value::new(disk)));
@@ -702,10 +702,10 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             ps::HashTable::new(args.ide_controllers.into_iter().map(
                 |(controller_number, drives)| {
                     (
-                        controller_number.to_string(),
+                        controller_number,
                         ps::Value::new(ps::HashTable::new(drives.into_iter().map(
                             |(lun, HyperVDrive { disk, is_dvd })| {
-                                (lun.to_string(), {
+                                (lun, {
                                     let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
                                     if let Some(disk) = disk {
                                         drive.push(("DiskPath", ps::Value::new(disk)));
@@ -747,7 +747,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 actual
             );
             nvme_entries.push((
-                format!("\"{vsid}\""),
+                vsid,
                 ps::Value::new(ps::HashTable::new([
                     ("Vtl", ps::Value::new(target_vtl as u32)),
                     (
@@ -770,7 +770,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         Some(ps::HashTable::new(args.physical_nvme_devices.iter().map(
             |(vsid, dev)| {
                 (
-                    format!("\"{}\"", vsid),
+                    vsid,
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(dev.target_vtl as u32)),
                         ("Nsid", ps::Value::new(dev.nsid)),
