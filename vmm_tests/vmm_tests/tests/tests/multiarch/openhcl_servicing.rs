@@ -1319,25 +1319,16 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     Ok(())
 }
 
-/// Verifies the per-device NVMe keepalive gate.
-///
-/// Two NVMe controllers are attached to a single VM:
-/// * A keepalive-compatible controller. Keepalive must be honored for
-///   this device — its controller is not reset across servicing, so
-///   `CREATE_IO_COMPLETION_QUEUE` must NOT be issued after servicing.
-///   The fault panics if the opcode is observed.
-/// * A keepalive-incompatible controller with VendorID = 0x1414 and DeviceID =
-///   0xb111. The test forces this path via the hardware-config fault override
-///   used by the compatibility check. Keepalive must be downgraded to
-///   reset-on-servicing for this device, so `CREATE_IO_COMPLETION_QUEUE` must
-///   be issued around servicing.
-///
-/// Keepalive is enabled VM-wide; the gate is expected to apply per
-/// device based on its Vendor/Device IDs.
+/// Boots a frontpage OpenHCL VM with two VTL2 NVMe -> VTL0 SCSI relays: one
+/// controller forced into fused keepalive mode (VendorID=0x1414/DeviceID=0xb111)
+/// and one normal controller. Verifies the fused device eagerly pre-creates its
+/// IO queues at init while the normal device creates them lazily, then services
+/// the VM with NVMe keepalive. Re-verifies that the fused device is still fused
+/// and the normal device is still non-fused after the service boundary.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_per_device_gate(
+async fn nvme_fused_keepalive_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
@@ -1350,41 +1341,13 @@ async fn servicing_keepalive_per_device_gate(
     const WITH_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN;
     const NO_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN + 1;
 
-    // Two independent fault start cells — one per device.
-    let mut with_keepalive_fault_updater = CellUpdater::new(false);
-    let mut no_keepalive_fault_updater = CellUpdater::new(false);
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
 
-    let (no_keepalive_create_seen_send, no_keepalive_create_seen_recv) = mesh::oneshot::<()>();
-
-    // c05b device: keepalive must be honored — fail loudly if any
-    // CREATE_IO_COMPLETION_QUEUE is observed after the fault is armed.
-    let with_keepalive_fault_config = FaultConfiguration::new(with_keepalive_fault_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .build(),
-                AdminQueueFaultBehavior::Panic(
-                    "c05b device received CREATE_IO_COMPLETION_QUEUE after servicing — \
-                     keepalive should have been honored for this device but the controller \
-                     was reset."
-                        .to_string(),
-                ),
-            ),
-        );
-
-    // Non c05b device: keepalive must be downgraded —
-    // verify CREATE_IO_COMPLETION_QUEUE IS issued after servicing.
-    let no_keepalive_fault_config = FaultConfiguration::new(no_keepalive_fault_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .build(),
-                AdminQueueFaultBehavior::Verify(Some(no_keepalive_create_seen_send)),
-            ),
-        )
-        .with_hardware_config_fault(
+    let run_vm = async || -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
+        let mut fused_updater = CellUpdater::new(false);
+        // Spoof the vendor and device ID for a device that requires fused keepalive
+        let fused_fault = FaultConfiguration::new(fused_updater.cell()).with_hardware_config_fault(
             HardwareConfigFaultConfig::new()
                 .with_vendor_id(0x1414)
                 .with_device_id(0xb111),
@@ -1478,28 +1441,69 @@ async fn servicing_keepalive_per_device_gate(
     with_keepalive_fault_updater.set(true).await;
     no_keepalive_fault_updater.set(true).await;
 
-    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+    // Asserts exactly one fused and one non-fused device are present, returning
+    // their IO-queue `unmapped` vectors as `(fused_io, normal_io)`. `phase` is
+    // used only to make failures clear about whether they occurred before or
+    // after servicing.
+    let split_fused = |devices: &[(bool, Vec<bool>)], phase: &str| -> (Vec<bool>, Vec<bool>) {
+        assert_eq!(devices.len(), 2, "[{phase}] expected two VTL2 NVMe devices");
+        let (_, fused_io) = devices
+            .iter()
+            .find(|(fused, _)| *fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in fused keepalive mode"));
+        let (_, normal_io) = devices
+            .iter()
+            .find(|(fused, _)| !*fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in normal (non-fused) mode"));
+        (fused_io.clone(), normal_io.clone())
+    };
 
-    agent.ping().await?;
+    let mut vm = run_vm().await?;
 
-    // The non-c05b device must issue CREATE_IO_COMPLETION_QUEUE after
-    // servicing because its keepalive was downgraded to reset.
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(no_keepalive_create_seen_recv)
-        .await
-        .expect(
-            "non-c05b NVMe device did not issue CREATE_IO_COMPLETION_QUEUE within 60s after \
-             servicing — the per-device keepalive gate did not downgrade keepalive for this \
-             device.",
-        )
-        .expect("CREATE_IO_COMPLETION_QUEUE verification on non-c05b device failed");
+    // Before servicing: the fused device eagerly pre-creates its full set of
+    // unmapped IO queues while the normal device creates them lazily.
+    let (fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "pre-servicing");
+    assert_eq!(
+        fused_io.len(),
+        eager_count,
+        "[pre-servicing] fused keepalive device should have min(max_io_queues, vp_count) = \
+         {eager_count} IO queues, but found {}",
+        fused_io.len()
+    );
+    assert!(
+        fused_io.iter().filter(|&&unmapped| unmapped).count() >= 1,
+        "[pre-servicing] fused keepalive device should have eagerly pre-created unmapped IO \
+         queues, but all {} queues were mapped",
+        fused_io.len()
+    );
+    assert!(
+        !normal_io.is_empty(),
+        "[pre-servicing] the normal NVMe driver should have at least one IO queue"
+    );
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "[pre-servicing] a normal (non-fused) device must never have unmapped IO queues"
+    );
+    assert!(
+        normal_io.len() < eager_count,
+        "[pre-servicing] a normal device creates IO queues lazily, so it should have fewer than \
+         the fused eager count ({eager_count}), but found {}",
+        normal_io.len()
+    );
 
-    // If the c05b device had received CREATE_IO_COMPLETION_QUEUE, the
-    // panic fault would have crashed the VM and failed this test. We
-    // disarm the faults defensively before tearing down.
-    with_keepalive_fault_updater.set(false).await;
-    no_keepalive_fault_updater.set(false).await;
+    // Exercise servicing with NVMe keepalive enabled.
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    // After servicing: the fused flag is recomputed on the restore path, so the
+    // fused device must still be fused and the normal device must still be
+    // non-fused. The `split_fused` call fails if either determination changed.
+    let (_fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "post-servicing");
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "[post-servicing] a normal (non-fused) device must never have unmapped IO queues"
+    );
 
     Ok(())
 }

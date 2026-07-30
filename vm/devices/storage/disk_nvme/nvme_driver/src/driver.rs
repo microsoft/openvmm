@@ -828,12 +828,20 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .admin
             .as_ref()
             .map(|a| {
+                let pending_commands_count = a.handler_data.pending_cmds.commands.len();
                 tracing::info!(
                     id = a.qid,
-                    pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    pending_commands_count,
                     ?pci_id,
                     "restoring admin queue",
                 );
+                if fused_keepalive_device && pending_commands_count > 0 {
+                    panic!(
+                        "fused keepalive device {pci_id} restored with a non-empty admin \
+                         queue ({pending_commands_count} pending commands); fused devices \
+                         must not issue admin commands after init"
+                    );
+                }
                 // Restore memory block for admin queue pair.
                 let mem_block = restored_memory
                     .iter()
@@ -1009,7 +1017,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     q.queue_data.qid == 1
                         || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
                 })
-                .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
+                .map(|q| -> Result<IoQueue<D>, anyhow::Error> {
                     let qid = q.queue_data.qid;
                     let cpu = q.cpu;
                     tracing::info!(qid, cpu, ?pci_id, "restoring queue");
@@ -1055,7 +1063,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
                     Ok(q)
                 })
-                .collect();
+                .collect::<anyhow::Result<Vec<_>>>()?;
 
             // Create prototype entries for any queues that don't currently have
             // outstanding commands. They will be restored on demand later.
@@ -1111,7 +1119,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
             worker.io = sorted_io
                 .into_iter()
-                .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
+                .map(|q| -> Result<IoQueue<D>, anyhow::Error> {
                     let qid = q.queue_data.qid;
                     let cpu = q.cpu;
                     tracing::info!(qid, cpu, iv = q.iv, ?pci_id, "restoring queue");
@@ -1155,7 +1163,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
                     Ok(q)
                 })
-                .collect();
+                .collect::<anyhow::Result<Vec<_>>>()?;
         }
 
         // Update next_ioq_id to avoid reusing qids.
