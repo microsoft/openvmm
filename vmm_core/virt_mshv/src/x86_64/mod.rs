@@ -62,6 +62,9 @@ use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::reference_time::ReferenceTimeSource;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
+use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const SNP_IMPORT_CHUNK_PAGES: usize = 256;
 
@@ -91,6 +94,12 @@ struct ModifyGpaHostAccessHeader {
 
 const GHCB_RAX_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rax) / size_of::<u64>());
+const GHCB_RCX_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rcx) / size_of::<u64>() - 64);
+const GHCB_RDX_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rdx) / size_of::<u64>() - 64);
+const GHCB_R8_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, r8) / size_of::<u64>() - 64);
 const GHCB_SW_EXIT_CODE_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_exit_code) / size_of::<u64>() - 64);
 const GHCB_SW_EXIT_INFO1_VALID_BIT: u64 =
@@ -125,6 +134,46 @@ enum SnpApCreateRequestError {
 fn set_ghcb_rax(ghcb: &mut x86defs::snp::GhcbPage, rax: u64) {
     ghcb.save.rax = rax;
     ghcb.save.valid_bitmap0 |= GHCB_RAX_VALID_BIT;
+}
+
+fn set_ghcb_gp(ghcb: &mut x86defs::snp::GhcbPage, index: usize, value: u64) -> bool {
+    match index {
+        index if index == x86emu::Gp::RAX as usize => set_ghcb_rax(ghcb, value),
+        index if index == x86emu::Gp::RCX as usize => {
+            ghcb.save.rcx = value;
+            ghcb.save.valid_bitmap1 |= GHCB_RCX_VALID_BIT;
+        }
+        index if index == x86emu::Gp::RDX as usize => {
+            ghcb.save.rdx = value;
+            ghcb.save.valid_bitmap1 |= GHCB_RDX_VALID_BIT;
+        }
+        index if index == x86emu::Gp::R8 as usize => {
+            ghcb.save.r8 = value;
+            ghcb.save.valid_bitmap1 |= GHCB_R8_VALID_BIT;
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn read_snp_start_vp_input(
+    vcpufd: &VcpuFd,
+    gpa: u64,
+) -> Result<hvdef::hypercall::StartVirtualProcessorX64, mshv_ioctls::MshvError> {
+    let mut data = [0; size_of::<hvdef::hypercall::StartVirtualProcessorX64>()];
+    for (offset, chunk) in data.chunks_mut(16).enumerate() {
+        let mut request = mshv_bindings::mshv_read_write_gpa {
+            base_gpa: gpa + (offset * 16) as u64,
+            byte_count: chunk.len() as u32,
+            ..Default::default()
+        };
+        let result = vcpufd.gpa_read(&mut request)?;
+        chunk.copy_from_slice(&result.data[..chunk.len()]);
+    }
+    Ok(
+        hvdef::hypercall::StartVirtualProcessorX64::read_from_bytes(&data)
+            .expect("buffer is exactly the StartVirtualProcessor input size"),
+    )
 }
 
 fn ghcb_rax_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
@@ -257,6 +306,68 @@ fn sanitize_snp_cpuid(function: u32, index: u32, values: &mut [u32; 4]) {
         values[2] = 0;
         values[3] = 0;
     }
+}
+
+fn snp_hv_cpuid_overrides(native_max_leaf: u32) -> [virt::CpuidLeaf; 3] {
+    const HV_ISOLATION_TYPE_SNP: u32 = 2;
+    let privileges = hvdef::HvPartitionPrivilege::new()
+        .with_start_virtual_processor(true)
+        .with_isolation(true)
+        .into_bits();
+    let privilege_high = (privileges >> 32) as u32;
+
+    // TODO: Investigate why this MSHV environment does not derive the Hyper-V
+    // isolation CPUID contract from MSHV_PT_ISOLATION_SNP. Cloud Hypervisor
+    // does not install an equivalent override, but we have not confirmed
+    // whether its environment receives the isolation leaves correctly from
+    // MSHV. Without these overrides, ACI Linux does not recognize a
+    // non-paravisor Hyper-V SNP guest and uses the hypercall-page overlay
+    // instead of direct VMMCALL hypercalls. Correctly describing isolation
+    // also keeps ACI's restricted-injection doorbell EOI path active, making
+    // the previous APIC-access recommendation mask unnecessary.
+    [
+        // Make the isolation configuration leaf discoverable.
+        virt::CpuidLeaf::new(
+            hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+            [
+                native_max_leaf.max(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION),
+                0,
+                0,
+                0,
+            ],
+        )
+        .masked([u32::MAX, 0, 0, 0]),
+        // Tell the guest that this is an isolated Hyper-V partition.
+        virt::CpuidLeaf::new(
+            hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
+            [0, privilege_high, 0, 0],
+        )
+        .masked([0, privilege_high, 0, 0]),
+        // Describe physical SNP without a paravisor or vTOM boundary.
+        virt::CpuidLeaf::new(
+            hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+            [0, HV_ISOLATION_TYPE_SNP, 0, 0],
+        )
+        .masked([u32::MAX; 4]),
+    ]
+}
+
+fn snp_start_vp_vmsa_gpa(context: &hvdef::hypercall::InitialVpContextX64) -> Option<u64> {
+    let encoded = context.rip;
+    // TODO: Confirm this ACI-specific overload is the intended Microsoft
+    // Hypervisor SNP contract. ACI zeroes the nominal register context and
+    // stores `vmsa_gpa | 1` in its first eight bytes for HvCallStartVP.
+    if encoded & 1 == 0
+        || context.as_bytes()[size_of::<u64>()..]
+            .iter()
+            .any(|&x| x != 0)
+    {
+        return None;
+    }
+    let vmsa_gpa = encoded & !1;
+    (vmsa_gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+        && !vmsa_gpa.is_multiple_of(SNP_UNSAFE_VMSA_ALIGNMENT))
+    .then_some(vmsa_gpa)
 }
 
 impl virt::Hypervisor for LinuxMshv {
@@ -501,7 +612,16 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        let cpuid = virt::CpuidLeafSet::new(config.cpuid.to_vec());
+        let mut cpuid = config.cpuid.to_vec();
+        if self.config.isolation == virt::IsolationType::Snp && self.config.hv_config.is_some() {
+            let native_max_leaf = self
+                .bsp
+                .get_cpuid_values(hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0, 0, 0)
+                .map(|values| values[0])
+                .unwrap_or(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION);
+            cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
+        }
+        let cpuid = virt::CpuidLeafSet::new(cpuid);
 
         // Apply CPUID overrides partition-wide.
         for leaf in cpuid.leaves().iter() {
@@ -660,6 +780,33 @@ mod tests {
             ]
         );
         assert_eq!(pt_disabled_xsave, !u64::from(supported_xsave_features()));
+    }
+
+    #[test]
+    fn snp_hv_cpuid_exposes_isolation() {
+        let leaves = snp_hv_cpuid_overrides(0x40000010);
+        assert_eq!(leaves[0].result[0], 0x40000010);
+        let privileges = hvdef::HvPartitionPrivilege::from(
+            u64::from(leaves[1].result[0]) | (u64::from(leaves[1].result[1]) << 32),
+        );
+        assert!(privileges.start_virtual_processor());
+        assert!(privileges.isolation());
+        assert_eq!(leaves[2].result, [0, 2, 0, 0]);
+    }
+
+    #[test]
+    fn parses_aci_snp_start_vp_context() {
+        let mut context = hvdef::hypercall::InitialVpContextX64::new_zeroed();
+        context.rip = 0x517001;
+        assert_eq!(snp_start_vp_vmsa_gpa(&context), Some(0x517000));
+
+        context.rflags = 2;
+        assert_eq!(snp_start_vp_vmsa_gpa(&context), None);
+        context.rflags = 0;
+        context.rip = 0x517000;
+        assert_eq!(snp_start_vp_vmsa_gpa(&context), None);
+        context.rip = SNP_UNSAFE_VMSA_ALIGNMENT | 1;
+        assert_eq!(snp_start_vp_vmsa_gpa(&context), None);
     }
 
     #[test]
@@ -1261,7 +1408,12 @@ impl virt::X86Partition for MshvPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
-        // TODO
+        // TODO: Implement LINT injection for non-isolated MSHV partitions.
+        //
+        // The legacy PIC/PIT are temporarily attached for direct-boot TSC
+        // calibration, but MSHV isolated VPs cannot receive PIC ExtINT through
+        // LINT0. The guest must route runtime interrupts through the IOAPIC/MSI
+        // path; PIC-dependent isolated guests are not supported.
         tracelimit::warn_ratelimited!(?vp_index, ?vtl, lint, "ignored lint pulse");
     }
 }
@@ -1515,7 +1667,7 @@ impl MshvProcessor<'_> {
             }
             HvMessageType::HvMessageTypeHypercallIntercept => {
                 tracing::trace!("HYPERCALL_INTERCEPT");
-                self.handle_hypercall_intercept(exit, dev);
+                self.handle_hypercall_intercept(exit, dev)?;
             }
             HvMessageType::HvMessageTypeX64ApicEoi => {
                 let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
@@ -1545,6 +1697,10 @@ impl MshvProcessor<'_> {
             }
             HvMessageType::HvMessageTypeGpaAttributeIntercept => {
                 self.handle_snp_gpa_attribute_intercept(exit)
+            }
+            HvMessageType::HvMessageTypeHypercallIntercept => {
+                tracing::trace!("HYPERCALL_INTERCEPT");
+                self.handle_hypercall_intercept(exit, dev)
             }
             HvMessageType::HvMessageTypeSynicSintDeliverable => {
                 let info = exit.as_message::<hvdef::HvX64SynicSintDeliverableMessage>();
@@ -2115,20 +2271,131 @@ impl MshvProcessor<'_> {
         self.emulate(message, devices, interruption_pending).await
     }
 
-    fn handle_hypercall_intercept(&mut self, message: &HvMessage, _devices: &impl CpuIo) {
+    fn handle_hypercall_intercept(
+        &mut self,
+        message: &HvMessage,
+        _devices: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
-        let is_64bit =
-            info.header.execution_state.cr0_pe() && info.header.execution_state.efer_lma();
-
-        let mut handler = MshvHypercallHandler {
-            partition: self.partition,
-            reg_page: self.runner.reg_page(),
+        let isolated = self.partition.isolation == virt::IsolationType::Snp;
+        // SEV-SNP guests use the 64-bit direct VMMCALL ABI. MSHV redacts the
+        // execution-state bits in the isolated hypercall intercept.
+        let is_64bit = isolated
+            || info.header.execution_state.cr0_pe() && info.header.execution_state.efer_lma();
+        let vcpufd = self.runner.vcpufd;
+        let mut isolated_regs = HvX64RegisterPage::new_zeroed();
+        let reg_page = if isolated {
+            let ghcb = self
+                .runner
+                .ghcb_page()
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+            if !ghcb_rax_is_valid(ghcb)
+                || ghcb.save.valid_bitmap1 & GHCB_RCX_VALID_BIT == 0
+                || ghcb.save.rax != info.rax
+                || ghcb.save.rcx != info.rcx
+                || ghcb.save.rdx != info.rdx
+                || ghcb.save.r8 != info.r8
+            {
+                tracelimit::warn_ratelimited!("inconsistent SNP hypercall registers");
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            isolated_regs.gp_registers[x86emu::Gp::RAX as usize] = info.rax;
+            isolated_regs.gp_registers[x86emu::Gp::RBX as usize] = info.rbx;
+            isolated_regs.gp_registers[x86emu::Gp::RCX as usize] = info.rcx;
+            isolated_regs.gp_registers[x86emu::Gp::RDX as usize] = info.rdx;
+            isolated_regs.gp_registers[x86emu::Gp::RSI as usize] = info.rsi;
+            isolated_regs.gp_registers[x86emu::Gp::RDI as usize] = info.rdi;
+            isolated_regs.gp_registers[x86emu::Gp::R8 as usize] = info.r8;
+            for (dst, src) in isolated_regs.xmm.iter_mut().zip(&info.xmm_registers) {
+                *dst = u128::from(*src);
+            }
+            &mut isolated_regs
+        } else {
+            self.runner.reg_page()
         };
 
-        MshvHypercallHandler::DISPATCHER.dispatch(
-            &self.partition.gm,
-            X64RegisterIo::new(&mut handler, is_64bit),
-        );
+        let (modified_gp, modified_xmm) = {
+            let mut handler = MshvHypercallHandler {
+                partition: self.partition,
+                reg_page,
+                caller_vp: self.vpindex,
+                isolated,
+                modified_gp: 0,
+                modified_xmm: 0,
+            };
+
+            if isolated && info.rcx as u16 == hvdef::HypercallCode::HvCallStartVirtualProcessor.0 {
+                let input_end = info
+                    .rdx
+                    .checked_add(size_of::<hvdef::hypercall::StartVirtualProcessorX64>() as u64);
+                let result = input_end
+                    .ok_or(hvdef::HvError::InvalidParameter)
+                    .and_then(|_| {
+                        read_snp_start_vp_input(vcpufd, info.rdx).map_err(|err| {
+                            tracelimit::warn_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                input_gpa = info.rdx,
+                                "failed to read SNP StartVirtualProcessor input"
+                            );
+                            hvdef::HvError::InvalidParameter
+                        })
+                    })
+                    .and_then(|input| {
+                        if input.rsvd0 != 0 || input.rsvd1 != 0 {
+                            return Err(hvdef::HvError::InvalidParameter);
+                        }
+                        hv1_hypercall::StartVirtualProcessor::start_virtual_processor(
+                            &mut handler,
+                            input.partition_id,
+                            input.vp_index,
+                            Vtl::try_from(input.target_vtl)?,
+                            &input.vp_context,
+                        )
+                    });
+                let output = match result {
+                    Ok(()) => hvdef::hypercall::HypercallOutput::SUCCESS,
+                    Err(err) => err.into(),
+                };
+                hv1_hypercall::X64RegisterState::set_gp(
+                    &mut handler,
+                    hv1_hypercall::X64HypercallRegister::Rax,
+                    output.into(),
+                );
+            } else {
+                MshvHypercallHandler::DISPATCHER.dispatch(
+                    &self.partition.gm,
+                    if isolated {
+                        X64RegisterIo::new_without_ip_advance(&mut handler, is_64bit)
+                    } else {
+                        X64RegisterIo::new(&mut handler, is_64bit)
+                    },
+                );
+            }
+            (handler.modified_gp, handler.modified_xmm)
+        };
+
+        if isolated {
+            if modified_xmm != 0 {
+                tracelimit::warn_ratelimited!(modified_xmm, "unsupported SNP hypercall XMM output");
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            let ghcb = self
+                .runner
+                .ghcb_page()
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+            for index in 0..isolated_regs.gp_registers.len() {
+                if modified_gp & (1 << index) != 0
+                    && !set_ghcb_gp(ghcb, index, isolated_regs.gp_registers[index])
+                {
+                    tracelimit::warn_ratelimited!(
+                        index,
+                        "unsupported SNP hypercall GP-register output"
+                    );
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2380,8 +2647,13 @@ impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
-        self.reg_page.gp_registers[n as usize] = value;
-        self.reg_page.dirty.set_general_purpose(true);
+        let index = n as usize;
+        self.reg_page.gp_registers[index] = value;
+        if self.isolated {
+            self.modified_gp |= 1 << index;
+        } else {
+            self.reg_page.dirty.set_general_purpose(true);
+        }
     }
 
     fn xmm(&mut self, n: usize) -> u128 {
@@ -2390,13 +2662,21 @@ impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
 
     fn set_xmm(&mut self, n: usize, value: u128) {
         self.reg_page.xmm[n] = value;
-        self.reg_page.dirty.set_xmm(true);
+        if self.isolated {
+            self.modified_xmm |= 1 << n;
+        } else {
+            self.reg_page.dirty.set_xmm(true);
+        }
     }
 }
 
 pub(crate) struct MshvHypercallHandler<'a> {
     pub(crate) partition: &'a MshvPartitionInner,
     pub(crate) reg_page: &'a mut HvX64RegisterPage,
+    pub(crate) caller_vp: VpIndex,
+    isolated: bool,
+    modified_gp: u16,
+    modified_xmm: u8,
 }
 
 impl MshvHypercallHandler<'_> {
@@ -2406,8 +2686,69 @@ impl MshvHypercallHandler<'_> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvRetargetDeviceInterrupt,
+            hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
+}
+
+impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
+    for MshvHypercallHandler<'_>
+{
+    fn start_virtual_processor(
+        &mut self,
+        partition_id: u64,
+        target_vp: u32,
+        target_vtl: Vtl,
+        vp_context: &hvdef::hypercall::InitialVpContextX64,
+    ) -> hvdef::HvResult<()> {
+        if self.partition.isolation != virt::IsolationType::Snp
+            || partition_id != hvdef::HV_PARTITION_ID_SELF
+        {
+            return Err(hvdef::HvError::InvalidPartitionId);
+        }
+        if target_vtl != Vtl::Vtl0 {
+            return Err(hvdef::HvError::InvalidParameter);
+        }
+
+        let target_vp = VpIndex::new(target_vp);
+        if target_vp.is_bsp()
+            || target_vp == self.caller_vp
+            || target_vp.index() as usize >= self.partition.vps.len()
+        {
+            return Err(hvdef::HvError::InvalidVpIndex);
+        }
+
+        let vmsa_gpa = snp_start_vp_vmsa_gpa(vp_context).ok_or(hvdef::HvError::InvalidParameter)?;
+        let vmsa_end = vmsa_gpa
+            .checked_add(hvdef::HV_PAGE_SIZE)
+            .ok_or(hvdef::HvError::InvalidParameter)?;
+        if !self
+            .partition
+            .mem_layout
+            .ram()
+            .iter()
+            .any(|range| range.range.contains(&MemoryRange::new(vmsa_gpa..vmsa_end)))
+        {
+            return Err(hvdef::HvError::InvalidParameter);
+        }
+
+        let request = mshv_bindings::mshv_sev_snp_ap_create {
+            vp_id: u64::from(target_vp.index()),
+            vmsa_gpa,
+        };
+        self.partition
+            .vmfd
+            .sev_snp_ap_create(&request)
+            .map_err(|err| {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    target_vp = target_vp.index(),
+                    vmsa_gpa,
+                    "failed to handle SNP StartVirtualProcessor"
+                );
+                hvdef::HvError::InvalidVpState
+            })
+    }
 }
 
 impl hv1_hypercall::RetargetDeviceInterrupt for MshvHypercallHandler<'_> {

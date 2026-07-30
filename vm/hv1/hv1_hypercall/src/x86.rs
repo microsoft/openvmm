@@ -10,6 +10,7 @@ use crate::support::AsHandler;
 pub struct X64RegisterIo<T> {
     inner: T,
     is_64bit: bool,
+    advance_ip: bool,
 }
 
 impl<T: X64RegisterState> X64RegisterIo<T> {
@@ -18,7 +19,23 @@ impl<T: X64RegisterState> X64RegisterIo<T> {
     /// Uses the 64-bit calling convention if `is_64bit`, otherwise the 32-bit
     /// one.
     pub fn new(t: T, is_64bit: bool) -> Self {
-        Self { inner: t, is_64bit }
+        Self {
+            inner: t,
+            is_64bit,
+            advance_ip: true,
+        }
+    }
+
+    /// Returns a register accessor that does not advance the instruction pointer.
+    ///
+    /// This is for hypercall transports where returning from the transport,
+    /// rather than this dispatcher, resumes execution after the hypercall.
+    pub fn new_without_ip_advance(t: T, is_64bit: bool) -> Self {
+        Self {
+            inner: t,
+            is_64bit,
+            advance_ip: false,
+        }
     }
 
     fn gp_pair(&mut self, high: X64HypercallRegister, low: X64HypercallRegister) -> u64 {
@@ -59,8 +76,10 @@ impl<T> AsHandler<T> for X64RegisterIo<&mut T> {
 
 impl<T: X64RegisterState> HypercallIo for X64RegisterIo<T> {
     fn advance_ip(&mut self) {
-        let rip = self.inner.rip().wrapping_add(3);
-        self.inner.set_rip(self.mask(rip));
+        if self.advance_ip {
+            let rip = self.inner.rip().wrapping_add(3);
+            self.inner.set_rip(self.mask(rip));
+        }
     }
 
     fn retry(&mut self, control: u64) {
@@ -234,6 +253,45 @@ mod tests {
     use super::*;
     use crate::tests::TestHypercallIo;
     use crate::tests::TestRegisterState;
+    use test_with_tracing::test;
+
+    struct NoRipState {
+        gp: [u64; 9],
+    }
+
+    impl X64RegisterState for NoRipState {
+        fn rip(&mut self) -> u64 {
+            panic!("RIP must not be read")
+        }
+
+        fn set_rip(&mut self, _rip: u64) {
+            panic!("RIP must not be written")
+        }
+
+        fn gp(&mut self, n: X64HypercallRegister) -> u64 {
+            self.gp[n as usize]
+        }
+
+        fn set_gp(&mut self, n: X64HypercallRegister, value: u64) {
+            self.gp[n as usize] = value;
+        }
+
+        fn xmm(&mut self, _n: usize) -> u128 {
+            0
+        }
+
+        fn set_xmm(&mut self, _n: usize, _value: u128) {}
+    }
+
+    #[test]
+    fn no_ip_advance_does_not_access_rip() {
+        let mut io = X64RegisterIo::new_without_ip_advance(NoRipState { gp: [0; 9] }, true);
+
+        io.advance_ip();
+        io.retry(0x1234);
+
+        assert_eq!(io.control(), 0x1234);
+    }
 
     /// Test hypercall IO for x86.
     impl<T: X64RegisterState + TestRegisterState> TestHypercallIo for X64RegisterIo<T> {
