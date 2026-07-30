@@ -47,7 +47,7 @@ const DNS_HEADER_LEN: usize = 12;
 const ANSWER_FIXED_LEN: usize = 12;
 
 /// Maximum size of a DNS response over UDP.
-const MAX_DNS_UDP_RESPONSE_LEN: usize = 512;
+pub(crate) const MAX_DNS_UDP_RESPONSE_LEN: usize = 512;
 
 /// A single static DNS record.
 struct StaticDnsRecord {
@@ -133,17 +133,16 @@ impl StaticDnsRecords {
             return None;
         }
 
-        let budget = max_len.min(MAX_DNS_UDP_RESPONSE_LEN);
         let mut total = DNS_HEADER_LEN + question.buffer_len();
 
-        if total > budget {
+        if total > max_len {
             return None;
         }
 
         let mut fit = 0;
         for rdata in &answers {
             let answer_len = ANSWER_FIXED_LEN + rdata.len();
-            if total + answer_len > budget {
+            if total + answer_len > max_len {
                 break;
             }
 

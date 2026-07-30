@@ -1023,7 +1023,7 @@ impl TcpConnectionInner {
 
         // rx path: feed guest data into the DNS handler for query extraction.
         // Done before the tx path so that a query answered locally from static
-        // records  is drained into tx_buffer within the same poll.
+        // records is drained into tx_buffer within the same poll.
         let view = self.rx_buffer.view(0..self.rx_buffer.len());
         let (a, b) = view.as_slices();
         match dns_handler.ingest(&[a, b], static_dns, dns) {

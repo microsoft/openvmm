@@ -602,7 +602,8 @@ impl<T: Client> Access<'_, T> {
             transport: crate::dns_resolver::DnsTransport::Udp,
         };
 
-        // Limit static DNS response sizes to the MTU.
+        // Limit static DNS response sizes to the MTU, and to the 512-byte
+        // maximum for DNS over UDP (no EDNS0 negotiation is performed).
         let ip_header_len = if matches!(dst_addr, IpAddress::Ipv4(_)) {
             IPV4_HEADER_LEN
         } else {
@@ -612,7 +613,8 @@ impl<T: Client> Access<'_, T> {
         let max_response_len = self
             .client
             .rx_mtu()
-            .saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN);
+            .saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN)
+            .min(crate::dns_records::MAX_DNS_UDP_RESPONSE_LEN);
 
         if let Some(response_data) = self
             .inner
