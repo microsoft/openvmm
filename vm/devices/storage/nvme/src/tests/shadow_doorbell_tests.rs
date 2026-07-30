@@ -182,6 +182,63 @@ async fn test_reset_shadow_doorbells(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_controller_reset_shadow_doorbells(driver: DefaultDriver) {
+    let cq_buf = PrpRange::new(vec![CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let sq_buf = PrpRange::new(vec![SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut backoff = Backoff::new(&driver);
+
+    let mut nvmec =
+        setup_shadow_doorbells(driver.clone(), &cq_buf, &sq_buf, &gm, &int_controller, None).await;
+
+    let mut cc = 0;
+    nvmec.read_bar0(0x14, cc.as_mut_bytes()).unwrap();
+    cc &= !1;
+    nvmec.write_bar0(0x14, cc.as_bytes()).unwrap();
+    let mut reset = false;
+    for _ in 0..5 {
+        let mut csts = 0;
+        nvmec.read_bar0(0x1c, csts.as_mut_bytes()).unwrap();
+        if !spec::Csts::from(csts).rdy() {
+            reset = true;
+            break;
+        }
+        backoff.back_off().await;
+    }
+    assert!(reset);
+
+    const SENTINEL: u64 = 0x0123_4567_89ab_cdef;
+    gm.write_plain::<u64>(DOORBELL_BUFFER_BASE, &SENTINEL)
+        .unwrap();
+    gm.write_plain::<u64>(EVT_IDX_BUFFER_BASE, &SENTINEL)
+        .unwrap();
+
+    cc |= 1;
+    nvmec.write_bar0(0x14, cc.as_bytes()).unwrap();
+    let mut ready = false;
+    for _ in 0..5 {
+        let mut csts = 0;
+        nvmec.read_bar0(0x1c, csts.as_mut_bytes()).unwrap();
+        if spec::Csts::from(csts).rdy() {
+            ready = true;
+            break;
+        }
+        backoff.back_off().await;
+    }
+    assert!(ready);
+
+    nvmec.write_bar0(0x1000, 0_u32.as_bytes()).unwrap();
+    backoff.back_off().await;
+
+    assert_eq!(
+        gm.read_plain::<u64>(DOORBELL_BUFFER_BASE).unwrap(),
+        SENTINEL
+    );
+    assert_eq!(gm.read_plain::<u64>(EVT_IDX_BUFFER_BASE).unwrap(), SENTINEL);
+}
+
+#[async_test]
 async fn test_setup_sq_ring_with_shadow(driver: DefaultDriver) {
     let cq_buf = PrpRange::new(vec![CQ_BASE], 0, PAGE_SIZE64).unwrap();
     let sq_buf = PrpRange::new(vec![SQ_BASE], 0, PAGE_SIZE64).unwrap();
