@@ -765,6 +765,17 @@ options:
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
 
+    /// expose the guest in the host AF_VSOCK namespace using the Linux
+    /// vhost_vsock kernel backend
+    #[cfg(target_os = "linux")]
+    #[clap(
+        long,
+        value_name = "CID",
+        conflicts_with = "virtio_vsock_path",
+        value_parser = parse_vhost_vsock_cid
+    )]
+    pub virtio_vsock_vhost_cid: Option<u32>,
+
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///
@@ -1444,6 +1455,17 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+#[cfg(target_os = "linux")]
+fn parse_vhost_vsock_cid(value: &str) -> Result<u32, String> {
+    let cid = value
+        .parse::<u32>()
+        .map_err(|error| format!("invalid CID '{value}': {error}"))?;
+    if !(3..u32::MAX).contains(&cid) {
+        return Err(format!("CID must be between 3 and {}", u32::MAX - 1));
+    }
+    Ok(cid)
 }
 
 /// Parse an optional `pcie_port=<name>:` prefix from a CLI argument string.
@@ -4998,6 +5020,25 @@ mod tests {
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1,num_queues=2").is_err()); // num_queues on device_id
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1,queue_sizes=[]").is_err()); // empty list
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1").is_err()); // device_id without queue_sizes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vhost_vsock_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "3"]).unwrap();
+        assert_eq!(opt.virtio_vsock_vhost_cid, Some(3));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "2"]).is_err());
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-vhost-cid",
+                "3",
+                "--virtio-vsock-path",
+                "/tmp/vsock",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

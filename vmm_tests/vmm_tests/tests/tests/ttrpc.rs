@@ -25,6 +25,8 @@ use petri::ResolvedArtifact;
 use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Write;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -136,10 +138,12 @@ fn test_ttrpc_interface(
         );
 
         // Backing files for the PCIe storage devices created on iteration 0
-        // (virtio-blk and an NVMe namespace). They are plain raw disks.
+        // (virtio-blk and an NVMe namespace) and for the vmbus SCSI disk. They
+        // are plain raw disks.
         let nvme_disk_path = tempdir.path().join("nvme.img");
         let blk_disk_path = tempdir.path().join("blk.img");
-        for path in [&nvme_disk_path, &blk_disk_path] {
+        let scsi_disk_path = tempdir.path().join("scsi.img");
+        for path in [&nvme_disk_path, &blk_disk_path, &scsi_disk_path] {
             std::fs::File::create(path)?.set_len(1024 * 1024)?;
         }
 
@@ -379,6 +383,17 @@ fn test_ttrpc_interface(
                                 virtiofs_config: vec![vmservice::VirtioFsConfig {
                                     tag: "testfs".to_string(),
                                     root_path: virtiofs_root.to_string_lossy().into(),
+                                }],
+                                // A SCSI controller keeps a request channel
+                                // alive for the lifetime of the VM, which used
+                                // to stop the VM worker from ever finishing its
+                                // stop. Attach a disk so that the teardown and
+                                // quit paths below cover that.
+                                scsi_disks: vec![vmservice::ScsiDisk {
+                                    controller: 0,
+                                    lun: 0,
+                                    host_path: scsi_disk_path.to_string_lossy().into(),
+                                    ..Default::default()
                                 }],
                                 ..Default::default()
                             }),
@@ -701,11 +716,7 @@ async fn launch_openvmm(
     openvmm: &ResolvedArtifact,
     socket_path: &Path,
     pidfile_path: &Path,
-) -> anyhow::Result<(
-    PolledChild<std::process::Child>,
-    mesh_rpc::Client,
-    Task<anyhow::Result<()>>,
-)> {
+) -> anyhow::Result<(OpenvmmChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -720,7 +731,9 @@ async fn launch_openvmm(
         .stderr(stderr_write)
         .spawn()?;
 
-    let mut child = PolledChild::<std::process::Child>::new(driver, child)?;
+    // Wrap the child immediately so that the error paths below (and any test
+    // failure after this function returns) tear the process down.
+    let mut child = OpenvmmChild(PolledChild::<std::process::Child>::new(driver, child)?);
 
     // Start pumping stderr immediately so the pipe buffer doesn't fill up and
     // block the child.
@@ -778,6 +791,50 @@ async fn launch_openvmm(
     );
 
     Ok((child, client, stderr_task))
+}
+
+/// Owns the OpenVMM process launched by [`launch_openvmm`], killing it on drop.
+///
+/// [`std::process::Child`] deliberately does *not* kill the process when it is
+/// dropped. Without this guard, any test that fails or panics before reaching
+/// its `TeardownVM`/`Quit` calls leaves an orphaned OpenVMM process behind,
+/// still running its VM and still holding the ttrpc socket.
+struct OpenvmmChild(PolledChild<std::process::Child>);
+
+impl Deref for OpenvmmChild {
+    type Target = PolledChild<std::process::Child>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for OpenvmmChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for OpenvmmChild {
+    fn drop(&mut self) {
+        let child = self.0.get_mut();
+        // `kill` reports success for an already-reaped child, so ask `try_wait`
+        // whether the process is actually gone rather than relying on that.
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        tracing::warn!("killing openvmm, which was still running at the end of the test");
+        if let Err(err) = child.kill() {
+            tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "failed to kill openvmm"
+            );
+            return;
+        }
+        // Reap the process so it doesn't linger as a zombie. It was just
+        // killed, so this returns promptly.
+        let _ = child.wait();
+    }
 }
 
 /// Builds a file-backed disk backend for the given path.

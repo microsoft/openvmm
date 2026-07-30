@@ -149,10 +149,24 @@ impl SidecarClient {
                 }
                 Err(err) => return Err(err),
             };
+            if node.cpus.start > expected_base {
+                tracing::info!(
+                    node = nodes.len(),
+                    gap_start = expected_base,
+                    gap_end = node.cpus.start,
+                    "sidecar node follows a gap; earlier node(s) skipped (no sidecar-started APs)"
+                );
+            }
             assert_eq!(node.cpus.start, expected_base);
             expected_base = node.cpus.end;
             nodes.push(node);
         }
+        let layout: Vec<Range<u32>> = nodes.iter().map(|node| node.cpus.clone()).collect();
+        tracing::info!(
+            ?layout,
+            "sidecar client initialized with {} node(s)",
+            nodes.len()
+        );
         Ok(Some(Self { nodes }))
     }
 

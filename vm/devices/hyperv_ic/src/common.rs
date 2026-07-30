@@ -18,6 +18,7 @@ use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
+use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -26,9 +27,9 @@ use zerocopy::IntoBytes;
 const FRAMEWORK_VERSIONS: &[Version] = &[FRAMEWORK_VERSION_1, FRAMEWORK_VERSION_3];
 
 #[derive(InspectMut)]
-pub(crate) struct IcPipe {
+pub(crate) struct IcPipe<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pub pipe: MessagePipe<GpadlRingMem>,
+    pub pipe: MessagePipe<M>,
     #[inspect(skip)]
     buf: Vec<u8>,
 }
@@ -49,8 +50,8 @@ pub(crate) struct Versions {
     pub message_version: Version,
 }
 
-impl IcPipe {
-    pub fn new(raw: RawAsyncChannel<GpadlRingMem>) -> Result<Self, std::io::Error> {
+impl<M: RingMem> IcPipe<M> {
+    pub fn new(raw: RawAsyncChannel<M>) -> Result<Self, std::io::Error> {
         let pipe = MessagePipe::new(raw)?;
         let buf = vec![0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
         Ok(Self { pipe, buf })
@@ -94,23 +95,38 @@ impl IcPipe {
                 Ok(None)
             }
             NegotiateState::WaitVersion => {
-                let (_result, buf) = self.read_response().await?;
-                let (message, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
-                    .ok()
-                    .context("missing negotiate message")?;
-                if message.framework_version_count != 1 || message.message_version_count != 1 {
-                    anyhow::bail!("no supported versions");
-                }
-                let ([framework_version, message_version], _) =
-                    <[Version; 2]>::read_from_prefix(rest)
-                        .ok()
-                        .context("missing version table")?;
+                let versions = loop {
+                    let (message_type, _status, buf) = self.read_message().await?;
+                    // A response to a request issued before the channel was
+                    // reset (e.g. across save/restore) may still be in flight.
+                    // There is no one left to receive it, so drop it.
+                    if message_type != MessageType::VERSION_NEGOTIATION {
+                        tracelimit::warn_ratelimited!(
+                            ?message_type,
+                            "dropping unexpected message while negotiating versions"
+                        );
+                        continue;
+                    }
+                    let (message, rest) =
+                        hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
+                            .ok()
+                            .context("missing negotiate message")?;
+                    if message.framework_version_count != 1 || message.message_version_count != 1 {
+                        anyhow::bail!("no supported versions");
+                    }
+                    let ([framework_version, message_version], _) =
+                        <[Version; 2]>::read_from_prefix(rest)
+                            .ok()
+                            .context("missing version table")?;
+
+                    break Versions {
+                        framework_version,
+                        message_version,
+                    };
+                };
 
                 *state = NegotiateState::Invalid;
-                Ok(Some(Versions {
-                    framework_version,
-                    message_version,
-                }))
+                Ok(Some(versions))
             }
             NegotiateState::Invalid => {
                 unreachable!()
@@ -143,6 +159,11 @@ impl IcPipe {
     }
 
     pub async fn read_response(&mut self) -> anyhow::Result<(Status, &[u8])> {
+        let (_message_type, status, buf) = self.read_message().await?;
+        Ok((status, buf))
+    }
+
+    async fn read_message(&mut self) -> anyhow::Result<(MessageType, Status, &[u8])> {
         let n = self
             .pipe
             .recv(&mut self.buf)
@@ -161,6 +182,129 @@ impl IcPipe {
             .get(..header.message_size as usize)
             .context("missing message body")?;
 
-        Ok((header.status, rest))
+        Ok((header.message_type, header.status, rest))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyperv_ic_protocol::Header;
+    use hyperv_ic_protocol::NegotiateMessage;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmbus_channel::connected_async_channels;
+    use vmbus_ring::FlatRingMem;
+
+    const TEST_MESSAGE_VERSION: Version = Version::new(5, 0);
+    const TEST_MESSAGE_VERSIONS: &[Version] = &[TEST_MESSAGE_VERSION];
+
+    fn response_header(message_type: MessageType, message_size: usize) -> Header {
+        Header {
+            message_type,
+            message_size: message_size as u16,
+            status: Status::SUCCESS,
+            transaction_id: 0,
+            flags: HeaderFlags::new()
+                .with_transaction(true)
+                .with_response(true),
+            ..FromZeros::new_zeroed()
+        }
+    }
+
+    fn version_response() -> Vec<u8> {
+        let message = NegotiateMessage {
+            framework_version_count: 1,
+            message_version_count: 1,
+            reserved: 0,
+        };
+        let versions = [FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION];
+        let header = response_header(
+            MessageType::VERSION_NEGOTIATION,
+            size_of_val(&message) + size_of_val(&versions),
+        );
+        [header.as_bytes(), message.as_bytes(), versions.as_bytes()].concat()
+    }
+
+    /// A transaction completion for some earlier, unrelated request.
+    fn stale_response(message_type: MessageType) -> Vec<u8> {
+        response_header(message_type, 0).as_bytes().to_vec()
+    }
+
+    fn new_pipes() -> (IcPipe<FlatRingMem>, MessagePipe<FlatRingMem>) {
+        let (host, guest) = connected_async_channels(16384);
+        (IcPipe::new(host).unwrap(), MessagePipe::new(guest).unwrap())
+    }
+
+    /// Runs the send half of negotiation and consumes the request from the
+    /// guest side of the channel.
+    async fn send_version_request(
+        pipe: &mut IcPipe<FlatRingMem>,
+        state: &mut NegotiateState,
+        guest: &mut MessagePipe<FlatRingMem>,
+    ) {
+        assert!(
+            pipe.negotiate(state, TEST_MESSAGE_VERSIONS)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut buf = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+        let n = guest.recv(&mut buf).await.unwrap();
+        let (header, _) = Header::read_from_prefix(&buf[..n]).unwrap();
+        assert_eq!(header.message_type, MessageType::VERSION_NEGOTIATION);
+        assert!(header.flags.request());
+    }
+
+    #[async_test]
+    async fn negotiate() {
+        let (mut pipe, mut guest) = new_pipes();
+        let mut state = NegotiateState::default();
+        send_version_request(&mut pipe, &mut state, &mut guest).await;
+        guest.send(&version_response()).await.unwrap();
+        let versions = pipe
+            .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(versions.framework_version, FRAMEWORK_VERSION_3);
+        assert_eq!(versions.message_version, TEST_MESSAGE_VERSION);
+    }
+
+    #[async_test]
+    async fn negotiate_drops_stale_responses() {
+        let (mut pipe, mut guest) = new_pipes();
+        let mut state = NegotiateState::default();
+        send_version_request(&mut pipe, &mut state, &mut guest).await;
+        guest
+            .send(&stale_response(MessageType::KVP_EXCHANGE))
+            .await
+            .unwrap();
+        guest
+            .send(&stale_response(MessageType::TIME_SYNC))
+            .await
+            .unwrap();
+        guest.send(&version_response()).await.unwrap();
+        let versions = pipe
+            .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(versions.framework_version, FRAMEWORK_VERSION_3);
+        assert_eq!(versions.message_version, TEST_MESSAGE_VERSION);
+    }
+
+    #[async_test]
+    async fn negotiate_rejects_non_transaction_response() {
+        let (mut pipe, mut guest) = new_pipes();
+        let mut state = NegotiateState::default();
+        send_version_request(&mut pipe, &mut state, &mut guest).await;
+        let mut response = version_response();
+        let (header, _) = Header::mut_from_prefix(response.as_mut_slice()).unwrap();
+        header.flags = HeaderFlags::new().with_request(true);
+        guest.send(&response).await.unwrap();
+        pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+            .await
+            .unwrap_err();
     }
 }

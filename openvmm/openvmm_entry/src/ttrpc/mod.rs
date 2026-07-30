@@ -571,13 +571,14 @@ impl VmService {
             }
             vmservice::Vm::Quit((), response) => {
                 // Shut down the controller (which stops and joins the worker).
+                // Drop the VM's device RPC channels first; see `teardown_vm`.
+                self.vm.take();
                 if let Some(controller) = self.vm_controller.take() {
                     controller.send(VmControllerRpc::Quit);
                 }
                 if let Some(task) = self.controller_task.take() {
                     task.await;
                 }
-                self.vm.take();
                 self.vm_controller_events.take();
                 if let Some((_, wait_response)) = self.wait_vm_response.take() {
                     wait_response.send(Err(grpc_error(anyhow!("VM quit"))));
@@ -1013,12 +1014,17 @@ impl VmService {
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         let controller = self.vm_controller.take().context("vm not created")?;
+        // Drop the VM's device RPC channels before waiting on the controller.
+        // A live `ScsiControllerRequest` sender keeps the detached storvsp task
+        // running, which in turn stops the VM worker from ever finishing its
+        // stop, so waiting for the controller first would hang forever. The
+        // REPL's quit path works around the same bug.
+        self.vm.take();
         controller.send(VmControllerRpc::Quit);
         drop(controller);
         if let Some(task) = self.controller_task.take() {
             task.await;
         }
-        self.vm.take();
         self.vm_controller_events.take();
         self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
