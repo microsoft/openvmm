@@ -257,29 +257,6 @@ struct VfioPciDevice {
     config_size: u64,
 }
 
-enum FunctionResetResult {
-    ClearFailed(anyhow::Error),
-    RebindFailed(anyhow::Error),
-    Complete(anyhow::Result<()>),
-}
-
-fn perform_function_reset(
-    clear_rid: impl FnOnce() -> anyhow::Result<()>,
-    reset_write: impl FnOnce() -> anyhow::Result<()>,
-    rebind_rid: impl FnOnce() -> anyhow::Result<()>,
-) -> FunctionResetResult {
-    if let Err(error) = clear_rid() {
-        return FunctionResetResult::ClearFailed(error);
-    }
-
-    let write_result = reset_write();
-    if let Err(error) = rebind_rid() {
-        return FunctionResetResult::RebindFailed(error);
-    }
-
-    FunctionResetResult::Complete(write_result)
-}
-
 impl ConfigSpaceRead for VfioPciDevice {
     fn read_config(&self, offset: u16, value: ByteEnabledDwordRead<'_>) -> anyhow::Result<()> {
         let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
@@ -667,34 +644,21 @@ impl VfioAssignedPciDevice {
             .as_ref()
             .expect("accelerated function reset requires a registration");
 
-        let result = perform_function_reset(
-            || registration.clear_requester_id(),
-            || {
-                self.requester_id = None;
-                self.vfio_device.write_config(offset, value)
-            },
-            || registration.set_requester_id(routed_rid),
-        );
-
-        let write_result = match result {
-            FunctionResetResult::ClearFailed(error) => {
-                tracelimit::warn_ratelimited!(
-                    pci_id = self.pci_id.as_str(),
-                    routed_rid,
-                    error = error.as_ref() as &dyn std::error::Error,
-                    "failed to clear SMMU requester ID; suppressing function reset"
-                );
-                return IoResult::Ok;
-            }
-            FunctionResetResult::RebindFailed(error) => {
-                panic!(
-                    "failed to rebind VFIO device {} to routed RID {routed_rid:#06x} after function reset; DMA remains blocked: {error:#}",
-                    self.pci_id
-                )
-            }
-            FunctionResetResult::Complete(write_result) => write_result,
-        };
-        self.requester_id = Some(routed_rid);
+        // The reset clears the device's captured BDF, so retire its StreamID
+        // first and re-publish the routed one afterwards.
+        registration.clear_requester_id();
+        self.requester_id = None;
+        let write_result = self.vfio_device.write_config(offset, value);
+        match registration.set_requester_id(routed_rid) {
+            // Leaves the device aborting until a later routed write retries.
+            Err(error) => tracelimit::warn_ratelimited!(
+                pci_id = self.pci_id.as_str(),
+                routed_rid,
+                error = error.as_ref() as &dyn std::error::Error,
+                "failed to rebind VFIO device requester ID after function reset"
+            ),
+            Ok(()) => self.requester_id = Some(routed_rid),
+        }
 
         if let Err(error) = write_result {
             tracelimit::warn_ratelimited!(
@@ -1415,12 +1379,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         } = *self;
 
         if let Some(registration) = accel_registration {
-            registration.clear_requester_id().unwrap_or_else(|error| {
-                panic!(
-                    "failed to clear SMMU requester ID for {} before VFIO reset: {error:#}",
-                    pci_id
-                )
-            });
+            registration.clear_requester_id();
         }
         *requester_id = None;
 
@@ -2192,94 +2151,6 @@ mod tests {
             0x68,
             ByteEnabledDwordWrite::with_all_bytes_enabled(u32::MAX),
         ));
-    }
-
-    #[test]
-    fn function_reset_sequence_is_clear_write_rebind() {
-        let events = parking_lot::Mutex::new(Vec::new());
-        let result = perform_function_reset(
-            || {
-                events.lock().push("clear");
-                Ok(())
-            },
-            || {
-                events.lock().push("write");
-                Ok(())
-            },
-            || {
-                events.lock().push("rebind");
-                Ok(())
-            },
-        );
-
-        assert!(matches!(result, FunctionResetResult::Complete(Ok(()))));
-        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
-    }
-
-    #[test]
-    fn function_reset_clear_failure_suppresses_write_and_rebind() {
-        let events = parking_lot::Mutex::new(Vec::new());
-        let result = perform_function_reset(
-            || {
-                events.lock().push("clear");
-                anyhow::bail!("clear failed")
-            },
-            || {
-                events.lock().push("write");
-                Ok(())
-            },
-            || {
-                events.lock().push("rebind");
-                Ok(())
-            },
-        );
-
-        assert!(matches!(result, FunctionResetResult::ClearFailed(_)));
-        assert_eq!(*events.lock(), ["clear"]);
-    }
-
-    #[test]
-    fn function_reset_write_failure_still_rebinds() {
-        let events = parking_lot::Mutex::new(Vec::new());
-        let result = perform_function_reset(
-            || {
-                events.lock().push("clear");
-                Ok(())
-            },
-            || {
-                events.lock().push("write");
-                anyhow::bail!("write failed")
-            },
-            || {
-                events.lock().push("rebind");
-                Ok(())
-            },
-        );
-
-        assert!(matches!(result, FunctionResetResult::Complete(Err(_))));
-        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
-    }
-
-    #[test]
-    fn function_reset_rebind_failure_is_distinct() {
-        let events = parking_lot::Mutex::new(Vec::new());
-        let result = perform_function_reset(
-            || {
-                events.lock().push("clear");
-                Ok(())
-            },
-            || {
-                events.lock().push("write");
-                Ok(())
-            },
-            || {
-                events.lock().push("rebind");
-                anyhow::bail!("rebind failed")
-            },
-        );
-
-        assert!(matches!(result, FunctionResetResult::RebindFailed(_)));
-        assert_eq!(*events.lock(), ["clear", "write", "rebind"]);
     }
 
     // --- Extended capability patch tests ---

@@ -523,12 +523,17 @@ impl IommufdStreamBackend {
 }
 
 impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
-    fn set_stream_id(&self, sid: Option<u32>) -> anyhow::Result<()> {
+    fn set_stream_id(&self, sid: Option<u32>) {
         let mut state = self.state.lock();
 
         // Stop DMA under the old identity before retiring any object that an
         // incoming transaction or invalidation could still reference.
-        self.handle_abort(&mut state)?;
+        self.handle_abort(&mut state).unwrap_or_else(|e| {
+            panic!(
+                "smmu accel: cannot stop DMA for dev_id {} while rebinding StreamID: {e:#}",
+                self.dev_id
+            )
+        });
         if let Some(vdevice_id) = state.vdevice_id.take() {
             self.destroy_owned(vdevice_id, "vDevice");
         }
@@ -538,7 +543,6 @@ impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
             virtual_sid = sid,
             "SMMU accel: rebound StreamID"
         );
-        Ok(())
     }
 
     fn set_stream_config(&self, config: smmu::StreamConfig) -> anyhow::Result<()> {

@@ -77,11 +77,14 @@ pub trait AcceleratedStreamBackend: Send + Sync {
     /// Changes the virtual StreamID associated with this device.
     ///
     /// The backend must first attach the device to an aborting domain, then
-    /// retire any host objects associated with the previous StreamID. On
-    /// success the device remains aborting until [`set_stream_config`](Self::set_stream_config)
-    /// applies the new StreamID's policy. Once abort has been attached, any
-    /// later error leaves the device fail-closed.
-    fn set_stream_id(&self, sid: Option<u32>) -> anyhow::Result<()>;
+    /// retire any host objects associated with the previous StreamID. The
+    /// device remains aborting until [`set_stream_config`](Self::set_stream_config)
+    /// applies the new StreamID's policy.
+    ///
+    /// Infallible: the only way this can fail is an inability to stop DMA,
+    /// which leaves a device translating under an identity the guest has moved
+    /// off. Backends fail fast rather than reporting that.
+    fn set_stream_id(&self, sid: Option<u32>);
 
     /// The guest reconfigured this stream's STE (via `CFGI_STE`), or the
     /// emulator recomputed the stream's policy (e.g. on a `GBPA` write or
@@ -367,11 +370,10 @@ impl AccelRegistration {
 
     /// Clears the captured RID and leaves the backend aborting. Used when the
     /// PCI device resets and must capture its BDF again.
-    pub fn clear_requester_id(&self) -> anyhow::Result<()> {
-        self.shared
-            .upgrade()
-            .context("SMMU was removed before requester ID reset")?
-            .clear_accel_requester_id(self.id)
+    pub fn clear_requester_id(&self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.clear_accel_requester_id(self.id);
+        }
     }
 }
 
@@ -965,39 +967,51 @@ impl SmmuSharedState {
 
     fn set_accel_requester_id(&self, id: u64, rid: u16) -> anyhow::Result<()> {
         let mut accel = self.accel_state.lock();
-        let reg = accel
+        let index = accel
             .devices
-            .iter_mut()
-            .find(|reg| reg.id == id)
+            .iter()
+            .position(|reg| reg.id == id)
             .context("accelerated SMMU registration no longer exists")?;
-        let sid = reg.stream_id_base + u32::from(rid);
-        if reg.sid == Some(sid) && reg.policy_applied {
+        let sid = accel.devices[index].stream_id_base + u32::from(rid);
+        if accel.devices[index].sid == Some(sid) && accel.devices[index].policy_applied {
             return Ok(());
         }
 
-        if reg.sid != Some(sid) {
+        // A StreamID names exactly one device: the host keys its vDevice table
+        // by it, and this table's own SID lookups would otherwise pick an
+        // arbitrary claimant. A guest renumbering buses can alias two devices
+        // for a window, so leave this one unbound until the other moves off.
+        let conflict = accel
+            .devices
+            .iter()
+            .any(|reg| reg.id != id && reg.sid == Some(sid));
+
+        // The guest moved this device, so its old StreamID is stale: stop DMA
+        // and retire the host objects naming it before adopting the new one.
+        let reg = &mut accel.devices[index];
+        let new = (!conflict).then_some(sid);
+        if reg.sid != new {
             reg.translating_sid = None;
-            reg.policy_applied = false;
-            reg.backend.set_stream_id(Some(sid))?;
-            reg.sid = Some(sid);
+            reg.backend.set_stream_id(new);
+            reg.sid = new;
         }
+        // The next routed config write retries.
+        anyhow::ensure!(!conflict, "StreamID {sid:#x} is assigned to another device");
+
         let config = self.current_stream_config(sid);
         Self::apply_config_or_abort(reg, config)
     }
 
-    fn clear_accel_requester_id(&self, id: u64) -> anyhow::Result<()> {
+    fn clear_accel_requester_id(&self, id: u64) {
         let mut accel = self.accel_state.lock();
-        let reg = accel
-            .devices
-            .iter_mut()
-            .find(|reg| reg.id == id)
-            .context("accelerated SMMU registration no longer exists")?;
+        // Nothing to clear if the registration is already gone.
+        let Some(reg) = accel.devices.iter_mut().find(|reg| reg.id == id) else {
+            return;
+        };
         reg.translating_sid = None;
-        reg.policy_applied = false;
-        reg.backend.set_stream_id(None)?;
+        reg.backend.set_stream_id(None);
         reg.sid = None;
         reg.policy_applied = true;
-        Ok(())
     }
 
     /// Removes registration `id` synchronously.
@@ -1155,6 +1169,8 @@ impl SmmuSharedState {
     pub(crate) fn apply_stream_config(&self, sid: u32) -> anyhow::Result<()> {
         let config = self.current_stream_config(sid);
         let mut accel = self.accel_state.lock();
+        // At most one registration holds a given SID; see
+        // [`set_accel_requester_id`](Self::set_accel_requester_id).
         let Some(reg) = accel.devices.iter_mut().find(|reg| reg.sid == Some(sid)) else {
             return Ok(());
         };

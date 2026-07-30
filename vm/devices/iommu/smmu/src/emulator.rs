@@ -2196,9 +2196,7 @@ mod tests {
     struct MockStreamBackend;
 
     impl crate::shared::AcceleratedStreamBackend for MockStreamBackend {
-        fn set_stream_id(&self, _sid: Option<u32>) -> anyhow::Result<()> {
-            Ok(())
-        }
+        fn set_stream_id(&self, _sid: Option<u32>) {}
 
         fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             Ok(())
@@ -2293,9 +2291,8 @@ mod tests {
     }
 
     impl crate::shared::AcceleratedStreamBackend for RecordingBackend {
-        fn set_stream_id(&self, sid: Option<u32>) -> anyhow::Result<()> {
+        fn set_stream_id(&self, sid: Option<u32>) {
             self.stream_ids.lock().push(sid);
-            Ok(())
         }
 
         fn set_stream_config(&self, config: crate::shared::StreamConfig) -> anyhow::Result<()> {
@@ -2526,7 +2523,7 @@ mod tests {
         backend.take_stream_ids();
         backend.take();
 
-        registration.clear_requester_id().expect("clear RID");
+        registration.clear_requester_id();
         assert_eq!(backend.take_stream_ids(), vec![None]);
         assert!(!is_translating(&dev, 0x100));
 
@@ -2846,9 +2843,7 @@ mod tests {
     }
 
     impl crate::shared::AcceleratedStreamBackend for DropTrackingBackend {
-        fn set_stream_id(&self, _sid: Option<u32>) -> anyhow::Result<()> {
-            Ok(())
-        }
+        fn set_stream_id(&self, _sid: Option<u32>) {}
 
         fn set_stream_config(&self, _config: crate::shared::StreamConfig) -> anyhow::Result<()> {
             Ok(())
@@ -2976,6 +2971,49 @@ mod tests {
         // With no sink, a batch is silently dropped rather than faulting.
         let devices = dev.shared_state.lock_accel_devices();
         assert!(SmmuSharedState::invalidate(&devices, &[[0, 0]]).is_ok());
+    }
+
+    /// Two devices cannot hold one StreamID — the host keys its vDevice table
+    /// by it. A guest that aliases them (e.g. mid bus renumber) leaves the
+    /// newcomer aborting, and its retry succeeds once the other device moves.
+    #[test]
+    fn test_duplicate_requester_id_is_rejected() {
+        let dev = make_accel_device();
+
+        let first = RecordingBackend::new();
+        let first_id = dev
+            .shared_state
+            .register_accel_device(0, first.clone())
+            .expect("register first backend");
+        let first_reg = crate::shared::AccelRegistration::new(&dev.shared_state, first_id);
+        first_reg.set_requester_id(0x100).expect("bind first RID");
+        first.take();
+
+        let second = RecordingBackend::new();
+        let second_id = dev
+            .shared_state
+            .register_accel_device(0, second.clone())
+            .expect("register second backend");
+        let second_reg = crate::shared::AccelRegistration::new(&dev.shared_state, second_id);
+        second.take();
+
+        let err = second_reg
+            .set_requester_id(0x100)
+            .expect_err("aliased StreamID must be rejected")
+            .to_string();
+        assert!(err.contains("assigned to another device"), "{err}");
+        // Already unbound, so nothing to retire.
+        assert!(second.take_stream_ids().is_empty());
+        // The device that already owns the StreamID is untouched.
+        assert!(first.take().is_empty());
+
+        // Once the first device moves off the StreamID, the retry succeeds.
+        first_reg.set_requester_id(0x200).expect("rebind first RID");
+        second_reg
+            .set_requester_id(0x100)
+            .expect("retry after conflict clears");
+        assert_eq!(second.take_stream_ids(), vec![Some(0x100)]);
+        assert_eq!(second.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
 
     /// The registration table stays locked for the duration of the host
