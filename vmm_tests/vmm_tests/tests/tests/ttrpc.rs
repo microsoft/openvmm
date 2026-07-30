@@ -732,7 +732,14 @@ fn test_ttrpc_uefi_boot(
                                 secure_boot_enabled: false,
                             },
                         )),
-                        guest_reset_action: vmservice::vm_config::GuestResetAction::Halt as i32,
+                        // The UEFI watchdog that ends `guest_test_uefi` reports
+                        // a reset on aarch64 but a triple fault on x64, so halt
+                        // on both rather than rebooting forever.
+                        guest_power_actions: Some(vmservice::vm_config::GuestPowerActions {
+                            reset: vmservice::vm_config::GuestPowerAction::Halt as i32,
+                            watchdog: vmservice::vm_config::GuestPowerAction::Halt as i32,
+                            ..Default::default()
+                        }),
                         serial_config: Some(vmservice::SerialConfig {
                             ports: vec![vmservice::serial_config::Config {
                                 port: 0,

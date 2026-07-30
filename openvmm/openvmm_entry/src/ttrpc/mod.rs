@@ -19,6 +19,7 @@ use fd_passing::FdRegistry;
 #[derive(Clone, Default)]
 struct FdRegistry {}
 
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -925,10 +926,27 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
-            automatic_guest_reset: match req_config.guest_reset_action() {
-                vmservice::vm_config::GuestResetAction::Restart => true,
-                vmservice::vm_config::GuestResetAction::Halt => false,
-            },
+        };
+
+        let guest_power_actions = {
+            use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+            let requested = req_config.guest_power_actions.unwrap_or_default();
+            let defaults = GuestPowerActions::default();
+            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
+                Ok(match ProtoAction::from_i32(value) {
+                    Some(ProtoAction::Default) => default,
+                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                    None => bail!("unknown guest power action {value}"),
+                })
+            };
+            GuestPowerActions {
+                shutdown: action(requested.shutdown, defaults.shutdown)?,
+                reset: action(requested.reset, defaults.reset)?,
+                crash: action(requested.crash, defaults.crash)?,
+                watchdog: action(requested.watchdog, defaults.watchdog)?,
+            }
         };
 
         let mut scsi_rpc = None;
@@ -1080,10 +1098,7 @@ impl VmService {
             processors,
             log_file: None,
             crash_dump_path: None,
-            // The ttrpc/grpc server never exits on a guest power event; it uses
-            // the historical defaults (none of which is Exit), so the
-            // ExitRequested event handled below is unreachable here.
-            guest_power_actions: GuestPowerActions::default(),
+            guest_power_actions,
         };
 
         // Spawn the controller task.
@@ -1204,9 +1219,9 @@ impl VmService {
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The server leaves the guest power actions at their defaults
-                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
-                // log rather than exiting the server out from under its clients.
+                // The protocol has no `exit` power action, so this should not
+                // occur in ttrpc/grpc mode; log rather than exiting the server
+                // out from under its clients.
                 tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {

@@ -689,9 +689,6 @@ impl PetriVmConfigOpenVmm {
 
             vmgs,
 
-            // Don't automatically reset the guest by default
-            automatic_guest_reset: false,
-
             // Disabled for VMM tests by default
             #[cfg(windows)]
             kernel_vmnics: vec![],

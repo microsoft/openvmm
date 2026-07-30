@@ -488,12 +488,26 @@ message PcieAttachment {
 }
 
 message VMConfig {
-    // Action to take when the guest requests a reset.
-    enum GuestResetAction {
-        // Restart the guest automatically.
-        RESTART = 0;
+    // Action for the VMM to take when the guest triggers a power event.
+    enum GuestPowerAction {
+        // Use the default for this event.
+        DEFAULT = 0;
+        // Restart the guest.
+        RESTART = 1;
         // Leave the virtual machine halted.
-        HALT = 1;
+        HALT = 2;
+    }
+
+    // Actions for the VMM to take on guest power events.
+    message GuestPowerActions {
+        // The guest powered off or hibernated. Defaults to HALT.
+        GuestPowerAction shutdown = 1;
+        // The guest requested a reset. Defaults to RESTART.
+        GuestPowerAction reset = 2;
+        // The guest triple faulted. Defaults to HALT.
+        GuestPowerAction crash = 3;
+        // The guest's watchdog timer expired. Defaults to RESTART.
+        GuestPowerAction watchdog = 4;
     }
 
     MemoryConfig memory_config = 1;
@@ -515,8 +529,9 @@ message VMConfig {
     NumaConfig numa_config = 10;
     // PCIe root complexes / ports / switches.
     PcieTopologyConfig pcie = 11;
-    // Action to take when the guest requests a reset.
-    GuestResetAction guest_reset_action = 12;
+    // Actions to take on guest power events. Each unset action uses its
+    // default.
+    GuestPowerActions guest_power_actions = 12;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

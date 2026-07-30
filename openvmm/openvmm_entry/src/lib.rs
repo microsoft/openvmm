@@ -31,7 +31,6 @@ use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
-use cli_args::GuestPowerAction;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
@@ -2037,10 +2036,6 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
-        // Only let the partition auto-reset when the reset action is `reset`.
-        // For `halt` or `exit`, the guest reset must surface as a halt event so
-        // the controller can hold the VM or exit instead of rebooting in place.
-        automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
