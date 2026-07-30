@@ -1780,6 +1780,33 @@ impl IntoPipeline for CheckinGatesCli {
             }
         }
 
+        // emit the distribution-configuration build gate
+        //
+        // OpenVMM publishes a source release that Linux distributions build and
+        // package themselves. That configuration is the only one in CI that does
+        // not use `.packages/` provisioning, so nothing else here would notice a
+        // change that only breaks a distribution build.
+        {
+            let distro_build_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "build openvmm [distribution config, x64-linux-gnu]",
+                )
+                .gh_set_pool(gh_pools::linux_x64_gh())
+                .ado_set_pool(ado_pools::default_linux())
+                .side_effect(|done| flowey_lib_hvlite::_jobs::check_distro_build::Request {
+                    // A commit under test is not a release, so it has no
+                    // version to assemble under.
+                    identity:
+                        flowey_lib_hvlite::assemble_openvmm_source_release::IdentitySource::Snapshot,
+                    done,
+                })
+                .finish();
+
+            all_jobs.push(distro_build_job);
+        }
+
         // all jobs depend on the quick-check gate
         if let Some(ref quick_check) = quick_check_job {
             for job in all_jobs.iter() {
