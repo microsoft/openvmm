@@ -30,7 +30,7 @@ After installation, you should have the following key dependencies:
 **Runtime Dependencies:**
 
 - `react` & `react-dom` - React framework
-- `react-router-dom` - Client-side routing
+- `react-router` - Client-side routing
 - `@tanstack/react-query` - Data fetching and caching
 - `@tanstack/react-table` - Table component library
 - `@tanstack/react-virtual` - Virtual scrolling
