@@ -31,6 +31,8 @@ use inspect::Inspect;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::Debug;
+use std::mem::size_of;
+use std::mem::size_of_val;
 use thiserror::Error;
 use uefi_nvram_specvars::signature_list::ParseError as SignatureListParseError;
 use uefi_nvram_specvars::signature_list::ParseSignatureList;
@@ -244,6 +246,10 @@ impl NvramServices {
 
         // Get the signatures from the base template
         let Some(signatures) = base_template_vars.and_then(BaseTemplateVars::signatures) else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                "no baseline secure boot template available; skipping secureboot configuration report"
+            );
             return;
         };
 
@@ -264,7 +270,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable,
                         loaded_variable_bytes = data.len(),
-                        "base secure boot template variable is missing in NVRAM"
+                        "loaded secure boot template variable is missing in NVRAM"
                     );
                     continue;
                 }
@@ -273,7 +279,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable,
                         loaded_variable_bytes = 0,
-                        "base secure boot template variable is missing in NVRAM"
+                        "loaded secure boot template variable is missing in NVRAM"
                     );
                     continue;
                 }
@@ -305,10 +311,10 @@ impl NvramServices {
 
             let base_signatures = base_signature_set(template_signatures);
             if base_signatures.is_empty() {
-                tracing::info!(
+                tracing::warn!(
                     CVM_ALLOWED,
                     variable,
-                    "base secure boot template variable contains no signatures"
+                    "baseline secure boot template variable contains no signatures"
                 );
                 continue;
             }
@@ -327,7 +333,7 @@ impl NvramServices {
                     loaded_entries,
                     missing_entries,
                     loaded_variable_bytes,
-                    "base secure boot template variable is present"
+                    "baseline secure boot template variable is present"
                 );
             } else {
                 tracing::warn!(
@@ -339,7 +345,7 @@ impl NvramServices {
                     loaded_entries,
                     missing_entries,
                     loaded_variable_bytes,
-                    "base secure boot template variable is missing"
+                    "baseline secure boot template variable is missing"
                 );
             }
         }
