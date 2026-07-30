@@ -628,17 +628,50 @@ impl SmmuSharedState {
         self.inner.read().oas_bits
     }
 
+    /// Binds this vSMMU to the physical SMMU and host vIOMMU backing an
+    /// accelerated device.
+    ///
+    /// Called when a VFIO device behind this SMMU binds to iommufd, which is
+    /// when the backing hardware is first known. The first call validates
+    /// host/guest compatibility and finalizes the host-derived vSMMU
+    /// parameters; later calls must name the same physical SMMU *and* the same
+    /// vIOMMU, since one vSMMU can span neither two of the former nor two of
+    /// the latter.
+    ///
+    /// The vIOMMU is held weakly: the strong references belong to the stream
+    /// backends, so it is released along with the last accelerated device, and
+    /// a device hot-plugged after that supplies a freshly built one.
+    pub fn bind_host_smmu<T: AcceleratedViommu + 'static>(
+        &self,
+        caps: crate::HostSmmuCaps,
+        viommu: &Arc<T>,
+    ) -> anyhow::Result<()> {
+        let viommu: Arc<dyn AcceleratedViommu> = viommu.clone();
+        // Lock order is accel state before `inner`, as in
+        // `transition_translation_policy`.
+        let mut accel = self.accel_state.lock();
+        if let Some(existing) = accel.viommu.as_ref().and_then(Weak::upgrade) {
+            if !Arc::ptr_eq(&existing, &viommu) {
+                anyhow::bail!(
+                    "SMMU is already backed by a live host vIOMMU; a single vSMMU \
+                     cannot be backed by two"
+                );
+            }
+        }
+        self.resolve_host_caps(caps)?;
+        accel.viommu = Some(Arc::downgrade(&viommu));
+        Ok(())
+    }
+
     /// Finalizes the host-derived vSMMU parameters against the physical SMMU
     /// backing an accelerated device, and validates host/guest compatibility.
     ///
-    /// Called when an accelerated VFIO device binds to iommufd, at which
-    /// point the backing physical SMMU is first known. Runs once per vSMMU:
-    /// the first device validates compatibility (TTF, TTENDIAN, GRAN4K) and
-    /// applies every host-derived parameter according to its configured
-    /// policy (currently OAS — `auto` adopts the host value; `fixed` is
-    /// validated as an upper bound). Subsequent devices must report identical
-    /// host caps; a mismatch is rejected, since a single vSMMU cannot be
-    /// backed by two different physical SMMUs.
+    /// Runs once per vSMMU: the first device validates compatibility (TTF,
+    /// TTENDIAN, GRAN4K) and applies every host-derived parameter according to
+    /// its configured policy (currently OAS — `auto` adopts the host value;
+    /// `fixed` is validated as an upper bound). Subsequent devices must report
+    /// identical host caps; a mismatch is rejected, since a single vSMMU cannot
+    /// be backed by two different physical SMMUs.
     ///
     /// The compatibility checks cover only the features this emulator
     /// actually advertises that the host hardware must honor when walking the
@@ -651,7 +684,7 @@ impl SmmuSharedState {
     /// emulates it and registers each guest StreamID individually via
     /// `IOMMU_VDEVICE_ALLOC`), so the host and guest stream-table parameters
     /// are independent.
-    pub fn resolve_host_caps(&self, caps: crate::HostSmmuCaps) -> anyhow::Result<()> {
+    fn resolve_host_caps(&self, caps: crate::HostSmmuCaps) -> anyhow::Result<()> {
         let mut inner = self.inner.write();
 
         if let Some(existing) = inner.resolved_host_caps {
@@ -1102,22 +1135,6 @@ impl SmmuSharedState {
             // its C_BAD_STE, being a data-plane fault, is delivered elsewhere.
             translate::SteAction::Abort | translate::SteAction::Illegal => StreamConfig::Abort,
         }
-    }
-
-    /// Records the host vIOMMU backing this SMMU's accelerated mode.
-    ///
-    /// Called when the first VFIO device behind this SMMU binds. All devices
-    /// behind a single emulated SMMU share one vIOMMU. Registration is
-    /// synchronous and callable while the emulator is stopped.
-    ///
-    /// Held weakly: the strong references belong to the stream backends, so the
-    /// vIOMMU goes away with the last of them and a device hot-plugged after
-    /// that records a freshly built one here. Taking a reference rather than an
-    /// owned `Arc` keeps a caller from handing over one it does not itself
-    /// retain, which would dangle immediately.
-    pub fn register_viommu<T: AcceleratedViommu + 'static>(&self, viommu: &Arc<T>) {
-        let viommu: Arc<dyn AcceleratedViommu> = viommu.clone();
-        self.accel_state.lock().viommu = Some(Arc::downgrade(&viommu));
     }
 
     fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) -> anyhow::Result<()> {

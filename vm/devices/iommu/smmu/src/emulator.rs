@@ -34,7 +34,7 @@ use vmcore::save_restore::SaveRestore;
 /// advertised value is carried by this policy up front. For accelerated SMMUs
 /// the final value also depends on the physical SMMU backing the device, which
 /// is only known once a VFIO device is bound to iommufd — see
-/// [`SmmuSharedState::resolve_host_caps`].
+/// [`SmmuSharedState::bind_host_smmu`].
 ///
 /// Both variants carry a concrete OAS supplied by the caller. This crate
 /// deliberately defines no default, so that the choice for `auto` is made once
@@ -58,7 +58,7 @@ pub enum SmmuOasPolicy {
 ///
 /// Decoded from a host SMMUv3's `IDR0..IDR5` register values (as returned by
 /// `IOMMU_GET_HW_INFO`) via [`HostSmmuCaps::from_idr`], and handed to
-/// [`SmmuSharedState::resolve_host_caps`], which finalizes the host-derived
+/// [`SmmuSharedState::bind_host_smmu`], which finalizes the host-derived
 /// vSMMU parameters and validates host/guest compatibility the first time a
 /// VFIO device binds. Keeping this a plain value type (with the IDR decoding
 /// owned by this crate) avoids a dependency from the `smmu` crate on the
@@ -66,7 +66,7 @@ pub enum SmmuOasPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostSmmuCaps {
     /// Host SMMUv3 output address size (IDR5.OAS field). Resolved to a bit
-    /// width (and validated) in [`SmmuSharedState::resolve_host_caps`], since
+    /// width (and validated) in [`SmmuSharedState::bind_host_smmu`], since
     /// the encoding may be one the architecture reserves.
     pub(crate) oas: crate::spec::cd::Ips,
     /// Host translation table format support (IDR0.TTF).
@@ -85,7 +85,7 @@ impl HostSmmuCaps {
     /// crate owns the register layout, so decoding lives here rather than in
     /// the iommufd bindings. This decode is total — the only field whose value
     /// may be unrecognized is OAS, whose `Ips` encoding is interpreted in
-    /// [`SmmuSharedState::resolve_host_caps`].
+    /// [`SmmuSharedState::bind_host_smmu`].
     pub fn from_idr(idr: [u32; 6]) -> Self {
         let idr0 = registers::Idr0::from(idr[0]);
         let idr5 = registers::Idr5::from(idr[5]);
@@ -2153,7 +2153,7 @@ mod tests {
     /// A mock invalidation sink that records each flushed batch and can be
     /// configured to fail after accepting a fixed number of entries (to
     /// exercise the partial-failure path).
-    struct MockInvalidationSink {
+    struct MockViommu {
         /// Each flushed batch, recorded in order as a list of `[qw0, qw1]`
         /// command pairs.
         batches: parking_lot::Mutex<Vec<Vec<[u64; 2]>>>,
@@ -2162,7 +2162,7 @@ mod tests {
         accept_limit: parking_lot::Mutex<Option<usize>>,
     }
 
-    impl MockInvalidationSink {
+    impl MockViommu {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 batches: parking_lot::Mutex::new(Vec::new()),
@@ -2179,7 +2179,7 @@ mod tests {
         }
     }
 
-    impl crate::shared::AcceleratedViommu for MockInvalidationSink {
+    impl crate::shared::AcceleratedViommu for MockViommu {
         fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
             self.batches.lock().push(entries.to_vec());
             match *self.accept_limit.lock() {
@@ -2316,6 +2316,16 @@ mod tests {
             accel: true,
         };
         SmmuDevice::new(TEST_MMIO_BASE, gm, &config, None, None)
+    }
+
+    /// Host caps compatible with everything the emulator advertises.
+    fn test_host_caps() -> HostSmmuCaps {
+        HostSmmuCaps {
+            oas: crate::spec::cd::Ips::IPS_48,
+            ttf: Idr0Ttf::new().with_aarch64(true),
+            ttendian: Idr0TtEndian::LE,
+            gran4k: true,
+        }
     }
 
     /// Write a valid STE with the given `Config` at `sid` in the test stream
@@ -2967,7 +2977,9 @@ mod tests {
         let dev = make_accel_device();
         let dropped = Arc::new(AtomicBool::new(false));
         let viommu = Arc::new(DropTrackingViommu(dropped.clone()));
-        dev.shared_state.register_viommu(&viommu);
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &viommu)
+            .expect("bind host SMMU");
 
         let ids: Vec<u64> = (0..2)
             .map(|_| {
@@ -2989,6 +3001,37 @@ mod tests {
         // An unreachable vIOMMU drops batches silently rather than faulting.
         let devices = dev.shared_state.lock_accel_devices();
         assert!(SmmuSharedState::invalidate(&devices, &[[0, 0]]).is_ok());
+    }
+
+    /// One vSMMU has one host vIOMMU, so a device naming a different live one
+    /// is rejected — the same rule the host-caps check enforces for the
+    /// physical SMMU. A device arriving after the last one left may bring a
+    /// new vIOMMU, since the old one is gone.
+    #[test]
+    fn test_bind_host_smmu_rejects_a_second_live_viommu() {
+        let dev = make_accel_device();
+
+        let first = MockViommu::new();
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &first)
+            .expect("bind first vIOMMU");
+        // A second device behind the same vSMMU names the same vIOMMU.
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &first)
+            .expect("rebind the same vIOMMU");
+
+        let second = MockViommu::new();
+        let err = dev
+            .shared_state
+            .bind_host_smmu(test_host_caps(), &second)
+            .expect_err("a competing live vIOMMU must be rejected")
+            .to_string();
+        assert!(err.contains("cannot be backed by two"), "{err}");
+
+        drop(first);
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &second)
+            .expect("bind a replacement vIOMMU once the first is gone");
     }
 
     /// Two devices cannot hold one StreamID — the host keys its vDevice table
@@ -3077,7 +3120,9 @@ mod tests {
             shared: Arc::downgrade(&dev.shared_state),
             locked_during_invalidate: AtomicBool::new(false),
         });
-        dev.shared_state.register_viommu(&sink);
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &sink)
+            .expect("bind host SMMU");
 
         write_cmdq_entry(&dev, 0, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0));
         write_cmdq_entry(&dev, 1, &sync_entry());
@@ -3179,10 +3224,12 @@ mod tests {
         }
     }
 
-    fn make_accel_cmdq_test_device() -> (SmmuDevice, Arc<MockInvalidationSink>) {
+    fn make_accel_cmdq_test_device() -> (SmmuDevice, Arc<MockViommu>) {
         let dev = make_cmdq_test_device();
-        let sink = MockInvalidationSink::new();
-        dev.shared_state.register_viommu(&sink);
+        let sink = MockViommu::new();
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &sink)
+            .expect("bind host SMMU");
         (dev, sink)
     }
 
@@ -3436,9 +3483,11 @@ mod tests {
         write64(&mut dev, CMDQ_BASE, cmdq_base.into());
         write32(&mut dev, CR0, Cr0::new().with_cmdqen(true).into());
 
-        let sink = MockInvalidationSink::new();
+        let sink = MockViommu::new();
         sink.set_accept_limit(1);
-        dev.shared_state.register_viommu(&sink);
+        dev.shared_state
+            .bind_host_smmu(test_host_caps(), &sink)
+            .expect("bind host SMMU");
 
         dev.guest_memory
             .write_plain(

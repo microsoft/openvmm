@@ -251,17 +251,13 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         // reused) the shared vIOMMU and queried host capabilities.
         let mut accel_registration: Option<smmu::AccelRegistration> = None;
         if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
-            // Finalize the vSMMU's host-derived parameters (OAS, ...) against
-            // the physical SMMU backing this device. Runs once per vSMMU; a
-            // later device on a different physical SMMU is rejected here.
+            // Bind the vSMMU to the physical SMMU and vIOMMU backing this
+            // device, finalizing host-derived parameters (OAS, ...). Runs once
+            // per vSMMU; a later device on a different physical SMMU or vIOMMU
+            // is rejected here.
             ctx.shared
-                .resolve_host_caps(nesting.host_caps)
+                .bind_host_smmu(nesting.host_caps, &nesting.accel_state)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
-
-            // All devices behind this emulated SMMU share one `SmmuAccelState`
-            // (vIOMMU); the association reservation above guarantees a
-            // subsequent device records the same one.
-            ctx.shared.register_viommu(&nesting.accel_state);
 
             let backend = Arc::new(crate::iommufd_nesting::IommufdStreamBackend::new(
                 nesting.accel_state,
