@@ -176,7 +176,7 @@ mod json {
         #[serde(rename = "db")]
         pub db: Vec<Signature>,
         #[serde(rename = "dbx")]
-        pub dbx: Vec<Signature>,
+        pub dbx: Option<Vec<Signature>>,
         #[serde(rename = "MokList")]
         pub moklist: Option<Vec<Signature>>,
         #[serde(rename = "MokListX")]
@@ -401,7 +401,7 @@ mod convert {
                     pk: pk.into(),
                     kek: validate_default(json_to_delta_sig_vec(kek))?,
                     db: validate_default(json_to_delta_sig_vec(db))?,
-                    dbx: validate_default(json_to_delta_sig_vec(dbx))?,
+                    dbx: validate_default(json_to_delta_sig_vec(dbx.unwrap_or_default()))?,
                     moklist: moklist
                         .map(|sigs| validate_default(json_to_delta_sig_vec(sigs)))
                         .transpose()?,
@@ -687,6 +687,39 @@ mod test {
     fn replace() {
         let data = serde_json::from_str::<json::JsonRoot>(REPLACE);
         let _ = data.unwrap();
+    }
+
+    #[test]
+    fn replace_without_dbx() {
+        let data = r#"
+        {
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": {
+                            "type": "x509",
+                            "value": ["Jw=="]
+                        },
+                        "KEK": [],
+                        "db": []
+                    }
+                }
+            }
+        }
+        "#;
+
+        let delta = parse_delta_json(data.as_bytes()).unwrap();
+        let firmware_uefi_custom_vars::delta::SignaturesDelta::Replace(signatures) =
+            delta.signatures
+        else {
+            panic!("expected replace signatures");
+        };
+        assert!(matches!(
+            signatures.dbx,
+            firmware_uefi_custom_vars::delta::SignatureDeltaVec::Sigs(dbx) if dbx.is_empty()
+        ));
     }
 
     // BAD_DB is a semantic test that requires performing signature validation
