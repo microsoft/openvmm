@@ -258,12 +258,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 .resolve_host_caps(nesting.host_caps)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
 
-            // Register the per-vIOMMU invalidation sink. All devices behind
-            // this emulated SMMU share one `SmmuAccelState` (vIOMMU), so this
-            // registers the sink once; the association reservation above
-            // guarantees subsequent devices receive the same sink.
-            ctx.shared
-                .register_invalidation_sink(nesting.accel_state.clone());
+            // All devices behind this emulated SMMU share one `SmmuAccelState`
+            // (vIOMMU); the association reservation above guarantees a
+            // subsequent device records the same one.
+            ctx.shared.register_viommu(&nesting.accel_state);
 
             let backend = Arc::new(crate::iommufd_nesting::IommufdStreamBackend::new(
                 nesting.accel_state,
