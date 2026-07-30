@@ -109,6 +109,19 @@ unsafe impl Send for Mapping {}
 // SAFETY: the underlying mapping can be accessed from any CPU.
 unsafe impl Sync for Mapping {}
 
+struct NodeLayout<'a>(&'a [SidecarNode]);
+
+impl core::fmt::Display for NodeLayout<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut comma = "";
+        for node in self.0 {
+            write!(f, "{}{}-{}", comma, node.cpus.start, node.cpus.end)?;
+            comma = ",";
+        }
+        Ok(())
+    }
+}
+
 /// An error returned by [`SidecarClient::new`].
 #[derive(Debug, Error)]
 pub enum NewSidecarClientError {
@@ -149,10 +162,23 @@ impl SidecarClient {
                 }
                 Err(err) => return Err(err),
             };
+            if node.cpus.start != expected_base {
+                tracing::info!(
+                    node = nodes.len(),
+                    expected_base,
+                    actual_start = node.cpus.start,
+                    actual_end = node.cpus.end,
+                    "sidecar node cpu range is non-contiguous"
+                );
+            }
             assert_eq!(node.cpus.start, expected_base);
             expected_base = node.cpus.end;
             nodes.push(node);
         }
+        tracing::info!(
+            layout = %NodeLayout(&nodes),
+            "discovered sidecar node cpu layout"
+        );
         Ok(Some(Self { nodes }))
     }
 
