@@ -157,7 +157,6 @@ impl SidecarClient {
                     "sidecar node follows a gap; earlier node(s) skipped (no sidecar-started APs)"
                 );
             }
-            assert_eq!(node.cpus.start, expected_base);
             expected_base = node.cpus.end;
             nodes.push(node);
         }
