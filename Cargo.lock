@@ -1373,6 +1373,7 @@ dependencies = [
  "inspect_proto",
  "mesh_rpc",
  "pal_async",
+ "powershell_builder",
  "socket2",
  "thiserror 2.0.16",
  "unix_socket",
@@ -2303,6 +2304,7 @@ version = "0.0.0"
 dependencies = [
  "flowey",
  "home",
+ "powershell_builder",
  "rlimit",
  "roxmltree",
  "rustc-hash 2.1.1",
@@ -3682,6 +3684,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "powershell_builder",
  "rustyline",
  "shell-words",
 ]

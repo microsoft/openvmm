@@ -38,6 +38,9 @@ pub mod hyperv {
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::timer::PolledTimer;
+    use powershell_builder::PowerShellBuilder;
+    use powershell_builder::RawVal;
+    use powershell_builder::Variable;
     use std::fs::File;
     use std::io::Write;
     use std::process::Command;
@@ -112,21 +115,25 @@ pub mod hyperv {
     }
 
     fn query_vm_com_port(port: ComPortAccessInfo<'_>) -> anyhow::Result<String> {
-        let script = match port {
-            ComPortAccessInfo::NameAndPortNumber(vm, num) => {
-                format!(r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#)
-            }
-            ComPortAccessInfo::IdAndPortNumber(id, num) => {
-                format!(
-                    r#"$x = Get-VMComPort -VMId "{id}" -Number {num} -ErrorAction Stop; $x.Path"#
-                )
-            }
+        let x = Variable::new("x");
+        let cmdlet = match port {
+            ComPortAccessInfo::NameAndPortNumber(vm, num) => PowerShellBuilder::new()
+                .cmdlet_to_var("Get-VMComPort", &x)
+                .arg("VMName", vm)
+                .arg("Number", num),
+            ComPortAccessInfo::IdAndPortNumber(id, num) => PowerShellBuilder::new()
+                .cmdlet_to_var("Get-VMComPort", &x)
+                .arg("VMId", id)
+                .arg("Number", num),
             ComPortAccessInfo::PortPipePath(path) => return Ok(path.to_owned()),
         };
 
-        let output = Command::new("powershell.exe")
-            .arg("-NoProfile")
-            .arg(&script)
+        let output = cmdlet
+            .arg("ErrorAction", RawVal::new("Stop"))
+            .next()
+            .cmdlet("$x.Path")
+            .finish()
+            .build()
             .output()
             .context("failed to query VM com port")?;
 
