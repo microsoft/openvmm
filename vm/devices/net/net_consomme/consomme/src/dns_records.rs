@@ -27,14 +27,15 @@ pub enum StaticDnsRecordError {
     InvalidData,
 }
 
-/// DNS `CLASS` value for the Internet (`IN`) class. smoltcp validates this when
-/// parsing but keeps its own `CLASS_IN` constant private, so we name it here to
-/// emit answer records.
+/// DNS `CLASS` value for the Internet (`IN`) class.
 const DNS_CLASS_IN: u16 = 1;
+
 /// Length in bytes of the RDATA for an `A` record.
 const A_RDATA_LEN: usize = 4;
+
 /// TTL advertised for static records.
 const DEFAULT_TTL: u32 = 60;
+
 /// Maximum length of a DNS name in presentation form we will store/compare.
 const MAX_NAME_LEN: usize = 255;
 
@@ -90,8 +91,6 @@ impl StaticDnsRecords {
             return None;
         }
 
-        // smoltcp's parsers are written for untrusted input and return errors
-        // (never panic) on malformed data.
         let packet = DnsPacket::new_checked(query).ok()?;
         if packet.question_count() != 1 {
             // Multiple or no question; let the query go through.
@@ -116,9 +115,7 @@ impl StaticDnsRecords {
             return None;
         }
 
-        // Echo the question section (name + TYPE + CLASS) verbatim.
-        let question = packet.payload().get(..question.name.len() + 4)?;
-        Some(build_a_response(&packet, question, &answers))
+        Some(build_a_response(&packet, &question, &answers))
     }
 }
 
@@ -137,7 +134,6 @@ fn normalize_name(name: &str) -> Option<String> {
 }
 
 /// Decodes a DNS name into lowercased presentation form (no trailing dot),
-/// following compression pointers via smoltcp's [`DnsPacket::parse_name`].
 ///
 /// Returns `None` on malformed input or if the name exceeds [`MAX_NAME_LEN`].
 fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
@@ -159,13 +155,15 @@ fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
 
 /// Builds a DNS response message containing one `A` answer per entry in
 /// `answers`, echoing the query's `question` section after the header.
-fn build_a_response(query: &DnsPacket<&[u8]>, question: &[u8], answers: &[&[u8]]) -> Vec<u8> {
-    // DNS message header length. smoltcp keeps its equivalent
-    // (`dns::field::HEADER_END`) private; this is also the offset the answers'
-    // compressed names point at, since the question follows the header.
-    const DNS_HEADER_LEN: u16 = 12;
+fn build_a_response(
+    query: &DnsPacket<&[u8]>,
+    question: &DnsQuestion<'_>,
+    answers: &[&[u8]],
+) -> Vec<u8> {
+    const DNS_HEADER_LEN: usize = 12;
+
     // Compression pointer (top two bits set) to the echoed question name.
-    const QNAME_POINTER: u16 = 0xc000 | DNS_HEADER_LEN;
+    const QNAME_POINTER: u16 = 0xc000 | DNS_HEADER_LEN as u16;
 
     let ancount = answers.len().min(u16::MAX as usize) as u16;
 
@@ -173,14 +171,19 @@ fn build_a_response(query: &DnsPacket<&[u8]>, question: &[u8], answers: &[&[u8]]
     let mut flags = DnsFlags::RESPONSE | DnsFlags::AUTHORITATIVE | DnsFlags::RECURSION_AVAILABLE;
     flags |= query.flags() & DnsFlags::RECURSION_DESIRED;
 
-    let mut response = Vec::new();
-    response.extend_from_slice(&query.transaction_id().to_be_bytes());
-    response.extend_from_slice(&flags.bits().to_be_bytes());
-    response.extend_from_slice(&query.question_count().to_be_bytes()); // QDCOUNT (== 1)
-    response.extend_from_slice(&ancount.to_be_bytes());
-    response.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
-    response.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
-    response.extend_from_slice(question); // Question section, echoed.
+    // Header + echoed question section, written via smoltcp.
+    let mut response = vec![0u8; DNS_HEADER_LEN + question.buffer_len()];
+    {
+        let mut packet = DnsPacket::new_unchecked(&mut response[..]);
+        packet.set_transaction_id(query.transaction_id());
+        packet.set_flags(flags);
+        packet.set_opcode(query.opcode());
+        packet.set_question_count(query.question_count());
+        packet.set_answer_record_count(ancount);
+        packet.set_authority_record_count(0);
+        packet.set_additional_record_count(0);
+        question.emit(packet.payload_mut());
+    }
 
     // One answer per record, using a compression pointer to the question name.
     for rdata in answers.iter().take(ancount as usize) {
@@ -198,22 +201,34 @@ fn build_a_response(query: &DnsPacket<&[u8]>, question: &[u8], answers: &[&[u8]]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smoltcp::wire::DnsOpcode;
+    use smoltcp::wire::DnsRepr;
 
-    /// Builds a minimal DNS query for `name` with the given qtype/qclass.
-    fn build_query(id: u16, name: &str, qtype: u16, qclass: u16) -> Vec<u8> {
-        let mut q = Vec::new();
-        q.extend_from_slice(&id.to_be_bytes());
-        q.extend_from_slice(&[0x01, 0x00]); // flags: RD=1
-        q.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
-        q.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // AN/NS/AR = 0
+    /// Builds a DNS query for `name` with the given qtype.
+    ///
+    /// Uses smoltcp's [`DnsRepr`] emitter, which always encodes the `IN` class.
+    fn build_query(id: u16, name: &str, qtype: DnsQueryType) -> Vec<u8> {
+        // Encode the query name into DNS wire format (length-prefixed labels).
+        let mut name_wire = Vec::new();
         for label in name.split('.').filter(|l| !l.is_empty()) {
-            q.push(label.len() as u8);
-            q.extend_from_slice(label.as_bytes());
+            name_wire.push(label.len() as u8);
+            name_wire.extend_from_slice(label.as_bytes());
         }
-        q.push(0);
-        q.extend_from_slice(&qtype.to_be_bytes());
-        q.extend_from_slice(&qclass.to_be_bytes());
-        q
+
+        name_wire.push(0);
+
+        let repr = DnsRepr {
+            transaction_id: id,
+            opcode: DnsOpcode::Query,
+            flags: DnsFlags::RECURSION_DESIRED,
+            question: DnsQuestion {
+                name: &name_wire,
+                type_: qtype,
+            },
+        };
+        let mut buffer = vec![0u8; repr.buffer_len()];
+        repr.emit(&mut DnsPacket::new_unchecked(&mut buffer[..]));
+        buffer
     }
 
     #[test]
@@ -223,18 +238,22 @@ mod tests {
             .add(StaticDnsRecordType::A, "Example.com", &[10, 0, 0, 5])
             .unwrap();
 
-        let query = build_query(0x1234, "example.com", DnsQueryType::A.into(), DNS_CLASS_IN);
+        let query = build_query(0x1234, "example.com", DnsQueryType::A);
         let response = records.build_response(&query).expect("should match");
 
         // Transaction ID preserved.
         assert_eq!(&response[0..2], &[0x12, 0x34]);
+
         // QR + AA set, RD preserved, RA set, RCODE 0.
         assert_eq!(response[2], 0x85);
         assert_eq!(response[3], 0x80);
+
         // ANCOUNT == 1.
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 1);
+
         // Final 4 RDATA bytes are the address we registered.
         assert_eq!(&response[response.len() - 4..], &[10, 0, 0, 5]);
+
         // RDATA is preceded by RDLENGTH == 4.
         assert_eq!(
             u16::from_be_bytes([response[response.len() - 6], response[response.len() - 5]]),
@@ -248,7 +267,7 @@ mod tests {
         records
             .add(StaticDnsRecordType::A, "host.local", &[1, 2, 3, 4])
             .unwrap();
-        let query = build_query(1, "HOST.LOCAL", DnsQueryType::A.into(), DNS_CLASS_IN);
+        let query = build_query(1, "HOST.LOCAL", DnsQueryType::A);
         assert!(records.build_response(&query).is_some());
     }
 
@@ -261,7 +280,7 @@ mod tests {
         records
             .add(StaticDnsRecordType::A, "many.test", &[2, 2, 2, 2])
             .unwrap();
-        let query = build_query(1, "many.test", DnsQueryType::A.into(), DNS_CLASS_IN);
+        let query = build_query(1, "many.test", DnsQueryType::A);
         let response = records.build_response(&query).unwrap();
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 2);
     }
@@ -272,7 +291,7 @@ mod tests {
         records
             .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
             .unwrap();
-        let query = build_query(1, "unknown.test", DnsQueryType::A.into(), DNS_CLASS_IN);
+        let query = build_query(1, "unknown.test", DnsQueryType::A);
         assert!(records.build_response(&query).is_none());
     }
 
@@ -283,14 +302,14 @@ mod tests {
             .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
             .unwrap();
         // AAAA for the same name should not be answered.
-        let query = build_query(1, "known.test", DnsQueryType::Aaaa.into(), DNS_CLASS_IN);
+        let query = build_query(1, "known.test", DnsQueryType::Aaaa);
         assert!(records.build_response(&query).is_none());
     }
 
     #[test]
     fn empty_store_returns_none() {
         let records = StaticDnsRecords::default();
-        let query = build_query(1, "known.test", DnsQueryType::A.into(), DNS_CLASS_IN);
+        let query = build_query(1, "known.test", DnsQueryType::A);
         assert!(records.build_response(&query).is_none());
     }
 
@@ -304,12 +323,16 @@ mod tests {
         // Too short, truncated label, unterminated name, compression pointer.
         assert!(records.build_response(&[]).is_none());
         assert!(records.build_response(&[0; 5]).is_none());
-        let mut truncated = build_query(1, "known.test", DnsQueryType::A.into(), DNS_CLASS_IN);
+
+        let mut truncated = build_query(1, "known.test", DnsQueryType::A);
         truncated.truncate(15);
+
         assert!(records.build_response(&truncated).is_none());
+
         // A label length that runs off the end of the buffer.
         let bad = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 63, b'x'];
         assert!(records.build_response(&bad).is_none());
+
         // Compression pointer in the question.
         let ptr = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0xc0, 0x0c];
         assert!(records.build_response(&ptr).is_none());
@@ -318,11 +341,13 @@ mod tests {
     #[test]
     fn add_validation() {
         let mut records = StaticDnsRecords::default();
+
         // Wrong RDATA length for an A record.
         assert_eq!(
             records.add(StaticDnsRecordType::A, "a.test", &[1, 2, 3]),
             Err(StaticDnsRecordError::InvalidData)
         );
+
         // Empty name.
         assert_eq!(
             records.add(StaticDnsRecordType::A, "", &[1, 2, 3, 4]),
@@ -333,6 +358,7 @@ mod tests {
     #[test]
     fn add_rejects_malformed_names() {
         let mut records = StaticDnsRecords::default();
+
         // Consecutive dots ("..") produce an empty label.
         assert_eq!(
             records.add(StaticDnsRecordType::A, "a..b", &[1, 2, 3, 4]),
