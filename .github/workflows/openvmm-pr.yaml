@@ -6954,7 +6954,7 @@ jobs:
         flowey e 31 flowey_lib_common::system_info 0
         flowey e 31 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
-    - name: resolve source archive identity
+    - name: resolve source release identity
       run: |-
         flowey e 31 flowey_lib_hvlite::_jobs::check_distro_build 0
         flowey e 31 flowey_lib_hvlite::_jobs::check_distro_build 1

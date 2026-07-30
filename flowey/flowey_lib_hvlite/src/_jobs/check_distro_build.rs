@@ -4,9 +4,9 @@
 //! Ensure `openvmm` still builds the way a Linux distribution package builds
 //! it.
 //!
-//! OpenVMM is meant to be built and packaged by Linux distributions from a
-//! source archive, so this configuration is a shipping interface. It differs
-//! from every other build in CI in one important way: it does not use the
+//! OpenVMM publishes a source release that distributions build and package
+//! themselves, so this configuration is a shipping interface. It differs from
+//! every other build in CI in one important way: it does not use the
 //! repository's `.packages/` provisioning, because a distribution build cannot
 //! consume prebuilt native libraries. Every native dependency comes from a
 //! distribution package instead, and the two environment overrides a packager
@@ -14,11 +14,13 @@
 //!
 //! Without this job, a change that only resolves through `.packages/` breaks
 //! downstream packagers silently, and we would not find out until someone
-//! tried to build one.
+//! tried to build a release.
 //!
-//! The build runs against an assembled source archive rather than the checkout,
-//! because building the checkout would let this pass on a tree a packager
-//! cannot reproduce: a packager has no `.git` directory and no untracked files.
+//! The build runs against the release assets themselves -- assembled by the
+//! same node the release publishes from, then verified and unpacked the way a
+//! packager would. Building the checkout instead would let this pass on a tree
+//! a packager cannot reproduce, since a packager has no `.git` directory and no
+//! untracked files.
 
 use crate::assemble_openvmm_source_release::CHECKSUM_FILE;
 use crate::assemble_openvmm_source_release::IdentitySource;
@@ -29,6 +31,9 @@ use flowey::node::prelude::*;
 flowey_request! {
     pub struct Request {
         /// Which identity to assemble and build under.
+        ///
+        /// A release passes [`IdentitySource::ReleaseTag`], so the job builds
+        /// the archive that is about to be published rather than a lookalike.
         pub identity: IdentitySource,
         pub done: WriteVar<SideEffect>,
     }
@@ -85,12 +90,12 @@ impl SimpleFlowNode for Node {
 
         ctx.req(flowey_lib_common::install_rust::Request::InstallTargetTriple(target.clone()));
 
-        // A commit under test is not a release, so it is assembled under a
-        // snapshot identity: a version that cannot be mistaken for one, with no
-        // tag. Everything else about the assembly and the build is what a
-        // packager does.
+        // A release resolves the tag it is publishing, so this job builds the
+        // archive that is about to ship. A commit under test has no release
+        // version, so it is assembled under a snapshot identity instead.
+        // Everything else about the assembly and the build is identical.
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let resolved = ctx.emit_rust_stepv("resolve source archive identity", |ctx| {
+        let resolved = ctx.emit_rust_stepv("resolve source release identity", |ctx| {
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             move |rt| {
                 let output_dir = std::env::current_dir()?.join("openvmm-source-release");
@@ -120,7 +125,7 @@ impl SimpleFlowNode for Node {
                 let output_dir = rt.read(output_dir);
 
                 // A packager starts by checking the archive against the
-                // checksums shipped alongside it, so start there too.
+                // checksums we published, so start there too.
                 rt.sh.change_dir(&output_dir);
                 flowey::shell_cmd!(rt, "sha256sum --check --strict {CHECKSUM_FILE}").run()?;
 
@@ -144,8 +149,9 @@ impl SimpleFlowNode for Node {
                 // recovers a version without a `.git` directory. If that were
                 // missing or wrong, the build would still succeed and the
                 // package would be labelled incorrectly. Compare the whole
-                // document rather than just the version: this is the only place
-                // the metadata contract is exercised end to end.
+                // document, not just the version: `tag` in particular is the
+                // field distinguishing a release from a snapshot, and this is
+                // the only place the metadata contract is exercised end to end.
                 let metadata_path = source_dir.join(METADATA_FILE);
                 let metadata: serde_json::Value =
                     serde_json::from_slice(&fs_err::read(&metadata_path)?)

@@ -297,7 +297,7 @@ jobs:
       $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build 0
       $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build 1
       $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build 2
-    displayName: resolve source archive identity
+    displayName: resolve source release identity
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 21 flowey_lib_hvlite::assemble_openvmm_source_release 0

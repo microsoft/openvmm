@@ -3,20 +3,27 @@
 
 //! Assemble the OpenVMM source release.
 //!
-//! This produces the files a source release consists of: a `.tar.gz` of the
-//! tracked source at a single revision, and a `SHA256SUMS` covering it. The
-//! archive carries its identity in a `.openvmm-release.json` file, because a
+//! This produces the files a release publishes: a `.tar.gz` of the tracked
+//! source at a single revision, and a `SHA256SUMS` covering it. The archive
+//! carries its release identity in a `.openvmm-release.json` file, because a
 //! packager building it has no `.git` directory to recover a version from.
+//!
+//! The node is deliberately shared between the release, which publishes these
+//! files, and CI, which builds them. CI would otherwise be testing a lookalike
+//! rather than the thing that actually ships.
 //!
 //! Assembly is reproducible: `git archive` emits a deterministic tar for a
 //! given commit, and `gzip -n` omits the timestamp that would otherwise vary.
 //! Two jobs handed the same [`SourceIdentity`] at the same commit therefore
-//! produce the same bytes, so a consumer of this node never has to be handed an
-//! archive to be sure it has the same one.
+//! produce the same bytes, which is what lets the job that builds a release and
+//! the job that publishes it each assemble independently rather than passing an
+//! artifact between them.
 
 use flowey::node::prelude::*;
 
-/// Checksums covering every assembled asset.
+pub const RELEASE_TAG_PREFIX: &str = "openvmm-v";
+
+/// Checksums covering every published asset.
 pub const CHECKSUM_FILE: &str = "SHA256SUMS";
 
 /// Release identity, carried inside the archive itself.
@@ -182,20 +189,28 @@ pub fn expected_metadata(identity: &SourceIdentity) -> serde_json::Value {
 
 /// Which identity a source release is assembled under.
 ///
-/// A commit under test is not a release, so it is assembled under a version
-/// that cannot be mistaken for one, with no tag. Everything else about the
-/// assembly is what a release does.
+/// Assembly is otherwise identical, so this is the only thing that separates a
+/// commit under test from a release.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentitySource {
     /// A commit under test, which is not a release.
     Snapshot,
+    /// The release named by the workflow's Git tag.
+    ReleaseTag,
 }
 
-/// Version used for an archive that is not a release.
+/// Version used for an archive that is not a release. It cannot be mistaken for
+/// a real version, and `parse_release_tag` would reject it as a tag.
 const SNAPSHOT_VERSION: &str = "0.0.0-dev";
 
 impl IdentitySource {
     /// Resolve the identity to assemble under.
+    ///
+    /// Both the distribution build job and the publishing job resolve their
+    /// identity through here. Keeping it in one place is what makes their
+    /// archives comparable: two callers at the same commit asking for the same
+    /// [`IdentitySource`] necessarily agree, and cannot drift apart later by
+    /// one of them growing a rule the other does not have.
     ///
     /// The working directory must already be the OpenVMM repository.
     pub fn resolve(self, rt: &mut RustRuntimeServices<'_>) -> anyhow::Result<SourceIdentity> {
@@ -203,6 +218,16 @@ impl IdentitySource {
 
         let (version, tag) = match self {
             IdentitySource::Snapshot => (SNAPSHOT_VERSION.to_owned(), None),
+            IdentitySource::ReleaseTag => {
+                let ref_type =
+                    std::env::var("GITHUB_REF_TYPE").context("GITHUB_REF_TYPE is not available")?;
+                if ref_type != "tag" {
+                    anyhow::bail!("OpenVMM releases must run from a Git tag");
+                }
+                let tag =
+                    std::env::var("GITHUB_REF_NAME").context("GITHUB_REF_NAME is not available")?;
+                (parse_release_tag(&tag)?, Some(tag))
+            }
         };
 
         Ok(SourceIdentity {
@@ -211,6 +236,36 @@ impl IdentitySource {
             revision,
         })
     }
+}
+
+/// Parse the canonical three-component version out of a release tag.
+pub fn parse_release_tag(tag: &str) -> anyhow::Result<String> {
+    let version = tag.strip_prefix(RELEASE_TAG_PREFIX).with_context(|| {
+        format!("OpenVMM release tag must start with {RELEASE_TAG_PREFIX:?}, got {tag:?}")
+    })?;
+    let components = version.split('.').collect::<Vec<_>>();
+    let [major, minor, patch] = components.as_slice() else {
+        anyhow::bail!(
+            "OpenVMM release version must contain exactly three components, got {version:?}"
+        );
+    };
+    for (name, component) in [("major", major), ("minor", minor), ("patch", patch)] {
+        // `u16::from_str` accepts a leading sign, so `+3` would otherwise parse
+        // as 3 and reach the archive prefix, the asset names, and the release
+        // title as the literal string "+3". Require plain digits.
+        if component.is_empty() || !component.bytes().all(|b| b.is_ascii_digit()) {
+            anyhow::bail!("OpenVMM release {name} component must be decimal digits: {component:?}");
+        }
+        if component.len() > 1 && component.starts_with('0') {
+            anyhow::bail!("OpenVMM release {name} component is not canonical: {component:?}");
+        }
+        component.parse::<u16>().with_context(|| {
+            format!(
+                "OpenVMM release {name} component must be an unsigned 16-bit integer: {component:?}"
+            )
+        })?;
+    }
+    Ok(version.to_owned())
 }
 
 #[cfg(test)]
@@ -223,6 +278,25 @@ mod tests {
             tag: tag.map(Into::into),
             revision: "0123456789abcdef0123456789abcdef01234567".into(),
         }
+    }
+
+    #[test]
+    fn parses_release_tag_for_asset_version() {
+        assert_eq!(parse_release_tag("openvmm-v0.12.3").unwrap(), "0.12.3");
+        assert!(parse_release_tag("openvmm-v0.12.3-rc.1").is_err());
+        assert!(parse_release_tag("openvmm-v0.012.3").is_err());
+        assert!(parse_release_tag("v0.12.3").is_err());
+    }
+
+    #[test]
+    fn rejects_version_components_that_are_not_plain_digits() {
+        // `u16::from_str` accepts a leading sign, so these parse as integers
+        // but are not canonical versions.
+        assert!(parse_release_tag("openvmm-v1.2.+3").is_err());
+        assert!(parse_release_tag("openvmm-v1.2.+03").is_err());
+        assert!(parse_release_tag("openvmm-v1.2.-3").is_err());
+        assert!(parse_release_tag("openvmm-v1..3").is_err());
+        assert!(parse_release_tag("openvmm-v1.2.3 ").is_err());
     }
 
     #[test]
