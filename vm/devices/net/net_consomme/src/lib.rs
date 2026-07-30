@@ -197,8 +197,8 @@ pub enum ConsommeMessageError {
     #[error("bind error")]
     Bind(consomme::BindError),
     /// Error adding a static DNS record.
-    #[error("dns record error")]
-    DnsRecord(StaticDnsRecordError),
+    #[error("dns record error: {0}")]
+    DnsRecord(#[source] StaticDnsRecordError),
     /// The subnet's virtual address pool is exhausted, so no virtual address
     /// could be allocated.
     #[error("virtual address pool exhausted")]
