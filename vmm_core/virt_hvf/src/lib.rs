@@ -15,10 +15,17 @@ mod vp_state;
 
 use crate::hypercall::HvfHypercallHandler;
 use aarch64defs::Cpsr64;
+use aarch64defs::DebugFeatures0El1;
 use aarch64defs::ExceptionClass;
+use aarch64defs::GicCpuInterface;
+use aarch64defs::IntermPhysAddrSize;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssSystem;
+use aarch64defs::MmFeatures0El1;
+use aarch64defs::MmFeatures2El1;
 use aarch64defs::MpidrEl1;
+use aarch64defs::ProcessorFeatures0El1;
+use aarch64defs::ProcessorFeatures1El1;
 use aarch64defs::SystemReg;
 use aarch64defs::Vendor;
 use aarch64defs::smccc::FastCall;
@@ -81,8 +88,6 @@ pub struct HvfHypervisor;
 #[error(transparent)]
 pub struct Error(#[from] anyhow::Error);
 
-const VM_IPA_BITS: u8 = 36;
-
 impl From<HvfError> for Error {
     fn from(value: HvfError) -> Self {
         <Result<(), _>>::Err(value)
@@ -109,12 +114,28 @@ impl virt::Hypervisor for HvfHypervisor {
         &'a mut self,
         config: virt::ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        Ok(HvfProtoPartition { config })
+        let mut ipa_bit_length = 0;
+        // SAFETY: `ipa_bit_length` is a valid out parameter.
+        unsafe { abi::hv_vm_config_get_default_ipa_size(&mut ipa_bit_length) }
+            .chk()
+            .context("failed to query the default HVF IPA size")?;
+        let ipa_bit_length =
+            u8::try_from(ipa_bit_length).context("default HVF IPA size does not fit in u8")?;
+        let ipa_range = IntermPhysAddrSize::from_ipa_bit_length(ipa_bit_length)
+            .with_context(|| format!("unsupported default HVF IPA size: {ipa_bit_length}"))?;
+
+        Ok(HvfProtoPartition {
+            config,
+            ipa_bit_length,
+            ipa_range,
+        })
     }
 }
 
 pub struct HvfProtoPartition<'a> {
     config: virt::ProtoPartitionConfig<'a>,
+    ipa_bit_length: u8,
+    ipa_range: IntermPhysAddrSize,
 }
 
 impl virt::ProtoPartition for HvfProtoPartition<'_> {
@@ -139,9 +160,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             }
         };
 
-        // SAFETY: no safety requirements. A null configuration selects Apple's
-        // default VM. Expose only the conservative 36-bit IPA subset so the
-        // guest never constructs an address outside that default VM.
+        // SAFETY: no safety requirements. A null configuration selects the
+        // default IPA width queried when the prototype partition was created.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
         let hv1 = HvfHv1State::new(self.config.processor_topology.vp_count());
@@ -196,6 +216,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             hv1,
             mappings: Default::default(),
             synic_ports: Default::default(),
+            ipa_range: self.ipa_range,
         });
 
         let mut vps = Vec::new();
@@ -232,7 +253,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
     }
 
     fn max_physical_address_size(&self) -> u8 {
-        VM_IPA_BITS
+        self.ipa_bit_length
     }
 }
 
@@ -495,6 +516,8 @@ struct HvfPartitionInner {
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))")]
     mappings: Mutex<Vec<MemoryRange>>,
     synic_ports: virt::synic::SynicPortMap,
+    #[inspect(skip)]
+    ipa_range: IntermPhysAddrSize,
 }
 
 #[derive(Inspect)]
@@ -564,20 +587,6 @@ struct VpInitState {
     gicr_range: Range<u64>,
 }
 
-// Arm A-profile Architecture Registers, DDI 0601 (2026-06), defines these
-// feature fields and their encodings.
-const ID_AA64PFR0_EL1_GIC_CPUIF: u64 = 1 << 24;
-const ID_AA64PFR0_EL1_GIC: u64 = 0xf << 24;
-const ID_AA64MMFR0_EL1_PARANGE: u64 = 0xf;
-const ID_AA64MMFR0_EL1_PARANGE_36BIT: u64 = 0b0001;
-const ID_AA64DFR0_EL1_PMUVER: u64 = 0xf << 8;
-const ID_AA64MMFR2_EL1_CNP: u64 = 0xf;
-const ID_AA64MMFR2_EL1_NV: u64 = 0xf << 24;
-const ID_AA64PFR0_EL1_EL2: u64 = 0xf << 8;
-const ID_AA64PFR0_EL1_EL3: u64 = 0xf << 12;
-const ID_AA64PFR0_EL1_SVE: u64 = 0xf << 32;
-const ID_AA64PFR1_EL1_SME: u64 = 0xf << 24;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IdRegisters {
     pfr0: u64,
@@ -631,68 +640,25 @@ impl IdRegisters {
 /// Derives the guest CPU model from HVF's host capability baseline.
 ///
 /// Arm DDI 0601 (2026-06) defines `ID_AA64PFR0_EL1.GIC=0b0001` as the
-/// GICv3/v4 system-register interface and `ID_AA64MMFR0_EL1.PARange=0b0001`
-/// as a 36-bit physical address range. The default HVF VM does not enable EL2,
-/// and this backend does not preserve PMU, SVE, SME, NV, CnP, or EL3 state, so
-/// those fields are hidden rather than exposing unusable host capabilities.
-fn id_register_policy(host: IdRegisters) -> IdRegisters {
+/// GICv3/v4 system-register interface. The default HVF VM does not enable EL2,
+/// and this backend does not preserve PMU, SVE, SME, NV, CnP, or EL3 state.
+fn id_register_policy(host: IdRegisters, ipa_range: IntermPhysAddrSize) -> IdRegisters {
+    let pfr0 = ProcessorFeatures0El1::from(host.pfr0)
+        .with_gic(GicCpuInterface::GICV3_OR_GICV4)
+        .with_el2(0)
+        .with_el3(0)
+        .with_sve(0);
+    let pfr1 = ProcessorFeatures1El1::from(host.pfr1).with_sme(0);
+    let dfr0 = DebugFeatures0El1::from(host.dfr0).with_pmu_ver(0);
+    let mmfr0 = MmFeatures0El1::from(host.mmfr0).with_pa_range(ipa_range);
+    let mmfr2 = MmFeatures2El1::from(host.mmfr2).with_cnp(0).with_nv(0);
+
     IdRegisters {
-        pfr0: (host.pfr0
-            & !(ID_AA64PFR0_EL1_GIC
-                | ID_AA64PFR0_EL1_EL2
-                | ID_AA64PFR0_EL1_EL3
-                | ID_AA64PFR0_EL1_SVE))
-            | ID_AA64PFR0_EL1_GIC_CPUIF,
-        pfr1: host.pfr1 & !ID_AA64PFR1_EL1_SME,
-        dfr0: host.dfr0 & !ID_AA64DFR0_EL1_PMUVER,
-        mmfr0: (host.mmfr0 & !ID_AA64MMFR0_EL1_PARANGE) | ID_AA64MMFR0_EL1_PARANGE_36BIT,
-        mmfr2: host.mmfr2 & !(ID_AA64MMFR2_EL1_CNP | ID_AA64MMFR2_EL1_NV),
-    }
-}
-
-#[cfg(test)]
-mod id_register_tests {
-    use super::*;
-
-    #[test]
-    fn policy_preserves_unowned_fields_and_hides_unvirtualized_features() {
-        let host = IdRegisters {
-            pfr0: u64::MAX,
-            pfr1: u64::MAX,
-            dfr0: u64::MAX,
-            mmfr0: u64::MAX,
-            mmfr2: u64::MAX,
-        };
-        let guest = id_register_policy(host);
-        let pfr0_mask =
-            ID_AA64PFR0_EL1_GIC | ID_AA64PFR0_EL1_EL2 | ID_AA64PFR0_EL1_EL3 | ID_AA64PFR0_EL1_SVE;
-
-        assert_eq!(guest.pfr0 & !pfr0_mask, host.pfr0 & !pfr0_mask);
-        assert_eq!(guest.pfr0 & pfr0_mask, ID_AA64PFR0_EL1_GIC_CPUIF);
-        assert_eq!(guest.pfr1, host.pfr1 & !ID_AA64PFR1_EL1_SME);
-        assert_eq!(guest.dfr0, host.dfr0 & !ID_AA64DFR0_EL1_PMUVER);
-        assert_eq!(
-            guest.mmfr0,
-            (host.mmfr0 & !ID_AA64MMFR0_EL1_PARANGE) | ID_AA64MMFR0_EL1_PARANGE_36BIT
-        );
-        assert_eq!(
-            guest.mmfr2,
-            host.mmfr2 & !(ID_AA64MMFR2_EL1_CNP | ID_AA64MMFR2_EL1_NV)
-        );
-    }
-
-    #[test]
-    fn policy_advertises_gicv3_and_36_bit_ipa() {
-        let guest = id_register_policy(IdRegisters {
-            pfr0: 0,
-            pfr1: 0,
-            dfr0: 0,
-            mmfr0: 0,
-            mmfr2: 0,
-        });
-
-        assert_eq!(guest.pfr0, ID_AA64PFR0_EL1_GIC_CPUIF);
-        assert_eq!(guest.mmfr0, ID_AA64MMFR0_EL1_PARANGE_36BIT);
+        pfr0: pfr0.into(),
+        pfr1: pfr1.into(),
+        dfr0: dfr0.into(),
+        mmfr0: mmfr0.into(),
+        mmfr2: mmfr2.into(),
     }
 }
 
@@ -706,7 +672,8 @@ impl BindProcessor for HvfProcessorBinder {
         let state = self.state.take().unwrap();
         let inner = &self.partition.vps[self.vp_index.index() as usize];
 
-        id_register_policy(IdRegisters::read(&vcpu)?).install(&mut vcpu)?;
+        id_register_policy(IdRegisters::read(&vcpu)?, self.partition.ipa_range)
+            .install(&mut vcpu)?;
         // Set the MPIDR.
         vcpu.set_sys_reg(abi::HvSysReg::MPIDR_EL1, inner.vp_info.mpidr.into())?;
 
@@ -876,14 +843,15 @@ impl Drop for HvfVcpu {
     }
 }
 
-const MAX_VTIMER_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_HOST_TIMER_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Converts an architected counter comparison into a bounded host wait.
 ///
 /// Arm DDI 0601 (2026-06), `CNTVCT_EL0` and `CNTV_CVAL_EL0`, defines the
 /// virtual timer against the monotonically increasing 64-bit system counter.
-/// The one-day cap is host scheduling policy; the architectural deadline is
-/// recomputed whenever the bounded wait expires.
+/// A guest can program a compare value beyond the range of the host's
+/// `Instant`. Bound each host wait to the same one-day horizon used by the VM
+/// time keeper, then recompute without changing the guest-visible deadline.
 fn vtimer_wait_duration(counter: u64, compare: u64, frequency: NonZeroU64) -> Option<Duration> {
     if compare <= counter {
         return None;
@@ -896,36 +864,8 @@ fn vtimer_wait_duration(counter: u64, compare: u64, frequency: NonZeroU64) -> Op
             ticks / frequency,
             ((ticks % frequency) as u128 * 1_000_000_000 / frequency as u128) as u32,
         )
-        .min(MAX_VTIMER_WAIT),
+        .min(MAX_HOST_TIMER_WAIT),
     )
-}
-
-#[cfg(test)]
-mod vtimer_tests {
-    use super::*;
-
-    #[test]
-    fn counter_comparison_distinguishes_expired_and_future_deadlines() {
-        let frequency = NonZeroU64::new(10).unwrap();
-
-        assert_eq!(vtimer_wait_duration(10, 10, frequency), None);
-        assert_eq!(vtimer_wait_duration(11, 10, frequency), None);
-        assert_eq!(
-            vtimer_wait_duration(10, 25, frequency),
-            Some(Duration::new(1, 500_000_000))
-        );
-    }
-
-    #[test]
-    fn counter_comparison_uses_architected_unsigned_ordering() {
-        let frequency = NonZeroU64::new(1).unwrap();
-
-        assert_eq!(
-            vtimer_wait_duration(1, u64::MAX, frequency),
-            Some(MAX_VTIMER_WAIT)
-        );
-        assert_eq!(vtimer_wait_duration(u64::MAX - 10, 9, frequency), None);
-    }
 }
 
 fn read_cntfrq() -> u64 {
@@ -957,26 +897,6 @@ fn system_register_operand(rt: u8) -> Option<u8> {
 /// the others return until event and timed-wait semantics are implemented.
 fn trapped_wfx_is_wfi(iss: u32) -> bool {
     iss & 0b11 == 0
-}
-
-#[cfg(test)]
-mod trap_tests {
-    use super::{system_register_operand, trapped_wfx_is_wfi};
-
-    #[test]
-    fn system_register_rt_31_decodes_as_xzr() {
-        assert_eq!(system_register_operand(0), Some(0));
-        assert_eq!(system_register_operand(30), Some(30));
-        assert_eq!(system_register_operand(31), None);
-    }
-
-    #[test]
-    fn esr_ti_distinguishes_wfi_from_other_wait_instructions() {
-        assert!(trapped_wfx_is_wfi(0b00));
-        assert!(!trapped_wfx_is_wfi(0b01));
-        assert!(!trapped_wfx_is_wfi(0b10));
-        assert!(!trapped_wfx_is_wfi(0b11));
-    }
 }
 
 impl HvfProcessor<'_> {
@@ -1516,5 +1436,133 @@ impl<'p> Processor for HvfProcessor<'p> {
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         vp_state::HvfVpStateAccess { processor: self }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_preserves_unowned_fields_and_hides_unvirtualized_features() {
+        let host = IdRegisters {
+            pfr0: u64::MAX,
+            pfr1: u64::MAX,
+            dfr0: u64::MAX,
+            mmfr0: u64::MAX,
+            mmfr2: u64::MAX,
+        };
+        let guest = id_register_policy(host, IntermPhysAddrSize::IPA_40_BITS_1_TB);
+
+        let expected_pfr0 = ProcessorFeatures0El1::from(host.pfr0)
+            .with_gic(GicCpuInterface::GICV3_OR_GICV4)
+            .with_el2(0)
+            .with_el3(0)
+            .with_sve(0);
+        let expected_pfr1 = ProcessorFeatures1El1::from(host.pfr1).with_sme(0);
+        let expected_dfr0 = DebugFeatures0El1::from(host.dfr0).with_pmu_ver(0);
+        let expected_mmfr0 =
+            MmFeatures0El1::from(host.mmfr0).with_pa_range(IntermPhysAddrSize::IPA_40_BITS_1_TB);
+        let expected_mmfr2 = MmFeatures2El1::from(host.mmfr2).with_cnp(0).with_nv(0);
+
+        assert_eq!(guest.pfr0, expected_pfr0.into());
+        assert_eq!(guest.pfr1, expected_pfr1.into());
+        assert_eq!(guest.dfr0, expected_dfr0.into());
+        assert_eq!(guest.mmfr0, expected_mmfr0.into());
+        assert_eq!(guest.mmfr2, expected_mmfr2.into());
+
+        assert_eq!(expected_pfr0.gic(), GicCpuInterface::GICV3_OR_GICV4);
+        assert_eq!(expected_pfr0.el2(), 0);
+        assert_eq!(expected_pfr0.el3(), 0);
+        assert_eq!(expected_pfr0.sve(), 0);
+        assert_eq!(expected_pfr1.sme(), 0);
+        assert_eq!(expected_dfr0.pmu_ver(), 0);
+        assert_eq!(
+            expected_mmfr0.pa_range(),
+            IntermPhysAddrSize::IPA_40_BITS_1_TB
+        );
+        assert_eq!(expected_mmfr2.cnp(), 0);
+        assert_eq!(expected_mmfr2.nv(), 0);
+    }
+
+    #[test]
+    fn policy_advertises_gicv3_and_queried_ipa_size() {
+        let guest = id_register_policy(
+            IdRegisters {
+                pfr0: 0,
+                pfr1: 0,
+                dfr0: 0,
+                mmfr0: 0,
+                mmfr2: 0,
+            },
+            IntermPhysAddrSize::IPA_48_BITS_256_TB,
+        );
+
+        assert_eq!(
+            ProcessorFeatures0El1::from(guest.pfr0).gic(),
+            GicCpuInterface::GICV3_OR_GICV4
+        );
+        assert_eq!(
+            MmFeatures0El1::from(guest.mmfr0).pa_range(),
+            IntermPhysAddrSize::IPA_48_BITS_256_TB
+        );
+    }
+
+    #[test]
+    fn ipa_bit_length_maps_to_arm_parange() {
+        for (bits, expected) in [
+            (32, IntermPhysAddrSize::IPA_32_BITS_4_GB),
+            (36, IntermPhysAddrSize::IPA_36_BITS_64_GB),
+            (40, IntermPhysAddrSize::IPA_40_BITS_1_TB),
+            (42, IntermPhysAddrSize::IPA_42_BITS_4_TB),
+            (44, IntermPhysAddrSize::IPA_44_BITS_16_TB),
+            (48, IntermPhysAddrSize::IPA_48_BITS_256_TB),
+            (52, IntermPhysAddrSize::IPA_52_BITS_4_PB),
+            (56, IntermPhysAddrSize::IPA_56_BITS_64_PB),
+        ] {
+            assert_eq!(
+                IntermPhysAddrSize::from_ipa_bit_length(bits),
+                Some(expected)
+            );
+        }
+        assert_eq!(IntermPhysAddrSize::from_ipa_bit_length(39), None);
+    }
+
+    #[test]
+    fn counter_comparison_distinguishes_expired_and_future_deadlines() {
+        let frequency = NonZeroU64::new(10).unwrap();
+
+        assert_eq!(vtimer_wait_duration(10, 10, frequency), None);
+        assert_eq!(vtimer_wait_duration(11, 10, frequency), None);
+        assert_eq!(
+            vtimer_wait_duration(10, 25, frequency),
+            Some(Duration::new(1, 500_000_000))
+        );
+    }
+
+    #[test]
+    fn counter_comparison_uses_architected_unsigned_ordering() {
+        let frequency = NonZeroU64::new(1).unwrap();
+
+        assert_eq!(
+            vtimer_wait_duration(1, u64::MAX, frequency),
+            Some(MAX_HOST_TIMER_WAIT)
+        );
+        assert_eq!(vtimer_wait_duration(u64::MAX - 10, 9, frequency), None);
+    }
+
+    #[test]
+    fn system_register_rt_31_decodes_as_xzr() {
+        assert_eq!(system_register_operand(0), Some(0));
+        assert_eq!(system_register_operand(30), Some(30));
+        assert_eq!(system_register_operand(31), None);
+    }
+
+    #[test]
+    fn esr_ti_distinguishes_wfi_from_other_wait_instructions() {
+        assert!(trapped_wfx_is_wfi(0b00));
+        assert!(!trapped_wfx_is_wfi(0b01));
+        assert!(!trapped_wfx_is_wfi(0b10));
+        assert!(!trapped_wfx_is_wfi(0b11));
     }
 }

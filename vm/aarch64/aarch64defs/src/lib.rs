@@ -746,6 +746,20 @@ open_enum! {
 }
 
 impl IntermPhysAddrSize {
+    pub const fn from_ipa_bit_length(bits: u8) -> Option<Self> {
+        Some(match bits {
+            32 => Self::IPA_32_BITS_4_GB,
+            36 => Self::IPA_36_BITS_64_GB,
+            40 => Self::IPA_40_BITS_1_TB,
+            42 => Self::IPA_42_BITS_4_TB,
+            44 => Self::IPA_44_BITS_16_TB,
+            48 => Self::IPA_48_BITS_256_TB,
+            52 => Self::IPA_52_BITS_4_PB,
+            56 => Self::IPA_56_BITS_64_PB,
+            _ => return None,
+        })
+    }
+
     const fn into_bits(self) -> u64 {
         self.0
     }
@@ -753,6 +767,80 @@ impl IntermPhysAddrSize {
     const fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
+}
+
+open_enum! {
+    /// `ID_AA64PFR0_EL1.GIC`.
+    pub enum GicCpuInterface: u8 {
+        NONE = 0,
+        GICV3_OR_GICV4 = 1,
+    }
+}
+
+impl GicCpuInterface {
+    const fn into_bits(self) -> u64 {
+        self.0 as u64
+    }
+
+    const fn from_bits(bits: u64) -> Self {
+        Self(bits as u8)
+    }
+}
+
+/// The fields of `ID_AA64PFR0_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct ProcessorFeatures0El1 {
+    #[bits(8)]
+    _el0_el1: u8,
+    #[bits(4)]
+    pub el2: u8,
+    #[bits(4)]
+    pub el3: u8,
+    #[bits(8)]
+    _fp_simd: u8,
+    #[bits(4)]
+    pub gic: GicCpuInterface,
+    #[bits(4)]
+    _ras: u8,
+    #[bits(4)]
+    pub sve: u8,
+    #[bits(28)]
+    _rest: u32,
+}
+
+/// The fields of `ID_AA64PFR1_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct ProcessorFeatures1El1 {
+    #[bits(24)]
+    _lower: u32,
+    #[bits(4)]
+    pub sme: u8,
+    #[bits(36)]
+    _rest: u64,
+}
+
+/// The fields of `ID_AA64DFR0_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct DebugFeatures0El1 {
+    #[bits(8)]
+    _lower: u8,
+    #[bits(4)]
+    pub pmu_ver: u8,
+    #[bits(52)]
+    _rest: u64,
+}
+
+/// The fields of `ID_AA64MMFR2_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct MmFeatures2El1 {
+    #[bits(4)]
+    pub cnp: u8,
+    #[bits(20)]
+    _middle: u32,
+    #[bits(4)]
+    pub nv: u8,
+    #[bits(36)]
+    _rest: u64,
 }
 
 /// aarch64 TCR_EL1 register

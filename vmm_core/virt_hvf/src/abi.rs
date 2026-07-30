@@ -74,6 +74,9 @@ impl HvfResult {
 unsafe extern "C" {
     pub fn hv_vm_create(config: *const ()) -> HvfResult;
     pub fn hv_vm_destroy() -> HvfResult;
+    /// Apple `hv_vm_config.h`: returns the IPA width used by a default VM
+    /// configuration. Available on macOS 13 and later.
+    pub fn hv_vm_config_get_default_ipa_size(ipa_bit_length: *mut u32) -> HvfResult;
     pub fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> HvfResult;
     pub fn hv_vm_unmap(ipa: u64, size: usize) -> HvfResult;
     pub fn hv_vcpu_create(
