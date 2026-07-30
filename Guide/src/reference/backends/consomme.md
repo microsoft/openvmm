@@ -260,9 +260,9 @@ through the host network stack like any other application.
 IPv6 is only enabled if the host has a routable IPv6 address at VM
 start time.
 
-### Static DNS records only support `A` record types
+### Static DNS records only support the `A` record type
 
-Only A records are currently supported.
+Only `A` records are currently supported.
 
 ### Static DNS records don't support DNSSEC
 

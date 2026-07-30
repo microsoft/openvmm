@@ -183,9 +183,10 @@ fn normalize_name(name: &str) -> Option<String> {
     Some(name.to_ascii_lowercase())
 }
 
-/// Decodes a DNS name into lowercased presentation form (no trailing dot),
+/// Decodes a DNS name into lowercased presentation form (no trailing dot).
 ///
-/// Returns `None` on malformed input or if the name exceeds [`smoltcp::config::DNS_MAX_NAME_SIZE`].
+/// Returns `None` on malformed input, or if the name exceeds
+/// [`smoltcp::config::DNS_MAX_NAME_SIZE`].
 fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
     let mut qname = String::new();
     for label in packet.parse_name(name) {

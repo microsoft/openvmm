@@ -20,10 +20,11 @@ use std::task::Poll;
 use std::task::ready;
 use thiserror::Error;
 
-// Maximum allowed DNS message size over TCP: 65535 bytes for the message
-// plus 2 bytes for the TCP length prefix. This is a sanity check to prevent
+// Maximum allowed DNS message payload size over TCP. The TCP length prefix is
+// a 2-byte big-endian value, so the message payload cannot exceed `u16::MAX`
+// bytes without truncating the prefix. This is also a sanity check to prevent
 // unbounded memory growth.
-const MAX_DNS_TCP_PAYLOAD_SIZE: usize = (u16::MAX as usize) + 2;
+const MAX_DNS_TCP_PAYLOAD_SIZE: usize = u16::MAX as usize;
 
 /// Errors returned by [`DnsTcpHandler::ingest`] and [`DnsTcpHandler::poll_read`]
 /// when the DNS TCP framing is invalid or the query cannot be processed.
