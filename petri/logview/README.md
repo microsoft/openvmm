@@ -4,7 +4,7 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 ## Prerequisites
 
-- **Node.js** (version `^20.19.0 || >=22.12.0`, as required by Vite 8)
+- **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
 
 ## Initial Setup
