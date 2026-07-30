@@ -6,10 +6,9 @@
 
 use super::Signature;
 use super::UefiVar;
-use mesh_protobuf::Protobuf;
 
 /// Changes to apply to a collection of UEFI nvram variables.
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub struct UefiVarsDelta {
     /// Secure Boot signature vars
     pub signatures: SignaturesDelta,
@@ -17,7 +16,7 @@ pub struct UefiVarsDelta {
     pub non_signature_vars: Vec<(String, UefiVar)>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub enum SignaturesDelta {
     /// Vars should append onto underlying template
     Append(SignaturesAppend),
@@ -26,7 +25,7 @@ pub enum SignaturesDelta {
 }
 
 /// Append CANNOT be used with `pk`
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub struct SignaturesAppend {
     pub kek: Option<Vec<Signature>>,
     pub db: Option<Vec<Signature>>,
@@ -38,7 +37,7 @@ pub struct SignaturesAppend {
 /// Replace the underlying template signatures, optionally using `Default` values
 /// from a base template. If no base template is provided, all required signature
 /// values must be specified explicitly.
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub struct SignaturesReplace {
     pub pk: SignatureDelta,
     pub kek: SignatureDeltaVec,
@@ -48,7 +47,7 @@ pub struct SignaturesReplace {
     pub moklistx: Option<SignatureDeltaVec>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub enum SignatureDelta {
     Sig(Signature),
     /// "Default" will pull the value of the signature from the specified
@@ -58,7 +57,7 @@ pub enum SignatureDelta {
     Default,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone)]
 pub enum SignatureDeltaVec {
     Sigs(Vec<Signature>),
     /// "Default" will pull the value of the signature from the specified
