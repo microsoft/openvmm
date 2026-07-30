@@ -101,6 +101,26 @@ const GHCB_SW_SCRATCH_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_scratch) / size_of::<u64>() - 64);
 const GHCB_SHARED_BUFFER_OFFSET: u64 =
     std::mem::offset_of!(x86defs::snp::GhcbPage, shared_buffer) as u64;
+const SVM_NAE_SNP_AP_CREATE: u32 = 1;
+const GHCB_ERROR_RESPONSE: u64 = 2;
+const GHCB_ERROR_INVALID_INPUT: u64 = 5;
+const SNP_UNSAFE_VMSA_ALIGNMENT: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct SnpApCreateRequest {
+    apic_id: u32,
+    vmsa_gpa: u64,
+    sev_features: u64,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum SnpApCreateRequestError {
+    MissingInput,
+    UnsupportedOperation(u16),
+    UnsupportedVmpl(u16),
+    InvalidSevFeatures(u64),
+    InvalidVmsaGpa(u64),
+}
 
 fn set_ghcb_rax(ghcb: &mut x86defs::snp::GhcbPage, rax: u64) {
     ghcb.save.rax = rax;
@@ -123,6 +143,60 @@ fn ghcb_mmio_fields_are_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
 
 fn ghcb_exit_info2_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
     ghcb.save.valid_bitmap1 & GHCB_SW_EXIT_INFO2_VALID_BIT != 0
+}
+
+fn set_ghcb_error(ghcb: &mut x86defs::snp::GhcbPage, error: u64) {
+    ghcb.save.sw_exit_info1 = GHCB_ERROR_RESPONSE;
+    ghcb.save.sw_exit_info2 = error;
+    ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT | GHCB_SW_EXIT_INFO2_VALID_BIT;
+}
+
+fn parse_snp_ap_create_request(
+    ghcb: &x86defs::snp::GhcbPage,
+) -> Result<SnpApCreateRequest, SnpApCreateRequestError> {
+    let operation = ghcb.save.sw_exit_info1 as u16;
+    if operation != SVM_NAE_SNP_AP_CREATE as u16 {
+        // TODO: Implement CREATE_ON_INIT and DESTROY once the MSHV kernel ABI
+        // provides the target-VP lifecycle operations needed for them.
+        return Err(SnpApCreateRequestError::UnsupportedOperation(operation));
+    }
+
+    let vmpl = (ghcb.save.sw_exit_info1 >> 16) as u16;
+    if vmpl != 0 {
+        return Err(SnpApCreateRequestError::UnsupportedVmpl(vmpl));
+    }
+
+    if !ghcb_rax_is_valid(ghcb) || !ghcb_exit_info2_is_valid(ghcb) {
+        return Err(SnpApCreateRequestError::MissingInput);
+    }
+
+    let sev_features = ghcb.save.rax;
+    if sev_features & 1 == 0 {
+        return Err(SnpApCreateRequestError::InvalidSevFeatures(sev_features));
+    }
+
+    let vmsa_gpa = ghcb.save.sw_exit_info2;
+    // Conservatively mirror KVM's workaround for the SNP erratum where a
+    // hugepage can collide with a 2 MiB-aligned VMSA RMP entry.
+    if !vmsa_gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+        || vmsa_gpa.is_multiple_of(SNP_UNSAFE_VMSA_ALIGNMENT)
+    {
+        return Err(SnpApCreateRequestError::InvalidVmsaGpa(vmsa_gpa));
+    }
+
+    Ok(SnpApCreateRequest {
+        apic_id: (ghcb.save.sw_exit_info1 >> 32) as u32,
+        vmsa_gpa,
+        sev_features,
+    })
+}
+
+fn vp_index_for_apic_id(
+    apic_id: u32,
+    vps: impl IntoIterator<Item = (VpIndex, u32)>,
+) -> Option<VpIndex> {
+    vps.into_iter()
+        .find_map(|(vp_index, candidate)| (candidate == apic_id).then_some(vp_index))
 }
 
 fn snp_host_access_flags(visibility: u32) -> Option<u8> {
@@ -521,6 +595,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             synic_ports: Default::default(),
             software_devices: ApicSoftwareDevices::new(apic_id_map),
             snp_launch_state: Mutex::new(SnpLaunchState::NotStarted),
+            snp_sev_features: Mutex::new(None),
             isolation: self.config.isolation,
             // SNP partition creation set TimeFreeze=1 before this object was built.
             time_frozen: Mutex::new(self.config.isolation.is_isolated()),
@@ -739,6 +814,90 @@ mod tests {
     }
 
     #[test]
+    fn parses_snp_ap_create_requests() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.sw_exit_info1 = (7u64 << 32) | u64::from(SVM_NAE_SNP_AP_CREATE);
+        ghcb.save.sw_exit_info2 = 0x20_000;
+        set_ghcb_rax(&mut ghcb, 9);
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT | GHCB_SW_EXIT_INFO2_VALID_BIT;
+
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Ok(SnpApCreateRequest {
+                apic_id: 7,
+                vmsa_gpa: 0x20_000,
+                sev_features: 9,
+            })
+        );
+
+        ghcb.save.sw_exit_info1 = 2;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::UnsupportedOperation(2))
+        );
+
+        ghcb.save.sw_exit_info1 = 0;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::UnsupportedOperation(0))
+        );
+
+        ghcb.save.sw_exit_info1 = (7u64 << 32) | (1 << 16) | u64::from(SVM_NAE_SNP_AP_CREATE);
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::UnsupportedVmpl(1))
+        );
+
+        ghcb.save.sw_exit_info1 = (7u64 << 32) | u64::from(SVM_NAE_SNP_AP_CREATE);
+        ghcb.save.sw_exit_info2 = 0x20_001;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::InvalidVmsaGpa(0x20_001))
+        );
+
+        ghcb.save.sw_exit_info2 = SNP_UNSAFE_VMSA_ALIGNMENT;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::InvalidVmsaGpa(
+                SNP_UNSAFE_VMSA_ALIGNMENT
+            ))
+        );
+
+        ghcb.save.sw_exit_info2 = 0x20_000;
+        ghcb.save.rax = 0;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::InvalidSevFeatures(0))
+        );
+
+        set_ghcb_rax(&mut ghcb, 9);
+        ghcb.save.valid_bitmap1 &= !GHCB_SW_EXIT_INFO2_VALID_BIT;
+        assert_eq!(
+            parse_snp_ap_create_request(&ghcb),
+            Err(SnpApCreateRequestError::MissingInput)
+        );
+    }
+
+    #[test]
+    fn maps_snp_apic_ids_to_vp_indices() {
+        let vps = [(VpIndex::new(0), 0), (VpIndex::new(1), 4)];
+        assert_eq!(vp_index_for_apic_id(4, vps), Some(VpIndex::new(1)));
+        assert_eq!(vp_index_for_apic_id(3, vps), None);
+    }
+
+    #[test]
+    fn encodes_ghcb_errors() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
+        set_ghcb_error(&mut ghcb, GHCB_ERROR_INVALID_INPUT);
+
+        assert_eq!(ghcb.save.sw_exit_info1, GHCB_ERROR_RESPONSE);
+        assert_eq!(ghcb.save.sw_exit_info2, GHCB_ERROR_INVALID_INPUT);
+        assert!(ghcb_exit_fields_are_valid(&ghcb));
+        assert!(ghcb_exit_info2_is_valid(&ghcb));
+    }
+
+    #[test]
     fn builds_snp_host_access_flags() {
         assert_eq!(snp_host_access_flags(0), Some(0));
         assert_eq!(snp_host_access_flags(1), None);
@@ -857,6 +1016,14 @@ impl MshvPartitionInner {
         pages: &[virt::InitialPageImport],
     ) -> Result<(), Error> {
         let (vmsa_gpa, cpuid_gpa) = snp_launch_pages(pages)?;
+        let vmsa = self
+            .gm
+            .read_plain::<x86defs::snp::SevVmsa>(vmsa_gpa)
+            .map_err(ErrorInner::SnpGuestMemory)?;
+        // GHCB SNP AP-creation requests supply a new VMSA. Save the BSP launch
+        // features so handle_snp_ap_create can require each AP VMSA to use the
+        // same guest-visible SEV feature set.
+        *self.snp_sev_features.lock() = Some(vmsa.sev_features.into_bits());
         self.write_snp_cpuid_page(cpuid_gpa)?;
 
         self.vmfd
@@ -1545,7 +1712,7 @@ impl MshvProcessor<'_> {
         match ghcb_op {
             GHCB_INFO_SPECIAL_DBGPRINT => {}
             GHCB_INFO_HYP_FEATURE_REQUEST if ghcb_data == 0 => {
-                let features = GHCB_HYP_FEATURE_SEV_SNP;
+                let features = GHCB_HYP_FEATURE_SEV_SNP | GHCB_HYP_FEATURE_SEV_SNP_AP_CREATION;
                 let response = GHCB_INFO_HYP_FEATURE_RESPONSE as u64
                     | u64::from(features) << GHCB_INFO_BIT_WIDTH;
                 self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
@@ -1774,6 +1941,9 @@ impl MshvProcessor<'_> {
                     .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
                 ghcb.save.sw_exit_info1 = 0;
             }
+            exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_AP_CREATION) => {
+                self.handle_snp_ap_create(info, ghcb_gpa)?;
+            }
             exit_code => {
                 tracelimit::warn_ratelimited!(
                     exit_code,
@@ -1786,6 +1956,117 @@ impl MshvProcessor<'_> {
             }
         }
 
+        Ok(())
+    }
+
+    fn handle_snp_ap_create(
+        &mut self,
+        info: &hvdef::HvX64VmgexitInterceptMessage,
+        ghcb_gpa: u64,
+    ) -> Result<(), VpHaltReason> {
+        let request = {
+            let ghcb = self
+                .runner
+                .ghcb_page()
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+            if ghcb.save.sw_exit_info2 != info.ghcb_page.standard.sw_exit_info2 {
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            match parse_snp_ap_create_request(ghcb) {
+                Ok(request) => request,
+                Err(error) => {
+                    tracelimit::warn_ratelimited!(
+                        ?error,
+                        "rejected invalid SNP AP creation request"
+                    );
+                    set_ghcb_error(ghcb, GHCB_ERROR_INVALID_INPUT);
+                    return Ok(());
+                }
+            }
+        };
+        let launch_sev_features = *self.partition.snp_sev_features.lock();
+        if launch_sev_features != Some(request.sev_features) {
+            tracelimit::warn_ratelimited!(
+                sev_features = request.sev_features,
+                ?launch_sev_features,
+                "rejected SNP AP creation with mismatched SEV features"
+            );
+            let ghcb = self
+                .runner
+                .ghcb_page()
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+            set_ghcb_error(ghcb, GHCB_ERROR_INVALID_INPUT);
+            return Ok(());
+        }
+
+        let target_vp = vp_index_for_apic_id(
+            request.apic_id,
+            self.partition
+                .vps
+                .iter()
+                .map(|vp| (vp.vp_info.base.vp_index, vp.vp_info.apic_id)),
+        );
+        let vmsa_end = request.vmsa_gpa.checked_add(hvdef::HV_PAGE_SIZE);
+        let valid_vmsa = vmsa_end.is_some_and(|end| {
+            request.vmsa_gpa != ghcb_gpa
+                && self.partition.mem_layout.ram().iter().any(|range| {
+                    range
+                        .range
+                        .contains(&MemoryRange::new(request.vmsa_gpa..end))
+                })
+        });
+        let target_vp = match target_vp {
+            Some(target_vp) if valid_vmsa && !target_vp.is_bsp() && target_vp != self.vpindex => {
+                target_vp
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(
+                    apic_id = request.apic_id,
+                    vmsa_gpa = request.vmsa_gpa,
+                    sev_features = request.sev_features,
+                    ?target_vp,
+                    "rejected invalid SNP AP creation target"
+                );
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                set_ghcb_error(ghcb, GHCB_ERROR_INVALID_INPUT);
+                return Ok(());
+            }
+        };
+        tracing::trace!(
+            target_vp = target_vp.index(),
+            apic_id = request.apic_id,
+            vmsa_gpa = request.vmsa_gpa,
+            sev_features = request.sev_features,
+            "creating SNP AP"
+        );
+        let request = mshv_bindings::mshv_sev_snp_ap_create {
+            vp_id: u64::from(target_vp.index()),
+            vmsa_gpa: request.vmsa_gpa,
+        };
+        if let Err(error) = self.partition.vmfd.sev_snp_ap_create(&request) {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                target_vp = target_vp.index(),
+                vmsa_gpa = request.vmsa_gpa,
+                "failed to create SNP AP"
+            );
+            let ghcb = self
+                .runner
+                .ghcb_page()
+                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+            set_ghcb_error(ghcb, GHCB_ERROR_INVALID_INPUT);
+            return Ok(());
+        }
+
+        let ghcb = self
+            .runner
+            .ghcb_page()
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        ghcb.save.sw_exit_info1 = 0;
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT;
         Ok(())
     }
 

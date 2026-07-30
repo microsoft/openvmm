@@ -261,6 +261,14 @@ struct MshvPartitionInner {
     /// SNP launch progress, synchronized because loading and memory mapping use
     /// shared partition references.
     snp_launch_state: Mutex<arch::SnpLaunchState>,
+    #[cfg(guest_arch = "x86_64")]
+    /// BSP SEV features used to validate GHCB AP-creation requests.
+    ///
+    /// AMD GHCB specification 56421, "SNP AP Creation", supplies the AP VMSA's
+    /// SEV_FEATURES in RAX and requires them to match the requesting vCPU. Each
+    /// created AP is validated against this BSP value, making it the canonical
+    /// feature set for subsequent requests.
+    snp_sev_features: Mutex<Option<u64>>,
     isolation: virt::IsolationType,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
