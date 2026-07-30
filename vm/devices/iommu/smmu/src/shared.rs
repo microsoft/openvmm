@@ -72,7 +72,7 @@ pub struct SmmuNestingContext {
 /// maps each variant onto host IOMMU operations.
 ///
 /// This trait is per-device (one instance per VFIO device). Invalidation,
-/// which is vIOMMU-scoped, lives on [`AcceleratedInvalidationSink`] instead.
+/// which is vIOMMU-scoped, lives on [`AcceleratedViommu`] instead.
 pub trait AcceleratedStreamBackend: Send + Sync {
     /// Changes the virtual StreamID associated with this device.
     ///
@@ -99,21 +99,21 @@ pub trait AcceleratedStreamBackend: Send + Sync {
     fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()>;
 }
 
-/// Sink that forwards a guest's invalidation commands to the host as a single
-/// ordered, batched stream per emulated SMMU.
+/// The host vIOMMU backing one accelerated emulated SMMU, as the emulator sees
+/// it: a target for the guest's invalidation commands.
 ///
 /// Invalidation is **vIOMMU-scoped**, not device-scoped: a vIOMMU-scoped
 /// invalidate already covers every stream behind the emulated SMMU, and the
 /// host kernel offers no per-device invalidate ioctl for the nested path. So
-/// there is exactly one sink per accelerated SMMU, and a guest invalidation is
-/// forwarded **once** (not once per device), eliminating the per-device
+/// there is exactly one of these per accelerated SMMU, and a guest invalidation
+/// is forwarded **once** (not once per device), eliminating the per-device
 /// fan-out that would otherwise turn one guest command into M identical host
 /// syscalls for M devices.
 ///
 /// The emulator accumulates consecutive forwardable CMDQ commands and flushes
-/// them to this sink as one batch (one `IOMMU_HWPT_INVALIDATE`) at each
-/// synchronization or configuration boundary, collapsing a shootdown burst of
-/// N commands from N syscalls to one.
+/// them here as one batch (one `IOMMU_HWPT_INVALIDATE`) at each synchronization
+/// or configuration boundary, collapsing a shootdown burst of N commands from N
+/// syscalls to one.
 ///
 /// Each entry is the raw 128-bit CMDQ command as a little-endian `[qw0, qw1]`
 /// quadword pair; the host kernel parses the opcode and operands. Keeping the
@@ -122,7 +122,7 @@ pub trait AcceleratedStreamBackend: Send + Sync {
 ///
 /// The emulator calls this with the accelerated registration table locked, so an
 /// implementation must not re-enter [`SmmuSharedState`].
-pub trait AcceleratedInvalidationSink: Send + Sync {
+pub trait AcceleratedViommu: Send + Sync {
     /// Forward `entries` to the host as one ordered batch, preserving program
     /// order.
     ///
@@ -264,15 +264,19 @@ struct AccelDeviceRegistration {
 /// Accelerated state for one emulated SMMU: the registered per-device stream
 /// backends and the host vIOMMU they all share.
 ///
-/// These live under one lock because they are one unit. An invalidation batch
-/// is admitted (by StreamID) and forwarded to the sink under a single hold, so
-/// no rebind or teardown can interleave; and the sink is held exactly as long
-/// as `devices` is non-empty, so the host vIOMMU is destroyed with the last
-/// device behind this SMMU rather than lingering for the VM's lifetime.
+/// These live under one lock because they are one unit: an invalidation batch
+/// is admitted (by StreamID) and forwarded to the vIOMMU under a single hold,
+/// so no rebind or teardown can interleave.
 #[derive(Default)]
 struct AccelState {
     devices: Vec<AccelDeviceRegistration>,
-    sink: Option<Arc<dyn AcceleratedInvalidationSink>>,
+    /// The host vIOMMU that every registered backend shares, held weakly.
+    ///
+    /// The strong references are the backends' own, so the vIOMMU is destroyed
+    /// along with the last device behind this SMMU without this table having to
+    /// track that itself. `None` until the first accelerated device binds, and
+    /// dangling once the last one goes until the next device re-sets it.
+    viommu: Option<Weak<dyn AcceleratedViommu>>,
 }
 
 /// Exclusive access to the accelerated registration table.
@@ -316,8 +320,7 @@ pub struct AccelRegistration {
 /// created or reused the vIOMMU. If manager setup fails, dropping the
 /// uncommitted reservation allows a later device to establish a different
 /// context. Once committed, the association remains fixed for the lifetime of
-/// the vSMMU, matching its single invalidation sink and QEMU's
-/// one-vIOMMU-per-SMMUv3 model.
+/// the vSMMU, matching QEMU's one-vIOMMU-per-SMMUv3 model.
 pub struct AccelIommuAssociation {
     shared: Arc<SmmuSharedState>,
     committed: bool,
@@ -1016,28 +1019,20 @@ impl SmmuSharedState {
 
     /// Removes registration `id` synchronously.
     ///
-    /// The last registration to go takes the host vIOMMU with it: nothing is
-    /// left behind this SMMU to translate or invalidate for. The removed
-    /// backend and the vIOMMU are dropped after releasing the lock, in that
-    /// order, so neither can race an in-flight invalidation batch (which holds
-    /// the same lock until the host consumes it).
+    /// The removed backend is dropped after releasing the lock so it cannot
+    /// race an in-flight invalidation batch, which holds the same lock until
+    /// the host consumes it. Dropping the last one also releases the host
+    /// vIOMMU, which this table only references weakly.
     pub fn unregister_accel_device(&self, id: u64) {
-        let (reg, sink) = {
+        let reg = {
             let mut accel = self.accel_state.lock();
-            let reg = accel
+            accel
                 .devices
                 .iter()
                 .position(|reg| reg.id == id)
-                .map(|pos| accel.devices.swap_remove(pos));
-            let sink = accel
-                .devices
-                .is_empty()
-                .then(|| accel.sink.take())
-                .flatten();
-            (reg, sink)
+                .map(|pos| accel.devices.swap_remove(pos))
         };
         drop(reg);
-        drop(sink);
     }
 
     /// Computes the SMMU's current policy for the given stream.
@@ -1109,17 +1104,20 @@ impl SmmuSharedState {
         }
     }
 
-    /// Registers the per-vIOMMU invalidation sink for accelerated mode.
+    /// Records the host vIOMMU backing this SMMU's accelerated mode.
     ///
     /// Called when the first VFIO device behind this SMMU binds. All devices
-    /// behind a single emulated SMMU share one vIOMMU and therefore one sink.
-    /// Registration is synchronous and callable while the emulator is stopped.
+    /// behind a single emulated SMMU share one vIOMMU. Registration is
+    /// synchronous and callable while the emulator is stopped.
     ///
-    /// This is the SMMU's only strong reference to the host vIOMMU, and it is
-    /// released when the last accelerated device unregisters, so a device
-    /// hot-plugged after that registers a freshly built vIOMMU's sink here.
-    pub fn register_invalidation_sink(&self, sink: Arc<dyn AcceleratedInvalidationSink>) {
-        self.accel_state.lock().sink = Some(sink);
+    /// Held weakly: the strong references belong to the stream backends, so the
+    /// vIOMMU goes away with the last of them and a device hot-plugged after
+    /// that records a freshly built one here. Taking a reference rather than an
+    /// owned `Arc` keeps a caller from handing over one it does not itself
+    /// retain, which would dangle immediately.
+    pub fn register_viommu<T: AcceleratedViommu + 'static>(&self, viommu: &Arc<T>) {
+        let viommu: Arc<dyn AcceleratedViommu> = viommu.clone();
+        self.accel_state.lock().viommu = Some(Arc::downgrade(&viommu));
     }
 
     fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) -> anyhow::Result<()> {
@@ -1249,20 +1247,20 @@ impl SmmuSharedState {
         self.accel_state.try_lock().is_none()
     }
 
-    /// Forwards an accumulated invalidation batch to the per-vIOMMU sink.
+    /// Forwards an accumulated invalidation batch to the host vIOMMU.
     ///
     /// Takes the registration guard rather than locking internally: the SID
     /// checks that admitted these entries and the host call that consumes them
     /// must not be split by a concurrent StreamID rebind, which would retire a
     /// vDevice the batch names and make the host reject an otherwise valid
-    /// command. No sink means no accelerated devices, and so nothing to
-    /// invalidate.
+    /// command. An unreachable vIOMMU means no accelerated devices remain, and
+    /// so nothing to invalidate.
     pub(crate) fn invalidate(
         devices: &AccelDevices<'_>,
         entries: &[[u64; 2]],
     ) -> Result<(), usize> {
-        match &devices.accel.sink {
-            Some(sink) => sink.invalidate(entries),
+        match devices.accel.viommu.as_ref().and_then(Weak::upgrade) {
+            Some(viommu) => viommu.invalidate(entries),
             None => Ok(()),
         }
     }

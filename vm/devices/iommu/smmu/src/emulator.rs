@@ -2179,7 +2179,7 @@ mod tests {
         }
     }
 
-    impl crate::shared::AcceleratedInvalidationSink for MockInvalidationSink {
+    impl crate::shared::AcceleratedViommu for MockInvalidationSink {
         fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
             self.batches.lock().push(entries.to_vec());
             match *self.accept_limit.lock() {
@@ -2926,49 +2926,67 @@ mod tests {
         assert!(dropped.load(Ordering::Relaxed));
     }
 
-    /// The SMMU releases the host vIOMMU with the last accelerated device, so
-    /// its iommufd objects are not held for the SMMU's (i.e. the VM's)
-    /// lifetime. Invalidations after that are no-ops.
+    /// The host vIOMMU's lifetime follows the stream backends that reference
+    /// it rather than this table's occupancy, so it is released with the last
+    /// accelerated device without the SMMU tracking that itself. Invalidations
+    /// after that are no-ops.
     #[test]
-    fn test_last_unregister_releases_invalidation_sink() {
+    fn test_viommu_released_with_last_backend() {
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
 
-        struct DropTrackingSink(Arc<AtomicBool>);
+        struct DropTrackingViommu(Arc<AtomicBool>);
 
-        impl crate::shared::AcceleratedInvalidationSink for DropTrackingSink {
+        impl crate::shared::AcceleratedViommu for DropTrackingViommu {
             fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
                 Ok(())
             }
         }
 
-        impl Drop for DropTrackingSink {
+        impl Drop for DropTrackingViommu {
             fn drop(&mut self) {
                 self.0.store(true, Ordering::Relaxed);
             }
         }
 
+        // Mirrors `IommufdStreamBackend`, which holds the `Arc<SmmuAccelState>`
+        // that is the vIOMMU. Held only for its refcount.
+        struct ViommuHoldingBackend(#[expect(dead_code)] Arc<DropTrackingViommu>);
+
+        impl crate::shared::AcceleratedStreamBackend for ViommuHoldingBackend {
+            fn set_stream_id(&self, _sid: Option<u32>) {}
+
+            fn set_stream_config(
+                &self,
+                _config: crate::shared::StreamConfig,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
         let dev = make_accel_device();
-        let sink_dropped = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let viommu = Arc::new(DropTrackingViommu(dropped.clone()));
+        dev.shared_state.register_viommu(&viommu);
 
         let ids: Vec<u64> = (0..2)
             .map(|_| {
                 dev.shared_state
-                    .register_accel_device(0, Arc::new(MockStreamBackend))
+                    .register_accel_device(0, Arc::new(ViommuHoldingBackend(viommu.clone())))
                     .expect("register backend")
             })
             .collect();
-        dev.shared_state
-            .register_invalidation_sink(Arc::new(DropTrackingSink(sink_dropped.clone())));
+        // Only the backends hold it now.
+        drop(viommu);
 
         // One device left: the vIOMMU is still needed.
         dev.shared_state.unregister_accel_device(ids[0]);
-        assert!(!sink_dropped.load(Ordering::Relaxed));
+        assert!(!dropped.load(Ordering::Relaxed));
 
         dev.shared_state.unregister_accel_device(ids[1]);
-        assert!(sink_dropped.load(Ordering::Relaxed));
+        assert!(dropped.load(Ordering::Relaxed));
 
-        // With no sink, a batch is silently dropped rather than faulting.
+        // An unreachable vIOMMU drops batches silently rather than faulting.
         let devices = dev.shared_state.lock_accel_devices();
         assert!(SmmuSharedState::invalidate(&devices, &[[0, 0]]).is_ok());
     }
@@ -3031,7 +3049,7 @@ mod tests {
             locked_during_invalidate: AtomicBool,
         }
 
-        impl crate::shared::AcceleratedInvalidationSink for LockObservingSink {
+        impl crate::shared::AcceleratedViommu for LockObservingSink {
             fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
                 let shared = self.shared.upgrade().expect("SMMU shared state");
                 self.locked_during_invalidate
@@ -3059,7 +3077,7 @@ mod tests {
             shared: Arc::downgrade(&dev.shared_state),
             locked_during_invalidate: AtomicBool::new(false),
         });
-        dev.shared_state.register_invalidation_sink(sink.clone());
+        dev.shared_state.register_viommu(&sink);
 
         write_cmdq_entry(&dev, 0, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0));
         write_cmdq_entry(&dev, 1, &sync_entry());
@@ -3164,7 +3182,7 @@ mod tests {
     fn make_accel_cmdq_test_device() -> (SmmuDevice, Arc<MockInvalidationSink>) {
         let dev = make_cmdq_test_device();
         let sink = MockInvalidationSink::new();
-        dev.shared_state.register_invalidation_sink(sink.clone());
+        dev.shared_state.register_viommu(&sink);
         (dev, sink)
     }
 
@@ -3420,7 +3438,7 @@ mod tests {
 
         let sink = MockInvalidationSink::new();
         sink.set_accept_limit(1);
-        dev.shared_state.register_invalidation_sink(sink);
+        dev.shared_state.register_viommu(&sink);
 
         dev.guest_memory
             .write_plain(

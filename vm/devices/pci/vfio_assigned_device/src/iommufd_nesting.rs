@@ -8,7 +8,7 @@
 //! and page tables. The SMMU emulator decodes the guest's CMDQ commands and
 //! dispatches a [`smmu::StreamConfig`] to this module via the per-device
 //! [`smmu::AcceleratedStreamBackend`] trait, and forwards batched invalidation
-//! commands via the per-vIOMMU [`smmu::AcceleratedInvalidationSink`] trait,
+//! commands via the per-vIOMMU [`smmu::AcceleratedViommu`] trait,
 //! both of which program the host IOMMU hardware.
 //!
 //! # Architecture
@@ -31,7 +31,7 @@
 //!
 //! - [`SmmuAccelState`]: per-SMMU iommufd objects (vIOMMU). Created lazily on
 //!   first VFIO device attachment. Shared across all devices behind the same
-//!   SMMU. Implements [`smmu::AcceleratedInvalidationSink`]: invalidation is
+//!   SMMU. Implements [`smmu::AcceleratedViommu`]: invalidation is
 //!   vIOMMU-scoped, so one batched `IOMMU_HWPT_INVALIDATE` per guest command
 //!   covers every stream behind the SMMU.
 //! - [`IommufdStreamBackend`]: per-device stream backend. Created during VFIO
@@ -559,7 +559,7 @@ impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
     }
 }
 
-impl smmu::AcceleratedInvalidationSink for SmmuAccelState {
+impl smmu::AcceleratedViommu for SmmuAccelState {
     fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
         // Forward the batch of raw 128-bit CMDQ entries to the host as a single
         // ordered `IOMMU_HWPT_INVALIDATE` on this vIOMMU. Each entry is a
