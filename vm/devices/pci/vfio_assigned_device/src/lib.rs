@@ -229,7 +229,6 @@ pub(crate) struct VfioAssignedPciDevice {
     /// behind an accel-capable SMMU. Owns the StreamID derived from the guest
     /// RequesterID seen on routed config-space writes, and every host object
     /// keyed by it. Dropped when this device is removed or hot-unplugged.
-    #[inspect(skip)]
     accel_stream: Option<iommufd_nesting::AccelStream>,
 }
 
