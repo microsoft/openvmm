@@ -547,8 +547,6 @@ impl Ghcb {
         page_table[PT_INDEX] = pte_for_pfn(page_number, true);
 
         flush_tlb();
-        // Evict the page from the cache before changing the encrypted state.
-        cache_lines_flush_page(GHCB_GVA.into_bits());
 
         // Unaccept the page, invalidates page state.
         pvalidate(page_number, GHCB_GVA.into_bits(), false, false).expect("memory unaccept");

@@ -12,6 +12,8 @@
 mod tests;
 
 use anyhow::Context;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
@@ -183,10 +185,10 @@ async fn send_eject_complete<M: RingMem>(
 pub trait MemoryAccess: Send {
     /// Returns the base GPA of the allocated MMIO space.
     fn gpa(&mut self) -> u64;
-    /// Reads a 32-bit value from the given address.
-    fn read(&mut self, addr: u64) -> u32;
-    /// Writes a 32-bit value to the given address.
-    fn write(&mut self, addr: u64, value: u32);
+    /// Reads a 1-, 2-, or 4-byte value from the given address.
+    fn read(&mut self, addr: u64, data: &mut [u8]);
+    /// Writes a 1-, 2-, or 4-byte value to the given address.
+    fn write(&mut self, addr: u64, data: &[u8]);
 }
 
 /// The amount of MMIO space required by the VPCI bus.
@@ -274,35 +276,45 @@ impl ConfigSpaceAccessor {
         if id.slot != self.current_slot {
             self.mem.write(
                 self.base_gpa + protocol::MMIO_PAGE_SLOT_NUMBER,
-                id.slot.into(),
+                &u32::from(id.slot).to_ne_bytes(),
             );
             self.current_slot = id.slot;
         }
         true
     }
 
-    fn read(&mut self, id: DeviceId, offset: u16) -> u32 {
+    /// Reads a value from the configuration space of the given device.
+    /// Offset must be u32 aligned.
+    fn read(&mut self, id: DeviceId, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         if !self.set_slot(id) {
             tracelimit::warn_ratelimited!(?id, offset, "device is gone, ignoring cfg read");
-            return !0;
+            value.set(!0);
+            return;
         }
-        let value = self
-            .mem
-            .read(self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64);
-        tracing::trace!(?id, offset, value, "host config space read");
-        value
+        let (byte_offset, _) = value.byte_enable().to_byte_offset_len();
+        let addr = self.base_gpa
+            + protocol::MMIO_PAGE_CONFIG_SPACE
+            + (offset as u64)
+            + (byte_offset as u64);
+        self.mem
+            .read(addr, value.reborrow().into_valid_byte_slice());
+        tracing::trace!(?id, offset, ?value, "host config space read");
     }
 
-    fn write(&mut self, id: DeviceId, offset: u16, value: u32) {
+    /// Writes a value to the configuration space of the given device.
+    /// Offset must be u32 aligned.
+    fn write(&mut self, id: DeviceId, offset: u16, value: ByteEnabledDwordWrite) {
         if !self.set_slot(id) {
             tracelimit::warn_ratelimited!(?id, offset, "device is gone, ignoring cfg write");
             return;
         }
-        tracing::trace!(?id, offset, value, "host config space write");
-        self.mem.write(
-            self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64,
-            value,
-        );
+        tracing::trace!(?id, offset, ?value, "host config space write");
+        let (byte_offset, _) = value.byte_enable().to_byte_offset_len();
+        let addr = self.base_gpa
+            + protocol::MMIO_PAGE_CONFIG_SPACE
+            + (offset as u64)
+            + (byte_offset as u64);
+        self.mem.write(addr, value.as_valid_byte_slice());
     }
 }
 
@@ -431,29 +443,40 @@ impl VpciDevice {
     /// Reads device configuration space.
     ///
     /// Some values will be handled without communicating with the host.
-    pub fn read_cfg(&self, offset: u16) -> u32 {
+    /// Offset must be u32 aligned.
+    pub fn read_cfg(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
         // For static values, return values from the device's description.
-        let value = match HeaderType00(offset) {
+        match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
                 let shadows = self.shadows.lock();
-                let status_command = self.config_space.lock().read(self.dev.id, offset);
+                self.config_space
+                    .lock()
+                    .read(self.dev.id, offset, value.reborrow());
                 // Preserve the MMIO enabled bit in the command register, since
                 // Hyper-V does not always emulate it correctly for reads.
                 let mask = u32::from(u16::from(Command::new().with_mmio_enabled(true)));
-                (status_command & !mask) | (u32::from(u16::from(shadows.command)) & mask)
+                if value.valid_mask() & mask != 0 {
+                    value.set(
+                        (value.extract() & !mask) | (u32::from(u16::from(shadows.command)) & mask),
+                    );
+                }
             }
             HeaderType00::DEVICE_VENDOR => {
-                (self.hw_ids.vendor_id as u32) | ((self.hw_ids.device_id as u32) << 16)
+                value.set_low_high(self.hw_ids.vendor_id, self.hw_ids.device_id);
             }
             HeaderType00::CLASS_REVISION => {
-                (self.hw_ids.revision_id as u32)
-                    | ((self.hw_ids.prog_if.0 as u32) << 8)
-                    | ((self.hw_ids.sub_class.0 as u32) << 16)
-                    | ((self.hw_ids.base_class.0 as u32) << 24)
+                value.set_bytes(
+                    self.hw_ids.revision_id,
+                    self.hw_ids.prog_if.0,
+                    self.hw_ids.sub_class.0,
+                    self.hw_ids.base_class.0,
+                );
             }
             HeaderType00::SUBSYSTEM_ID => {
-                (self.hw_ids.type0_sub_vendor_id as u32)
-                    | ((self.hw_ids.type0_sub_system_id as u32) << 16)
+                value.set_low_high(
+                    self.hw_ids.type0_sub_vendor_id,
+                    self.hw_ids.type0_sub_system_id,
+                );
             }
             HeaderType00::BAR0
             | HeaderType00::BAR1
@@ -465,28 +488,32 @@ impl VpciDevice {
                 // BAR reads. Return the shadowed value.
                 let shadows = self.shadows.lock();
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
-                shadows.bars[i] | self.bar_rao[i]
+                value.set(shadows.bars[i] | self.bar_rao[i]);
             }
-            _ => self.config_space.lock().read(self.dev.id, offset),
+            _ => self
+                .config_space
+                .lock()
+                .read(self.dev.id, offset, value.reborrow()),
         };
-        tracing::trace!(?offset, value, "config space read");
-        value
+        tracing::trace!(?offset, ?value, "config space read");
     }
 
     /// Writes device configuration space.
-    pub fn write_cfg(&self, offset: u16, value: u32) {
-        tracing::trace!(?offset, value, "config space write");
+    /// Offset must be u32 aligned.
+    pub fn write_cfg(&self, offset: u16, value: ByteEnabledDwordWrite) {
+        tracing::trace!(?offset, ?value, "config space write");
         let mut shadows = self.shadows.lock();
         let shadows = &mut *shadows;
         let mut accessor = self.config_space.lock();
         match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
-                let new_command = Command::from(value as u16);
+                let new_command = Command::from(value.merge_low(shadows.command.into_bits()));
                 if new_command.mmio_enabled() && !shadows.command.mmio_enabled() {
                     // Flush the BAR shadow to the device.
                     for (i, &bar) in shadows.bars.iter().enumerate() {
                         let bar_offset = HeaderType00::BAR0.0 + (i as u16 * 4);
-                        accessor.write(self.dev.id, bar_offset, bar);
+                        let write_dword = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
+                        accessor.write(self.dev.id, bar_offset, write_dword);
                     }
                 }
                 shadows.command = new_command;
@@ -501,7 +528,8 @@ impl VpciDevice {
                 // is enabled to avoid wasting time writing probe values to the
                 // host.
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
-                shadows.bars[i] = value & self.bar_masks[i] | self.bar_rao[i];
+                let new_bar_value = value.merge(shadows.bars[i]);
+                shadows.bars[i] = new_bar_value & self.bar_masks[i] | self.bar_rao[i];
                 return;
             }
             _ => {}

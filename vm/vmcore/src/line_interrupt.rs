@@ -110,7 +110,7 @@ impl Inspect for LineInterruptInner {
             })
             .child("lines", |req| {
                 let mut resp = req.respond();
-                for (_, line) in self.lines.iter() {
+                for line in self.lines.values() {
                     resp.field(&line.debug_label, line.is_high);
                 }
             });

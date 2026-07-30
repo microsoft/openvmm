@@ -849,7 +849,7 @@ pub mod x86_64 {
             .enumerate()
         {
             cpuid_page.cpuid_leaf_info[i].eax_in = required_leaf.eax;
-            cpuid_page.cpuid_leaf_info[i].eax_out = required_leaf.ecx;
+            cpuid_page.cpuid_leaf_info[i].ecx_in = required_leaf.ecx;
             cpuid_page.count += 1;
         }
 

@@ -994,8 +994,10 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
     ) -> Result<guestmem::LockedPages, HvError> {
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
         self.0
-            .lock_gpns(false, &[gpn])
+            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
             .map_err(|_| HvError::OperationFailed)
     }
 
@@ -2840,6 +2842,8 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_msr_tdx(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let state = &mut self.backing.vtls[vtl].private_regs;
 
         match msr {

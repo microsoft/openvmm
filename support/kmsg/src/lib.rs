@@ -185,7 +185,12 @@ impl<'a> SyslogParsedEntry<'a> {
         let s = s.strip_prefix('[')?;
         let (secs, s) = s.trim_start().split_once('.')?;
         let (usecs, s) = s.split_once(']')?;
-        let time = Duration::new(secs.parse().ok()?, usecs.parse::<u32>().ok()? * 1000);
+        let secs = secs.parse().ok()?;
+        let usecs = usecs.parse::<u32>().ok()?;
+        if usecs >= 1_000_000 {
+            return None;
+        }
+        let time = Duration::new(secs, usecs * 1000);
 
         Some(SyslogParsedEntry {
             _facility: facility,

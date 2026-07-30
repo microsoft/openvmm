@@ -14,6 +14,8 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
@@ -172,7 +174,7 @@ impl PortIoIntercept for MissingDev {
 }
 
 impl PciConfigSpace for MissingDev {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         let pci = self.pci.as_ref().unwrap();
 
         pci_core::cfg_space_emu::ConfigSpaceType0Emulator::new(
@@ -190,10 +192,10 @@ impl PciConfigSpace for MissingDev {
             vec![],
             pci_core::cfg_space_emu::DeviceBars::new(),
         )
-        .read_u32(offset, value)
+        .read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> IoResult {
         IoResult::Ok
     }
 

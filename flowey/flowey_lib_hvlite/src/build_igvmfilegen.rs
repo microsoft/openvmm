@@ -48,6 +48,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -63,6 +64,26 @@ impl FlowNode for Node {
                 m
             });
 
+        // `crypto`'s vendored OpenSSL build needs the headers and perl.
+        let ssl_pkgs: Vec<String> = match ctx.platform() {
+            FlowPlatform::Linux(distro) => match distro {
+                FlowPlatformLinuxDistro::Ubuntu => vec!["libssl-dev".into()],
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
+                    vec!["openssl-devel".into(), "perl".into()]
+                }
+                FlowPlatformLinuxDistro::Arch => vec!["openssl".into(), "perl".into()],
+                FlowPlatformLinuxDistro::Nix => Vec::new(),
+                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            },
+            _ => Vec::new(),
+        };
+        let ssl_dep = (!ssl_pkgs.is_empty()).then(|| {
+            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                package_names: ssl_pkgs,
+                done: v,
+            })
+        });
+
         for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "igvmfilegen".into(),
@@ -73,7 +94,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps: Vec::new(),
+                pre_build_deps: ssl_dep.clone().into_iter().collect(),
                 output: v,
             });
 

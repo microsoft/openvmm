@@ -147,7 +147,9 @@ impl Pkcs7SignedDataInner {
 
         // Build a fresh CERT_CONTEXT from the DER so we can attach the
         // ephemeral key without mutating the caller's certificate.
-        let cert_der = cert.to_der().map_err(|e| crate::rsa::RsaError(e.0))?;
+        let cert_der = cert
+            .to_der()
+            .map_err(|e| crate::rsa::RsaError(crate::x509::win::backend_err(e)))?;
         // SAFETY: cert_der is a valid DER X.509 byte slice.
         let ctx_ptr = unsafe { CertCreateCertificateContext(X509_ASN_ENCODING, &cert_der) };
         let ctx_ptr = NonNull::new(ctx_ptr).ok_or_else(|| {
@@ -231,7 +233,7 @@ impl Pkcs7SignedDataInner {
         .map_err(|e| rsa_err(e, "CryptSignMessage"))?;
         out.truncate(needed as usize);
 
-        Self::from_der(&out).map_err(|e| crate::rsa::RsaError(e.0))
+        Self::from_der(&out).map_err(|Pkcs7Error(e)| crate::rsa::RsaError(e))
     }
 
     pub fn embedded_certificates(&self) -> Result<Vec<X509Certificate>, Pkcs7Error> {
@@ -239,7 +241,10 @@ impl Pkcs7SignedDataInner {
         let mut out = Vec::with_capacity(count as usize);
         for i in 0..count {
             let der = get_param_bytes(&self.msg, CMSG_CERT_PARAM, i)?;
-            out.push(X509Certificate::from_der(&der).map_err(|e| Pkcs7Error(e.0))?);
+            out.push(
+                X509Certificate::from_der(&der)
+                    .map_err(|e| Pkcs7Error(crate::x509::win::backend_err(e)))?,
+            );
         }
         Ok(out)
     }
@@ -284,9 +289,10 @@ impl Pkcs7SignedDataInner {
         let count: u32 = get_param_value::<u32>(&self.msg, CMSG_CERT_COUNT_PARAM, 0)?;
         for i in 0..count {
             let der = get_param_bytes(&self.msg, CMSG_CERT_PARAM, i)?;
-            let cert = X509Certificate::from_der(&der).map_err(|e| Pkcs7Error(e.0))?;
-            let (issuer, serial) =
-                extract_issuer_and_serial(&cert.0).map_err(|e| Pkcs7Error(e.0))?;
+            let cert = X509Certificate::from_der(&der)
+                .map_err(|e| Pkcs7Error(crate::x509::win::backend_err(e)))?;
+            let (issuer, serial) = extract_issuer_and_serial(&cert.0)
+                .map_err(|e| Pkcs7Error(crate::x509::win::backend_err(e)))?;
             if issuer == want_issuer && serial == want_serial {
                 return Ok((cert, signature));
             }

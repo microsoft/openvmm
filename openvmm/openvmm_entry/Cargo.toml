@@ -80,6 +80,7 @@ sparse_mmap.workspace = true
 term.workspace = true
 tracelimit.workspace = true
 tracing_helpers.workspace = true
+vmm_cli.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
@@ -89,6 +90,7 @@ fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
+parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
@@ -119,6 +121,9 @@ features = [
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

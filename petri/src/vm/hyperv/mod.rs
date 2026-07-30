@@ -90,7 +90,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
-        (firmware.quirks().hyperv, VmmQuirks::default())
+        (
+            firmware.quirks().hyperv,
+            VmmQuirks {
+                // Workaround for #3897
+                flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
+            },
+        )
     }
 
     fn default_servicing_flags() -> OpenHclServicingFlags {
@@ -391,7 +397,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             && matches!(properties.os_flavor, OsFlavor::Windows)
             && !properties.is_isolated
         {
-            let mut imc_hive_file = tempfile::NamedTempFile::new().context("creating tempfile")?;
+            let mut imc_hive_file = tempfile::Builder::new()
+                .prefix("imc-")
+                .tempfile_in(temp_dir.path())
+                .context("creating IMC hive tempfile")?;
             imc_hive_file
                 .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
                 .context("failed to write imc hive")?;
@@ -405,8 +414,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             .openhcl_config()
             .and_then(|c| c.vtl2_settings.as_ref())
         {
-            let mut vtl2_settings_file =
-                tempfile::NamedTempFile::new().context("creating tempfile")?;
+            let mut vtl2_settings_file = tempfile::Builder::new()
+                .prefix("vtl2-settings-")
+                .tempfile_in(temp_dir.path())
+                .context("creating VTL2 settings tempfile")?;
             vtl2_settings_file
                 .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
                 .context("writing settings to tempfile")?;

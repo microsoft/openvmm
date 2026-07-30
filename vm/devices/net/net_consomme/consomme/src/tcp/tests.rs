@@ -725,6 +725,28 @@ async fn test_tcp_host_to_guest_data(driver: DefaultDriver) {
     assert_eq!(tcp.payload, b"response data");
 }
 
+/// Guest-bound data segments must carry a correct TCP checksum computed over
+/// the populated payload (not skipped, not stale over a zeroed payload).
+#[pal_async::async_test]
+async fn test_tcp_guest_packet_checksum_valid(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+
+    h.clear_guest_packets();
+    h.host_write(b"checksum me").await;
+
+    let pkt = h.poll_until_guest_packet(|t| !t.payload.is_empty()).await;
+    let eth = EthernetFrame::new_unchecked(&pkt[..]);
+    let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+    let src_ip = ipv4.src_addr();
+    let dst_ip = ipv4.dst_addr();
+    let tcp_pkt = TcpPacket::new_unchecked(ipv4.payload());
+
+    assert!(
+        tcp_pkt.verify_checksum(&src_ip.into(), &dst_ip.into()),
+        "guest-bound TCP segment must have a valid checksum"
+    );
+}
+
 /// Test that a host-side EOF (shutdown write) causes consomme to send
 /// a FIN to the guest.
 #[pal_async::async_test]
@@ -1855,4 +1877,76 @@ async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
         "consomme must proactively re-advertise a non-zero window after the \
          host drains the backlog; got {window_update:?}"
     );
+}
+
+/// Verifies that the zero-copy TCP checksum computed over the header and the
+/// two payload slices — combined with the pseudo-header — matches smoltcp's
+/// contiguous checksum, for every payload split point (which exercises the
+/// odd-length `a` boundary that byte-swaps `b`).
+#[test]
+fn tcp_checksum_matches_smoltcp() {
+    use smoltcp::wire::IpAddress;
+    use smoltcp::wire::IpProtocol;
+    use smoltcp::wire::Ipv6Address;
+    use smoltcp::wire::TcpControl;
+    use smoltcp::wire::TcpPacket;
+    use smoltcp::wire::TcpRepr;
+    use smoltcp::wire::TcpSeqNumber;
+
+    let v4 = (IpAddress::v4(93, 184, 216, 34), IpAddress::v4(10, 0, 0, 2));
+    let v6 = (
+        IpAddress::Ipv6(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x1)),
+        IpAddress::Ipv6(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x2)),
+    );
+
+    for (src, dst) in [v4, v6] {
+        for payload_len in [0usize, 1, 2, 3, 4, 5, 15, 16, 17, 63, 1460] {
+            let payload: Vec<u8> = (0..payload_len).map(|i| (i * 7 + 3) as u8).collect();
+            let repr = TcpRepr {
+                src_port: 443,
+                dst_port: 51000,
+                control: TcpControl::None,
+                seq_number: TcpSeqNumber(0x1234_5678),
+                ack_number: Some(TcpSeqNumber(0x7654_4321)),
+                window_len: 65535,
+                window_scale: None,
+                max_seg_size: None,
+                sack_permitted: false,
+                sack_ranges: [None, None, None],
+                timestamp: None,
+                payload: &payload,
+            };
+            let mut buf = vec![0u8; repr.buffer_len()];
+            let mut pkt = TcpPacket::new_unchecked(&mut buf);
+            repr.emit(&mut pkt, &src, &dst, &Default::default());
+            pkt.set_checksum(0);
+            pkt.fill_checksum(&src, &dst);
+            let reference = pkt.checksum();
+
+            let header_len = pkt.header_len() as usize;
+            pkt.set_checksum(0);
+            for split in 0..=payload_len {
+                let (a, b) = payload.split_at(split);
+                let got = !checksum::combine(&[
+                    checksum::pseudo_header(
+                        &src,
+                        &dst,
+                        IpProtocol::Tcp,
+                        (header_len + payload_len) as u32,
+                    ),
+                    checksum::data(&pkt.as_ref()[..header_len]),
+                    checksum::data(a),
+                    if a.len() % 2 == 0 {
+                        checksum::data(b)
+                    } else {
+                        checksum::data(b).swap_bytes()
+                    },
+                ]);
+                assert_eq!(
+                    got, reference,
+                    "checksum mismatch: payload_len={payload_len} split={split}"
+                );
+            }
+        }
+    }
 }

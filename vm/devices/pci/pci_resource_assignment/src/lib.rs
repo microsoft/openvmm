@@ -23,6 +23,10 @@ mod tests;
 /// Compute the devfn byte from a device number and function number.
 ///
 /// This is the standard PCI encoding: `(device << 3) | function`.
+///
+/// For an ARI Device the Device Number field is eliminated: `device` is 0 and
+/// `function` is the full 8-bit ARI Function Number, so this still yields the
+/// correct config-space devfn byte (`(0 << 3) | function == function`).
 pub fn devfn(device: u8, function: u8) -> u8 {
     (device << 3) | function
 }

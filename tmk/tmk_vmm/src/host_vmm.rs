@@ -44,6 +44,7 @@ impl RunContext<'_> {
                 hv_config: None,
                 vmtime: self.vmtime_source,
                 isolation: virt::IsolationType::None,
+                nested_virt: false,
             })
             .context("failed to create proto partition")?;
 
@@ -55,6 +56,7 @@ impl RunContext<'_> {
                 guest_memory: &guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
+                fault_resolver: None,
             })
             .context("failed to build partition")?;
 

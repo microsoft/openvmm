@@ -70,7 +70,7 @@ pub mod hyperv {
                 .trim();
             Ok(stdout
                 .parse()
-                .with_context(|| format!("failed to parse VM ID '{}'", &stdout))?)
+                .with_context(|| format!("failed to parse VM ID '{}'", stdout))?)
         } else {
             anyhow::bail!(
                 "{}",

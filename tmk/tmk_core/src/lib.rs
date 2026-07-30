@@ -12,6 +12,7 @@ pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 use aarch64 as arch;
+use tmk_protocol::TestFlags64;
 #[cfg(target_arch = "x86_64")]
 use x86_64 as arch;
 
@@ -143,7 +144,7 @@ unsafe extern "C" {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! define_tmk_test {
-    ($name:expr, $func:ident) => {
+    ($name:expr, $func:ident, $flags:expr) => {
         const _: () = {
             // Strip the crate name from the module path.
             const NAME: &[u8] = const {
@@ -162,6 +163,7 @@ macro_rules! define_tmk_test {
             static TEST: $crate::TestDescriptor = $crate::TestDescriptor {
                 name: NAME,
                 entrypoint: $func,
+                flags: $flags,
             };
         };
     };
@@ -176,6 +178,8 @@ pub struct TestDescriptor {
     pub name: &'static [u8],
     /// The test entry point.
     pub entrypoint: for<'scope> fn(TestContext<'scope>),
+    /// Test flags
+    pub flags: TestFlags64,
 }
 
 #[cfg_attr(minimal_rt, panic_handler)]

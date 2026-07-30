@@ -318,7 +318,8 @@ fn create_request(
         let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
             .with_retry(true)
-            .with_skip_hw_unsealing(true);
+            .with_skip_hw_unsealing(true)
+            .with_use_rsa_aes_key_wrap_384(true);
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }

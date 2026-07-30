@@ -13,6 +13,7 @@ use crate::QueueResources;
 use crate::VirtioDevice;
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::spec::pci::*;
@@ -20,8 +21,13 @@ use crate::spec::queue::*;
 use crate::spec::*;
 use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
+use chipset_device::io::IoError;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
 use futures::StreamExt;
@@ -527,26 +533,41 @@ impl VirtioTestGuest {
     ) {
         let bar_address1: u64 = 0x10000000000;
         dev.pci_device
-            .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+            .pci_cfg_write(
+                0x14,
+                ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+            )
             .unwrap();
         dev.pci_device
-            .pci_cfg_write(0x10, bar_address1 as u32)
+            .pci_cfg_write(
+                0x10,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+            )
             .unwrap();
 
         let bar_address2: u64 = 0x20000000000;
         dev.pci_device
-            .pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
+            .pci_cfg_write(
+                0x1c,
+                ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+            )
             .unwrap();
         dev.pci_device
-            .pci_cfg_write(0x18, bar_address2 as u32)
+            .pci_cfg_write(
+                0x18,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+            )
             .unwrap();
 
         dev.pci_device
             .pci_cfg_write(
                 0x4,
-                cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
+                ByteEnabledDwordWrite::new(
+                    cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                    PciConfigByteEnable::LOW_WORD,
+                ),
             )
             .unwrap();
 
@@ -618,7 +639,12 @@ impl VirtioTestGuest {
                 .unwrap();
         }
         // enable all device MSI interrupts
-        dev.pci_device.pci_cfg_write(0x40, 0x80000000).unwrap();
+        dev.pci_device
+            .pci_cfg_write(
+                0x40,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+            )
+            .unwrap();
         // run device — use the write_u32 test helper to bypass MmioIntercept
         // stall/deferred logic.
         let current = dev.pci_device.read_u32(20);
@@ -1278,8 +1304,16 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
-        0
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        // Return a recognizable, offset-encoded value: the byte at
+        // device-config offset `N` reads back as `N`. This lets tests verify
+        // the positioning of device-config accesses routed through this task.
+        u32::from_le_bytes([
+            offset as u8,
+            offset.wrapping_add(1) as u8,
+            offset.wrapping_add(2) as u8,
+            offset.wrapping_add(3) as u8,
+        ])
     }
 
     async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
@@ -1389,6 +1423,16 @@ impl VirtioPciTestDevice {
         test_mem: &Arc<VirtioTestMemoryAccess>,
         queue_work: Option<TestDeviceQueueWorkFn>,
     ) -> Self {
+        Self::new_with_register_length(driver, num_queues, test_mem, queue_work, 12)
+    }
+
+    fn new_with_register_length(
+        driver: &DefaultDriver,
+        num_queues: u16,
+        test_mem: &Arc<VirtioTestMemoryAccess>,
+        queue_work: Option<TestDeviceQueueWorkFn>,
+        device_register_length: u32,
+    ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
         let msi_conn = MsiConnection::new();
@@ -1403,7 +1447,7 @@ impl VirtioPciTestDevice {
                         .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                         .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
-                    device_register_length: 12,
+                    device_register_length,
                     ..Default::default()
                 },
                 queue_work,
@@ -1617,7 +1661,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut capabilities = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(4, &mut capabilities)
+        .pci_cfg_read(
+            4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut capabilities),
+        )
         .unwrap();
     assert_eq!(
         capabilities,
@@ -1629,14 +1676,20 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut next_cap_offset = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(0x34, &mut next_cap_offset)
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut next_cap_offset),
+        )
         .unwrap();
     assert_ne!(next_cap_offset, 0);
 
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::MSIX.0);
@@ -1646,7 +1699,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1656,17 +1712,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
 
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x38);
     next_cap_offset = header[1] as u32;
@@ -1675,7 +1740,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1683,17 +1751,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 20);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x38);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 4);
     next_cap_offset = header[1] as u32;
@@ -1702,7 +1779,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1710,17 +1790,26 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x3c);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 4);
     next_cap_offset = header[1] as u32;
@@ -1729,7 +1818,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
     let mut header = 0;
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16, &mut header)
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
@@ -1737,21 +1829,436 @@ async fn verify_pci_config(driver: DefaultDriver) {
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 4, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 8, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 0x40);
     pci_test_device
         .pci_device
-        .pci_cfg_read(next_cap_offset as u16 + 12, &mut buf)
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
         .unwrap();
     assert_eq!(buf, 12);
     next_cap_offset = header[1] as u32;
+    assert_ne!(next_cap_offset, 0);
+
+    // The final capability is VIRTIO_PCI_CAP_PCI_CFG (the PCI configuration
+    // access capability). Its length is 20 bytes: the 16-byte virtio_pci_cap
+    // header plus the trailing 4-byte pci_cfg_data window.
+    let mut header = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+    let header = header.to_le_bytes();
+    assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
+    assert_eq!(header[3], VirtioPciCapType::PCI_CFG.0);
+    assert_eq!(header[2], 20);
+    // bar/id/offset/length are all zero until the driver programs them.
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    next_cap_offset = header[1] as u32;
     assert_eq!(next_cap_offset, 0);
+}
+
+/// Walk the capability list and return the config-space offset of the
+/// VIRTIO_PCI_CAP_PCI_CFG capability (identified by cfg_type == PCI_CFG).
+fn find_pci_cfg_cap_offset(dev: &mut VirtioPciDevice) -> u16 {
+    let mut next = 0;
+    dev.pci_cfg_read(
+        0x34,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut next),
+    )
+    .unwrap();
+    while next != 0 {
+        let mut header = 0;
+        dev.pci_cfg_read(
+            next as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 && header[3] == VirtioPciCapType::PCI_CFG.0
+        {
+            return next as u16;
+        }
+        next = header[1] as u32;
+    }
+    panic!("VIRTIO_PCI_CAP_PCI_CFG capability not found");
+}
+
+/// Exercise the VIRTIO_PCI_CAP_PCI_CFG `pci_cfg_data` window: program the
+/// bar/offset/length fields via config space, then read/write BAR regions
+/// through the window and confirm the accesses reach the same registers as
+/// direct MMIO.
+#[async_test]
+async fn verify_pci_cfg_access_window(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Program the window to point at BAR0 offset 0 (device_feature_select), a
+    // 4-byte access.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    // Reading the window returns the current device_feature_select (0).
+    let mut val = 0xdead_beef;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 0);
+
+    // Writing the window updates device_feature_select; a direct MMIO read of
+    // the same register must observe the change.
+    dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap();
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 2);
+
+    // Verify the write went to the real register by mapping BAR0 and reading
+    // device_feature_select directly.
+    let bar_address1: u64 = 0x2000000000;
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x4,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
+    )
+    .unwrap();
+    let mut mmio = [0u8; 4];
+    dev.mmio_read(bar_address1, &mut mmio).unwrap();
+    assert_eq!(u32::from_le_bytes(mmio), 2);
+
+    // An invalid length (per spec must be 1, 2, or 4) is rejected with an
+    // access-size error; a non-multiple offset is rejected as unaligned. Both
+    // paths return an error without panicking.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(3))
+        .unwrap(); // length = 3 (invalid)
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+
+    // A valid length with a misaligned offset is rejected as unaligned.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::UnalignedAccess)
+    ));
+}
+
+/// A `pci_cfg_data` access whose `cap.offset`/`cap.length` falls outside the
+/// selected BAR must be rejected as `InvalidRegister`, rather than truncating
+/// the offset to `u16` or routing past the end of the BAR.
+#[async_test]
+async fn verify_pci_cfg_access_window_bounds(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // A BAR0 offset far past the end of the transport + device-config region.
+    // This value fits in a u16, so it exercises the BAR-size check rather than
+    // the u16 bound.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0xf000),
+    )
+    .unwrap(); // offset = 0xf000
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+
+    // A BAR that the window cannot reach is rejected as well.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(1))
+        .unwrap(); // bar = 1
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+}
+
+/// Regression test for sub-dword (`cap.length` < 4) accesses through the
+/// `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
+///
+/// Per the virtio spec (4.1.4.9.1) the device stores/uses the *first*
+/// `cap.length` bytes of `pci_cfg_data`, regardless of how `cap.offset` is
+/// aligned within its containing DWORD. So a 2-byte access at a BAR offset
+/// whose low bits are `2` must still land in the low two bytes of
+/// `pci_cfg_data` — not bytes 2..4.
+#[async_test]
+async fn verify_pci_cfg_access_window_subdword(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Seed device_feature_select (a 4-byte BAR0 register at offset 0) so its
+    // upper 16 bits hold a recognizable value.
+    dev.write_u32(0, 0xbbbb_aaaa);
+
+    // Program the window for a 2-byte access at BAR0 offset 2 (the upper half
+    // of device_feature_select); `offset & 3 == 2`.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    // A read through the window must return the accessed bytes in the low two
+    // bytes of pci_cfg_data.
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(
+        val & 0xffff,
+        0xbbbb,
+        "read data must occupy the first cap.length bytes of pci_cfg_data (got {val:#010x})",
+    );
+
+    // A write through the window must take its value from the low two bytes of
+    // pci_cfg_data and store it at BAR0 offset 2.
+    dev.pci_cfg_write(
+        data_off,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0x0000_cccc),
+    )
+    .unwrap();
+    assert_eq!(
+        dev.read_u32(0) >> 16,
+        0xcccc,
+        "written data must be taken from the first cap.length bytes of pci_cfg_data",
+    );
+}
+
+/// Exercise the *deferred* device-config path of the `pci_cfg_data` window.
+///
+/// Device-specific config registers are owned by the async device task, so an
+/// access through the window at `cap.offset >= BAR0_DEVICE_CFG_OFFSET` is
+/// deferred. The PCI config bus polls the deferred read with a 4-byte dword
+/// buffer, so the completion must be a full dword with the accessed
+/// `cap.length` bytes left-aligned into the low bytes of `pci_cfg_data`.
+///
+/// The test device reports byte `N` at device-config offset `N`.
+#[async_test]
+async fn verify_pci_cfg_access_window_deferred(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Device config starts after the common (56), notify (4), and ISR (4)
+    // regions in BAR0.
+    const DEVICE_CFG_BAR0_OFFSET: u32 = 56 + 4 + 4;
+
+    // Point the window at BAR0 (bar = 0, id = 0).
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+
+    // Aligned 4-byte read at device-config offset 0 => bytes [0, 1, 2, 3].
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET),
+    )
+    .unwrap(); // offset = device cfg + 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(buf, [0, 1, 2, 3]);
+
+    // Sub-dword 2-byte read at device-config offset 2 (`offset & 3 == 2`). The
+    // accessed bytes [2, 3] must land in the low two bytes of pci_cfg_data.
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET + 2),
+    )
+    .unwrap(); // offset = device cfg + 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(
+        u32::from_le_bytes(buf) & 0xffff,
+        0x0302,
+        "deferred device-config bytes must be left-aligned in pci_cfg_data",
+    );
+}
+
+#[async_test]
+async fn verify_pci_config_no_device_cfg(driver: DefaultDriver) {
+    // A virtio device with no device-specific config (device_register_length == 0)
+    // must not emit a DEVICE_CFG capability, since a zero-length virtio capability
+    // is rejected by drivers (e.g. Linux: "virtio_pci: bad capability len 0").
+    let mut pci_test_device = VirtioPciTestDevice::new_with_register_length(
+        &driver,
+        1,
+        &VirtioTestMemoryAccess::new(),
+        None,
+        0,
+    );
+
+    // Walk the PCI capability list and ensure no DEVICE_CFG virtio capability
+    // is present.
+    let mut next_cap_offset = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut next_cap_offset),
+        )
+        .unwrap();
+    assert_ne!(next_cap_offset, 0);
+
+    while next_cap_offset != 0 {
+        let mut header = 0;
+        pci_test_device
+            .pci_device
+            .pci_cfg_read(
+                next_cap_offset as u16,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+            )
+            .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 {
+            assert_ne!(
+                header[3],
+                VirtioPciCapType::DEVICE_CFG.0,
+                "DEVICE_CFG capability must not be emitted when device_register_length is 0"
+            );
+        }
+        next_cap_offset = header[1] as u32;
+    }
 }
 
 #[async_test]
@@ -1761,30 +2268,45 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     let bar_address1: u64 = 0x2000000000;
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+        .pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+        )
         .unwrap();
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x10, bar_address1 as u32)
+        .pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+        )
         .unwrap();
 
     let bar_address2: u64 = 0x4000;
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
+        .pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+        )
         .unwrap();
     pci_test_device
         .pci_device
-        .pci_cfg_write(0x18, bar_address2 as u32)
+        .pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+        )
         .unwrap();
 
     pci_test_device
         .pci_device
         .pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
 
@@ -2898,20 +3420,37 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     .unwrap();
 
     let bar_address1: u64 = 0x10000000000;
-    dev.pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
-        .unwrap();
-    dev.pci_cfg_write(0x10, bar_address1 as u32).unwrap();
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+    )
+    .unwrap();
 
     let bar_address2: u64 = 0x20000000000;
-    dev.pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
-        .unwrap();
-    dev.pci_cfg_write(0x18, bar_address2 as u32).unwrap();
+    dev.pci_cfg_write(
+        0x1c,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x18,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+    )
+    .unwrap();
 
     dev.pci_cfg_write(
         0x4,
-        cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
     )
     .unwrap();
 
@@ -2957,7 +3496,11 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     dev.mmio_write(bar_address1 + 28, &1u16.to_le_bytes())
         .unwrap();
     // Enable all MSI interrupts
-    dev.pci_cfg_write(0x40, 0x80000000).unwrap();
+    dev.pci_cfg_write(
+        0x40,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+    )
+    .unwrap();
 
     // Attempt DRIVER_OK — enable() will fail (use write_u32 to bypass deferred IO)
     let current = dev.read_u32(20);
@@ -3727,19 +4270,37 @@ impl PciTestTransport {
         .unwrap();
 
         let bar_address: u64 = 0x10000000000;
-        dev.pci_cfg_write(0x14, (bar_address >> 32) as u32).unwrap();
-        dev.pci_cfg_write(0x10, bar_address as u32).unwrap();
+        dev.pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address >> 32) as u32),
+        )
+        .unwrap();
+        dev.pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address as u32),
+        )
+        .unwrap();
 
         let bar_address2: u64 = 0x20000000000;
-        dev.pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
-            .unwrap();
-        dev.pci_cfg_write(0x18, bar_address2 as u32).unwrap();
+        dev.pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address2 >> 32) as u32),
+        )
+        .unwrap();
+        dev.pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address2 as u32),
+        )
+        .unwrap();
 
         dev.pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
 
@@ -3786,7 +4347,11 @@ impl PciTestTransport {
             dev.mmio_write(bar_address + 28, &1u16.to_le_bytes())
                 .unwrap();
         }
-        dev.pci_cfg_write(0x40, 0x80000000).unwrap();
+        dev.pci_cfg_write(
+            0x40,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+        )
+        .unwrap();
 
         Self { dev }
     }
@@ -3981,13 +4546,24 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
     .unwrap();
 
     let bar_address: u64 = 0x10000000000;
-    dev.pci_cfg_write(0x14, (bar_address >> 32) as u32).unwrap();
-    dev.pci_cfg_write(0x10, bar_address as u32).unwrap();
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address as u32),
+    )
+    .unwrap();
     dev.pci_cfg_write(
         0x4,
-        cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
     )
     .unwrap();
 
@@ -4344,17 +4920,26 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     // Configure BARs on the target device so doorbells can be registered.
     let bar_address1: u64 = 0x10000000000;
     dev2.pci_device
-        .pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+        .pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+        )
         .unwrap();
     dev2.pci_device
-        .pci_cfg_write(0x10, bar_address1 as u32)
+        .pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+        )
         .unwrap();
     dev2.pci_device
         .pci_cfg_write(
             0x4,
-            cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+            ByteEnabledDwordWrite::new(
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+                PciConfigByteEnable::LOW_WORD,
+            ),
         )
         .unwrap();
     // Reset counter to isolate restore behavior.
@@ -4575,4 +5160,631 @@ async fn stop_during_failed_enable_resets_config_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
     verify_stop_during_failed_enable_resets_config(&mut transport).await;
+}
+
+/// Test for the `write_at_offset` address-overflow hardening gap.
+///
+/// The readable-payload reader (`read_from_payload_at_offset`) uses
+/// `saturating_add` so a guest-supplied descriptor address that overflows when
+/// the device's write offset is added lands out of range instead of wrapping
+/// to a low GPA. The writable path (`write_at_offset`) uses a plain `+`, so a
+/// descriptor whose `address + offset` overflows `u64` either panics (debug)
+/// or wraps into an unrelated low guest page (release), corrupting memory the
+/// request never described.
+///
+/// Here a writable descriptor sits at `u64::MAX - 0x800` and the device writes
+/// at offset `0x900`, so `address + offset` wraps to GPA `0xFF`. A correct
+/// implementation must fail the write (its real target is out of range) and
+/// MUST NOT touch `0xFF`.
+#[async_test]
+async fn write_at_offset_overflow_does_not_wrap_to_low_gpa(driver: DefaultDriver) {
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let size: u16 = 4;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    // Sentinel in the low page that the wrapped address (0xFF) would land on.
+    mem.write_at(0xFF, &[0x11]).unwrap();
+
+    // Writable descriptor whose address plus the write offset overflows u64:
+    //   (u64::MAX - 0x800) + 0x900 == 0xFF  (mod 2^64)
+    let overflow_addr = u64::MAX - 0x800;
+    write_descriptor(
+        &mem,
+        desc_addr,
+        0,
+        overflow_addr,
+        0x1000,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    let mut avail_idx = 0;
+    make_available(&mem, avail_addr, size, 0, &mut avail_idx);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        Interrupt::null(),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let work = queue.try_next().unwrap().expect("descriptor available");
+
+    // Writing one byte at offset 0x900 targets `overflow_addr + 0x900`, which
+    // overflows u64. A correct implementation rejects it as out of range; the
+    // buggy one panics (debug) or wraps to GPA 0xFF (release).
+    let result = work.write_at_offset(0x900, &mem, &[0xAB]);
+    assert!(
+        result.is_err(),
+        "write to an address that overflows u64 must fail, not wrap around"
+    );
+
+    let mut byte = [0u8; 1];
+    mem.read_at(0xFF, &mut byte).unwrap();
+    assert_eq!(
+        byte[0], 0x11,
+        "overflowing write must not corrupt the wrapped-to low GPA"
+    );
+}
+
+/// Test for the packed-ring full-ring wrap-counter bug.
+///
+/// A single descriptor chain may legally span the entire ring (the maximum
+/// length the spec permits). Consuming and completing such a buffer advances
+/// both the avail and used cursors by `queue_size` — a full lap — which MUST
+/// toggle the respective wrap counters. The device's `(next + count) % size` /
+/// `next < old` check misses the exact-wrap case (`next == old`), leaving both
+/// wrap counters stale; after that, a conformant driver's next (correctly
+/// wrapped) descriptor is invisible to the device.
+///
+/// This drives a real packed `VirtioQueue` through the public API: a
+/// conformant driver makes a full-ring 4-descriptor chain available, the
+/// device consumes and completes it, and the saved queue state must show both
+/// wrap counters flipped.
+#[async_test]
+async fn packed_full_ring_chain_toggles_wrap_counters(driver: DefaultDriver) {
+    // Packed descriptor: address(u64)@0, length(u32)@8, buffer_id(u16)@12,
+    // flags(u16)@14.
+    fn write_packed_desc(
+        mem: &GuestMemory,
+        desc_addr: u64,
+        index: u16,
+        addr: u64,
+        len: u32,
+        buffer_id: u16,
+        flags: DescriptorFlags,
+    ) {
+        let base = desc_addr + index as u64 * 16;
+        mem.write_at(base, &addr.to_le_bytes()).unwrap();
+        mem.write_at(base + 8, &len.to_le_bytes()).unwrap();
+        mem.write_at(base + 12, &buffer_id.to_le_bytes()).unwrap();
+        mem.write_at(base + 14, &flags.into_bits().to_le_bytes())
+            .unwrap();
+    }
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 4;
+
+    // Conformant driver, wrap counter = 1: make a chain spanning all `size`
+    // descriptors available (AVAIL=1, USED=0). The buffer id lives on the last
+    // descriptor; every descriptor but the last sets NEXT.
+    for i in 0..size {
+        let last = i == size - 1;
+        let flags = DescriptorFlags::new().with_available(true).with_next(!last);
+        let buffer_id = if last { 42 } else { 0 };
+        write_packed_desc(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x1000,
+            0x1000,
+            buffer_id,
+            flags,
+        );
+    }
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED),
+        params,
+        mem.clone(),
+        Interrupt::null(),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    // The device consumes the full-ring buffer (all four descriptors) and
+    // completes it.
+    let work = queue
+        .try_next()
+        .unwrap()
+        .expect("full-ring buffer available");
+    assert_eq!(
+        work.payload.len(),
+        4,
+        "chain should span all four descriptors"
+    );
+    queue.complete(work, 4);
+
+    // After one full lap a spec-conformant device must have toggled both wrap
+    // counters. The packed queue state encodes the wrap bit at bit 15, so a
+    // correct device reports 0 for both; the buggy device leaves them at
+    // 0x8000.
+    let state = queue.queue_state();
+    assert_eq!(
+        state.avail_index, 0,
+        "avail wrap counter must toggle after a full-ring lap"
+    );
+    assert_eq!(
+        state.used_index, 0,
+        "used wrap counter must toggle after a full-ring lap"
+    );
+}
+
+/// Directly exercises the in-order completion helper: with it in front of the
+/// queue, descriptors completed out of order are published to the used ring
+/// strictly in avail (consumption) order.
+#[async_test]
+async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let interrupt_event = Event::new();
+    let notify = Interrupt::from_event(interrupt_event);
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Make three writeable descriptors available.
+    let mut avail_idx = 0;
+    for i in 0..3u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+
+    let w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w2 = in_order.try_next(&mut queue).unwrap().unwrap();
+
+    let mut used_idx = 0;
+
+    // Complete the last descriptor first: nothing may be published yet.
+    in_order.complete(&mut queue, w2.into_completion(), 22);
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 0: it publishes, but descriptor 2 must wait for 1.
+    in_order.complete(&mut queue, w0.into_completion(), 10);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((0, 10))
+    );
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 1: now 1 and the already-filled 2 flush in order.
+    in_order.complete(&mut queue, w1.into_completion(), 11);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((1, 11))
+    );
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((2, 22))
+    );
+}
+
+/// Completing the same descriptor twice while it is still outstanding is an
+/// internal invariant violation (the device rejects guest-induced duplicates
+/// upstream), so the in-order helper must fail fast rather than silently
+/// stalling the used ring.
+#[async_test]
+#[should_panic(expected = "completed more than once")]
+async fn in_order_double_complete_panics(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let notify = Interrupt::from_event(Event::new());
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Descriptors 0 and 1, with 1 made available twice so two works share
+    // descriptor index 1.
+    let mut avail_idx = 0;
+    for i in 0..2u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+    make_available(&mem, avail_addr, size, 1, &mut avail_idx);
+
+    let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1b = in_order.try_next(&mut queue).unwrap().unwrap();
+
+    // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
+    // behind it; completing index 1 twice while buffered must panic.
+    in_order.complete(&mut queue, w1a.into_completion(), 1);
+    in_order.complete(&mut queue, w1b.into_completion(), 1);
+}
+
+const BOUND_TEST_QUEUE_SIZE: u16 = 4;
+const BOUND_TEST_DESC_ADDR: u64 = 0x1000;
+const BOUND_TEST_AVAIL_ADDR: u64 = 0x2000;
+const BOUND_TEST_USED_ADDR: u64 = 0x3000;
+const BOUND_TEST_DATA_ADDR: u64 = 0x4000;
+
+fn bound_test_params(size: u16) -> QueueParams {
+    QueueParams {
+        size,
+        enable: true,
+        desc_addr: BOUND_TEST_DESC_ADDR,
+        avail_addr: BOUND_TEST_AVAIL_ADDR,
+        used_addr: BOUND_TEST_USED_ADDR,
+    }
+}
+
+fn new_bound_test_queue(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> (GuestMemory, VirtioQueue) {
+    new_bound_test_queue_result(driver, packed, initial_state).unwrap()
+}
+
+fn new_bound_test_queue_result(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    init_avail_ring(&mem, BOUND_TEST_AVAIL_ADDR);
+    init_used_ring(&mem, BOUND_TEST_USED_ADDR);
+    if !packed {
+        for index in 0..BOUND_TEST_QUEUE_SIZE {
+            write_descriptor(
+                &mem,
+                BOUND_TEST_DESC_ADDR,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                0x100,
+                DescriptorFlags::new().with_write(true),
+                0,
+            );
+        }
+    }
+    let features = if packed {
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED)
+    } else {
+        VirtioDeviceFeatures::new()
+    };
+    let queue = VirtioQueue::new(
+        features,
+        bound_test_params(BOUND_TEST_QUEUE_SIZE),
+        mem.clone(),
+        Interrupt::from_event(Event::new()),
+        PolledWait::new(driver, Event::new()).unwrap(),
+        initial_state,
+    )?;
+    Ok((mem, queue))
+}
+
+fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
+    let error = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<QueueError>());
+    assert!(matches!(
+        error,
+        Some(QueueError::TooManyInFlightDescriptors {
+            in_flight: actual_in_flight,
+            requested: actual_requested,
+            queue_size: BOUND_TEST_QUEUE_SIZE,
+        }) if *actual_in_flight == in_flight && *actual_requested == requested
+    ));
+}
+
+fn next_error(queue: &mut VirtioQueue) -> io::Error {
+    match queue.try_next() {
+        Err(error) => error,
+        Ok(_) => panic!("queue accepted too many in-flight descriptors"),
+    }
+}
+
+fn make_split_bound_test_work(mem: &GuestMemory, count: u16, initial_avail: u16) {
+    use crate::test_helpers::make_available;
+
+    let mut avail = initial_avail;
+    for index in 0..count {
+        make_available(
+            mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            index % BOUND_TEST_QUEUE_SIZE,
+            &mut avail,
+        );
+    }
+}
+
+fn write_packed_descriptor(
+    mem: &GuestMemory,
+    index: u16,
+    addr: u64,
+    buffer_id: u16,
+    flags: DescriptorFlags,
+) {
+    let base = BOUND_TEST_DESC_ADDR + size_of::<PackedDescriptor>() as u64 * u64::from(index);
+    for (offset, bytes) in [
+        (
+            std::mem::offset_of!(PackedDescriptor, address),
+            addr.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, buffer_id),
+            buffer_id.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, flags_raw),
+            u16::from(flags).to_le_bytes().as_slice(),
+        ),
+    ] {
+        mem.write_at(base + offset as u64, bytes).unwrap();
+    }
+    mem.write_at(
+        base + std::mem::offset_of!(PackedDescriptor, length) as u64,
+        &0x100u32.to_le_bytes(),
+    )
+    .unwrap();
+}
+
+#[async_test]
+async fn split_queue_rejects_too_many_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_restamped_slots(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    for index in 0..BOUND_TEST_QUEUE_SIZE {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            available,
+        );
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+
+    write_packed_descriptor(
+        &mem,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0,
+        DescriptorFlags::new().with_write(true).with_used(true),
+    );
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    let write = |index, flags| {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            flags,
+        );
+    };
+    write(0, available.with_next(true));
+    write(1, available);
+    let _ = queue.try_next().unwrap().unwrap();
+
+    write(2, available.with_next(true));
+    write(3, available.with_next(true));
+    write(0, available);
+    assert_in_flight_error(next_error(&mut queue), 2, 3);
+}
+
+#[async_test]
+async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    let mut works = Vec::new();
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        works.push(queue.try_next().unwrap().expect("within queue size"));
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+    queue.complete(works.remove(0), 1);
+    let _ = queue.try_next().unwrap().unwrap();
+}
+
+#[async_test]
+async fn split_queue_restore_seeds_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(
+        &driver,
+        false,
+        Some(QueueState {
+            avail_index: 3,
+            used_index: 1,
+        }),
+    );
+    make_split_bound_test_work(&mem, 3, 3);
+
+    for _ in 0..2 {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), 4, 1);
+}
+
+#[async_test]
+async fn packed_queue_new_rejects_oversized_size(driver: DefaultDriver) {
+    let mem = GuestMemory::allocate(0x110000);
+    let params = QueueParams {
+        size: (1 << 15) + 1,
+        enable: true,
+        desc_addr: 0x1000,
+        avail_addr: 0x100000,
+        used_addr: 0x101000,
+    };
+    let features =
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    assert!(matches!(
+        VirtioQueue::new(
+            features,
+            params,
+            mem,
+            Interrupt::from_event(Event::new()),
+            queue_event,
+            None,
+        ),
+        Err(QueueError::InvalidQueueSize(size)) if size == (1 << 15) + 1
+    ));
+}
+
+#[async_test]
+async fn queue_new_rejects_corrupt_saved_state(driver: DefaultDriver) {
+    let cases = [
+        (false, 10, 0),
+        (true, 1, 6),
+        (true, BOUND_TEST_QUEUE_SIZE, 0),
+        (true, 0, BOUND_TEST_QUEUE_SIZE),
+    ];
+    for (packed, avail_index, used_index) in cases {
+        assert!(matches!(
+            new_bound_test_queue_result(
+                &driver,
+                packed,
+                Some(QueueState {
+                    avail_index,
+                    used_index,
+                }),
+            ),
+            Err(QueueError::InvalidSavedState {
+                avail_index: actual_avail,
+                used_index: actual_used,
+                queue_size: BOUND_TEST_QUEUE_SIZE,
+            }) if actual_avail == avail_index && actual_used == used_index
+        ));
+    }
 }

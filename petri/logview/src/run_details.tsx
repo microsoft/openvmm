@@ -109,6 +109,14 @@ function RunDetailsHeader({
         )}
       </div>
       <div className="common-header-right">
+        <a
+          href={`https://github.com/microsoft/openvmm/actions/runs/${runId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="common-table-link"
+        >
+          GH Run
+        </a>
         <SearchInput value={searchFilter} onChange={setSearchFilter} />
         <span className="common-result-count">{resultCount} tests</span>
       </div>

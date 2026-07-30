@@ -1083,6 +1083,9 @@ impl ChannelList {
     }
 
     /// Gets a channel by guest channel ID.
+    ///
+    /// It is an error to call this function on a channel that has been released
+    /// by the guest, since the guest should not be using that ID anymore.
     fn get_by_channel_id_mut(
         &mut self,
         assigned_channels: &AssignedChannels,
@@ -1717,24 +1720,16 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // restore_channel was never called for this, but it was in
                     // the saved state. This indicates the offer is meant to be
                     // fresh, so revoke and reoffer it.
-                    //
-                    // Exception: if the channel is Closed there is no
-                    // per-device state to lose, and revoking would race with
-                    // any guest probe currently attempting to open it.
-                    if matches!(channel.state, ChannelState::Closed) {
-                        channel.restore_state = RestoreState::Restored;
-                    } else {
-                        let retain = revoke(
-                            self.inner
-                                .pending_messages
-                                .sender(self.notifier, self.inner.state.is_paused()),
-                            offer_id,
-                            channel,
-                            &mut self.inner.gpadls,
-                        );
-                        assert!(retain, "channel has not been released");
-                        channel.state = ChannelState::Reoffered;
-                    }
+                    let retain = revoke(
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
+                        offer_id,
+                        channel,
+                        &mut self.inner.gpadls,
+                    );
+                    assert!(retain, "channel has not been released");
+                    channel.state = ChannelState::Reoffered;
                 }
                 RestoreState::Unmatched => {
                     // offer_channel was never called for this, but it was in
@@ -2749,27 +2744,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         Ok(())
     }
 
-    /// Sends a GPADL to the device when `ranges` is Some. Returns false if the
-    /// GPADL should be removed because the channel is already revoked.
-    #[must_use]
-    fn gpadl_updated(
+    /// Sends a GPADL to the device after the full list of ranges was received.
+    fn gpadl_completed(
         mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &Channel,
         gpadl_id: GpadlId,
-        gpadl: &Gpadl,
-    ) -> bool {
+        gpadl: &mut Gpadl,
+    ) {
         if channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_UNSUCCESSFUL);
-            false
+
+            // A gpadl for a channel that was revoked but still referenced is
+            // allowed. In this case there is no channel to notify so
+            // immediately send a success response.
+            gpadl.state = GpadlState::Accepted;
+            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_SUCCESS);
         } else {
-            // Notify the channel if the GPADL is done.
+            // Notify the channel of the completed GPADL.
             sender.notifier.notify(
                 offer_id,
                 Action::Gpadl(gpadl_id, gpadl.count, gpadl.buf.clone()),
             );
-            true
         }
     }
 
@@ -2801,12 +2797,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Entry::Occupied(_) => return Err(ChannelError::DuplicateGpadlId),
         };
 
-        // If we're not done, track the offer ID for GPADL body requests
-        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
-        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
-        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
-        //      is unique, since the body message doesn't include a channel ID.
-        if !done {
+        if done {
+            Self::gpadl_completed(
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused()),
+                offer_id,
+                channel,
+                input.gpadl_id,
+                gpadl,
+            )
+        } else {
+            // If we're not done, track the offer ID for GPADL body requests
+            // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique,
+            //      which allows for a guest to reuse a gpadl ID in use by a reserved channel (which
+            //      it may not know about). But for in-progress GPADLs we need to ensure the gpadl
+            //      ID itself is unique, since the body message doesn't include a channel ID.
             match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
                 Entry::Vacant(entry) => {
                     entry.insert(offer_id);
@@ -2822,20 +2828,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     return Err(ChannelError::DuplicateGpadlId);
                 }
             }
-        }
-
-        if done
-            && !Self::gpadl_updated(
-                self.inner
-                    .pending_messages
-                    .sender(self.notifier, self.inner.state.is_paused()),
-                offer_id,
-                channel,
-                input.gpadl_id,
-                gpadl,
-            )
-        {
-            self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
         }
         Ok(())
     }
@@ -2889,7 +2881,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Ok(done) => {
                 if done {
                     self.inner.incomplete_gpadls.remove(&input.gpadl_id);
-                    if !Self::gpadl_updated(
+                    Self::gpadl_completed(
                         self.inner
                             .pending_messages
                             .sender(self.notifier, self.inner.state.is_paused()),
@@ -2897,9 +2889,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         channel,
                         input.gpadl_id,
                         gpadl,
-                    ) {
-                        self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
-                    }
+                    )
                 }
             }
             Err(err) => {

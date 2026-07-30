@@ -12,7 +12,8 @@ export const defaultSorting = [
 
 export const columnWidthMap = {
     creationTime: 210,
-    status: 60
+    status: 60,
+    runNumber: 120
 };
 
 // Define the columns for the test details table
@@ -67,6 +68,30 @@ export const createColumns = (testName?: string): ColumnDef<TestRunInfo>[] => {
                     <Link to={`/runs/${runNumber}${searchParams}`} className="common-table-link" title={runNumber}>
                         {runNumber}
                     </Link>
+                );
+            },
+            sortingFn: (rowA, rowB, columnId) => {
+                const a = rowA.getValue(columnId) as string;
+                const b = rowB.getValue(columnId) as string;
+                return a.localeCompare(b);
+            },
+        },
+        {
+            id: 'ghRun',
+            accessorKey: 'runNumber',
+            header: 'GH Run',
+            enableSorting: true,
+            cell: (info) => {
+                const runNumber = info.getValue() as string;
+                return (
+                    <a
+                        href={`https://github.com/microsoft/openvmm/actions/runs/${runNumber}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="common-table-link"
+                    >
+                        {runNumber}
+                    </a>
                 );
             },
             sortingFn: (rowA, rowB, columnId) => {

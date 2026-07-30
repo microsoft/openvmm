@@ -170,13 +170,21 @@ impl IgvmAttestRequestHeader {
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
 /// 2 - skip_hw_unsealing: Skip hardware unsealing in case key release request fails
+/// 3 - use_rsa_aes_key_wrap_384: Request that the IGVM Agent ask Azure Key Vault
+///     (AKV) to wrap and release the key with the SHA-384 variant of the
+///     composite RSA+AES key-wrap scheme (PKCS#11 CKM_RSA_AES_KEY_WRAP /
+///     AKV's RSA_AES_KEY_WRAP_384): RSA-OAEP-SHA384 (MGF1-SHA-384) wraps an
+///     AES-256 KEK that performs AES Key Wrap on the released key. The default
+///     is the same CKM_RSA_AES_KEY_WRAP scheme with the inner RSA-OAEP using
+///     SHA-1 (MGF1-SHA-1).
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
     pub skip_hw_unsealing: bool,
-    #[bits(29)]
+    pub use_rsa_aes_key_wrap_384: bool,
+    #[bits(28)]
     _reserved: u32,
 }
 
@@ -234,12 +242,18 @@ impl IgvmAttestRequestDataExt {
 /// Bitmap indicates a signal to requestor
 /// 0 - IGVM_SIGNAL_RETRY_RECOMMENDED_BIT: Retry recommendation
 /// 1 - IGVM_SIGNAL_SKIP_HW_UNSEALING_RECOMMENDED_BIT: Skip hardware unsealing
+/// 2 - IGVM_SIGNAL_RSA_AES_KEY_WRAP_384_USED_BIT: Set by the IGVM Agent to
+///     indicate that the agent asked AKV for the SHA-384 variant
+///     (RSA_AES_KEY_WRAP_384) and AKV used it to wrap the key in the payload.
+///     If this bit is clear, AKV wrapped the key with the default
+///     CKM_RSA_AES_KEY_WRAP scheme (inner RSA-OAEP using SHA-1).
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
     pub skip_hw_unsealing: bool,
-    #[bits(30)]
+    pub rsa_aes_key_wrap_384_used: bool,
+    #[bits(29)]
     _reserved: u32,
 }
 

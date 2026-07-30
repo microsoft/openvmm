@@ -193,7 +193,10 @@ pub static OPENHCL_VERSION: OpenHclVersion = OpenHclVersion::new();
 // UNSAFETY: link_section and export_name are unsafe.
 #[expect(unsafe_code)]
 // SAFETY: The build_info section is custom and carries no safety requirements.
-#[unsafe(link_section = ".build_info")]
+// The `.build_info` section is only consumed by the OpenHCL (ELF) split-debug
+// step, so emit it on Linux only: it is invalid on Mach-O (needs a
+// segment,section name) and unused on COFF.
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".build_info"))]
 // SAFETY: The name "BUILD_INFO" is only declared here in OpenHCL and shouldn't
 // collide with any other symbols. It is a special symbol intended for
 // post-mortem debugging, and no runtime functionality should depend on it.
