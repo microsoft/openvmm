@@ -25,16 +25,14 @@
 use crate::spec::events::EvtEntry;
 use crate::spec::registers;
 use crate::translate;
-use anyhow::Context as _;
 use guestmem::GuestMemory;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
@@ -73,25 +71,15 @@ pub struct SmmuNestingContext {
 ///
 /// This trait is per-device (one instance per VFIO device). Invalidation,
 /// which is vIOMMU-scoped, lives on [`AcceleratedViommu`] instead.
+///
+/// A backend is registered against one StreamID for its whole life. The guest
+/// moving a device to a different BDF retires the registration and creates a
+/// new one, so nothing here ever has to learn about a StreamID change.
 pub trait AcceleratedStreamBackend: Send + Sync {
-    /// Changes the virtual StreamID associated with this device.
-    ///
-    /// The backend must first attach the device to an aborting domain, then
-    /// retire any host objects associated with the previous StreamID. The
-    /// device remains aborting until [`set_stream_config`](Self::set_stream_config)
-    /// applies the new StreamID's policy.
-    ///
-    /// Infallible: the only way this can fail is an inability to stop DMA,
-    /// which leaves a device translating under an identity the guest has moved
-    /// off. Backends fail fast rather than reporting that.
-    fn set_stream_id(&self, sid: Option<u32>);
-
     /// The guest reconfigured this stream's STE (via `CFGI_STE`), or the
     /// emulator recomputed the stream's policy (e.g. on a `GBPA` write or
     /// `SMMUEN` transition). The emulator has already parsed and validated
-    /// the STE into `config`. Only [`StreamConfig::Translate`] carries a
-    /// stream ID (for lazy vDevice allocation); the bypass and abort cases
-    /// have no per-stream identity to act on.
+    /// the STE into `config`.
     ///
     /// On error, the backend must leave its previously applied configuration
     /// active. The emulator preserves the corresponding forwarding state and
@@ -148,13 +136,10 @@ pub enum StreamConfig {
     /// Bypass translation (`Config=BYPASS`) — identity GPA→HPA via the
     /// nesting parent (S2) HWPT.
     Bypass,
-    /// Stage-1 translation (`Config=S1_TRANS`). Carries the stream ID (for
-    /// lazy vDevice allocation) and the raw stage-1 STE double-words.
+    /// Stage-1 translation (`Config=S1_TRANS`). Carries the raw stage-1 STE
+    /// double-words; the backend already knows the StreamID it was registered
+    /// against.
     Translate {
-        /// Stream ID this configuration applies to. Used by the backend to
-        /// allocate the iommufd vDevice (the virtual stream ID is not known
-        /// at backend construction time).
-        sid: u32,
         /// Canonical stage-1 STE double-words `[DW0, DW1]`: the guest STE
         /// reduced to the fields that are architecturally meaningful under this
         /// vSMMU's advertised capabilities, with every RES0/IGNORED field
@@ -231,34 +216,21 @@ fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste, oas_mask: u64) -> [u64; 
 
 /// Registration entry for a VFIO device with iommufd-accelerated translation.
 ///
-/// The SID is supplied explicitly from the first routed PCI configuration
-/// write, because PCI routing owns the guest-assigned BDF.
+/// Keyed by StreamID in [`AccelState`], which the guest's PCI routing assigns:
+/// a registration exists exactly while its device has an identity to translate
+/// under.
 ///
 /// Stored in [`SmmuSharedState`] so host-side registration and removal can
 /// complete while the chipset emulator is stopped.
 struct AccelDeviceRegistration {
-    /// Unique id assigned at registration and held by the device's guard.
-    id: u64,
-    /// Offset into this SMMU's stream table for the device's root complex.
-    stream_id_base: u32,
-    /// Current SMMU-local StreamID, once the PCI routing layer has observed the
-    /// endpoint's guest RequesterID.
-    sid: Option<u32>,
-    /// Whether the current SID's architectural policy was successfully applied.
-    /// False while a newly rebound SID remains on abort after a policy error.
-    policy_applied: bool,
     /// The iommufd-backed stream handler.
     backend: Arc<dyn AcceleratedStreamBackend>,
-    /// The stream ID for which this device is currently attached in
-    /// translating (`S1_TRANS`) mode on the host, or `None` when the most
-    /// recently applied config is bypass/abort (or an apply failed).
-    ///
-    /// This is the exact vSID the backend used to allocate the host vDevice
-    /// and attach the nested HWPT, recorded at apply time rather than
-    /// recomputed at query time, so it matches the host attach state exactly.
-    /// It gates SID-based invalidation forwarding. Access is serialized by the
-    /// shared registration-table lock.
-    translating_sid: Option<u32>,
+    /// Whether this stream is currently attached in translating (`S1_TRANS`)
+    /// mode on the host, recorded at apply time rather than recomputed at
+    /// query time so it matches the host attach state exactly. It gates
+    /// SID-based invalidation forwarding. Access is serialized by the shared
+    /// registration-table lock.
+    translating: bool,
 }
 
 /// Accelerated state for one emulated SMMU: the registered per-device stream
@@ -269,7 +241,7 @@ struct AccelDeviceRegistration {
 /// so no rebind or teardown can interleave.
 #[derive(Default)]
 struct AccelState {
-    devices: Vec<AccelDeviceRegistration>,
+    devices: HashMap<u32, AccelDeviceRegistration>,
     /// The host vIOMMU that every registered backend shares, held weakly.
     ///
     /// The strong references are the backends' own, so the vIOMMU is destroyed
@@ -295,22 +267,24 @@ impl AccelDevices<'_> {
     pub(crate) fn is_translating(&self, sid: u32) -> bool {
         self.accel
             .devices
-            .iter()
-            .any(|reg| reg.translating_sid == Some(sid))
+            .get(&sid)
+            .is_some_and(|reg| reg.translating)
     }
 }
 
-/// Handle tying an accelerated registration to the lifetime of the VFIO
-/// device that owns it. Dropping it synchronously unregisters the stream
-/// backend.
+/// Handle tying an accelerated registration to the StreamID it was created
+/// for. Dropping it synchronously drives the stream to abort and unregisters
+/// the backend.
 ///
-/// Held by the assigned PCI device (see the VFIO resolver); dropped when the
-/// device is removed or hot-unplugged. Holds a [`Weak`] reference so it never
-/// keeps the emulated SMMU alive: if the SMMU is already gone there is nothing
-/// left to unregister from.
+/// Held by the assigned PCI device (see the VFIO resolver) for as long as the
+/// guest keeps the device at the BDF this StreamID came from; a move to a
+/// different BDF drops this and creates a new one. Holds a [`Weak`] reference
+/// so it never keeps the emulated SMMU alive: if the SMMU is already gone there
+/// is nothing left to unregister from.
+#[derive(Debug)]
 pub struct AccelRegistration {
     shared: Weak<SmmuSharedState>,
-    id: u64,
+    sid: u32,
 }
 
 /// Reservation tying an accelerated vSMMU to one host IOMMU context.
@@ -353,37 +327,16 @@ impl Drop for AccelIommuAssociation {
 }
 
 impl AccelRegistration {
-    /// Creates a guard for registration `id` on `shared`.
-    pub fn new(shared: &Arc<SmmuSharedState>, id: u64) -> Self {
-        Self {
-            shared: Arc::downgrade(shared),
-            id,
-        }
-    }
-
-    /// Publishes the guest RequesterID observed by PCI configuration routing.
-    /// A changed RID is rebound through abort before its new stream policy is
-    /// applied. Repeating the current RID is a no-op.
-    pub fn set_requester_id(&self, rid: u16) -> anyhow::Result<()> {
-        self.shared
-            .upgrade()
-            .context("SMMU was removed before requester ID assignment")?
-            .set_accel_requester_id(self.id, rid)
-    }
-
-    /// Clears the captured RID and leaves the backend aborting. Used when the
-    /// PCI device resets and must capture its BDF again.
-    pub fn clear_requester_id(&self) {
-        if let Some(shared) = self.shared.upgrade() {
-            shared.clear_accel_requester_id(self.id);
-        }
+    /// The StreamID this registration was created for, fixed for its life.
+    pub fn stream_id(&self) -> u32 {
+        self.sid
     }
 }
 
 impl Drop for AccelRegistration {
     fn drop(&mut self) {
         if let Some(shared) = self.shared.upgrade() {
-            shared.unregister_accel_device(self.id);
+            shared.unregister_accel_device(self.sid);
         }
     }
 }
@@ -449,11 +402,6 @@ pub struct SmmuSharedState {
     /// Host IOMMU context backing this accelerated vSMMU. A vSMMU has one
     /// vIOMMU and therefore cannot span independently managed IOAS contexts.
     accel_iommu_association: Mutex<AccelIommuAssociationState>,
-    /// Monotonic source of accelerated-registration ids. Each
-    /// [`register_accel_device`](Self::register_accel_device) hands back a
-    /// fresh id (via its [`AccelRegistration`] guard) that identifies the
-    /// entry for later removal by its [`AccelRegistration`] guard.
-    next_accel_id: AtomicU64,
 }
 
 #[derive(Default)]
@@ -577,7 +525,6 @@ impl SmmuSharedState {
             oas_policy,
             accel_state: Mutex::new(AccelState::default()),
             accel_iommu_association: Mutex::new(AccelIommuAssociationState::default()),
-            next_accel_id: AtomicU64::new(0),
         })
     }
 
@@ -968,103 +915,74 @@ impl SmmuSharedState {
         }
     }
 
-    /// Register an accelerated backend for a VFIO device.
+    /// Registers `backend` as the accelerated stream for `sid` and applies that
+    /// stream's current policy.
     ///
-    /// Registration synchronously attaches the backend to abort. The PCI
-    /// routing layer later publishes the guest RequesterID through the returned
-    /// [`AccelRegistration`], at which point the current stream policy is
-    /// applied.
+    /// Fails only if `sid` is already registered: a StreamID names exactly one
+    /// device, because the host keys its vDevice table by it. A guest
+    /// renumbering buses can transiently alias two devices, and the loser stays
+    /// unregistered — and so blocked — until the winner moves off.
     ///
-    /// Returns the registration id. Wrap it in an [`AccelRegistration`]
-    /// (`AccelRegistration::new(&shared, id)`) tied to the device's lifetime so
-    /// the backend is unregistered (and torn down) when the device is removed.
+    /// A backend that rejects its initial policy is left aborting and the error
+    /// is logged rather than returned: the registration is still valid, and the
+    /// guest's next `CFGI_STE` for this SID retries it. That matches the global
+    /// policy transitions, which likewise cannot report a policy failure to the
+    /// guest.
+    ///
+    /// The returned guard unregisters on drop; hold it for as long as the
+    /// device keeps this StreamID.
     pub fn register_accel_device(
-        &self,
-        stream_id_base: u32,
+        self: &Arc<Self>,
+        sid: u32,
         backend: Arc<dyn AcceleratedStreamBackend>,
-    ) -> anyhow::Result<u64> {
-        let id = self.next_accel_id.fetch_add(1, Ordering::Relaxed);
+    ) -> anyhow::Result<AccelRegistration> {
         let mut accel = self.accel_state.lock();
-        let mut reg = AccelDeviceRegistration {
-            id,
-            stream_id_base,
-            sid: None,
-            policy_applied: true,
-            backend,
-            translating_sid: None,
-        };
-        // Unlike later transitions this can report failure rather than
-        // panicking: the device has not been attached yet, so it is still in
-        // the host's blocking domain and its DMA is already stopped.
-        Self::apply_config(&mut reg, StreamConfig::Abort)?;
-        accel.devices.push(reg);
-        Ok(id)
-    }
-
-    fn set_accel_requester_id(&self, id: u64, rid: u16) -> anyhow::Result<()> {
-        let mut accel = self.accel_state.lock();
-        let index = accel
-            .devices
-            .iter()
-            .position(|reg| reg.id == id)
-            .context("accelerated SMMU registration no longer exists")?;
-        let sid = accel.devices[index].stream_id_base + u32::from(rid);
-        if accel.devices[index].sid == Some(sid) && accel.devices[index].policy_applied {
-            return Ok(());
-        }
-
-        // A StreamID names exactly one device: the host keys its vDevice table
-        // by it, and this table's own SID lookups would otherwise pick an
-        // arbitrary claimant. A guest renumbering buses can alias two devices
-        // for a window, so leave this one unbound until the other moves off.
-        let conflict = accel
-            .devices
-            .iter()
-            .any(|reg| reg.id != id && reg.sid == Some(sid));
-
-        // The guest moved this device, so its old StreamID is stale: stop DMA
-        // and retire the host objects naming it before adopting the new one.
-        let reg = &mut accel.devices[index];
-        let new = (!conflict).then_some(sid);
-        if reg.sid != new {
-            reg.translating_sid = None;
-            reg.backend.set_stream_id(new);
-            reg.sid = new;
-        }
-        // The next routed config write retries.
-        anyhow::ensure!(!conflict, "StreamID {sid:#x} is assigned to another device");
+        anyhow::ensure!(
+            !accel.devices.contains_key(&sid),
+            "StreamID {sid:#x} is already registered to another device"
+        );
 
         let config = self.current_stream_config(sid);
-        Self::apply_config_or_abort(reg, config)
-    }
-
-    fn clear_accel_requester_id(&self, id: u64) {
-        let mut accel = self.accel_state.lock();
-        // Nothing to clear if the registration is already gone.
-        let Some(reg) = accel.devices.iter_mut().find(|reg| reg.id == id) else {
-            return;
+        let mut reg = AccelDeviceRegistration {
+            backend,
+            translating: false,
         };
-        reg.translating_sid = None;
-        reg.backend.set_stream_id(None);
-        reg.sid = None;
-        reg.policy_applied = true;
+        if let Err(error) = Self::apply_config_or_abort(sid, &mut reg, config) {
+            tracelimit::warn_ratelimited!(
+                error = error.as_ref() as &dyn std::error::Error,
+                sid,
+                "smmu: stream left aborting after failed policy apply at registration"
+            );
+        }
+        accel.devices.insert(sid, reg);
+
+        Ok(AccelRegistration {
+            shared: Arc::downgrade(self),
+            sid,
+        })
     }
 
-    /// Removes registration `id` synchronously.
+    /// Removes the registration for `sid` synchronously, driving its stream to
+    /// abort first.
     ///
-    /// The removed backend is dropped after releasing the lock so it cannot
-    /// race an in-flight invalidation batch, which holds the same lock until
-    /// the host consumes it. Dropping the last one also releases the host
-    /// vIOMMU, which this table only references weakly.
-    pub fn unregister_accel_device(&self, id: u64) {
+    /// DMA stops before the StreamID is released, and both happen under the one
+    /// lock every config and invalidation path takes, so no `CFGI_STE` can
+    /// re-attach the stream behind us and no in-flight invalidation batch can
+    /// name a vDevice the caller is about to destroy.
+    fn unregister_accel_device(&self, sid: u32) {
         let reg = {
             let mut accel = self.accel_state.lock();
-            accel
-                .devices
-                .iter()
-                .position(|reg| reg.id == id)
-                .map(|pos| accel.devices.swap_remove(pos))
+            let Some(reg) = accel.devices.remove(&sid) else {
+                return;
+            };
+            reg.backend
+                .set_stream_config(StreamConfig::Abort)
+                .unwrap_or_else(|error| {
+                    panic!("smmu: cannot stop DMA for SID {sid:#x}: {error:#}")
+                });
+            reg
         };
+        // Released outside the lock so a teardown cannot stall an invalidation.
         drop(reg);
     }
 
@@ -1127,7 +1045,6 @@ impl SmmuSharedState {
         match translate::ste_config_action(&ste) {
             translate::SteAction::Bypass => StreamConfig::Bypass,
             translate::SteAction::S1Translate => StreamConfig::Translate {
-                sid,
                 ste_dwords: canonical_s1_ste_dwords(&ste, policy.oas_mask),
             },
             // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
@@ -1138,15 +1055,11 @@ impl SmmuSharedState {
     }
 
     fn apply_config(reg: &mut AccelDeviceRegistration, config: StreamConfig) -> anyhow::Result<()> {
-        let translating_sid = match config {
-            StreamConfig::Translate { sid, .. } => Some(sid),
-            StreamConfig::Bypass | StreamConfig::Abort => None,
-        };
+        let translating = matches!(config, StreamConfig::Translate { .. });
         // A failed atomic replacement leaves the previous host attachment
         // active, so update forwarding state only after backend success.
         reg.backend.set_stream_config(config)?;
-        reg.translating_sid = translating_sid;
-        reg.policy_applied = true;
+        reg.translating = translating;
         Ok(())
     }
 
@@ -1159,6 +1072,7 @@ impl SmmuSharedState {
     /// such destination; failing to reach it means DMA cannot be stopped at
     /// all, and nothing in the architecture can express that.
     fn apply_config_or_abort(
+        sid: u32,
         reg: &mut AccelDeviceRegistration,
         config: StreamConfig,
     ) -> anyhow::Result<()> {
@@ -1168,15 +1082,11 @@ impl SmmuSharedState {
         };
 
         if matches!(config, StreamConfig::Abort) {
-            panic!("smmu: cannot stop DMA for SID {:x?}: {error:#}", reg.sid);
+            panic!("smmu: cannot stop DMA for SID {sid:#x}: {error:#}");
         }
         Self::apply_config(reg, StreamConfig::Abort).unwrap_or_else(|abort_error| {
-            panic!(
-                "smmu: cannot stop DMA for SID {:x?} after {error:#}: {abort_error:#}",
-                reg.sid
-            )
+            panic!("smmu: cannot stop DMA for SID {sid:#x} after {error:#}: {abort_error:#}")
         });
-        reg.policy_applied = false;
         Err(error)
     }
 
@@ -1184,31 +1094,26 @@ impl SmmuSharedState {
     pub(crate) fn apply_stream_config(&self, sid: u32) -> anyhow::Result<()> {
         let config = self.current_stream_config(sid);
         let mut accel = self.accel_state.lock();
-        // At most one registration holds a given SID; see
-        // [`set_accel_requester_id`](Self::set_accel_requester_id).
-        let Some(reg) = accel.devices.iter_mut().find(|reg| reg.sid == Some(sid)) else {
+        let Some(reg) = accel.devices.get_mut(&sid) else {
             return Ok(());
         };
-        Self::apply_config_or_abort(reg, config)
+        Self::apply_config_or_abort(sid, reg, config)
     }
 
     /// Recomputes and applies the current policy for every registered stream
     /// whose StreamID falls within `sids`.
-    ///
-    /// Registrations that have not yet captured a RequesterID have no StreamID
-    /// and so fall in no range; they are already aborting and are skipped.
     pub(crate) fn apply_stream_configs_in_range(
         &self,
         sids: std::ops::RangeInclusive<u64>,
     ) -> anyhow::Result<()> {
         let mut accel = self.accel_state.lock();
         let mut first_error = None;
-        for reg in accel.devices.iter_mut() {
-            let Some(sid) = reg.sid.filter(|sid| sids.contains(&u64::from(*sid))) else {
+        for (&sid, reg) in accel.devices.iter_mut() {
+            if !sids.contains(&u64::from(sid)) {
                 continue;
-            };
+            }
             let config = self.current_stream_config(sid);
-            if let Err(error) = Self::apply_config_or_abort(reg, config) {
+            if let Err(error) = Self::apply_config_or_abort(sid, reg, config) {
                 first_error.get_or_insert(error);
             }
         }
@@ -1218,31 +1123,26 @@ impl SmmuSharedState {
         }
     }
 
-    /// Applies a proposed global policy to every SID-bearing accelerated
-    /// registration, then publishes it.
+    /// Applies a proposed global policy to every accelerated registration, then
+    /// publishes it.
     ///
     /// Always completes: SMMUv3 defines no config-plane error reporting, and a
     /// register update must complete in finite time (§6.3.9), so a stream whose
     /// policy the backend rejects is simply left aborting — indistinguishable
     /// to the guest from a stream with an ILLEGAL STE. The guest's next
-    /// `CFGI_STE` for that SID retries it. Registrations without a SID remain
-    /// on Abort and are deliberately not called.
+    /// `CFGI_STE` for that SID retries it.
     pub(crate) fn transition_translation_policy(
         &self,
         policy: TranslationPolicy,
         transition: &'static str,
     ) {
         let mut accel = self.accel_state.lock();
-        for reg in accel.devices.iter_mut() {
-            let Some(sid) = reg.sid else {
-                continue;
-            };
+        for (&sid, reg) in accel.devices.iter_mut() {
             let config = self.stream_config_for_policy(policy, sid);
-            if let Err(error) = Self::apply_config_or_abort(reg, config) {
+            if let Err(error) = Self::apply_config_or_abort(sid, reg, config) {
                 tracelimit::warn_ratelimited!(
                     error = error.as_ref() as &dyn std::error::Error,
                     transition,
-                    id = reg.id,
                     sid,
                     "smmu: stream left aborting after failed policy transition"
                 );
@@ -2708,7 +2608,7 @@ mod tests {
         write_ste(&gm, sid, &make_s1_ste(CD_BASE));
         assert!(matches!(
             state.current_stream_config(sid),
-            StreamConfig::Translate { sid: s, .. } if s == sid
+            StreamConfig::Translate { .. }
         ));
 
         // Bypass STE → Bypass.

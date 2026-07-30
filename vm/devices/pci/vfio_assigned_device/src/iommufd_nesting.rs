@@ -276,6 +276,51 @@ impl SmmuAccelState {
     }
 }
 
+impl SmmuAccelState {
+    /// Allocates the vDevice binding `vsid` to `dev_id` within this vIOMMU.
+    ///
+    /// The host keys its invalidation routing by this (vIOMMU, vSID) pair, so
+    /// exactly one may exist per StreamID at a time.
+    pub fn alloc_vdevice(&self, dev_id: u32, vsid: u32) -> anyhow::Result<VDevice> {
+        let id = self
+            .ctx
+            .vdevice_alloc(self.viommu_id, dev_id, vsid.into())
+            .with_context(|| {
+                format!("failed to allocate vDevice for dev_id={dev_id}, vsid={vsid:#x}")
+            })?;
+        tracing::info!(
+            dev_id,
+            vdevice_id = id,
+            virtual_sid = vsid,
+            "allocated iommufd vDevice"
+        );
+        Ok(VDevice {
+            ctx: self.ctx.clone(),
+            id,
+        })
+    }
+}
+
+/// The iommufd vDevice binding one guest StreamID to a device within a vIOMMU.
+///
+/// Owned by whoever owns the StreamID, so the host binding is destroyed exactly
+/// when the guest stops using that identity.
+pub struct VDevice {
+    ctx: Arc<IommufdCtx>,
+    id: u32,
+}
+
+impl Drop for VDevice {
+    fn drop(&mut self) {
+        self.ctx.destroy(self.id).unwrap_or_else(|e| {
+            panic!(
+                "smmu accel: failed to destroy vDevice {:#x}: {e:#}",
+                self.id
+            )
+        });
+    }
+}
+
 impl Drop for SmmuAccelState {
     fn drop(&mut self) {
         // Runs once the cache entry and every stream backend behind this vSMMU
@@ -345,8 +390,6 @@ struct StreamBackendState {
     /// ABORT or BYPASS (attached to the shared abort/bypass HWPT, which are
     /// owned by [`SmmuAccelState`], not tracked here).
     current_nested_hwpt: Option<u32>,
-    /// vDevice ID, lazily allocated on first `CFGI_STE` with `S1_TRANS`.
-    vdevice_id: Option<u32>,
 }
 
 impl IommufdStreamBackend {
@@ -369,9 +412,16 @@ impl IommufdStreamBackend {
             state: Mutex::new(StreamBackendState {
                 attached: false,
                 current_nested_hwpt: None,
-                vdevice_id: None,
             }),
         }
+    }
+
+    /// Attaches the shared abort HWPT, blocking DMA.
+    ///
+    /// Used at device resolution to make the device a vIOMMU member before the
+    /// guest has assigned it a BDF, and so a StreamID.
+    pub fn attach_abort(&self) -> anyhow::Result<()> {
+        self.handle_abort(&mut self.state.lock())
     }
 
     /// Destroy an iommufd object this backend allocated, **failing fast** on
@@ -448,30 +498,7 @@ impl IommufdStreamBackend {
         &self,
         state: &mut StreamBackendState,
         nested_ste: [u64; 2],
-        stream_id: u32,
     ) -> anyhow::Result<()> {
-        // Lazy vDevice allocation — the virtual stream ID is the guest-assigned
-        // BDF from the CFGI_STE command's SID, not known at construction time.
-        if state.vdevice_id.is_none() {
-            let vdev_id = self
-                .accel
-                .ctx
-                .vdevice_alloc(self.accel.viommu_id, self.dev_id, stream_id as u64)
-                .with_context(|| {
-                    format!(
-                        "failed to allocate vDevice for dev_id={}, vsid={}",
-                        self.dev_id, stream_id
-                    )
-                })?;
-            tracing::info!(
-                dev_id = self.dev_id,
-                vdevice_id = vdev_id,
-                virtual_sid = stream_id,
-                "allocated iommufd vDevice"
-            );
-            state.vdevice_id = Some(vdev_id);
-        }
-
         // The STE the kernel reads to program nested stage-1 translation.
         // `nested_ste` is already canonicalized by the SMMU emulator to the
         // stage-1 fields meaningful under its advertised capabilities (RES0 and
@@ -523,28 +550,6 @@ impl IommufdStreamBackend {
 }
 
 impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
-    fn set_stream_id(&self, sid: Option<u32>) {
-        let mut state = self.state.lock();
-
-        // Stop DMA under the old identity before retiring any object that an
-        // incoming transaction or invalidation could still reference.
-        self.handle_abort(&mut state).unwrap_or_else(|e| {
-            panic!(
-                "smmu accel: cannot stop DMA for dev_id {} while rebinding StreamID: {e:#}",
-                self.dev_id
-            )
-        });
-        if let Some(vdevice_id) = state.vdevice_id.take() {
-            self.destroy_owned(vdevice_id, "vDevice");
-        }
-
-        tracing::debug!(
-            dev_id = self.dev_id,
-            virtual_sid = sid,
-            "SMMU accel: rebound StreamID"
-        );
-    }
-
     fn set_stream_config(&self, config: smmu::StreamConfig) -> anyhow::Result<()> {
         let mut state = self.state.lock();
         match config {
@@ -552,8 +557,8 @@ impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
             smmu::StreamConfig::Bypass => self.handle_bypass(&mut state),
             // `ste_dwords` is already canonicalized by the emulator to the
             // stage-1 fields the host nesting path accepts; pass it through.
-            smmu::StreamConfig::Translate { sid, ste_dwords } => {
-                self.handle_s1_translate(&mut state, ste_dwords, sid)
+            smmu::StreamConfig::Translate { ste_dwords } => {
+                self.handle_s1_translate(&mut state, ste_dwords)
             }
         }
     }
@@ -597,31 +602,117 @@ impl Drop for IommufdStreamBackend {
     fn drop(&mut self) {
         // Take the tracked state first so the `state` borrow is released before
         // the destroy helper (which borrows `self`) runs.
-        let (attached, nested_hwpt, vdevice) = {
+        let (attached, nested_hwpt) = {
             let state = self.state.get_mut();
-            (
-                state.attached,
-                state.current_nested_hwpt.take(),
-                state.vdevice_id.take(),
-            )
+            (state.attached, state.current_nested_hwpt.take())
         };
 
         // Detach only when we know the device is attached. Because attachment
         // is tracked precisely, a detach failure here is an invariant
-        // violation — fail fast, like the destroys below.
+        // violation — fail fast, like the destroy below.
         if attached {
             self.device.detach_pt().unwrap_or_else(|e| {
                 panic!("smmu accel: failed to detach device on teardown: {e:#}")
             });
         }
 
-        // Destroying objects we allocated must succeed; a failure is the same
-        // invariant violation as on the live paths, so fail fast here too.
         if let Some(hwpt_id) = nested_hwpt {
             self.destroy_owned(hwpt_id, "nested HWPT");
         }
-        if let Some(vdev_id) = vdevice {
-            self.destroy_owned(vdev_id, "vDevice");
+    }
+}
+
+/// A VFIO device's accelerated stream: the host objects and SMMU registration
+/// that make up its participation in the emulated SMMU.
+///
+/// PCI routing owns the guest-assigned BDF, so this owns the StreamID derived
+/// from it and everything keyed by it. A device only appears in the SMMU's
+/// registration table while it has one, which is why the SMMU never has to be
+/// told that a StreamID arrived or changed.
+pub struct AccelStream {
+    accel: Arc<SmmuAccelState>,
+    backend: Arc<IommufdStreamBackend>,
+    shared: Arc<smmu::SmmuSharedState>,
+    stream_id_base: u32,
+    dev_id: u32,
+    bound: Option<BoundStream>,
+}
+
+/// The objects that exist only while the device holds a StreamID.
+///
+/// Dropped in declaration order: the SMMU registration first, which drives the
+/// stream to abort under the SMMU's lock, and only then the vDevice that
+/// StreamID named.
+struct BoundStream {
+    rid: u16,
+    registration: smmu::AccelRegistration,
+    #[expect(dead_code)]
+    vdevice: VDevice,
+}
+
+impl AccelStream {
+    /// Wires a freshly bound VFIO device into `nesting`'s emulated SMMU,
+    /// leaving it attached to the abort HWPT.
+    ///
+    /// The device is a vIOMMU member from here on, but has no StreamID until
+    /// the guest assigns it a BDF, so it stays blocked until then.
+    pub fn new(
+        nesting: &smmu::SmmuNestingContext,
+        accel: Arc<SmmuAccelState>,
+        dev_id: u32,
+        device: Arc<vfio_sys::Device>,
+    ) -> anyhow::Result<Self> {
+        let backend = Arc::new(IommufdStreamBackend::new(accel.clone(), dev_id, device));
+        backend
+            .attach_abort()
+            .context("failed to block DMA for a newly bound VFIO device")?;
+        Ok(Self {
+            accel,
+            backend,
+            shared: nesting.shared.clone(),
+            stream_id_base: nesting.stream_id_base,
+            dev_id,
+            bound: None,
+        })
+    }
+
+    /// Binds the device to the StreamID for `rid`, replacing any StreamID it
+    /// already holds. Repeating the current RID is a no-op.
+    ///
+    /// On failure the device holds no StreamID and remains blocked; a later
+    /// routed configuration write retries.
+    pub fn bind(&mut self, rid: u16) -> anyhow::Result<()> {
+        if self.bound.as_ref().is_some_and(|bound| bound.rid == rid) {
+            return Ok(());
         }
+        // Release the old StreamID before claiming the new one: the host allows
+        // one vDevice per StreamID, and this device may be moving onto a
+        // StreamID some other device is simultaneously moving off.
+        self.unbind();
+
+        let sid = self.stream_id_base + u32::from(rid);
+        let vdevice = self.accel.alloc_vdevice(self.dev_id, sid)?;
+        let registration = self
+            .shared
+            .register_accel_device(sid, self.backend.clone())?;
+        self.bound = Some(BoundStream {
+            rid,
+            registration,
+            vdevice,
+        });
+        Ok(())
+    }
+
+    /// Releases the device's StreamID, leaving it blocked. Used when a reset
+    /// clears the captured BDF.
+    pub fn unbind(&mut self) {
+        self.bound = None;
+    }
+
+    /// The StreamID the device currently holds, if any.
+    pub fn stream_id(&self) -> Option<u32> {
+        self.bound
+            .as_ref()
+            .map(|bound| bound.registration.stream_id())
     }
 }
