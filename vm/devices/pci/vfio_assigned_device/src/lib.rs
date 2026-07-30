@@ -225,18 +225,12 @@ pub(crate) struct VfioAssignedPciDevice {
     /// (cdev) fds alive and cleans up on drop.
     binding: manager::VfioBinding,
 
-    /// Accelerated (iommufd-nested) SMMU registration guard, present only for
-    /// a device behind an accel-capable SMMU. Dropped when this device is
-    /// removed/hot-unplugged, which enqueues the unregister so the emulated
-    /// SMMU removes and tears down the device's stream backend. It also receives
-    /// the guest RequesterID from routed config-space writes.
+    /// Accelerated (iommufd-nested) SMMU stream, present only for a device
+    /// behind an accel-capable SMMU. Owns the StreamID derived from the guest
+    /// RequesterID seen on routed config-space writes, and every host object
+    /// keyed by it. Dropped when this device is removed or hot-unplugged.
     #[inspect(skip)]
-    accel_registration: Option<smmu::AccelRegistration>,
-
-    /// Guest RequesterID most recently bound successfully to the accelerated
-    /// SMMU. Config writes with the same RID stay on the local fast path.
-    #[inspect(hex)]
-    requester_id: Option<u16>,
+    accel_stream: Option<iommufd_nesting::AccelStream>,
 }
 
 #[derive(Inspect)]
@@ -345,7 +339,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
-        accel_registration: Option<smmu::AccelRegistration>,
+        accel_stream: Option<iommufd_nesting::AccelStream>,
     ) -> anyhow::Result<Self> {
         Self::from_device(
             device,
@@ -355,7 +349,7 @@ impl VfioAssignedPciDevice {
             msi_target,
             memory_mapper,
             bar_addresses,
-            accel_registration,
+            accel_stream,
         )
         .await
     }
@@ -368,7 +362,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
-        accel_registration: Option<smmu::AccelRegistration>,
+        accel_stream: Option<iommufd_nesting::AccelStream>,
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -607,8 +601,7 @@ impl VfioAssignedPciDevice {
             bar_direct_maps,
             config_patches,
             binding,
-            accel_registration,
-            requester_id: None,
+            accel_stream,
         })
     }
 
@@ -639,25 +632,23 @@ impl VfioAssignedPciDevice {
         value: ByteEnabledDwordWrite,
         routed_rid: u16,
     ) -> IoResult {
-        let registration = self
-            .accel_registration
-            .as_ref()
-            .expect("accelerated function reset requires a registration");
+        let accel = self
+            .accel_stream
+            .as_mut()
+            .expect("accelerated function reset requires a stream");
 
-        // The reset clears the device's captured BDF, so retire its StreamID
-        // first and re-publish the routed one afterwards.
-        registration.clear_requester_id();
-        self.requester_id = None;
+        // The reset clears the device's captured BDF, so release its StreamID
+        // first and re-derive it from the routed one afterwards.
+        accel.unbind();
         let write_result = self.vfio_device.write_config(offset, value);
-        match registration.set_requester_id(routed_rid) {
-            // Leaves the device aborting until a later routed write retries.
-            Err(error) => tracelimit::warn_ratelimited!(
+        if let Err(error) = accel.bind(routed_rid) {
+            // Leaves the device blocked until a later routed write retries.
+            tracelimit::warn_ratelimited!(
                 pci_id = self.pci_id.as_str(),
                 routed_rid,
                 error = error.as_ref() as &dyn std::error::Error,
                 "failed to rebind VFIO device requester ID after function reset"
-            ),
-            Ok(()) => self.requester_id = Some(routed_rid),
+            );
         }
 
         if let Err(error) = write_result {
@@ -1372,16 +1363,16 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _,       // immutable device geometry
             ref mut msix,
             supports_reset,
-            config_patches: _,      // immutable — built at init
-            binding: _,             // lifetime handle — no reset needed
-            ref accel_registration, // SMMU registration guard — persists across reset
-            ref mut requester_id,
+            config_patches: _, // immutable — built at init
+            binding: _,        // lifetime handle — no reset needed
+            ref mut accel_stream,
         } = *self;
 
-        if let Some(registration) = accel_registration {
-            registration.clear_requester_id();
+        // The reset clears the captured BDF, so the StreamID derived from it
+        // goes too; the guest's next routed config write re-derives one.
+        if let Some(accel) = accel_stream {
+            accel.unbind();
         }
-        *requester_id = None;
 
         // Reset emulated MSI-X table and capability to power-on defaults
         // (all vectors masked, address/data zeroed). The capability and
@@ -1430,7 +1421,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
         let offset = address.byte_offset();
         let rid = (u16::from(address.bus) << 8) | u16::from(address.devfn);
 
-        if self.accel_registration.is_some()
+        if self.accel_stream.is_some()
             && Self::is_function_reset_write(
                 self.pcie_flr_control_offset,
                 self.af_flr_control_offset,
@@ -1441,19 +1432,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             return self.write_function_reset(offset, value, rid);
         }
 
-        if let Some(registration) = &self.accel_registration {
-            if self.requester_id != Some(rid) {
-                match registration.set_requester_id(rid) {
-                    Ok(()) => self.requester_id = Some(rid),
-                    Err(error) => {
-                        tracelimit::warn_ratelimited!(
-                            pci_id = self.pci_id.as_str(),
-                            rid,
-                            error = error.as_ref() as &dyn std::error::Error,
-                            "failed to bind VFIO device requester ID"
-                        );
-                    }
-                }
+        if let Some(accel) = &mut self.accel_stream {
+            if let Err(error) = accel.bind(rid) {
+                tracelimit::warn_ratelimited!(
+                    pci_id = self.pci_id.as_str(),
+                    rid,
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to bind VFIO device requester ID"
+                );
             }
         }
 

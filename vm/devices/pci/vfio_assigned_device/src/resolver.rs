@@ -246,10 +246,11 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             crate::manager::VfioCdevBindingState::from_response(resp, pci_id.clone());
 
         // If the device is nested, wire the manager's iommufd objects into
-        // the emulated SMMU: finalize host-derived parameters and register
-        // the per-device stream backend. The manager already created (or
-        // reused) the shared vIOMMU and queried host capabilities.
-        let mut accel_registration: Option<smmu::AccelRegistration> = None;
+        // the emulated SMMU. The manager already created (or reused) the
+        // shared vIOMMU and queried host capabilities. The device gets no
+        // StreamID here — PCI routing supplies the BDF one is derived from,
+        // so it stays blocked until the guest assigns it.
+        let mut accel_stream = None;
         if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
             // Bind the vSMMU to the physical SMMU and vIOMMU backing this
             // device, finalizing host-derived parameters (OAS, ...). Runs once
@@ -259,20 +260,15 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 .bind_host_smmu(nesting.host_caps, &nesting.accel_state)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
 
-            let backend = Arc::new(crate::iommufd_nesting::IommufdStreamBackend::new(
-                nesting.accel_state,
-                iommufd_devid,
-                device.clone(),
-            ));
-
-            // Register the backend and keep the returned guard on the device,
-            // so removing/hot-unplugging the device unregisters the backend
-            // synchronously instead of leaking it for the vSMMU's lifetime.
-            let id = ctx
-                .shared
-                .register_accel_device(ctx.stream_id_base, backend)
-                .with_context(|| format!("failed to register device {pci_id} with the SMMU"))?;
-            accel_registration = Some(smmu::AccelRegistration::new(&ctx.shared, id));
+            accel_stream = Some(
+                crate::iommufd_nesting::AccelStream::new(
+                    &ctx,
+                    nesting.accel_state,
+                    iommufd_devid,
+                    device.clone(),
+                )
+                .with_context(|| format!("failed to attach device {pci_id} to the SMMU"))?,
+            );
 
             tracing::info!(pci_id, "registered iommufd nesting backend with SMMU");
         }
@@ -289,7 +285,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             input.dma_target.msi_target(),
             memory_mapper,
             bar_addresses,
-            accel_registration,
+            accel_stream,
         )
         .await?;
 
