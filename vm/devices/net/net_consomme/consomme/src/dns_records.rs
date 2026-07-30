@@ -67,11 +67,12 @@ impl StaticDnsRecords {
     /// Adds a static record.
     ///
     /// `name` is the query name in presentation form (e.g. `"example.com"`),
-    /// stored lowercased and compared case-insensitively.
+    /// stored lowercased and compared case-insensitively. It must be ASCII.
     ///
-    /// Returns [`StaticDnsRecordError::InvalidName`] if `name` is empty or too
-    /// long, or [`StaticDnsRecordError::InvalidData`] if `rdata` has the wrong
-    /// length for `record_type`.
+    /// Returns [`StaticDnsRecordError::InvalidName`] if `name` is empty, too
+    /// long, non-ASCII, or otherwise malformed, or
+    /// [`StaticDnsRecordError::InvalidData`] if `rdata` has the wrong length
+    /// for `record_type`.
     pub fn add(
         &mut self,
         record_type: StaticDnsRecordType,
@@ -163,6 +164,11 @@ impl StaticDnsRecords {
 fn normalize_name(name: &str) -> Option<String> {
     let name = name.strip_suffix('.').unwrap_or(name);
     if name.is_empty() || name.len() > smoltcp::config::DNS_MAX_NAME_SIZE {
+        return None;
+    }
+
+    // Reject non-ASCII names.
+    if !name.is_ascii() {
         return None;
     }
 
@@ -541,6 +547,12 @@ mod tests {
         let long_label = "a".repeat(MAX_LABEL_LEN + 1);
         assert_eq!(
             records.add(StaticDnsRecordType::A, &long_label, &[1, 2, 3, 4]),
+            Err(StaticDnsRecordError::InvalidName)
+        );
+
+        // A non-ASCII name is rejected.
+        assert_eq!(
+            records.add(StaticDnsRecordType::A, "exämple.com", &[1, 2, 3, 4]),
             Err(StaticDnsRecordError::InvalidName)
         );
 
