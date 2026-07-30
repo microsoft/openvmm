@@ -39,6 +39,19 @@ const DEFAULT_TTL: u32 = 60;
 /// Maximum length of a DNS name in presentation form we will store/compare.
 const MAX_NAME_LEN: usize = 255;
 
+/// Maximum length of a single DNS label, in bytes (RFC 1035 §2.3.4).
+const MAX_LABEL_LEN: usize = 63;
+
+/// Length of the fixed DNS message header, in bytes.
+const DNS_HEADER_LEN: usize = 12;
+
+/// Fixed per-answer overhead for a compression-pointer `A` record: name
+/// pointer (2) + TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2).
+const ANSWER_FIXED_LEN: usize = 12;
+
+/// Maximum size of a DNS response over UDP.
+const MAX_DNS_UDP_RESPONSE_LEN: usize = 512;
+
 /// A single static DNS record.
 struct StaticDnsRecord {
     /// Lowercased presentation-form domain name (no trailing dot).
@@ -86,12 +99,20 @@ impl StaticDnsRecords {
 
     /// Builds a DNS response for `query` if it matches one of the static
     /// records, otherwise returns `None`.
-    pub fn build_response(&self, query: &[u8]) -> Option<Vec<u8>> {
+    ///
+    /// `max_len` bounds the size of the returned DNS message (in bytes).
+    pub fn build_response(&self, query: &[u8], max_len: usize) -> Option<Vec<u8>> {
         if self.records.is_empty() {
             return None;
         }
 
         let packet = DnsPacket::new_checked(query).ok()?;
+
+        // Ignore packets with the response flag set.
+        if packet.flags().contains(DnsFlags::RESPONSE) {
+            return None;
+        }
+
         if packet.question_count() != 1 {
             // Multiple or no question; let the query go through.
             return None;
@@ -115,7 +136,31 @@ impl StaticDnsRecords {
             return None;
         }
 
-        Some(build_a_response(&packet, &question, &answers))
+        let budget = max_len.min(MAX_DNS_UDP_RESPONSE_LEN);
+        let mut total = DNS_HEADER_LEN + question.buffer_len();
+
+        if total > budget {
+            return None;
+        }
+
+        let mut fit = 0;
+        for rdata in &answers {
+            let answer_len = ANSWER_FIXED_LEN + rdata.len();
+            if total + answer_len > budget {
+                break;
+            }
+
+            total += answer_len;
+            fit += 1;
+        }
+
+        let truncated = fit < answers.len();
+        Some(build_a_response(
+            &packet,
+            &question,
+            &answers[..fit],
+            truncated,
+        ))
     }
 }
 
@@ -125,8 +170,11 @@ fn normalize_name(name: &str) -> Option<String> {
         return None;
     }
 
-    // Reject empty labels ("..").
-    if name.split('.').any(|label| label.is_empty()) {
+    // Reject empty labels ("..") and labels longer than the DNS maximum (63).
+    if name
+        .split('.')
+        .any(|label| label.is_empty() || label.len() > MAX_LABEL_LEN)
+    {
         return None;
     }
 
@@ -159,17 +207,20 @@ fn build_a_response(
     query: &DnsPacket<&[u8]>,
     question: &DnsQuestion<'_>,
     answers: &[&[u8]],
+    truncated: bool,
 ) -> Vec<u8> {
-    const DNS_HEADER_LEN: usize = 12;
-
     // Compression pointer (top two bits set) to the echoed question name.
     const QNAME_POINTER: u16 = 0xc000 | DNS_HEADER_LEN as u16;
 
     let ancount = answers.len().min(u16::MAX as usize) as u16;
 
-    // Response flags: QR=1, AA=1, RA=1, RD echoed from the query.
+    // Response flags: QR=1, AA=1, RA=1, RD echoed from the query. TC is set
+    // when answers were dropped to fit the response-size budget.
     let mut flags = DnsFlags::RESPONSE | DnsFlags::AUTHORITATIVE | DnsFlags::RECURSION_AVAILABLE;
     flags |= query.flags() & DnsFlags::RECURSION_DESIRED;
+    if truncated {
+        flags |= DnsFlags::TRUNCATED;
+    }
 
     // Header + echoed question section, written via smoltcp.
     let mut response = vec![0u8; DNS_HEADER_LEN + question.buffer_len()];
@@ -239,7 +290,9 @@ mod tests {
             .unwrap();
 
         let query = build_query(0x1234, "example.com", DnsQueryType::A);
-        let response = records.build_response(&query).expect("should match");
+        let response = records
+            .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+            .expect("should match");
 
         // Transaction ID preserved.
         assert_eq!(&response[0..2], &[0x12, 0x34]);
@@ -268,7 +321,11 @@ mod tests {
             .add(StaticDnsRecordType::A, "host.local", &[1, 2, 3, 4])
             .unwrap();
         let query = build_query(1, "HOST.LOCAL", DnsQueryType::A);
-        assert!(records.build_response(&query).is_some());
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_some()
+        );
     }
 
     #[test]
@@ -281,7 +338,9 @@ mod tests {
             .add(StaticDnsRecordType::A, "many.test", &[2, 2, 2, 2])
             .unwrap();
         let query = build_query(1, "many.test", DnsQueryType::A);
-        let response = records.build_response(&query).unwrap();
+        let response = records
+            .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+            .unwrap();
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 2);
     }
 
@@ -292,7 +351,11 @@ mod tests {
             .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
             .unwrap();
         let query = build_query(1, "unknown.test", DnsQueryType::A);
-        assert!(records.build_response(&query).is_none());
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
     }
 
     #[test]
@@ -303,14 +366,22 @@ mod tests {
             .unwrap();
         // AAAA for the same name should not be answered.
         let query = build_query(1, "known.test", DnsQueryType::Aaaa);
-        assert!(records.build_response(&query).is_none());
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
     }
 
     #[test]
     fn empty_store_returns_none() {
         let records = StaticDnsRecords::default();
         let query = build_query(1, "known.test", DnsQueryType::A);
-        assert!(records.build_response(&query).is_none());
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
     }
 
     #[test]
@@ -321,21 +392,108 @@ mod tests {
             .unwrap();
 
         // Too short, truncated label, unterminated name, compression pointer.
-        assert!(records.build_response(&[]).is_none());
-        assert!(records.build_response(&[0; 5]).is_none());
+        assert!(
+            records
+                .build_response(&[], MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
+        assert!(
+            records
+                .build_response(&[0; 5], MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
 
         let mut truncated = build_query(1, "known.test", DnsQueryType::A);
         truncated.truncate(15);
 
-        assert!(records.build_response(&truncated).is_none());
+        assert!(
+            records
+                .build_response(&truncated, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
 
         // A label length that runs off the end of the buffer.
         let bad = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 63, b'x'];
-        assert!(records.build_response(&bad).is_none());
+        assert!(
+            records
+                .build_response(&bad, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
 
         // Compression pointer in the question.
         let ptr = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0xc0, 0x0c];
-        assert!(records.build_response(&ptr).is_none());
+        assert!(
+            records
+                .build_response(&ptr, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn response_packets_are_ignored() {
+        let mut records = StaticDnsRecords::default();
+        records
+            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .unwrap();
+
+        // A matching query is answered...
+        let mut query = build_query(1, "known.test", DnsQueryType::A);
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_some()
+        );
+
+        // ...but the same message with the QR (response) bit set is ignored,
+        // so we don't reply to a DNS response misrouted to port 53.
+        query[2] |= 0x80;
+        assert!(
+            records
+                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn oversized_answer_set_is_truncated() {
+        let mut records = StaticDnsRecords::default();
+        // Register more answers than a small budget can hold.
+        for i in 0..20u8 {
+            records
+                .add(StaticDnsRecordType::A, "many.test", &[10, 0, 0, i])
+                .unwrap();
+        }
+
+        let query = build_query(1, "many.test", DnsQueryType::A);
+
+        // With a generous budget all answers fit and TC is clear.
+        let full = records
+            .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+            .unwrap();
+        let full_count = u16::from_be_bytes([full[6], full[7]]);
+        assert_eq!(full_count, 20);
+        assert_eq!(full[2] & 0x02, 0, "TC must be clear when nothing dropped");
+
+        // Size the budget to hold exactly two answers.
+        let answer_len = ANSWER_FIXED_LEN + 4;
+        let base = full.len() - full_count as usize * answer_len;
+        let budget = base + answer_len * 2;
+        let response = records.build_response(&query, budget).unwrap();
+
+        assert_eq!(u16::from_be_bytes([response[6], response[7]]), 2);
+        assert_ne!(response[2] & 0x02, 0, "TC must be set when answers dropped");
+        assert!(response.len() <= budget);
+    }
+
+    #[test]
+    fn budget_too_small_for_header_returns_none() {
+        let mut records = StaticDnsRecords::default();
+        records
+            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .unwrap();
+        let query = build_query(1, "known.test", DnsQueryType::A);
+        // Not even the header and question fit, so no response is synthesized.
+        assert!(records.build_response(&query, 4).is_none());
     }
 
     #[test]
@@ -376,6 +534,22 @@ mod tests {
         assert_eq!(
             records.add(StaticDnsRecordType::A, &too_long, &[1, 2, 3, 4]),
             Err(StaticDnsRecordError::InvalidName)
+        );
+
+        // A single label longer than the DNS maximum (63) is rejected, even
+        // when the overall name is within the length limit.
+        let long_label = "a".repeat(MAX_LABEL_LEN + 1);
+        assert_eq!(
+            records.add(StaticDnsRecordType::A, &long_label, &[1, 2, 3, 4]),
+            Err(StaticDnsRecordError::InvalidName)
+        );
+
+        // A label of exactly the maximum length is accepted.
+        let max_label = "a".repeat(MAX_LABEL_LEN);
+        assert!(
+            records
+                .add(StaticDnsRecordType::A, &max_label, &[1, 2, 3, 4])
+                .is_ok()
         );
 
         // A well-formed name (with an optional trailing dot) succeeds.

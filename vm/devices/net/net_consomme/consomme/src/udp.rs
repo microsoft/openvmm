@@ -602,8 +602,24 @@ impl<T: Client> Access<'_, T> {
             transport: crate::dns_resolver::DnsTransport::Udp,
         };
 
-        // If the query matches a static DNS record, return that record directly.
-        if let Some(response_data) = self.inner.static_dns.build_response(udp.payload()) {
+
+        // Limit static DNS response sizes to the MTU.
+        let ip_header_len = if matches!(dst_addr, IpAddress::Ipv4(_)) {
+            IPV4_HEADER_LEN
+        } else {
+            IPV6_HEADER_LEN
+        };
+
+        let max_response_len = self
+            .client
+            .rx_mtu()
+            .saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN);
+
+        if let Some(response_data) = self
+            .inner
+            .static_dns
+            .build_response(udp.payload(), max_response_len)
+        {
             let response = DnsResponse {
                 flow,
                 response_data,

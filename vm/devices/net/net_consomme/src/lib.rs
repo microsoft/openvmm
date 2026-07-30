@@ -320,7 +320,7 @@ impl ConsommeControl {
             .map_err(ConsommeMessageError::Mesh)
     }
 
-    ///Adds a static DNS record that will be returned directly
+    /// Adds a static DNS record that will be returned directly
     /// if the guest sends a matching query.
     pub async fn add_dns_record(
         &self,
