@@ -2469,6 +2469,24 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     meshworker::run_vmm_mesh_host()?;
 
     let opt = cli_args::parse_options();
+
+    // Emitted once per VMM process, so that every log bundle and bug report
+    // identifies the build it came from. Logged after option parsing so that
+    // `--version` and `--help` stay clean, and after the mesh host check so
+    // that worker processes do not each repeat it. Deliberately `info` rather
+    // than `warn`: development builds are the normal case for anyone working on
+    // OpenVMM, and a warning that always fires is one that gets filtered out and
+    // then ignored when it finally matters.
+    {
+        let build = openvmm_build_info::get();
+        tracing::info!(
+            version = build.version(),
+            kind = ?build.kind(),
+            revision = build.scm_revision(),
+            target = build.target(),
+            "openvmm build"
+        );
+    }
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)

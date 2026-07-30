@@ -12,30 +12,79 @@
 
 #![expect(missing_docs)]
 
+/// What kind of build this is.
+///
+/// Deliberately not a boolean "official". OpenVMM ships as source that someone
+/// else builds, so a packager's binary is legitimately not ours and yet is a
+/// legitimate build of an official version. The proof that a *source release*
+/// is official is the build provenance attestation on the archive, not anything
+/// a binary can claim about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildKind {
+    /// Built from a tree sitting at a release version.
+    Release,
+    /// Built from a tree working towards the next release, which carries a
+    /// semver prerelease component.
+    Development,
+    /// Built with `OPENVMM_PKGVERSION`, so the reported version is whatever
+    /// the builder chose.
+    Custom,
+}
+
+impl BuildKind {
+    const fn resolve() -> Self {
+        // `match` on bytes because `str` comparison is not const.
+        match env!("OPENVMM_BUILD_KIND").as_bytes() {
+            b"release" => BuildKind::Release,
+            b"development" => BuildKind::Development,
+            _ => BuildKind::Custom,
+        }
+    }
+
+    /// Whether this build came from a tree sitting at a release version.
+    ///
+    /// This says nothing about *who* built it.
+    pub const fn is_release(&self) -> bool {
+        matches!(self, BuildKind::Release)
+    }
+}
+
 /// Version and source identity of this build.
 #[derive(Debug)]
 pub struct BuildInfo {
     version: &'static str,
+    long_version: &'static str,
     product_version: &'static str,
     revision: &'static str,
+    target: &'static str,
+    kind: BuildKind,
 }
 
 impl BuildInfo {
     pub const fn new() -> Self {
         Self {
             version: env!("OPENVMM_VERSION"),
+            long_version: include_str!(concat!(env!("OUT_DIR"), "/long_version.txt")),
             product_version: env!("OPENVMM_PRODUCT_VERSION"),
             revision: env!("OPENVMM_REVISION"),
+            target: env!("OPENVMM_TARGET"),
+            kind: BuildKind::resolve(),
         }
     }
 
-    /// The version to show a human, as reported by `openvmm --version`.
+    /// The version to show a human, as reported by `openvmm -V`.
     ///
     /// This carries whatever enrichment was available at build time: a `+g`
     /// revision suffix for a checkout other than the exact release tag, or a
     /// packager's own string if they set `OPENVMM_PKGVERSION`.
     pub const fn version(&self) -> &'static str {
         self.version
+    }
+
+    /// The multi-line form reported by `openvmm --version`, in the style of
+    /// `rustc -vV`.
+    pub const fn long_version(&self) -> &'static str {
+        self.long_version
     }
 
     /// The plain upstream version, with nothing appended and no override
@@ -52,6 +101,16 @@ impl BuildInfo {
     /// checkout (a released source archive, for instance).
     pub const fn scm_revision(&self) -> &'static str {
         self.revision
+    }
+
+    /// The target triple this was built for.
+    pub const fn target(&self) -> &'static str {
+        self.target
+    }
+
+    /// Whether this is a release, development, or custom build.
+    pub const fn kind(&self) -> BuildKind {
+        self.kind
     }
 }
 
@@ -112,5 +171,37 @@ mod tests {
                     && revision.bytes().all(|b| b.is_ascii_hexdigit())),
             "unexpected revision {revision:?}"
         );
+    }
+
+    /// A development build must say so, since that is the whole point of the
+    /// `-dev` suffix on `main`.
+    #[test]
+    fn build_kind_matches_the_version() {
+        let info = get();
+        match info.kind() {
+            BuildKind::Development => {
+                assert!(info.product_version().contains('-'));
+                assert!(!info.kind().is_release());
+            }
+            BuildKind::Release => {
+                assert!(!info.product_version().contains('-'));
+                assert!(info.kind().is_release());
+            }
+            BuildKind::Custom => {}
+        }
+    }
+
+    /// The long form is what a bug report gets pasted from, so it has to carry
+    /// the parts that identify the build.
+    #[test]
+    fn long_version_carries_the_identity() {
+        let info = get();
+        let long = info.long_version();
+        assert!(long.starts_with(info.version()), "{long:?}");
+        assert!(long.contains(info.product_version()), "{long:?}");
+        assert!(long.contains(info.target()), "{long:?}");
+        if !info.scm_revision().is_empty() {
+            assert!(long.contains(info.scm_revision()), "{long:?}");
+        }
     }
 }

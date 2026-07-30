@@ -4,6 +4,7 @@
 #![expect(missing_docs)]
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Prefix of the Git tag naming an OpenVMM release.
@@ -116,9 +117,14 @@ fn main() {
     // `CH_EXTRA_VERSION` do, so a bug report names the build it came from. An
     // empty value is treated as unset, since build systems routinely pass an
     // undefined variable through as `""`.
-    let version = match std::env::var("OPENVMM_PKGVERSION") {
-        Ok(pkgversion) if !pkgversion.is_empty() => pkgversion,
-        _ => match &revision {
+    let pkgversion = match std::env::var("OPENVMM_PKGVERSION") {
+        Ok(pkgversion) if !pkgversion.is_empty() => Some(pkgversion),
+        _ => None,
+    };
+
+    let version = match &pkgversion {
+        Some(pkgversion) => pkgversion.clone(),
+        None => match &revision {
             // Semver build metadata, so it orders identically to the plain
             // version and a build from a checkout is never mistaken for one
             // from the matching release archive.
@@ -129,8 +135,42 @@ fn main() {
         },
     };
 
+    // Deliberately not a boolean "official". OpenVMM ships as source that
+    // someone else builds, so a packager's binary is legitimately not ours and
+    // yet is a legitimate build of an official version. Report what is known
+    // and let the consumer judge.
+    let (kind, kind_description) = if pkgversion.is_some() {
+        ("custom", "custom (built with OPENVMM_PKGVERSION)")
+    } else if product_version.contains('-') {
+        // A semver prerelease component. `main` carries `-dev`, so anything
+        // built from it says so.
+        ("development", "development (not an official release)")
+    } else {
+        ("release", "release")
+    };
+
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    let long_version = format!(
+        "{version}\n\
+         build:   {kind_description}\n\
+         version: {product_version}\n\
+         commit:  {}\n\
+         host:    {target}",
+        revision.as_deref().unwrap_or("(not built from a checkout)"),
+    );
+
     println!("cargo:rustc-env=OPENVMM_VERSION={version}");
     println!("cargo:rustc-env=OPENVMM_PRODUCT_VERSION={product_version}");
+    println!("cargo:rustc-env=OPENVMM_BUILD_KIND={kind}");
+    println!("cargo:rustc-env=OPENVMM_TARGET={target}");
+    // Written to a file rather than emitted as `rustc-env`, because cargo parses
+    // build script output a line at a time and would silently keep only the
+    // first line of a multi-line value. Pre-formatted here because a build
+    // script can compose it from optional parts, where `concat!` in the library
+    // could not.
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    std::fs::write(out_dir.join("long_version.txt"), &long_version)
+        .expect("failed to write long version");
     println!(
         "cargo:rustc-env=OPENVMM_REVISION={}",
         revision.unwrap_or_default()

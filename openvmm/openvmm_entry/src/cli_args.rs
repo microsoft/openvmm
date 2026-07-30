@@ -146,7 +146,11 @@ pub struct NumaDistanceCli {
 // `name` is set explicitly because the version and help output otherwise
 // report `CARGO_PKG_NAME`, which is the crate holding this parser
 // (`openvmm_entry`) rather than the binary a user actually invoked.
-#[command(name = "openvmm", version = openvmm_build_info::get().version())]
+#[command(
+    name = "openvmm",
+    version = openvmm_build_info::get().version(),
+    long_version = openvmm_build_info::get().long_version(),
+)]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -3397,17 +3401,29 @@ mod tests {
     use test_with_tracing::test;
 
     /// `--version` reports the resolved build identity rather than clap's
-    /// default, which would be the parser crate's own name and version.
+    /// default, which would be the parser crate's own name and version, and the
+    /// long form carries the detail a bug report needs.
     #[test]
     fn version_reports_build_info() {
-        let Err(error) = Options::try_parse_from(["openvmm", "--version"]) else {
-            panic!("--version unexpectedly parsed as runtime options");
-        };
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        let short = version_output(["openvmm", "-V"]);
         assert_eq!(
-            error.to_string(),
+            short,
             format!("openvmm {}\n", openvmm_build_info::get().version())
         );
+
+        let long = version_output(["openvmm", "--version"]);
+        assert_eq!(
+            long,
+            format!("openvmm {}\n", openvmm_build_info::get().long_version())
+        );
+    }
+
+    fn version_output(args: [&str; 2]) -> String {
+        let Err(error) = Options::try_parse_from(args) else {
+            panic!("{args:?} unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        error.to_string()
     }
 
     #[test]

@@ -37,6 +37,16 @@ fn main() {
             .map(parse_u16)
             .unwrap_or(0);
 
+        // VS_FF_PRERELEASE. A semver prerelease component (`main` carries
+        // `-dev`) is exactly what this Win32 flag means, and it makes a
+        // non-release build visible in the file properties dialog and to any
+        // tooling that inspects binaries, without anyone having to run it.
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PRE");
+        let prerelease = !std::env::var("CARGO_PKG_VERSION_PRE")
+            .unwrap_or_default()
+            .is_empty();
+        let file_flags = if prerelease { 0x2 } else { 0x0 };
+
         let macros = [
             (
                 "OPENVMM_VERSION",
@@ -46,6 +56,7 @@ fn main() {
                 "OPENVMM_VERSION_STR",
                 format!(r#""{major}.{minor}.{patch}.{revision}""#),
             ),
+            ("OPENVMM_FILE_FLAGS", format!("{file_flags:#x}")),
         ];
 
         embed_resource::compile(
