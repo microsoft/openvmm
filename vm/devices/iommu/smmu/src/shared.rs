@@ -44,9 +44,11 @@ use zerocopy::IntoBytes;
 /// This is the concrete type carried (type-erased) by
 /// [`DmaPassthrough::HardwareNestable`](pci_core::dma::DmaPassthrough::HardwareNestable)
 /// for devices behind an accel-capable SMMU. The VFIO resolver downcasts the
-/// opaque handle to this type and runs the one-shot nesting handshake
-/// (`resolve_host_caps` → build a stream backend → [`register_accel_device`]).
+/// opaque handle to this type, binds the vSMMU to the host hardware
+/// ([`bind_host_smmu`]), and blocks the device until PCI routing gives it a
+/// BDF to derive a StreamID from ([`register_accel_device`]).
 ///
+/// [`bind_host_smmu`]: SmmuSharedState::bind_host_smmu
 /// [`register_accel_device`]: SmmuSharedState::register_accel_device
 #[derive(Clone)]
 pub struct SmmuNestingContext {

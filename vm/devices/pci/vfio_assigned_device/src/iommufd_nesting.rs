@@ -34,9 +34,14 @@
 //!   SMMU. Implements [`smmu::AcceleratedViommu`]: invalidation is
 //!   vIOMMU-scoped, so one batched `IOMMU_HWPT_INVALIDATE` per guest command
 //!   covers every stream behind the SMMU.
-//! - [`IommufdStreamBackend`]: per-device stream backend. Created during VFIO
-//!   cdev device resolution. Registered with [`smmu::SmmuSharedState`] by
-//!   stream ID.
+//! - [`IommufdStreamBackend`]: per-device stream backend, created during VFIO
+//!   cdev device resolution and attached to the abort HWPT straight away, so a
+//!   device is a vIOMMU member before it has any StreamID.
+//! - [`AccelStream`]: the device's participation in the emulated SMMU. PCI
+//!   routing owns the guest-assigned BDF, so this owns the StreamID derived
+//!   from it, plus the [`VDevice`] and SMMU registration keyed by it. A guest
+//!   moving the device to a different BDF retires all three and creates new
+//!   ones, which is why the SMMU never has to be told a StreamID changed.
 
 use anyhow::Context as _;
 use parking_lot::Mutex;
@@ -353,13 +358,9 @@ impl Drop for SmmuAccelState {
 /// | BYPASS (4) | Attach to the shared bypass HWPT — identity GPA→HPA via S2 |
 /// | S1_TRANS (5) | Allocate a nested HWPT with STE DW0-1, attach (replace) |
 ///
-/// # vDevice Allocation
-///
-/// The iommufd vDevice (virtual device within the vIOMMU) is allocated
-/// lazily on first `on_cfgi_ste` with `Config=S1_TRANS`. The vDevice's
-/// virtual stream ID is the guest-assigned BDF, which is not known at
-/// device construction time (the guest assigns bus numbers after PCIe
-/// enumeration).
+/// The backend is registered against one StreamID for its whole life, so it
+/// never has to interpret one: the [`VDevice`] naming that StreamID is owned by
+/// [`AccelStream`] and outlives every config applied here.
 pub struct IommufdStreamBackend {
     /// Per-SMMU shared state (vIOMMU, S2 parent HWPT).
     accel: Arc<SmmuAccelState>,
@@ -371,7 +372,7 @@ pub struct IommufdStreamBackend {
     /// The same `Arc<vfio_sys::Device>` is held by the PCI emulation, so a
     /// single fd serves both roles (no dup).
     device: Arc<vfio_sys::Device>,
-    /// Per-device mutable state (nested HWPT, vDevice).
+    /// Per-device mutable state (attachment and nested HWPT).
     state: Mutex<StreamBackendState>,
 }
 
@@ -398,12 +399,10 @@ impl IommufdStreamBackend {
     /// `device` is the shared VFIO device handle (bound to iommufd), also held
     /// by the PCI emulation — one fd serves both.
     ///
-    /// The device is detached (kernel blocking domain) immediately after bind.
-    /// SMMU registration first attaches the shared abort HWPT. The backend
-    /// remains aborting until PCI routing publishes the guest RequesterID and
-    /// the SMMU applies that stream's current policy. After this first attach,
-    /// the device is always attached to some nested HWPT and is never detached
-    /// again until teardown.
+    /// The device is detached (kernel blocking domain) immediately after bind
+    /// and stays that way until [`attach_abort`](Self::attach_abort). After
+    /// that first attach it is always attached to some nested HWPT, and is
+    /// never detached again until teardown.
     pub fn new(accel: Arc<SmmuAccelState>, dev_id: u32, device: Arc<vfio_sys::Device>) -> Self {
         Self {
             accel,
@@ -629,13 +628,21 @@ impl Drop for IommufdStreamBackend {
 /// from it and everything keyed by it. A device only appears in the SMMU's
 /// registration table while it has one, which is why the SMMU never has to be
 /// told that a StreamID arrived or changed.
+#[derive(inspect::Inspect)]
 pub struct AccelStream {
+    /// Declared first so teardown releases the StreamID-scoped objects before
+    /// the vIOMMU they live under: the last `Arc<SmmuAccelState>` here is
+    /// dropped by the backend below, which destroys the vIOMMU.
+    bound: Option<BoundStream>,
+    #[inspect(skip)]
     accel: Arc<SmmuAccelState>,
+    #[inspect(skip)]
     backend: Arc<IommufdStreamBackend>,
+    #[inspect(skip)]
     shared: Arc<smmu::SmmuSharedState>,
+    #[inspect(hex)]
     stream_id_base: u32,
     dev_id: u32,
-    bound: Option<BoundStream>,
 }
 
 /// The objects that exist only while the device holds a StreamID.
@@ -643,9 +650,13 @@ pub struct AccelStream {
 /// Dropped in declaration order: the SMMU registration first, which drives the
 /// stream to abort under the SMMU's lock, and only then the vDevice that
 /// StreamID named.
+#[derive(inspect::Inspect)]
 struct BoundStream {
+    #[inspect(hex)]
     rid: u16,
+    #[inspect(hex, with = "|r| r.stream_id()")]
     registration: smmu::AccelRegistration,
+    #[inspect(skip)]
     #[expect(dead_code)]
     vdevice: VDevice,
 }
@@ -667,12 +678,12 @@ impl AccelStream {
             .attach_abort()
             .context("failed to block DMA for a newly bound VFIO device")?;
         Ok(Self {
+            bound: None,
             accel,
             backend,
             shared: nesting.shared.clone(),
             stream_id_base: nesting.stream_id_base,
             dev_id,
-            bound: None,
         })
     }
 
@@ -707,12 +718,5 @@ impl AccelStream {
     /// clears the captured BDF.
     pub fn unbind(&mut self) {
         self.bound = None;
-    }
-
-    /// The StreamID the device currently holds, if any.
-    pub fn stream_id(&self) -> Option<u32> {
-        self.bound
-            .as_ref()
-            .map(|bound| bound.registration.stream_id())
     }
 }
