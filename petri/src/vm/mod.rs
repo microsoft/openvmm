@@ -1260,6 +1260,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Apply a custom UEFI variable delta encoded as JSON.
+    pub fn with_custom_uefi_json(mut self, json: impl Into<Vec<u8>>) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Custom UEFI variables are only supported for UEFI firmware.")
+            .custom_uefi_json = Some(json.into());
+        self
+    }
+
     /// Set the VM to use the specified processor topology.
     pub fn with_processor_topology(mut self, topology: ProcessorTopology) -> Self {
         self.config.proc_topology = topology;
@@ -2284,6 +2294,8 @@ pub struct UefiConfig {
     pub secure_boot_enabled: bool,
     /// Secure boot template
     pub secure_boot_template: Option<SecureBootTemplate>,
+    /// Custom UEFI variable delta JSON
+    pub custom_uefi_json: Option<Vec<u8>>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
     /// Always attempt a default boot
@@ -2304,6 +2316,7 @@ impl Default for UefiConfig {
         Self {
             secure_boot_enabled: false,
             secure_boot_template: None,
+            custom_uefi_json: None,
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,

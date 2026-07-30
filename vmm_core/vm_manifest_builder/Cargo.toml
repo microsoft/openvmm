@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_resources.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 getrandom.workspace = true
 input_core.workspace = true

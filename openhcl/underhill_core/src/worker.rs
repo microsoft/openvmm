@@ -76,7 +76,6 @@ use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
-use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
@@ -2552,34 +2551,24 @@ async fn new_underhill_vm(
 
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
-        use firmware_uefi_custom_vars::CustomVars;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        // map the GET's template enum onto the hardcoded secureboot template type
-        let base_vars = match dps.general.secure_boot_template {
-            SecureBootTemplateType::None => CustomVars::default(),
+        #[cfg(guest_arch = "aarch64")]
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        let base_template_json = match &dps.general.secure_boot_template {
+            SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
-                if cfg!(guest_arch = "x86_64") {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                } else if cfg!(guest_arch = "aarch64") {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
-                }
+                Some(secure_boot_templates::microsoft_windows())
             }
             SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                if cfg!(guest_arch = "x86_64") {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                } else if cfg!(guest_arch = "aarch64") {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
-                }
+                Some(secure_boot_templates::microsoft_uefi_ca())
             }
         };
 
         // check if vmgs includes custom UEFI JSON
-        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+        let custom_uefi_json = if let Some(vmgs_client) = vmgs_client.as_ref() {
             vmgs_client
                 .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
                 .context("failed to instantiate custom UEFI JSON store")?
@@ -2588,33 +2577,12 @@ async fn new_underhill_vm(
                 .context("failed to get custom UEFI JSON data")?
         } else {
             None
-        };
-
-        // obtain the final custom uefi vars by applying the delta onto
-        // the base vars
-        let custom_uefi_vars = match custom_uefi_json_data {
-            Some(data) => {
-                let res = (|| -> Result<CustomVars, anyhow::Error> {
-                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                    Ok(base_vars.apply_delta(delta)?)
-                })();
-
-                match res {
-                    Ok(vars) => vars,
-                    Err(e) => {
-                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                        get_client
-                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                            .await;
-                        return Err(e).context("failed to load custom UEFI variables");
-                    }
-                }
-            }
-            None => base_vars,
-        };
+        }
+        .map(Into::into);
 
         let config = firmware_uefi_resources::UefiConfig {
-            custom_uefi_vars,
+            base_template_json,
+            custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
             use_mmio: cfg!(not(guest_arch = "x86_64")),
