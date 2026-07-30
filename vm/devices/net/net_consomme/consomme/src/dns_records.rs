@@ -36,9 +36,6 @@ const A_RDATA_LEN: usize = 4;
 /// TTL advertised for static records.
 const DEFAULT_TTL: u32 = 60;
 
-/// Maximum length of a DNS name in presentation form we will store/compare.
-const MAX_NAME_LEN: usize = 255;
-
 /// Maximum length of a single DNS label, in bytes (RFC 1035 §2.3.4).
 const MAX_LABEL_LEN: usize = 63;
 
@@ -166,7 +163,7 @@ impl StaticDnsRecords {
 
 fn normalize_name(name: &str) -> Option<String> {
     let name = name.strip_suffix('.').unwrap_or(name);
-    if name.is_empty() || name.len() > MAX_NAME_LEN {
+    if name.is_empty() || name.len() > smoltcp::config::DNS_MAX_NAME_SIZE {
         return None;
     }
 
@@ -183,7 +180,7 @@ fn normalize_name(name: &str) -> Option<String> {
 
 /// Decodes a DNS name into lowercased presentation form (no trailing dot),
 ///
-/// Returns `None` on malformed input or if the name exceeds [`MAX_NAME_LEN`].
+/// Returns `None` on malformed input or if the name exceeds [`smoltcp::config::DNS_MAX_NAME_SIZE`].
 fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
     let mut qname = String::new();
     for label in packet.parse_name(name) {
@@ -194,7 +191,7 @@ fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
         for &b in label {
             qname.push(b.to_ascii_lowercase() as char);
         }
-        if qname.len() > MAX_NAME_LEN {
+        if qname.len() > smoltcp::config::DNS_MAX_NAME_SIZE {
             return None;
         }
     }
@@ -530,7 +527,7 @@ mod tests {
         );
 
         // A name longer than the maximum permitted length is rejected.
-        let too_long = "a".repeat(MAX_NAME_LEN + 1);
+        let too_long = "a".repeat(smoltcp::config::DNS_MAX_NAME_SIZE + 1);
         assert_eq!(
             records.add(StaticDnsRecordType::A, &too_long, &[1, 2, 3, 4]),
             Err(StaticDnsRecordError::InvalidName)
