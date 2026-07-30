@@ -67,6 +67,25 @@ message DirectBoot {
 }
 
 message UEFI {
+    // Variables used to initialize an empty UEFI variable store. These are
+    // ignored when the store already contains any variables.
+    message InitialVariables {
+        // A predefined set of Secure Boot-related variables. Selecting a
+        // template initializes keys and signature databases but does not
+        // enable Secure Boot enforcement.
+        enum SecureBootTemplate {
+            // Do not initialize Secure Boot-related variables from a template.
+            NONE = 0;
+            // Initialize variables with the Microsoft Windows certificate set.
+            MICROSOFT_WINDOWS = 1;
+            // Initialize variables with the Microsoft UEFI CA certificate set.
+            MICROSOFT_UEFI_CERTIFICATE_AUTHORITY = 2;
+        }
+
+        // The predefined Secure Boot variable set to use for initialization.
+        SecureBootTemplate secure_boot_template = 1;
+    }
+
     // Path to the UEFI firmware image on the host.
     string firmware_path = 1;
 
@@ -74,6 +93,13 @@ message UEFI {
     // had no OpenVMM equivalent and were never honored.
     reserved 2, 3;
     reserved "device_path", "optional_data";
+
+    // Variables to inject when initializing an empty UEFI variable store.
+    InitialVariables initial_variables = 4;
+
+    // Whether the firmware enforces Secure Boot policy. This is independent
+    // of whether initial Secure Boot variables are supplied above.
+    bool secure_boot_enabled = 5;
 }
 
 message MemoryConfig {
@@ -462,6 +488,14 @@ message PcieAttachment {
 }
 
 message VMConfig {
+    // Action to take when the guest requests a reset.
+    enum GuestResetAction {
+        // Restart the guest automatically.
+        RESTART = 0;
+        // Leave the virtual machine halted.
+        HALT = 1;
+    }
+
     MemoryConfig memory_config = 1;
     ProcessorConfig processor_config = 2;
     DevicesConfig devices_config = 3;
@@ -481,6 +515,8 @@ message VMConfig {
     NumaConfig numa_config = 10;
     // PCIe root complexes / ports / switches.
     PcieTopologyConfig pcie = 11;
+    // Action to take when the guest requests a reset.
+    GuestResetAction guest_reset_action = 12;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

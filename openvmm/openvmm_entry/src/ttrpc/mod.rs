@@ -719,7 +719,7 @@ impl VmService {
 
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
-        let (load_mode, base_chipset_type) = match req_config
+        let (load_mode, base_chipset_type, uefi_config) = match req_config
             .boot_config
             .take()
             .context("missing boot configuration")?
@@ -740,12 +740,43 @@ impl VmService {
                         boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                     },
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    None,
                 )
             }
             vmservice::vm_config::BootConfig::Uefi(uefi) => {
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
+                let initial_variables = uefi.initial_variables.unwrap_or_default();
+                let uefi_vars = match (arch, initial_variables.secure_boot_template()) {
+                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
+                        Default::default()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => {
+                        hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                    }
+                };
                 (
                     LoadMode::Uefi {
                         firmware,
@@ -775,21 +806,22 @@ impl VmService {
                         force_dma_bounce: false,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                    Some((uefi_vars, uefi.secure_boot_enabled)),
                 )
             }
         };
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
-        if matches!(load_mode, LoadMode::Uefi { .. }) {
+        if let Some((uefi_vars, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
             // ephemeral: with no VMGS file configured there is nowhere to
             // persist boot entries or secure boot state across reboots.
             chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
                 arch,
-                firmware_uefi_custom_vars::CustomVars::default(),
-                false,
+                uefi_vars,
+                secure_boot_enabled,
                 firmware_uefi_resources::LogLevel::make_default(),
                 None,
                 EphemeralNonVolatileStoreHandle.into_resource(),
@@ -893,7 +925,10 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
-            automatic_guest_reset: true,
+            automatic_guest_reset: match req_config.guest_reset_action() {
+                vmservice::vm_config::GuestResetAction::Restart => true,
+                vmservice::vm_config::GuestResetAction::Halt => false,
+            },
         };
 
         let mut scsi_rpc = None;

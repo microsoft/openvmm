@@ -726,8 +726,13 @@ fn test_ttrpc_uefi_boot(
                         boot_config: Some(vmservice::vm_config::BootConfig::Uefi(
                             vmservice::Uefi {
                                 firmware_path: firmware_path.get().to_string_lossy().to_string(),
+                                initial_variables: Some(vmservice::uefi::InitialVariables {
+                                    secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
+                                }),
+                                secure_boot_enabled: false,
                             },
                         )),
+                        guest_reset_action: vmservice::vm_config::GuestResetAction::Halt as i32,
                         serial_config: Some(vmservice::SerialConfig {
                             ports: vec![vmservice::serial_config::Config {
                                 port: 0,
@@ -789,9 +794,9 @@ fn test_ttrpc_uefi_boot(
             .context("timed out waiting for the guest UEFI application to run")?
             .context("com1 closed before the guest UEFI application ran")?;
 
-        // `guest_test_uefi` deliberately triple faults once it has finished its
-        // run, so waiting for the halt confirms the guest ran to completion
-        // rather than just reaching its first line of output.
+        // `guest_test_uefi` deliberately halts once it has finished its run,
+        // so waiting for the halt confirms the guest ran to completion rather
+        // than just reaching its first line of output.
         CancelContext::new()
             .with_timeout(Duration::from_secs(120))
             .until_cancelled(waiter)
@@ -810,12 +815,16 @@ fn test_ttrpc_uefi_boot(
         assert_eq!(
             props.state,
             vmservice::VmState::Halted as i32,
-            "guest triple faulted, expected HALTED"
+            "guest stopped, expected HALTED"
         );
         let halt_reason = props.halt_reason.unwrap_or_default();
+        let expected_halt_reason = match petri_artifacts_common::tags::MachineArch::host() {
+            petri_artifacts_common::tags::MachineArch::X86_64 => "TripleFault",
+            petri_artifacts_common::tags::MachineArch::Aarch64 => "Reset",
+        };
         assert!(
-            halt_reason.contains("TripleFault"),
-            "expected a triple fault halt, got {halt_reason:?}"
+            halt_reason.contains(expected_halt_reason),
+            "expected a {expected_halt_reason} halt, got {halt_reason:?}"
         );
 
         // Tearing down a VM that has a SCSI controller used to hang here, so
