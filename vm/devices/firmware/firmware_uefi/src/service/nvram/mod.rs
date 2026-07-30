@@ -669,10 +669,26 @@ mod tests {
     use firmware_uefi_custom_vars::ApplyDeltaError;
     use pal_async::async_test;
     use ucs2::Ucs2LeSlice;
+    use uefi_nvram_specvars::signature_list::SignatureData;
+    use uefi_nvram_specvars::signature_list::SignatureList;
     use uefi_nvram_storage::EFI_TIME;
     use uefi_nvram_storage::NvramStorage;
     use uefi_nvram_storage::in_memory::InMemoryNvram;
     use wchar::wchz;
+
+    const TEST_SIGNATURE_OWNER: guid::Guid = guid::guid!("00000000-0000-0000-0000-000000000001");
+
+    fn x509_variable(certs: &[&'static [u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        for cert in certs {
+            SignatureList::X509(SignatureData::new_x509(
+                TEST_SIGNATURE_OWNER,
+                Cow::Borrowed(*cert),
+            ))
+            .extend_as_spec_signature_list(&mut data);
+        }
+        data
+    }
 
     fn append_without_base_json() -> Vec<u8> {
         br#"{
@@ -693,6 +709,26 @@ mod tests {
             vsm_config: None,
             services: NvramSpecServices::new(storage),
         }
+    }
+
+    #[test]
+    fn authenticated_and_raw_signature_payloads_parse_identically() {
+        let raw = x509_variable(&[b"cert1"]);
+        let mut authenticated = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+        authenticated.extend_from_slice(&raw);
+
+        assert_eq!(
+            collect_signature_set(&authenticated).unwrap(),
+            collect_signature_set(&raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn signature_set_difference_counts_missing_baseline_entries() {
+        let baseline = collect_signature_set(&x509_variable(&[b"cert1", b"cert2"])).unwrap();
+        let loaded = collect_signature_set(&x509_variable(&[b"cert1", b"cert3"])).unwrap();
+
+        assert_eq!(baseline.difference(&loaded).count(), 1);
     }
 
     #[async_test]
