@@ -1086,9 +1086,9 @@ impl HvfProcessor<'_> {
 
 impl Drop for HvfProcessor<'_> {
     fn drop(&mut self) {
-        let mut waker = self.inner.waker.write();
-        let _waker = waker.take();
+        let waker = self.inner.waker.write().take();
         self.inner.vcpu.store(!0, Ordering::SeqCst);
+        drop(waker);
     }
 }
 
