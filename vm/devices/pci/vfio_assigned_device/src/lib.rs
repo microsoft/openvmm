@@ -221,15 +221,16 @@ pub(crate) struct VfioAssignedPciDevice {
     )]
     config_patches: BTreeMap<u16, ConfigPatch>,
 
-    /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
-    /// (cdev) fds alive and cleans up on drop.
-    binding: manager::VfioBinding,
-
     /// Accelerated (iommufd-nested) SMMU stream, present only for a device
     /// behind an accel-capable SMMU. Owns the StreamID derived from the guest
     /// RequesterID seen on routed config-space writes, and every host object
-    /// keyed by it. Dropped when this device is removed or hot-unplugged.
+    /// keyed by it. Declared before `binding` so these references are released
+    /// before the manager is notified of device removal.
     accel_stream: Option<iommufd_nesting::AccelStream>,
+
+    /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
+    /// (cdev) fds alive and cleans up on drop.
+    binding: manager::VfioBinding,
 }
 
 #[derive(Inspect)]
@@ -599,8 +600,8 @@ impl VfioAssignedPciDevice {
             supports_reset,
             bar_direct_maps,
             config_patches,
-            binding,
             accel_stream,
+            binding,
         })
     }
 

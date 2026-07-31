@@ -688,11 +688,6 @@ struct IoasManager {
     #[inspect(skip)]
     ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
     ioas_id: u32,
-    /// Nesting parent (stage-2) HWPTs under this IOAS, one per physical IOMMU
-    /// in use. Weak, so a parent is destroyed once the last vIOMMU nesting on
-    /// it goes away.
-    #[inspect(skip)]
-    nesting_parents: Vec<Weak<crate::iommufd_nesting::NestingParent>>,
     /// Cached per-vSMMU accel state (vIOMMU). All devices behind the same
     /// vSMMU share one entry; the first device to request nesting creates it.
     /// The serial actor loop is the mutual exclusion — no lock needed. There
@@ -713,6 +708,9 @@ struct IoasManager {
     /// Next device ID (unique within this manager).
     #[inspect(skip)]
     next_device_id: u64,
+    /// Next accelerated-state ID (unique within this manager).
+    #[inspect(skip)]
+    next_accel_state_id: u64,
     #[inspect(skip)]
     recv: mesh::Receiver<IoasManagerRpc>,
 }
@@ -721,18 +719,33 @@ struct IoasManager {
 struct CdevDeviceEntry {
     id: u64,
     pci_id: String,
+    accel_state_id: Option<u64>,
+}
+
+fn remove_cdev_device(
+    devices: &mut Vec<CdevDeviceEntry>,
+    device_id: u64,
+) -> Option<(CdevDeviceEntry, Option<u64>)> {
+    let pos = devices.iter().position(|device| device.id == device_id)?;
+    let entry = devices.swap_remove(pos);
+    let unused_accel_state = entry.accel_state_id.filter(|&accel_state_id| {
+        !devices
+            .iter()
+            .any(|device| device.accel_state_id == Some(accel_state_id))
+    });
+    Some((entry, unused_accel_state))
 }
 
 /// Cache entry mapping an emulated SMMU to its host vIOMMU.
 ///
-/// Both halves are weak. A strong `vsmmu` would keep the emulated SMMU alive
-/// for the manager's lifetime; a strong `accel` would keep the vIOMMU and its
-/// HWPTs alive after the last device behind the vSMMU is removed. Holding both
-/// weakly makes the entry expire on its own, and lets a re-plugged device
-/// either reuse a still-live vIOMMU or build a fresh one.
+/// The manager owns the accelerated state and nesting parent until the last
+/// device referencing `id` is removed. The vSMMU is weak so this cache does not
+/// keep the chipset device alive.
 struct AccelStateEntry {
+    id: u64,
     vsmmu: Weak<smmu::SmmuSharedState>,
-    accel: Weak<crate::iommufd_nesting::SmmuAccelState>,
+    accel: Arc<crate::iommufd_nesting::SmmuAccelState>,
+    parent: Arc<crate::iommufd_nesting::NestingParent>,
 }
 
 impl IoasManager {
@@ -771,12 +784,12 @@ impl IoasManager {
             iommu_id,
             ctx,
             ioas_id,
-            nesting_parents: Vec::new(),
             accel_states: Vec::new(),
             _dma_handle: dma_handle,
             dmabuf_registry,
             devices: Vec::new(),
             next_device_id: 0,
+            next_accel_state_id: 0,
             recv,
         })
     }
@@ -827,7 +840,7 @@ impl IoasManager {
         // attached to the IOAS directly — it will be attached to a nested
         // HWPT by the IommufdStreamBackend. For non-nesting, attach to the
         // IOAS for identity DMA.
-        let nesting = if let Some(vsmmu) = vsmmu {
+        let (nesting, accel_state_id) = if let Some(vsmmu) = vsmmu {
             // Query the physical SMMU's capabilities backing this device.
             let host_caps = crate::iommufd_nesting::query_host_caps(&self.ctx, devid)
                 .context("failed to query host SMMU capabilities")?;
@@ -836,14 +849,11 @@ impl IoasManager {
             // first device behind the SMMU allocates it; the rest reuse it
             // (matched by Arc identity), so one emulated SMMU maps to one
             // iommufd vIOMMU.
-            self.prune_accel_states();
             let existing = self.accel_states.iter().find_map(|entry| {
                 let cached = entry.vsmmu.upgrade()?;
-                Arc::ptr_eq(&cached, &vsmmu)
-                    .then(|| entry.accel.upgrade())
-                    .flatten()
+                Arc::ptr_eq(&cached, &vsmmu).then(|| (entry.accel.clone(), entry.id))
             });
-            let accel_state = match existing {
+            let (accel_state, accel_state_id) = match existing {
                 Some(state) => state,
                 None => {
                     let (parent, viommu_id) = self.select_nesting_parent(devid)?;
@@ -851,28 +861,35 @@ impl IoasManager {
                         crate::iommufd_nesting::SmmuAccelState::new(
                             self.ctx.clone(),
                             devid,
-                            parent,
+                            parent.clone(),
                             viommu_id,
                         )
                         .context("failed to create SMMU accel state")?,
                     );
+                    let id = self.next_accel_state_id;
+                    self.next_accel_state_id += 1;
                     self.accel_states.push(AccelStateEntry {
+                        id,
                         vsmmu: Arc::downgrade(&vsmmu),
-                        accel: Arc::downgrade(&state),
+                        accel: state.clone(),
+                        parent,
                     });
-                    state
+                    (state, id)
                 }
             };
 
-            Some(NestingOutput {
-                accel_state,
-                host_caps,
-            })
+            (
+                Some(NestingOutput {
+                    accel_state,
+                    host_caps,
+                }),
+                Some(accel_state_id),
+            )
         } else {
             // Normal path: attach to IOAS for identity DMA.
             cdev.attach_ioas(self.ioas_id)
                 .context("failed to attach cdev device to IOAS")?;
-            None
+            (None, None)
         };
 
         let device_id = self.next_device_id;
@@ -881,6 +898,7 @@ impl IoasManager {
         self.devices.push(CdevDeviceEntry {
             id: device_id,
             pci_id: pci_id.clone(),
+            accel_state_id,
         });
 
         tracing::info!(
@@ -897,8 +915,10 @@ impl IoasManager {
             device: cdev.into_device(),
             iommufd_devid: devid,
             ioas_id: self.ioas_id,
-            device_id,
-            manager_send: self.recv.sender(),
+            removal: CdevDeviceRemoval {
+                device_id,
+                manager_send: self.recv.sender(),
+            },
             dmabuf_registry: self.dmabuf_registry.clone(),
             nesting,
         })
@@ -918,7 +938,16 @@ impl IoasManager {
         &mut self,
         dev_id: u32,
     ) -> anyhow::Result<(Arc<crate::iommufd_nesting::NestingParent>, u32)> {
-        for parent in self.nesting_parents.iter().filter_map(Weak::upgrade) {
+        let mut parents = Vec::new();
+        for entry in &self.accel_states {
+            if !parents
+                .iter()
+                .any(|parent| Arc::ptr_eq(parent, &entry.parent))
+            {
+                parents.push(entry.parent.clone());
+            }
+        }
+        for parent in parents {
             if let ViommuAlloc::Allocated(viommu_id) = parent.alloc_viommu(dev_id)? {
                 return Ok((parent, viommu_id));
             }
@@ -933,30 +962,27 @@ impl IoasManager {
             // The parent was just built from this device's own IOMMU.
             anyhow::bail!("host rejected a vIOMMU on a nesting parent allocated for this device");
         };
-        self.nesting_parents.push(Arc::downgrade(&parent));
         Ok((parent, viommu_id))
     }
 
-    /// Drops cache entries whose emulated SMMU or vIOMMU has gone away, so the
-    /// table does not grow across device hot-plug cycles.
-    fn prune_accel_states(&mut self) {
-        self.accel_states
-            .retain(|entry| entry.vsmmu.strong_count() > 0 && entry.accel.strong_count() > 0);
-        self.nesting_parents
-            .retain(|parent| parent.strong_count() > 0);
-    }
-
     fn remove_device(&mut self, device_id: u64) {
-        if let Some(pos) = self.devices.iter().position(|d| d.id == device_id) {
-            let entry = self.devices.swap_remove(pos);
+        if let Some((entry, unused_accel_state)) = remove_cdev_device(&mut self.devices, device_id)
+        {
             tracing::info!(
                 device_id,
                 pci_id = entry.pci_id,
                 iommu_id = self.iommu_id,
                 "removing cdev device"
             );
+            if let Some(accel_state_id) = unused_accel_state {
+                let pos = self
+                    .accel_states
+                    .iter()
+                    .position(|state| state.id == accel_state_id)
+                    .expect("device accelerated state must remain cached until removal");
+                self.accel_states.swap_remove(pos);
+            }
         }
-        self.prune_accel_states();
     }
 }
 
@@ -998,15 +1024,27 @@ pub(crate) struct CdevPrepareResponse {
     pub device: vfio_sys::Device,
     pub iommufd_devid: u32,
     pub ioas_id: u32,
-    pub device_id: u64,
-    /// Sender to the per-iommu manager for drop notification.
-    pub manager_send: mesh::Sender<IoasManagerRpc>,
+    /// Removal notification transferred into the device binding on success.
+    removal: CdevDeviceRemoval,
     /// Registry of exported device-BAR dmabufs for this IOAS, shared so the
     /// device can register its BAR dmabufs for peer-to-peer DMA.
     pub dmabuf_registry: Arc<DmaBufRegistry>,
     /// Nesting output for iommufd nested S1. Present when the device was
     /// prepared with `vsmmu: Some(_)`.
     pub nesting: Option<NestingOutput>,
+}
+
+/// Notifies the per-IOAS manager exactly once when device ownership ends.
+struct CdevDeviceRemoval {
+    device_id: u64,
+    manager_send: mesh::Sender<IoasManagerRpc>,
+}
+
+impl Drop for CdevDeviceRemoval {
+    fn drop(&mut self) {
+        self.manager_send
+            .send(IoasManagerRpc::RemoveDevice(self.device_id));
+    }
 }
 
 /// iommufd nested-translation objects returned from [`IoasManager`] when a
@@ -1260,12 +1298,9 @@ pub(crate) struct VfioCdevBindingState {
     iommufd_devid: u32,
     /// IOAS containing this device's DMA mappings.
     ioas_id: u32,
-    /// Manager-local ID used to remove this device from inspect state.
+    /// Manager removal notification, transferred from the prepare response.
     #[inspect(skip)]
-    device_id: u64,
-    /// Per-IOAS manager notified when this binding is dropped.
-    #[inspect(skip)]
-    manager_send: mesh::Sender<IoasManagerRpc>,
+    _removal: CdevDeviceRemoval,
     /// Registry of exported device-BAR dmabufs for this device's IOAS.
     #[inspect(skip)]
     dmabuf_registry: Arc<DmaBufRegistry>,
@@ -1292,8 +1327,7 @@ impl VfioCdevBindingState {
                 pci_id,
                 iommufd_devid: resp.iommufd_devid,
                 ioas_id: resp.ioas_id,
-                device_id: resp.device_id,
-                manager_send: resp.manager_send,
+                _removal: resp.removal,
                 dmabuf_registry: resp.dmabuf_registry,
                 dmabuf_inode: None,
             },
@@ -1306,8 +1340,6 @@ impl Drop for VfioCdevBindingState {
         if let Some((st_dev, st_ino)) = self.dmabuf_inode {
             self.dmabuf_registry.deregister_device(st_dev, st_ino);
         }
-        self.manager_send
-            .send(IoasManagerRpc::RemoveDevice(self.device_id));
     }
 }
 
@@ -1390,5 +1422,48 @@ mod tests {
         associations.begin(&vsmmu, "iommu0").unwrap();
         associations.complete(&vsmmu, "iommu0", false);
         assert!(associations.begin(&vsmmu, "iommu1").is_err());
+    }
+
+    #[pal_async::async_test]
+    async fn cdev_device_removal_notifies_manager() {
+        let mut recv = mesh::Receiver::new();
+        let removal = CdevDeviceRemoval {
+            device_id: 42,
+            manager_send: recv.sender(),
+        };
+
+        drop(removal);
+
+        let IoasManagerRpc::RemoveDevice(device_id) = recv.recv().await.unwrap() else {
+            panic!("unexpected manager message");
+        };
+        assert_eq!(device_id, 42);
+    }
+
+    #[test]
+    fn cdev_accel_state_released_on_last_device_each_hotplug_cycle() {
+        let mut devices = vec![
+            CdevDeviceEntry {
+                id: 1,
+                pci_id: "device1".into(),
+                accel_state_id: Some(10),
+            },
+            CdevDeviceEntry {
+                id: 2,
+                pci_id: "device2".into(),
+                accel_state_id: Some(10),
+            },
+        ];
+
+        assert_eq!(remove_cdev_device(&mut devices, 1).unwrap().1, None);
+        assert_eq!(remove_cdev_device(&mut devices, 2).unwrap().1, Some(10));
+
+        devices.push(CdevDeviceEntry {
+            id: 3,
+            pci_id: "device3".into(),
+            accel_state_id: Some(11),
+        });
+        assert_eq!(remove_cdev_device(&mut devices, 3).unwrap().1, Some(11));
+        assert!(devices.is_empty());
     }
 }
