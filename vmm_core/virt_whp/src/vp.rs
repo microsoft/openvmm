@@ -336,6 +336,31 @@ impl<'a> WhpProcessor<'a> {
                 // Process the user-mode APIC, waiting for interrupts if halted.
                 let ready = self.process_apic(dev);
 
+                // TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
+                // The hypervisor can leave a VP halted with an interrupt
+                // pending in its offloaded APIC, with nothing left to wake it,
+                // so poll for that case periodically.
+                {
+                    const UNHALT_CHECK_PERIOD: std::time::Duration =
+                        std::time::Duration::from_secs(1);
+
+                    let expired = self
+                        .state
+                        .unhalt_check_vmtime
+                        .as_mut()
+                        .is_some_and(|vmtime| {
+                            vmtime.set_timeout_if_before(
+                                vmtime.now().wrapping_add(UNHALT_CHECK_PERIOD),
+                            );
+                            vmtime.poll_timeout(cx).is_ready()
+                        });
+
+                    if expired {
+                        let vtl = self.state.runnable_vtls.highest_set().unwrap();
+                        self.unhalt_for_pending_interrupt(vtl);
+                    }
+                }
+
                 // Arm the timer.
                 if self.state.vmtime.poll_timeout(cx).is_ready() {
                     // The timer has already expired. Yield once to allow other

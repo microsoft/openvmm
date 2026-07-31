@@ -229,6 +229,7 @@ struct RunState {
     vtls: RunStateVtls,
     #[inspect(mut)]
     halted: bool,
+    unhalt_check_vmtime: Option<VmTimeAccess>,
     exits: vp::ExitStats,
     vmtime: VmTimeAccess,
 }
@@ -325,6 +326,7 @@ impl RunState {
             ref mut crash_msg_len,
             ref mut vtls,
             ref mut halted,
+            unhalt_check_vmtime: _,
             exits: _,
             vtl2_wakeup_vmtime: _,
             vmtime: _,
@@ -1035,6 +1037,12 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         .vmtime
                         .access(format!("vtl2-wakeup-{}", vp.index.index()))
                 });
+                let unhalt_check_vmtime =
+                    matches!(partition.inner.vtl0.lapic, LocalApicKind::Offloaded).then(|| {
+                        self.config
+                            .vmtime
+                            .access(format!("apic-unhalt-{}", vp.index.index()))
+                    });
                 WhpProcessorBinder {
                     partition: partition.inner.clone(),
                     index: vp.index,
@@ -1046,6 +1054,7 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         crash_msg_address: None,
                         crash_msg_len: None,
                         halted: false,
+                        unhalt_check_vmtime,
                         vtls: RunStateVtls {
                             vtl0: PerVtlRunState::new(
                                 &partition.inner.vtl0.lapic,
