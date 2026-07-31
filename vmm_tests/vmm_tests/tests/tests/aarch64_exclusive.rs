@@ -84,19 +84,15 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     Ok(())
 }
 
-/// Boot an aarch64 guest with no VMBus via linux direct boot, and assign a
-/// VFIO device from the incubator into the guest behind an accelerated SMMU.
+/// Boot an aarch64 guest with no VMBus via linux direct boot,
+/// and assign a VFIO device from the incubator into the guest.
 ///
 /// This test is intended to run inside a QEMU TCG incubator with KVM.
 /// The incubator profile sets up a virtio-blk device bound to vfio-pci,
 /// and publishes its BDF under the profile name `test-disk` (see
 /// [`incubator_vfio_bdf`]). The test assigns that device into the L2 guest
-/// behind an accelerated (iommufd-nested) SMMU — forcing translating stage-1
-/// domains with `iommu.passthrough=0` so the nested-HWPT path is exercised —
-/// verifies it appears as a block device, then reads from it to exercise DMA
-/// and interrupts through the accelerated SMMU's nested HWPT. Finally it
-/// function-level-resets the device and reads again, covering the StreamID
-/// retire-and-rebind path.
+/// and verifies it appears as a block device, then reads from it to exercise
+/// DMA and interrupts.
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
 /// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
@@ -130,6 +126,96 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         .write(true)
         .open(std::path::Path::new("/dev/vfio/devices").join(cdev_name.file_name()))
         .context("failed to open VFIO cdev")?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
+                c.hypervisor.with_hv = false;
+                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                    port_name: "s0rc0rp1".into(),
+                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                        pci_id: vfio_bdf,
+                        cdev,
+                        iommufd,
+                        iommu_id: "iommu0".into(),
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    // Verify the assigned device appears in the guest as /dev/vda with the
+    // expected size. The incubator provisions a 64 MiB VFIO-backed virtio-blk
+    // disk (the `test-disk` device in the aarch64-tcg-pcie incubator profile).
+    // Checking the sysfs size proves the VFIO-assigned device is the one that
+    // showed up, rather than merely that *some* vda exists.
+    const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
+    let sh = agent.unix_shell();
+    let vda_size = sh
+        .read_file("/sys/block/vda/size")
+        .await
+        .context("VFIO-assigned virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    tracing::info!(vda_sectors, "guest /dev/vda size");
+    anyhow::ensure!(
+        vda_sectors == TEST_DISK_SIZE / 512,
+        "unexpected /dev/vda size: expected {} sectors, got {vda_sectors}",
+        TEST_DISK_SIZE / 512
+    );
+
+    // Read from the disk to exercise DMA and interrupts through the IOMMU.
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await?;
+    tracing::info!(dd_output = %dd_output, "dd completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read, got: {dd_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Assign a VFIO device into an aarch64 guest behind an **accelerated**
+/// (iommufd-nested) SMMU, and exercise the nested stage-1 translation path.
+///
+/// The same incubator `test-disk` device as [`boot_no_vmbus_pcie_aarch64_tcg`],
+/// but placed behind an accel-capable SMMU and forced into translating (not
+/// passthrough) stage-1 domains with `iommu.passthrough=0`, so the host nested
+/// HWPT is what the device's DMA actually goes through.
+///
+/// Beyond booting and reading, this covers two things the non-accel test
+/// cannot: that stage-1 translation is genuinely in effect rather than bypass,
+/// and that a StreamID survives being retired and re-derived — the VMM
+/// destroys the host vDevice and nested HWPT on a function-level reset and
+/// rebuilds both from the routed configuration write that follows.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
+/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
+#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
+async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let vfio_bdf = incubator_vfio_bdf("test-disk")?;
+
+    tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device behind an accelerated SMMU");
+
+    let cdev = open_vfio_cdev(&vfio_bdf)?;
     let iommufd = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -182,11 +268,9 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         .run()
         .await?;
 
-    // Verify the assigned device appears in the guest as /dev/vda with the
-    // expected size. The incubator provisions a 64 MiB VFIO-backed virtio-blk
-    // disk (the `test-disk` device in the aarch64-tcg-pcie incubator profile).
-    // Checking the sysfs size proves the VFIO-assigned device is the one that
-    // showed up, rather than merely that *some* vda exists.
+    // The incubator provisions a 64 MiB VFIO-backed virtio-blk disk, so the
+    // sysfs size proves the assigned device is the one that showed up rather
+    // than merely that *some* vda exists.
     const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
     let sh = agent.unix_shell();
     let vda_size = sh
@@ -201,7 +285,8 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         TEST_DISK_SIZE / 512
     );
 
-    // Read from the disk to exercise DMA and interrupts through the IOMMU.
+    // Read from the disk to exercise DMA and interrupts through the nested
+    // HWPT.
     let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
         .read_stderr()
         .await?;
