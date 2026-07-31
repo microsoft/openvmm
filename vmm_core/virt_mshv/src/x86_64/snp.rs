@@ -294,6 +294,47 @@ pub(super) fn snp_host_access_flags(visibility: u32) -> Option<u8> {
     }
 }
 
+pub(crate) fn acquire_snp_host_access(
+    partition: &MshvPartitionInner,
+    addr: u64,
+    size: u64,
+) -> anyhow::Result<()> {
+    // TODO: The current prototype implementation does not coordinate
+    // acquisition with guest visibility changes. In particular, there is no
+    // per-page state preventing a fault on another thread from acquiring
+    // access while a GPA attribute intercept is revoking it. A complete
+    // implementation must serialize acquisition with revocation and block or
+    // fail this request if the guest is making the page private.
+    anyhow::ensure!(
+        addr.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            && size.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            && size != 0,
+        "host-access range must be page aligned and nonempty"
+    );
+    let page_count = size / hvdef::HV_PAGE_SIZE;
+    let flags = (1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE)
+        | (1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE)
+        | (1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE);
+    let mut buf = HeaderVec::<ModifyGpaHostAccessHeader, u64, 0>::new(ModifyGpaHostAccessHeader {
+        flags,
+        rsvd: [0; 7],
+        page_count,
+    });
+    let gpas = (0..page_count)
+        .map(|page| addr + page * hvdef::HV_PAGE_SIZE)
+        .collect::<Vec<_>>();
+    buf.extend_tail_from_slice(&gpas);
+    // SAFETY: The custom header matches `mshv_modify_gpa_host_access`,
+    // followed by `page_count` contiguous GPA values.
+    let args = unsafe {
+        &*buf
+            .as_ptr()
+            .cast::<mshv_bindings::mshv_modify_gpa_host_access>()
+    };
+    partition.vmfd.modify_gpa_host_access(args)?;
+    Ok(())
+}
+
 pub(super) fn parse_snp_gpa_range(
     range: hvdef::hypercall::HvGpaRange,
 ) -> Result<(u64, u64), VpHaltReason> {

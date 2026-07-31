@@ -131,6 +131,14 @@ pub struct MappingManagerClient {
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
+    pub async fn set_host_access(
+        &self,
+        host_access: Option<Arc<dyn virt::PartitionMemoryMap>>,
+    ) -> Result<(), VaMapperError> {
+        self.new_mapper(false).await?.set_host_access(host_access);
+        Ok(())
+    }
+
     /// Returns a secondary VA mapper for this guest memory.
     ///
     /// A *secondary* mapper is any host-side view of guest memory other than the
@@ -141,6 +149,7 @@ impl MappingManagerClient {
     /// to touch guest memory, or a DMA target. They never own the memory, and
     /// soft large pages are not applied to them: in soft-large-page mode a
     /// secondary mapper only ever gets 4 KB pages.
+    /// Returns a VA mapper for this guest memory.
     ///
     /// When `eager` is true, the mapper receives all existing mappings
     /// immediately and gets new ones pushed synchronously. File-backed

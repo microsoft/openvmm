@@ -709,6 +709,14 @@ pub struct GuestMemoryClient {
 }
 
 impl GuestMemoryClient {
+    /// Installs a handler used to acquire host access after a guest-memory fault.
+    pub async fn set_host_access(
+        &self,
+        host_access: Option<Arc<dyn virt::PartitionMemoryMap>>,
+    ) -> Result<(), VaMapperError> {
+        self.mapping_manager.set_host_access(host_access).await
+    }
+
     /// Retrieves a [`GuestMemory`] object to access guest memory from this
     /// process.
     ///

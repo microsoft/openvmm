@@ -43,6 +43,18 @@ pub trait PartitionMemoryMap: Send + Sync {
         Ok(())
     }
 
+    /// Acquires host access to a guest-memory range.
+    ///
+    /// This is used by isolated partitions whose userspace mapping may fault
+    /// until the hypervisor grants current host access.
+    ///
+    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
+    /// required to safely lower host access and track that pages are not
+    /// currently in use before revoking access.
+    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
+        anyhow::bail!("acquiring host access is not supported")
+    }
+
     /// Maps a range residing in a remote process.
     ///
     /// This may fail if the range overlaps any other mapped range.
