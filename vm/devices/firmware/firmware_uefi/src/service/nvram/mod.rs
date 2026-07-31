@@ -330,14 +330,13 @@ impl NvramServices {
                 continue;
             }
 
-            let missing_entries = base_signatures.difference(&loaded_signatures).count();
             let report = SecureBootConfigReport {
                 variable_name,
                 baseline_revision,
                 custom_uefi_config_present,
                 base_template_entries: base_signatures.len(),
                 loaded_entries: loaded_signatures.len(),
-                missing_entries,
+                missing_entries: base_signatures.difference(&loaded_signatures).count(),
                 loaded_variable_bytes,
             };
             tracing::info!(CVM_ALLOWED, ?report);
@@ -717,11 +716,11 @@ mod tests {
     }
 
     #[test]
-    fn signature_set_difference_counts_missing_baseline_entries() {
-        let baseline = collect_signature_set(&x509_variable(&[b"cert1", b"cert2"])).unwrap();
+    fn signature_set_difference_ignores_extra_loaded_signatures() {
+        let base = collect_signature_set(&x509_variable(&[b"cert1", b"cert2"])).unwrap();
         let loaded = collect_signature_set(&x509_variable(&[b"cert1", b"cert3"])).unwrap();
 
-        assert_eq!(baseline.difference(&loaded).count(), 1);
+        assert_eq!(base.difference(&loaded).count(), 1);
     }
 
     #[async_test]
